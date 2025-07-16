@@ -9,3 +9,13 @@ temp/
 *.parquet
 *.csv
 *.json.backup
+
+# Ignore build artifacts
+build/
+dist/
+
+# Testing documentation
+TESTING.md
+
+# Package files
+*.tgz

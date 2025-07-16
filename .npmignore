@@ -1,0 +1,62 @@
+# Development files
+.git/
+.gitignore
+.env*
+*.log
+*.pid
+*.seed
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Testing files
+test/
+tests/
+*.test.js
+*.test.ts
+__tests__/
+coverage/
+
+# Build tools
+webpack.config.js
+gulpfile.js
+rollup.config.js
+.travis.yml
+.github/
+
+# Documentation that shouldn't be in npm package
+docs/
+CONTRIBUTING.md
+CHANGELOG.md
+TODO.md
+TESTING.md
+
+# Development dependencies
+node_modules/
+*.tsbuildinfo
+
+# Build files (keep dist/ for npm package)
+build/
+
+# Temporary files
+temp/
+tmp/
+*.tmp
+data/
+*.parquet
+*.csv
+*.json.backup
+
+# Package files
+*.tgz
+
+# Testing documentation
+TESTING.md

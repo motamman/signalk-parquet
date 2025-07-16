@@ -56,9 +56,11 @@ npm run build
 
 ## Configuration
 
+### Plugin Configuration
+
 Navigate to **SignalK Admin → Server → Plugin Config → SignalK Parquet Data Store**
 
-### Basic Configuration
+Configure basic plugin settings (path configuration is managed separately in the web interface):
 
 | Setting | Description | Default |
 |---------|-------------|---------|
@@ -70,6 +72,8 @@ Navigate to **SignalK Admin → Server → Plugin Config → SignalK Parquet Dat
 | **Retention Days** | Days to keep processed files | 7 |
 
 ### S3 Upload Configuration
+
+Configure S3 upload settings in the plugin configuration:
 
 | Setting | Description | Default |
 |---------|-------------|---------|
@@ -84,29 +88,65 @@ Navigate to **SignalK Admin → Server → Plugin Config → SignalK Parquet Dat
 
 ## Path Configuration
 
+**Important**: Path configuration is managed exclusively through the web interface, not in the SignalK admin interface. This provides a more intuitive interface for managing data collection paths.
+
+### Accessing Path Configuration
+
+1. Navigate to: `http://localhost:3000/plugins/signalk-parquet`
+2. Click the **⚙️ Path Configuration** tab
+
 ### Adding Data Paths
 
 Use the web interface to configure which SignalK paths to collect:
 
-1. Navigate to the **Path Configuration** tab
-2. Click **Add New Path**
-3. Configure the path settings:
+1. Click **➕ Add New Path**
+2. Configure the path settings:
    - **SignalK Path**: The SignalK data path (e.g., `navigation.position`)
    - **Always Enabled**: Collect data regardless of regimen state
    - **Regimen Control**: Command name that controls collection
    - **Source Filter**: Only collect from specific sources
    - **Context**: SignalK context (usually `vessels.self`)
+3. Click **✅ Add Path**
+
+### Managing Existing Paths
+
+- **Edit Path**: Click ✏️ Edit button to modify path settings
+- **Delete Path**: Click 🗑️ Remove button to delete a path
+- **Refresh**: Click 🔄 Refresh Paths to reload configuration
+
+### Path Configuration Storage
+
+Path configurations are stored separately from plugin configuration in:
+```
+~/.signalk/signalk-parquet/webapp-config.json
+```
+
+This allows for:
+- Independent management of path configurations
+- Better separation of concerns
+- Easier backup and migration of path settings
+- More intuitive web-based configuration interface
 
 ### Regimen-Based Control
 
 Regimens allow you to control data collection based on SignalK commands:
 
+**Example**: Weather data collection controlled by regimen
 ```json
 {
   "path": "environment.wind.angleApparent",
   "enabled": false,
   "regimen": "captureWeather",
   "source": "mqtt-weatherflow-udp",
+  "context": "vessels.self"
+}
+```
+
+**Command Path**: Add the corresponding command path
+```json
+{
+  "path": "commands.captureWeather",
+  "enabled": true,
   "context": "vessels.self"
 }
 ```
@@ -421,13 +461,44 @@ For issues and feature requests:
 - **TypeScript Issues**: Consult TypeScript documentation
 - **DuckDB Issues**: Check DuckDB documentation
 
+## Testing
+
+Comprehensive testing procedures are documented in `TESTING.md`. The testing guide covers:
+
+- Installation and build verification
+- Plugin configuration testing
+- Web interface functionality
+- Data collection validation
+- Regimen control testing
+- File output verification
+- S3 integration testing
+- API endpoint testing
+- Performance testing
+- Error handling validation
+
+### Quick Test
+
+```bash
+# Test plugin health
+curl http://localhost:3000/plugins/signalk-parquet/api/health
+
+# Test path configuration
+curl http://localhost:3000/plugins/signalk-parquet/api/config/paths
+
+# Test data collection
+curl http://localhost:3000/plugins/signalk-parquet/api/paths
+```
+
+For detailed testing procedures, see [TESTING.md](TESTING.md).
+
 ## Contributing
 
 1. Fork the repository
 2. Create a feature branch
 3. Add TypeScript types for new features
 4. Include tests and documentation
-5. Submit a pull request
+5. Follow the testing procedures in `TESTING.md`
+6. Submit a pull request
 
 ## Changelog
 
