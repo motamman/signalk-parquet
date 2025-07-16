@@ -550,6 +550,21 @@
         let availablePaths = [];
         let dataDirectory = '';
 
+        // Get the plugin path dynamically
+        function getPluginPath() {
+            // Get the current script's path to determine the plugin name
+            const currentPath = window.location.pathname;
+            const pathParts = currentPath.split('/');
+            const pluginIndex = pathParts.indexOf('plugins');
+            
+            if (pluginIndex !== -1 && pathParts[pluginIndex + 1]) {
+                return `/plugins/${pathParts[pluginIndex + 1]}`;
+            }
+            
+            // Fallback to the plugin name from package.json
+            return '/plugins/signalk-parquet';
+        }
+
         // Load available paths on page load
         window.addEventListener('load', async function() {
             await loadAvailablePaths();
@@ -559,7 +574,7 @@
 
         async function loadAvailablePaths() {
             try {
-                const response = await fetch('/plugins/signalk-parquet/api/paths');
+                const response = await fetch(`${getPluginPath()}/api/paths`);
                 const result = await response.json();
                 
                 if (result.success) {

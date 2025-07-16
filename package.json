@@ -30,11 +30,11 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/motamman/zennora-signalk-parquet.git"
+    "url": "git+https://github.com/motamman/signalk-parquet.git"
   },
-  "homepage": "https://github.com/motamman/zennora-signalk-parquet#readme",
+  "homepage": "https://github.com/motamman/signalk-parquet#readme",
   "bugs": {
-    "url": "https://github.com/motamman/zennora-signalk-parquet/issues"
+    "url": "https://github.com/motamman/signalk-parquet/issues"
   },
   "signalk": {
     "appSupport": "webapp",

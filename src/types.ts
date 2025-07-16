@@ -189,7 +189,7 @@ export interface TypedRequest<T = any> extends Request {
 }
 
 export interface TypedResponse<T = any> extends Response {
-  json: (body: T) => TypedResponse<T>;
+  json: (body: T) => this;
 }
 
 // Internal Plugin State
@@ -198,8 +198,8 @@ export interface PluginState {
   dataBuffers: Map<string, DataRecord[]>;
   activeRegimens: Set<string>;
   subscribedPaths: Set<string>;
-  saveInterval?: NodeJS.Timer;
-  consolidationInterval?: NodeJS.Timer;
+  saveInterval?: NodeJS.Timeout;
+  consolidationInterval?: NodeJS.Timeout;
   parquetWriter?: ParquetWriter;
   s3Client?: any;
   currentConfig?: PluginConfig;

@@ -931,13 +931,13 @@ export = function(app: SignalKApp): SignalKPlugin {
         const dataDir = getDataDir();
         const paths = getAvailablePaths(dataDir);
         
-        res.json({
+        return res.json({
           success: true,
           dataDirectory: dataDir,
           paths: paths
         });
       } catch (error) {
-        res.status(500).json({
+        return res.status(500).json({
           success: false,
           error: (error as Error).message
         });
@@ -973,14 +973,14 @@ export = function(app: SignalKApp): SignalKPlugin {
           })
           .sort((a, b) => new Date(b.modified).getTime() - new Date(a.modified).getTime());
         
-        res.json({
+        return res.json({
           success: true,
           path: signalkPath,
           directory: pathDir,
           files: files
         });
       } catch (error) {
-        res.status(500).json({
+        return res.status(500).json({
           success: false,
           error: (error as Error).message
         });
@@ -1038,7 +1038,7 @@ export = function(app: SignalKApp): SignalKPlugin {
           const rawData = reader.getRowObjects();
           
           // Convert BigInt values to regular numbers for JSON serialization
-          const data = rawData.map(row => {
+          const data = rawData.map((row: any) => {
             const convertedRow: any = {};
             for (const [key, value] of Object.entries(row)) {
               convertedRow[key] = typeof value === 'bigint' ? Number(value) : value;
@@ -1049,7 +1049,7 @@ export = function(app: SignalKApp): SignalKPlugin {
           // Get column info
           const columns = data.length > 0 ? Object.keys(data[0]) : [];
           
-          res.json({
+          return res.json({
             success: true,
             path: signalkPath,
             file: sampleFile.name,
@@ -1067,7 +1067,7 @@ export = function(app: SignalKApp): SignalKPlugin {
         }
         
       } catch (error) {
-        res.status(500).json({
+        return res.status(500).json({
           success: false,
           error: (error as Error).message
         });
@@ -1126,7 +1126,7 @@ export = function(app: SignalKApp): SignalKPlugin {
           const rawData = reader.getRowObjects();
           
           // Convert BigInt values to regular numbers for JSON serialization
-          const data = rawData.map(row => {
+          const data = rawData.map((row: any) => {
             const convertedRow: any = {};
             for (const [key, value] of Object.entries(row)) {
               convertedRow[key] = typeof value === 'bigint' ? Number(value) : value;
@@ -1134,7 +1134,7 @@ export = function(app: SignalKApp): SignalKPlugin {
             return convertedRow;
           });
           
-          res.json({
+          return res.json({
             success: true,
             query: processedQuery,
             rowCount: data.length,
@@ -1151,7 +1151,7 @@ export = function(app: SignalKApp): SignalKPlugin {
         }
         
       } catch (error) {
-        res.status(500).json({
+        return res.status(500).json({
           success: false,
           error: (error as Error).message
         });
@@ -1191,7 +1191,7 @@ export = function(app: SignalKApp): SignalKPlugin {
 
         await state.s3Client.send(listCommand);
         
-        res.json({
+        return res.json({
           success: true,
           message: 'S3 connection successful',
           bucket: state.currentConfig.s3Upload.bucket,
@@ -1200,7 +1200,7 @@ export = function(app: SignalKApp): SignalKPlugin {
         });
       } catch (error) {
         app.debug('S3 test connection error:', error);
-        res.status(500).json({
+        return res.status(500).json({
           success: false,
           error: (error as Error).message || 'S3 connection failed'
         });
@@ -1211,12 +1211,12 @@ export = function(app: SignalKApp): SignalKPlugin {
     router.get('/api/config/paths', (_: TypedRequest, res: TypedResponse<ConfigApiResponse>) => {
       try {
         const paths = state.currentConfig?.paths || [];
-        res.json({
+        return res.json({
           success: true,
           paths: paths
         });
       } catch (error) {
-        res.status(500).json({
+        return res.status(500).json({
           success: false,
           error: (error as Error).message
         });
@@ -1224,16 +1224,17 @@ export = function(app: SignalKApp): SignalKPlugin {
     });
 
     // Add new path configuration
-    router.post('/api/config/paths', (req: TypedRequest<PathConfigRequest>, res: TypedResponse) => {
+    router.post('/api/config/paths', (req: TypedRequest<PathConfigRequest>, res: TypedResponse): void => {
       try {
         const newPath = req.body;
         
         // Validate required fields
         if (!newPath.path) {
-          return res.status(400).json({
+          res.status(400).json({
             success: false,
             error: 'Path is required'
           });
+          return;
         }
 
         // Add to current configuration
@@ -1242,10 +1243,11 @@ export = function(app: SignalKApp): SignalKPlugin {
         // Save to plugin configuration
         app.savePluginOptions(state.currentConfig, (err?: Error) => {
           if (err) {
-            return res.status(500).json({
+            res.status(500).json({
               success: false,
               error: 'Failed to save configuration: ' + err.message
             });
+            return;
           }
           
           // Update subscriptions
@@ -1266,24 +1268,26 @@ export = function(app: SignalKApp): SignalKPlugin {
     });
 
     // Update existing path configuration
-    router.put('/api/config/paths/:index', (req: TypedRequest<PathConfigRequest>, res: TypedResponse) => {
+    router.put('/api/config/paths/:index', (req: TypedRequest<PathConfigRequest>, res: TypedResponse): void => {
       try {
         const index = parseInt(req.params.index);
         const updatedPath = req.body;
         
         if (index < 0 || index >= state.currentConfig!.paths.length) {
-          return res.status(404).json({
+          res.status(404).json({
             success: false,
             error: 'Path configuration not found'
           });
+          return;
         }
 
         // Validate required fields
         if (!updatedPath.path) {
-          return res.status(400).json({
+          res.status(400).json({
             success: false,
             error: 'Path is required'
           });
+          return;
         }
 
         // Update the path configuration
@@ -1292,10 +1296,11 @@ export = function(app: SignalKApp): SignalKPlugin {
         // Save to plugin configuration
         app.savePluginOptions(state.currentConfig, (err?: Error) => {
           if (err) {
-            return res.status(500).json({
+            res.status(500).json({
               success: false,
               error: 'Failed to save configuration: ' + err.message
             });
+            return;
           }
           
           // Update subscriptions
@@ -1316,15 +1321,16 @@ export = function(app: SignalKApp): SignalKPlugin {
     });
 
     // Remove path configuration
-    router.delete('/api/config/paths/:index', (req: TypedRequest, res: TypedResponse) => {
+    router.delete('/api/config/paths/:index', (req: TypedRequest, res: TypedResponse): void => {
       try {
         const index = parseInt(req.params.index);
         
         if (index < 0 || index >= state.currentConfig!.paths.length) {
-          return res.status(404).json({
+          res.status(404).json({
             success: false,
             error: 'Path configuration not found'
           });
+          return;
         }
 
         // Get the path being removed for response
@@ -1336,10 +1342,11 @@ export = function(app: SignalKApp): SignalKPlugin {
         // Save to plugin configuration
         app.savePluginOptions(state.currentConfig, (err?: Error) => {
           if (err) {
-            return res.status(500).json({
+            res.status(500).json({
               success: false,
               error: 'Failed to save configuration: ' + err.message
             });
+            return;
           }
           
           // Update subscriptions
@@ -1363,7 +1370,7 @@ export = function(app: SignalKApp): SignalKPlugin {
 
     // Health check
     router.get('/api/health', (_: TypedRequest, res: TypedResponse<HealthApiResponse>) => {
-      res.json({
+      return res.json({
         success: true,
         status: 'healthy',
         timestamp: new Date().toISOString(),
