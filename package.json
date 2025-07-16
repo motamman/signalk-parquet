@@ -63,7 +63,9 @@
   },
   "files": [
     "dist/**/*",
+    "src/**/*",
     "public/**/*",
+    "tsconfig.json",
     "README.md",
     "LICENSE"
   ]
