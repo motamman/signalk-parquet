@@ -27,7 +27,8 @@ import {
   PathInfo,
   DuckDBInstance,
   DuckDBConnection,
-  DuckDBResult
+  DuckDBResult,
+  WebAppPathConfig
 } from './types';
 
 // AWS S3 for file upload
@@ -49,7 +50,46 @@ try {
   console.warn('DuckDB not available for webapp queries');
 }
 
+// Global variables for path management
+let currentPaths: PathConfig[] = [];
+let appInstance: SignalKApp;
+
+// Function to load paths from web app configuration
+function loadWebAppPaths(): PathConfig[] {
+  const webAppConfigPath = path.join(appInstance.getDataDirPath(), 'signalk-parquet', 'webapp-config.json');
+  try {
+    if (fs.existsSync(webAppConfigPath)) {
+      const configData = fs.readFileSync(webAppConfigPath, 'utf8');
+      const webAppConfig: WebAppPathConfig = JSON.parse(configData);
+      return webAppConfig.paths || [];
+    }
+  } catch (error) {
+    appInstance.debug(`Failed to load web app path configuration: ${error}`);
+  }
+  return [];
+}
+
+// Function to save paths to web app configuration
+function saveWebAppPaths(paths: PathConfig[]): void {
+  const webAppConfigPath = path.join(appInstance.getDataDirPath(), 'signalk-parquet', 'webapp-config.json');
+  try {
+    // Ensure directory exists
+    const configDir = path.dirname(webAppConfigPath);
+    if (!fs.existsSync(configDir)) {
+      fs.mkdirSync(configDir, { recursive: true });
+    }
+    
+    const webAppConfig: WebAppPathConfig = { paths };
+    fs.writeFileSync(webAppConfigPath, JSON.stringify(webAppConfig, null, 2));
+    appInstance.debug(`Saved web app path configuration with ${paths.length} paths`);
+  } catch (error) {
+    appInstance.error(`Failed to save web app path configuration: ${error}`);
+  }
+}
+
 export = function(app: SignalKApp): SignalKPlugin {
+  // Store app instance for global access
+  appInstance = app;
   const plugin: SignalKPlugin = {
     id: 'signalk-parquet',
     name: 'SignalK to Parquet',
@@ -90,9 +130,11 @@ export = function(app: SignalKApp): SignalKPlugin {
       retentionDays: options?.retentionDays || 7,
       fileFormat: options?.fileFormat || 'parquet',
       vesselMMSI: vesselMMSI,
-      paths: options?.paths || [],
       s3Upload: options?.s3Upload || { enabled: false }
     };
+
+    // Load paths from web app configuration
+    currentPaths = loadWebAppPaths();
 
     // Initialize ParquetWriter
     state.parquetWriter = new ParquetWriter({ 
@@ -189,7 +231,7 @@ export = function(app: SignalKApp): SignalKPlugin {
 
   // Subscribe to command paths that control regimens using proper subscription manager
   function subscribeToCommandPaths(config: PluginConfig): void {
-    const commandPaths = config.paths.filter(pathConfig => 
+    const commandPaths = currentPaths.filter((pathConfig: PathConfig) => 
       pathConfig && pathConfig.path && pathConfig.path.startsWith('commands.') && pathConfig.enabled
     );
 
@@ -197,7 +239,7 @@ export = function(app: SignalKApp): SignalKPlugin {
 
     const commandSubscription = {
       context: 'vessels.self',
-      subscribe: commandPaths.map(pathConfig => ({
+      subscribe: commandPaths.map((pathConfig: PathConfig) => ({
         path: pathConfig.path,
         period: 1000  // Check commands every second
       }))
@@ -302,12 +344,12 @@ export = function(app: SignalKApp): SignalKPlugin {
     // Re-subscribe to command paths
     subscribeToCommandPaths(config);
 
-    // Now subscribe to data paths
-    const dataPaths = config.paths.filter(pathConfig => 
+    // Now subscribe to data paths using currentPaths
+    const dataPaths = currentPaths.filter((pathConfig: PathConfig) => 
       pathConfig && pathConfig.path && !pathConfig.path.startsWith('commands.')
     );
 
-    const shouldSubscribePaths = dataPaths.filter(pathConfig => shouldSubscribeToPath(pathConfig));
+    const shouldSubscribePaths = dataPaths.filter((pathConfig: PathConfig) => shouldSubscribeToPath(pathConfig));
     
     if (shouldSubscribePaths.length === 0) {
       app.debug('No data paths need subscription currently');
@@ -316,7 +358,7 @@ export = function(app: SignalKApp): SignalKPlugin {
 
     // Group paths by context for separate subscriptions
     const contextGroups = new Map<string, PathConfig[]>();
-    shouldSubscribePaths.forEach(pathConfig => {
+    shouldSubscribePaths.forEach((pathConfig: PathConfig) => {
       const context = pathConfig.context || 'vessels.self';
       if (!contextGroups.has(context)) {
         contextGroups.set(context, []);
@@ -348,7 +390,7 @@ export = function(app: SignalKApp): SignalKPlugin {
             delta.updates.forEach((update: SignalKUpdate) => {
               if (update.values) {
                 update.values.forEach((valueUpdate: SignalKValue) => {
-                  const pathConfig = pathConfigs.find(p => p.path === valueUpdate.path);
+                  const pathConfig = pathConfigs.find((p: PathConfig) => p.path === valueUpdate.path);
                   if (pathConfig) {
                     handleDataMessage(valueUpdate, pathConfig, config, update, delta);
                   }
@@ -595,13 +637,13 @@ export = function(app: SignalKApp): SignalKPlugin {
 
   // Initialize regimen states from current API values at startup
   function initializeRegimenStates(config: PluginConfig): void {
-    const commandPaths = config.paths.filter(pathConfig => 
+    const commandPaths = currentPaths.filter((pathConfig: PathConfig) => 
       pathConfig && pathConfig.path && pathConfig.path.startsWith('commands.') && pathConfig.enabled
     );
 
     app.debug(`🔍 Checking current command values for ${commandPaths.length} command paths at startup`);
 
-    commandPaths.forEach(pathConfig => {
+    commandPaths.forEach((pathConfig: PathConfig) => {
       try {
         // Get current value from SignalK API
         const currentData = app.getSelfPath(pathConfig.path);
@@ -742,54 +784,6 @@ export = function(app: SignalKApp): SignalKPlugin {
         default: 7,
         minimum: 1,
         maximum: 365
-      },
-      paths: {
-        type: 'array',
-        title: 'SignalK Paths Configuration',
-        description: 'Configure which SignalK paths to collect and how to control collection',
-        items: {
-          type: 'object',
-          properties: {
-            path: {
-              type: 'string',
-              title: 'SignalK Path',
-              description: 'The SignalK path to collect data from (e.g., navigation.position)',
-              default: ''
-            },
-            name: {
-              type: 'string',
-              title: 'Display Name',
-              description: 'Optional display name for this path configuration',
-              default: ''
-            },
-            enabled: {
-              type: 'boolean',
-              title: 'Always Enabled',
-              description: 'Collect data from this path regardless of regimen state',
-              default: false
-            },
-            regimen: {
-              type: 'string',
-              title: 'Regimen Control',
-              description: 'Command name that controls data collection (e.g., captureWeather)',
-              default: ''
-            },
-            source: {
-              type: 'string',
-              title: 'Source Filter',
-              description: 'Only collect data from this specific source (e.g., mqtt-weatherflow-udp)',
-              default: ''
-            },
-            context: {
-              type: 'string',
-              title: 'Context',
-              description: 'SignalK context for this path',
-              default: 'vessels.self'
-            }
-          },
-          required: ['path']
-        },
-        default: []
       },
       s3Upload: {
         type: 'object',
@@ -1207,10 +1201,12 @@ export = function(app: SignalKApp): SignalKPlugin {
       }
     });
 
+    // Web App Path Configuration API Routes (manages separate config file)
+    
     // Get current path configurations
     router.get('/api/config/paths', (_: TypedRequest, res: TypedResponse<ConfigApiResponse>) => {
       try {
-        const paths = state.currentConfig?.paths || [];
+        const paths = loadWebAppPaths();
         return res.json({
           success: true,
           paths: paths
@@ -1237,27 +1233,19 @@ export = function(app: SignalKApp): SignalKPlugin {
           return;
         }
 
-        // Add to current configuration
-        state.currentConfig!.paths.push(newPath);
+        // Add to current paths
+        currentPaths.push(newPath);
         
-        // Save to plugin configuration
-        app.savePluginOptions(state.currentConfig, (err?: Error) => {
-          if (err) {
-            res.status(500).json({
-              success: false,
-              error: 'Failed to save configuration: ' + err.message
-            });
-            return;
-          }
-          
-          // Update subscriptions
-          updateDataSubscriptions(state.currentConfig!);
-          
-          res.json({
-            success: true,
-            message: 'Path configuration added successfully',
-            path: newPath
-          });
+        // Save to web app configuration
+        saveWebAppPaths(currentPaths);
+        
+        // Update subscriptions
+        updateDataSubscriptions(state.currentConfig!);
+        
+        res.json({
+          success: true,
+          message: 'Path configuration added successfully',
+          path: newPath
         });
       } catch (error) {
         res.status(500).json({
@@ -1273,7 +1261,7 @@ export = function(app: SignalKApp): SignalKPlugin {
         const index = parseInt(req.params.index);
         const updatedPath = req.body;
         
-        if (index < 0 || index >= state.currentConfig!.paths.length) {
+        if (index < 0 || index >= currentPaths.length) {
           res.status(404).json({
             success: false,
             error: 'Path configuration not found'
@@ -1291,26 +1279,18 @@ export = function(app: SignalKApp): SignalKPlugin {
         }
 
         // Update the path configuration
-        state.currentConfig!.paths[index] = updatedPath;
+        currentPaths[index] = updatedPath;
         
-        // Save to plugin configuration
-        app.savePluginOptions(state.currentConfig, (err?: Error) => {
-          if (err) {
-            res.status(500).json({
-              success: false,
-              error: 'Failed to save configuration: ' + err.message
-            });
-            return;
-          }
-          
-          // Update subscriptions
-          updateDataSubscriptions(state.currentConfig!);
-          
-          res.json({
-            success: true,
-            message: 'Path configuration updated successfully',
-            path: updatedPath
-          });
+        // Save to web app configuration
+        saveWebAppPaths(currentPaths);
+        
+        // Update subscriptions
+        updateDataSubscriptions(state.currentConfig!);
+        
+        res.json({
+          success: true,
+          message: 'Path configuration updated successfully',
+          path: updatedPath
         });
       } catch (error) {
         res.status(500).json({
@@ -1325,7 +1305,7 @@ export = function(app: SignalKApp): SignalKPlugin {
       try {
         const index = parseInt(req.params.index);
         
-        if (index < 0 || index >= state.currentConfig!.paths.length) {
+        if (index < 0 || index >= currentPaths.length) {
           res.status(404).json({
             success: false,
             error: 'Path configuration not found'
@@ -1334,31 +1314,23 @@ export = function(app: SignalKApp): SignalKPlugin {
         }
 
         // Get the path being removed for response
-        const removedPath = state.currentConfig!.paths[index];
+        const removedPath = currentPaths[index];
         
-        // Remove from configuration
-        state.currentConfig!.paths.splice(index, 1);
+        // Remove from current paths
+        currentPaths.splice(index, 1);
         
-        // Save to plugin configuration
-        app.savePluginOptions(state.currentConfig, (err?: Error) => {
-          if (err) {
-            res.status(500).json({
-              success: false,
-              error: 'Failed to save configuration: ' + err.message
-            });
-            return;
-          }
-          
-          // Update subscriptions
-          updateDataSubscriptions(state.currentConfig!);
-          
-          app.debug(`Removed path configuration: ${removedPath.name} (${removedPath.path})`);
-          
-          res.json({
-            success: true,
-            message: 'Path configuration removed successfully',
-            removedPath: removedPath
-          });
+        // Save to web app configuration
+        saveWebAppPaths(currentPaths);
+        
+        // Update subscriptions
+        updateDataSubscriptions(state.currentConfig!);
+        
+        app.debug(`Removed path configuration: ${removedPath.name} (${removedPath.path})`);
+        
+        res.json({
+          success: true,
+          message: 'Path configuration removed successfully',
+          removedPath: removedPath
         });
       } catch (error) {
         res.status(500).json({

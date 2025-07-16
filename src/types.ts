@@ -39,7 +39,6 @@ export interface PluginConfig {
   retentionDays: number;
   fileFormat: 'json' | 'csv' | 'parquet';
   vesselMMSI: string;
-  paths: PathConfig[];
   s3Upload: S3UploadConfig;
 }
 
@@ -50,6 +49,11 @@ export interface PathConfig {
   regimen?: string;
   source?: string;
   context?: string;
+}
+
+// Web App Path Configuration (stored separately from plugin config)
+export interface WebAppPathConfig {
+  paths: PathConfig[];
 }
 
 export interface S3UploadConfig {
