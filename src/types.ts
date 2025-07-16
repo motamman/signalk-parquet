@@ -190,6 +190,7 @@ export interface TypedRequest<T = any> extends Request {
 
 export interface TypedResponse<T = any> extends Response {
   json: (body: T) => this;
+  status: (code: number) => this;
 }
 
 // Internal Plugin State

@@ -887,7 +887,7 @@ export = function(app: SignalKApp): SignalKPlugin {
         try {
           app.debug(`🚶 Walking path: ${currentPath} (relative: ${relativePath})`);
           const items = fs.readdirSync(currentPath);
-          items.forEach(item => {
+          items.forEach((item: string) => {
             const fullPath = path.join(currentPath, item);
             const stat = fs.statSync(fullPath);
             
@@ -895,10 +895,10 @@ export = function(app: SignalKApp): SignalKPlugin {
               const newRelativePath = relativePath ? `${relativePath}.${item}` : item;
               
               // Check if this directory has parquet files
-              const hasParquetFiles = fs.readdirSync(fullPath).some(file => file.endsWith('.parquet'));
+              const hasParquetFiles = fs.readdirSync(fullPath).some((file: string) => file.endsWith('.parquet'));
               
               if (hasParquetFiles) {
-                const fileCount = fs.readdirSync(fullPath).filter(file => file.endsWith('.parquet')).length;
+                const fileCount = fs.readdirSync(fullPath).filter((file: string) => file.endsWith('.parquet')).length;
                 app.debug(`✅ Found SignalK path with data: ${newRelativePath} (${fileCount} files)`);
                 paths.push({
                   path: newRelativePath,
@@ -960,8 +960,8 @@ export = function(app: SignalKApp): SignalKPlugin {
         }
         
         const files = fs.readdirSync(pathDir)
-          .filter(file => file.endsWith('.parquet'))
-          .map(file => {
+          .filter((file: string) => file.endsWith('.parquet'))
+          .map((file: string) => {
             const filePath = path.join(pathDir, file);
             const stat = fs.statSync(filePath);
             return {
@@ -971,7 +971,7 @@ export = function(app: SignalKApp): SignalKPlugin {
               modified: stat.mtime.toISOString()
             };
           })
-          .sort((a, b) => new Date(b.modified).getTime() - new Date(a.modified).getTime());
+          .sort((a: any, b: any) => new Date(b.modified).getTime() - new Date(a.modified).getTime());
         
         return res.json({
           success: true,
@@ -1013,13 +1013,13 @@ export = function(app: SignalKApp): SignalKPlugin {
         
         // Get the most recent parquet file
         const files = fs.readdirSync(pathDir)
-          .filter(file => file.endsWith('.parquet'))
-          .map(file => {
+          .filter((file: string) => file.endsWith('.parquet'))
+          .map((file: string) => {
             const filePath = path.join(pathDir, file);
             const stat = fs.statSync(filePath);
             return { name: file, path: filePath, modified: stat.mtime };
           })
-          .sort((a, b) => b.modified.getTime() - a.modified.getTime());
+          .sort((a: any, b: any) => b.modified.getTime() - a.modified.getTime());
         
         if (files.length === 0) {
           return res.status(404).json({
