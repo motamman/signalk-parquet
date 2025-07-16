@@ -743,6 +743,54 @@ export = function(app: SignalKApp): SignalKPlugin {
         minimum: 1,
         maximum: 365
       },
+      paths: {
+        type: 'array',
+        title: 'SignalK Paths Configuration',
+        description: 'Configure which SignalK paths to collect and how to control collection',
+        items: {
+          type: 'object',
+          properties: {
+            path: {
+              type: 'string',
+              title: 'SignalK Path',
+              description: 'The SignalK path to collect data from (e.g., navigation.position)',
+              default: ''
+            },
+            name: {
+              type: 'string',
+              title: 'Display Name',
+              description: 'Optional display name for this path configuration',
+              default: ''
+            },
+            enabled: {
+              type: 'boolean',
+              title: 'Always Enabled',
+              description: 'Collect data from this path regardless of regimen state',
+              default: false
+            },
+            regimen: {
+              type: 'string',
+              title: 'Regimen Control',
+              description: 'Command name that controls data collection (e.g., captureWeather)',
+              default: ''
+            },
+            source: {
+              type: 'string',
+              title: 'Source Filter',
+              description: 'Only collect data from this specific source (e.g., mqtt-weatherflow-udp)',
+              default: ''
+            },
+            context: {
+              type: 'string',
+              title: 'Context',
+              description: 'SignalK context for this path',
+              default: 'vessels.self'
+            }
+          },
+          required: ['path']
+        },
+        default: []
+      },
       s3Upload: {
         type: 'object',
         title: 'S3 Upload Configuration',
