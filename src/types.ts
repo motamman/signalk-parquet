@@ -17,6 +17,12 @@ export interface SignalKApp {
   };
   savePluginOptions: (options: any, callback: (error?: Error) => void) => void;
   handleMessage: (pluginId: string, delta: SignalKDelta) => void;
+  registerPutHandler: (
+    context: string,
+    path: string,
+    handler: CommandPutHandler,
+    source?: string
+  ) => void;
 }
 
 // SignalK Plugin Interface

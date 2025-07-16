@@ -452,8 +452,7 @@ export = function(app: SignalKApp): SignalKPlugin {
           timestamp,
           values: [{
             path: `commands.${commandName}`,
-            value: value,
-            timestamp
+            value: value
           }]
         }]
       };
@@ -515,8 +514,7 @@ export = function(app: SignalKApp): SignalKPlugin {
         timestamp,
         values: [{
           path: `commands.${commandName}`,
-          value,
-          timestamp
+          value
         }]
       }]
     };
