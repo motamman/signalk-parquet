@@ -309,8 +309,8 @@ export type CommandPutHandler = (
   context: string,
   path: string,
   value: any,
-  callback: (result: CommandExecutionResult) => void
-) => void;
+  callback?: (result: CommandExecutionResult) => void
+) => CommandExecutionResult;
 
 export interface CommandExecutionResult {
   state: 'COMPLETED' | 'PENDING' | 'FAILED';

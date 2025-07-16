@@ -332,9 +332,10 @@ export = function(app: SignalKApp): SignalKPlugin {
         context: string,
         path: string,
         value: any,
-        callback: (result: CommandExecutionResult) => void
-      ): void => {
-        handleCommandExecution(commandName, Boolean(value), callback);
+        callback?: (result: CommandExecutionResult) => void
+      ): CommandExecutionResult => {
+        app.debug(`Handling PUT for commands.${commandName} with value:`, value);
+        return executeCommand(commandName, Boolean(value));
       };
 
       // Register PUT handler with SignalK
@@ -478,7 +479,7 @@ export = function(app: SignalKApp): SignalKPlugin {
         state: 'COMPLETED',
         statusCode: 200,
         message: `Command '${commandName}' executed: ${value}`,
-        timestamp
+        timestamp: timestamp
       };
 
     } catch (error) {
@@ -546,14 +547,6 @@ export = function(app: SignalKApp): SignalKPlugin {
     }
   }
 
-  function handleCommandExecution(
-    commandName: string,
-    value: boolean,
-    callback: (result: CommandExecutionResult) => void
-  ): void {
-    const result = executeCommand(commandName, value);
-    callback(result);
-  }
 
   // Subscribe to command paths that control regimens using proper subscription manager
   function subscribeToCommandPaths(config: PluginConfig): void {
