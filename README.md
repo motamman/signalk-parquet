@@ -19,6 +19,18 @@ A comprehensive TypeScript-based SignalK plugin that saves marine data directly 
 
 ## Installation
 
+### Install from GitHub
+```bash
+# Navigate to folder
+cd ~/.signalk/node_modules/
+
+# Install
+npm install mottamman/signalk-parquet
+
+# Restart SignalK
+sudo systemctl restart signalk
+```
+
 ### Development Setup
 
 ```bash
@@ -53,6 +65,8 @@ npm run build
 - `npm run watch` - Watch for changes and recompile
 - `npm run clean` - Remove compiled files
 - `npm run dev` - Build and watch for changes
+
+## 
 
 ## Configuration
 
