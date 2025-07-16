@@ -14,8 +14,6 @@ temp/
 build/
 dist/
 
-# Testing documentation
-TESTING.md
 
 # Package files
 *.tgz

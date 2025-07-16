@@ -423,15 +423,6 @@ Enable debug logging in SignalK:
 }
 ```
 
-## Migration from JavaScript Version
-
-1. **Backup Configuration**: Save current plugin configuration
-2. **Stop Plugin**: Disable the JavaScript version
-3. **Install TypeScript Version**: Follow installation instructions
-4. **Migrate Configuration**: Use same configuration parameters
-5. **Verify Operation**: Check data collection and web interface
-
-## Dependencies
 
 ### Runtime Dependencies
 
@@ -453,13 +444,6 @@ Enable debug logging in SignalK:
 
 MIT License - See LICENSE file for details.
 
-## Support
-
-For issues and feature requests:
-- **Plugin Issues**: Report via GitHub issues
-- **SignalK Integration**: Check SignalK documentation
-- **TypeScript Issues**: Consult TypeScript documentation
-- **DuckDB Issues**: Check DuckDB documentation
 
 ## Testing
 
