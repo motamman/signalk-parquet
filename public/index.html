@@ -1,0 +1,1042 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SignalK Parquet Data Interface</title>
+    <link rel="icon" type="image/png" href="parquet.png">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background-color: #f5f5f5;
+            color: #333;
+            line-height: 1.6;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #2BB5D6 0%, #013542 100%);
+            color: white;
+            padding: 20px 0;
+            margin-bottom: 20px;
+            border-radius: 10px;
+            text-align: center;
+        }
+
+        .header h1 {
+            font-size: 2.5rem;
+            margin-bottom: 10px;
+        }
+
+        .header p {
+            font-size: 1.1rem;
+            opacity: 0.9;
+        }
+
+        .section {
+            background: white;
+            padding: 20px;
+            margin-bottom: 20px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+
+        .section h2 {
+            color: #667eea;
+            margin-bottom: 15px;
+            font-size: 1.5rem;
+        }
+
+        .form-group {
+            margin-bottom: 15px;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: 500;
+            color: #555;
+        }
+
+        input, select, textarea {
+            width: 100%;
+            padding: 10px;
+            border: 2px solid #ddd;
+            border-radius: 5px;
+            font-size: 14px;
+            transition: border-color 0.3s;
+        }
+
+        input:focus, select:focus, textarea:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        textarea {
+            resize: vertical;
+            min-height: 100px;
+            font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+        }
+
+        button {
+            background: #667eea;
+            color: white;
+            padding: 12px 20px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: background-color 0.3s;
+            margin-right: 10px;
+            margin-bottom: 10px;
+        }
+
+        button:hover {
+            background: #5a6fd8;
+        }
+
+        button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+
+        .btn-secondary {
+            background: #6c757d;
+        }
+
+        .btn-secondary:hover {
+            background: #5a6268;
+        }
+
+        .results {
+            margin-top: 20px;
+        }
+
+        .table-container {
+            overflow-x: auto;
+            margin-top: 15px;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            min-width: 600px;
+        }
+
+        th, td {
+            padding: 8px;
+            text-align: left;
+            border-bottom: 1px solid #ddd;
+            word-wrap: break-word;
+        }
+        
+        th:nth-child(1), td:nth-child(1) { min-width: 200px; } /* Path */
+        th:nth-child(2), td:nth-child(2) { width: 70px; } /* Enabled */
+        th:nth-child(3), td:nth-child(3) { min-width: 120px; } /* Regimen */
+        th:nth-child(4), td:nth-child(4) { min-width: 100px; } /* Source */
+        th:nth-child(5), td:nth-child(5) { width: 100px; } /* Context */
+        th:nth-child(6), td:nth-child(6) { width: 140px; } /* Actions */
+
+        th {
+            background-color: #f8f9fa;
+            font-weight: 600;
+            color: #495057;
+        }
+
+        tr:hover {
+            background-color: #f8f9fa;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 20px;
+            color: #666;
+        }
+
+        .error {
+            background-color: #f8d7da;
+            border: 1px solid #f5c6cb;
+            color: #721c24;
+            padding: 10px;
+            border-radius: 5px;
+            margin-top: 10px;
+        }
+
+        .success {
+            background-color: #d4edda;
+            border: 1px solid #c3e6cb;
+            color: #155724;
+            padding: 10px;
+            border-radius: 5px;
+            margin-top: 10px;
+        }
+
+        .path-list {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+            gap: 15px;
+            margin-top: 15px;
+        }
+
+        .path-item {
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 5px;
+            border-left: 4px solid #667eea;
+        }
+
+        .path-item h4 {
+            margin-bottom: 5px;
+            color: #495057;
+        }
+
+        .path-item p {
+            font-size: 0.9rem;
+            color: #666;
+        }
+
+        .path-item button {
+            margin-top: 10px;
+            padding: 5px 10px;
+            font-size: 12px;
+        }
+
+        .query-examples {
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 5px;
+            margin-top: 15px;
+        }
+
+        .query-examples h4 {
+            margin-bottom: 10px;
+            color: #495057;
+        }
+
+        .query-examples ul {
+            list-style: none;
+            padding: 0;
+        }
+
+        .query-examples li {
+            margin-bottom: 10px;
+            padding: 10px;
+            background: white;
+            border-radius: 3px;
+            cursor: pointer;
+            transition: background-color 0.3s;
+        }
+
+        .query-examples li:hover {
+            background: #e9ecef;
+        }
+
+        .query-examples code {
+            font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+            font-size: 0.9rem;
+        }
+
+        .stats {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 15px;
+            padding: 10px;
+            background: #f8f9fa;
+            border-radius: 5px;
+        }
+
+        .stat-item {
+            text-align: center;
+        }
+
+        .stat-value {
+            font-size: 1.5rem;
+            font-weight: bold;
+            color: #667eea;
+        }
+
+        .stat-label {
+            font-size: 0.9rem;
+            color: #666;
+        }
+
+        .collapsible-header {
+            cursor: pointer;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 15px 20px;
+            margin: -20px -20px 15px -20px;
+            background: #f8f9fa;
+            border-radius: 10px 10px 0 0;
+            transition: background-color 0.3s;
+        }
+
+        .collapsible-header:hover {
+            background: #e9ecef;
+        }
+
+        .collapsible-header h2 {
+            margin: 0;
+        }
+
+        .collapse-icon {
+            font-size: 1.2rem;
+            transition: transform 0.3s;
+        }
+
+        .collapse-icon.collapsed {
+            transform: rotate(-90deg);
+        }
+
+        .collapsible-content {
+            overflow: hidden;
+            transition: max-height 0.3s ease-out;
+        }
+
+        .collapsible-content.collapsed {
+            max-height: 0;
+        }
+
+        .collapsible-content.expanded {
+            max-height: 2000px;
+        }
+
+        /* Tab Navigation Styles */
+        .tab-navigation {
+            display: flex;
+            background: white;
+            border-radius: 10px 10px 0 0;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            margin-bottom: 0;
+            overflow-x: auto;
+        }
+
+        .tab-button {
+            background: #f8f9fa;
+            border: none;
+            padding: 15px 20px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 500;
+            color: #666;
+            border-radius: 0;
+            transition: all 0.3s;
+            white-space: nowrap;
+            border-bottom: 3px solid transparent;
+            margin: 0;
+        }
+
+        .tab-button:first-child {
+            border-radius: 10px 0 0 0;
+        }
+
+        .tab-button:last-child {
+            border-radius: 0 10px 0 0;
+        }
+
+        .tab-button:hover {
+            background: #e9ecef;
+            color: #333;
+        }
+
+        .tab-button.active {
+            background: white;
+            color: #667eea;
+            border-bottom-color: #667eea;
+        }
+
+        .tab-content {
+            background: white;
+            border-radius: 0 0 10px 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
+        }
+
+        .tab-panel {
+            display: none;
+        }
+
+        .tab-panel.active {
+            display: block;
+        }
+
+        .tab-panel .section {
+            margin-bottom: 0;
+            box-shadow: none;
+            border-radius: 0 0 10px 10px;
+        }
+
+        @media (max-width: 768px) {
+            .container {
+                padding: 10px;
+            }
+            
+            .header h1 {
+                font-size: 2rem;
+            }
+            
+            .stats {
+                flex-direction: column;
+                gap: 10px;
+            }
+
+            .tab-navigation {
+                flex-wrap: wrap;
+            }
+
+            .tab-button {
+                flex: 1;
+                min-width: 120px;
+                padding: 12px 15px;
+                font-size: 13px;
+            }
+
+            .tab-button:first-child,
+            .tab-button:last-child {
+                border-radius: 0;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>
+                <img src="parquet.png" alt="Parquet" style="height: 80px; vertical-align: middle; margin-right: 10px; border-radius: 5px;"> 
+                SignalK to Parquet Interface</h1>
+            <p>Export, query, and explore your SignalK data archived as Parquet files</p>
+        </div>
+
+        <!-- Tab Navigation -->
+        <div class="tab-navigation">
+            <button class="tab-button active" onclick="showTab('pathConfig')">⚙️ Path Configuration</button>
+            <button class="tab-button" onclick="showTab('dataPaths')">📁 Available Data Paths</button>
+            <button class="tab-button" onclick="showTab('customQuery')">🔍 Custom Query</button>
+            <button class="tab-button" onclick="showTab('s3Config')">☁️ Cloud Status</button>
+        </div>
+
+        <!-- Tab Content Panels -->
+        <div class="tab-content">
+            <!-- Path Configuration Tab -->
+            <div id="pathConfig" class="tab-panel active">
+                <div class="section">
+                    <h2>⚙️ Path Configuration</h2>
+                <p>Manage which SignalK paths to collect data from:</p>
+                <button onclick="loadPathConfigurations()">🔄 Refresh Paths</button>
+                <button onclick="showAddPathForm()">➕ Add New Path</button>
+                
+                <!-- Add Path Form (hidden by default) -->
+                <div id="addPathForm" style="display: none; margin: 20px 0; padding: 20px; background: #f8f9fa; border-radius: 5px; min-height: 400px; overflow: visible;">
+                    <h4>Add New Path Configuration</h4>
+                    <div class="form-group">
+                        <label for="pathSignalK">SignalK Path:</label>
+                        <input type="text" id="pathSignalK" placeholder="e.g., navigation.position">
+                    </div>
+                    <div class="form-group">
+                        <label for="pathEnabled" style="display: inline !important; margin-bottom: 0 !important;">Always Enabled:</label>
+                        <input type="checkbox" id="pathEnabled" style="display: inline !important; width: auto !important; margin-left: 10px;">
+                    </div>
+                    <div class="form-group">
+                        <label for="pathRegimen">Regimen Control:</label>
+                        <input type="text" id="pathRegimen" placeholder="e.g., captureWeather, capturePassage">
+                    </div>
+                    <div class="form-group">
+                        <label for="pathSource">Source Filter (optional):</label>
+                        <input type="text" id="pathSource" placeholder="e.g., mqtt-weatherflow-udp">
+                    </div>
+                    <div class="form-group">
+                        <label for="pathContext">Context:</label>
+                        <input type="text" id="pathContext" placeholder="e.g., vessels.self" value="vessels.self">
+                    </div>
+                    <div style="margin-top: 20px; padding-top: 15px; border-top: 1px solid #ddd; min-height: 60px; display: flex; gap: 10px; align-items: center;">
+                        <button onclick="addPathConfiguration()">✅ Add Path</button>
+                        <button class="btn-secondary" onclick="hideAddPathForm()">❌ Cancel</button>
+                    </div>
+                </div>
+                
+                    <div id="pathConfigContainer">
+                        <div class="loading">Loading path configurations...</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- S3 Configuration Tab -->
+            <div id="s3Config" class="tab-panel">
+                <div class="section">
+                    <h2>☁️ Cloud Status</h2>
+            <p>Test your S3 connection and understand the Key Prefix functionality:</p>
+            <button onclick="testS3Connection()">🔗 Test S3 Connection</button>
+            <div id="s3TestResult" style="margin-top: 10px;"></div>
+            
+            <div style="margin-top: 15px; padding: 15px; background: #f8f9fa; border-radius: 5px;">
+                <h4>📋 S3 Key Prefix Explanation</h4>
+                <p><strong>S3 Key Prefix</strong> organizes your uploaded files in the S3 bucket with a directory structure:</p>
+                <ul style="margin: 10px 0; padding-left: 20px;">
+                    <li><strong>Without prefix:</strong> Files upload as <code>vessels/self/navigation/position/2025-07-12.parquet</code></li>
+                    <li><strong>With prefix "marine-data":</strong> Files upload as <code>marine-data/vessels/self/navigation/position/2025-07-12.parquet</code></li>
+                    <li><strong>With prefix "boat-123/":</strong> Files upload as <code>boat-123/vessels/self/navigation/position/2025-07-12.parquet</code></li>
+                </ul>
+                    <p>This allows organizing multiple vessels or data sources in the same S3 bucket.</p>
+                </div>
+                </div>
+            </div>
+
+            <!-- Data Paths Tab -->
+            <div id="dataPaths" class="tab-panel">
+                <div class="section">
+                    <h2>📁 Available Data Paths</h2>
+                <p>Available SignalK data paths with Parquet files:</p>
+                    <div id="availablePaths">
+                        <div class="loading">Loading available paths...</div>
+                    </div>
+                    
+                    <!-- Query Section for Data Paths -->
+                    <div style="margin-top: 30px; padding-top: 20px; border-top: 1px solid #ddd;">
+                        <h3>Query Data</h3>
+                        <div class="form-group">
+                            <label for="dataPathsQueryInput">DuckDB SQL Query:</label>
+                            <textarea id="dataPathsQueryInput" placeholder="SELECT * FROM 'path/to/file.parquet' LIMIT 10"></textarea>
+                        </div>
+                        <button onclick="executeDataPathsQuery()">▶️ Execute Query</button>
+                        <button class="btn-secondary" onclick="clearDataPathsQuery()">🗑️ Clear</button>
+                        
+                        <div id="dataPathsResultsContainer" class="results">
+                            <p>Run a query to see results here...</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Custom Query Tab -->
+            <div id="customQuery" class="tab-panel">
+                <div class="section">
+                    <h2>🔍 Custom Query</h2>
+                <div class="form-group">
+                    <label for="queryInput">DuckDB SQL Query:</label>
+                    <textarea id="queryInput" placeholder="SELECT * FROM 'path/to/file.parquet' LIMIT 10"></textarea>
+                </div>
+                <button onclick="executeQuery()">▶️ Execute Query</button>
+                <button class="btn-secondary" onclick="clearQuery()">🗑️ Clear</button>
+                
+                <div class="query-examples">
+                    <h4>📝 Example Queries (click to use):</h4>
+                    <ul id="queryExamples">
+                            <li><div class="loading">Loading example queries...</div></li>
+                        </ul>
+                    </div>
+                    
+                    <!-- Query Results Section -->
+                    <div id="customQueryResultsContainer" class="results">
+                        <p>Run a query to see results here...</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let availablePaths = [];
+        let dataDirectory = '';
+
+        // Load available paths on page load
+        window.addEventListener('load', async function() {
+            await loadAvailablePaths();
+            await loadPathConfigurations();
+            generateExampleQueries();
+        });
+
+        async function loadAvailablePaths() {
+            try {
+                const response = await fetch('/plugins/signalk-parquet/api/paths');
+                const result = await response.json();
+                
+                if (result.success) {
+                    availablePaths = result.paths;
+                    dataDirectory = result.dataDirectory;
+                    displayAvailablePaths();
+                } else {
+                    document.getElementById('availablePaths').innerHTML = 
+                        `<div class="error">Error loading paths: ${result.error}</div>`;
+                }
+            } catch (error) {
+                document.getElementById('availablePaths').innerHTML = 
+                    `<div class="error">Network error: ${error.message}</div>`;
+            }
+        }
+
+        function displayAvailablePaths() {
+            const container = document.getElementById('availablePaths');
+            
+            if (availablePaths.length === 0) {
+                container.innerHTML = '<p>No Parquet data files found. Start collecting data first.</p>';
+                return;
+            }
+
+            let html = '<div class="path-list">';
+            availablePaths.forEach(pathInfo => {
+                html += `
+                    <div class="path-item">
+                        <h4>${pathInfo.path}</h4>
+                        <p>${pathInfo.fileCount} files</p>
+                        <button onclick="generateQueryForPath('${pathInfo.path}', '${pathInfo.directory}')">📋 Generate Query</button>
+                    </div>
+                `;
+            });
+            html += '</div>';
+            
+            container.innerHTML = html;
+        }
+
+        function generateQueryForPath(signalkPath, directory) {
+            const query = `SELECT * FROM '${directory}/*.parquet' ORDER BY received_timestamp DESC LIMIT 10`;
+            setDataPathsQuery(query);
+        }
+
+        function generateExampleQueries() {
+            const container = document.getElementById('queryExamples');
+            
+            if (availablePaths.length === 0) {
+                container.innerHTML = '<li><em>No data paths available yet. Start collecting data first.</em></li>';
+                return;
+            }
+
+            let html = '';
+            
+            // Generate examples based on available paths
+            availablePaths.slice(0, 4).forEach(pathInfo => {
+                const examples = [
+                    `SELECT * FROM '${pathInfo.directory}/*.parquet' ORDER BY received_timestamp DESC LIMIT 10`,
+                    `SELECT COUNT(*) as total_records FROM '${pathInfo.directory}/*.parquet'`,
+                    `SELECT received_timestamp, value, source_label FROM '${pathInfo.directory}/*.parquet' WHERE value IS NOT NULL ORDER BY received_timestamp DESC LIMIT 10`
+                ];
+                
+                examples.forEach(query => {
+                    html += `<li onclick="setQuery(this.textContent)"><code>${query}</code></li>`;
+                });
+            });
+
+            container.innerHTML = html;
+        }
+
+        async function executeQuery() {
+            const query = document.getElementById('queryInput').value.trim();
+            if (!query) {
+                alert('Please enter a query');
+                return;
+            }
+
+            const resultsContainer = document.getElementById('customQueryResultsContainer');
+            resultsContainer.innerHTML = '<div class="loading">Executing query...</div>';
+
+            try {
+                const response = await fetch('/plugins/signalk-parquet/api/query', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ query })
+                });
+
+                const result = await response.json();
+
+                if (result.success) {
+                    displayResults(result, 'customQueryResultsContainer');
+                } else {
+                    resultsContainer.innerHTML = `<div class="error">Query error: ${result.error}</div>`;
+                }
+            } catch (error) {
+                resultsContainer.innerHTML = `<div class="error">Network error: ${error.message}</div>`;
+            }
+        }
+
+        async function executeDataPathsQuery() {
+            const query = document.getElementById('dataPathsQueryInput').value.trim();
+            if (!query) {
+                alert('Please enter a query');
+                return;
+            }
+
+            const resultsContainer = document.getElementById('dataPathsResultsContainer');
+            resultsContainer.innerHTML = '<div class="loading">Executing query...</div>';
+
+            try {
+                const response = await fetch('/plugins/signalk-parquet/api/query', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ query })
+                });
+
+                const result = await response.json();
+
+                if (result.success) {
+                    displayResults(result, 'dataPathsResultsContainer');
+                } else {
+                    resultsContainer.innerHTML = `<div class="error">Query error: ${result.error}</div>`;
+                }
+            } catch (error) {
+                resultsContainer.innerHTML = `<div class="error">Network error: ${error.message}</div>`;
+            }
+        }
+
+        function displayResults(result, containerId = 'resultsContainer') {
+            const container = document.getElementById(containerId);
+            
+            if (!result.data || result.data.length === 0) {
+                container.innerHTML = '<p>No data returned from query.</p>';
+                return;
+            }
+
+            // Stats
+            let statsHtml = `
+                <div class="stats">
+                    <div class="stat-item">
+                        <div class="stat-value">${result.rowCount}</div>
+                        <div class="stat-label">Rows</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-value">${Object.keys(result.data[0]).length}</div>
+                        <div class="stat-label">Columns</div>
+                    </div>
+                </div>
+            `;
+
+            // Table
+            const columns = Object.keys(result.data[0]);
+            let tableHtml = '<div class="table-container"><table><thead><tr>';
+            
+            columns.forEach(col => {
+                tableHtml += `<th>${col}</th>`;
+            });
+            tableHtml += '</tr></thead><tbody>';
+
+            result.data.forEach(row => {
+                tableHtml += '<tr>';
+                columns.forEach(col => {
+                    let value = row[col];
+                    if (value === null || value === undefined) {
+                        value = '';
+                    } else if (typeof value === 'object') {
+                        value = JSON.stringify(value);
+                    }
+                    tableHtml += `<td>${value}</td>`;
+                });
+                tableHtml += '</tr>';
+            });
+
+            tableHtml += '</tbody></table></div>';
+
+            container.innerHTML = statsHtml + tableHtml;
+        }
+
+        function setQuery(query) {
+            document.getElementById('queryInput').value = query;
+        }
+
+        function setDataPathsQuery(query) {
+            document.getElementById('dataPathsQueryInput').value = query;
+        }
+
+        function clearQuery() {
+            document.getElementById('queryInput').value = '';
+            document.getElementById('customQueryResultsContainer').innerHTML = '<p>Run a query to see results here...</p>';
+        }
+
+        function clearDataPathsQuery() {
+            document.getElementById('dataPathsQueryInput').value = '';
+            document.getElementById('dataPathsResultsContainer').innerHTML = '<p>Run a query to see results here...</p>';
+        }
+
+        function showTab(tabId) {
+            // Hide all tab panels
+            const tabPanels = document.querySelectorAll('.tab-panel');
+            tabPanels.forEach(panel => {
+                panel.classList.remove('active');
+            });
+            
+            // Remove active class from all tab buttons
+            const tabButtons = document.querySelectorAll('.tab-button');
+            tabButtons.forEach(button => {
+                button.classList.remove('active');
+            });
+            
+            // Show the selected tab panel
+            const selectedPanel = document.getElementById(tabId);
+            if (selectedPanel) {
+                selectedPanel.classList.add('active');
+            }
+            
+            // Add active class to the clicked tab button
+            const clickedButton = document.querySelector(`[onclick="showTab('${tabId}')"]`);
+            if (clickedButton) {
+                clickedButton.classList.add('active');
+            }
+        }
+
+        async function testS3Connection() {
+            const resultDiv = document.getElementById('s3TestResult');
+            const button = document.querySelector('button[onclick="testS3Connection()"]');
+            
+            // Show loading state
+            button.disabled = true;
+            button.textContent = '🔄 Testing...';
+            resultDiv.innerHTML = '<div class="loading">Testing S3 connection...</div>';
+
+            try {
+                const response = await fetch('/plugins/signalk-parquet/api/test-s3', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    }
+                });
+
+                const result = await response.json();
+
+                if (result.success) {
+                    resultDiv.innerHTML = `
+                        <div class="success">
+                            ✅ ${result.message}<br>
+                            <strong>Bucket:</strong> ${result.bucket}<br>
+                            <strong>Region:</strong> ${result.region}<br>
+                            <strong>Key Prefix:</strong> ${result.keyPrefix}
+                        </div>
+                    `;
+                } else {
+                    resultDiv.innerHTML = `<div class="error">❌ ${result.error}</div>`;
+                }
+            } catch (error) {
+                resultDiv.innerHTML = `<div class="error">❌ Network error: ${error.message}</div>`;
+            } finally {
+                // Reset button
+                button.disabled = false;
+                button.textContent = '🔗 Test S3 Connection';
+            }
+        }
+
+        // Path Configuration Management Functions
+        async function loadPathConfigurations() {
+            try {
+                const response = await fetch('/plugins/signalk-parquet/api/config/paths');
+                const result = await response.json();
+                
+                if (result.success) {
+                    displayPathConfigurations(result.paths);
+                } else {
+                    document.getElementById('pathConfigContainer').innerHTML = 
+                        `<div class="error">Error loading path configurations: ${result.error}</div>`;
+                }
+            } catch (error) {
+                document.getElementById('pathConfigContainer').innerHTML = 
+                    `<div class="error">Network error: ${error.message}</div>`;
+            }
+        }
+
+        function displayPathConfigurations(paths) {
+            const container = document.getElementById('pathConfigContainer');
+            
+            if (!paths || paths.length === 0) {
+                container.innerHTML = `
+                    <div style="text-align: center; padding: 40px; background: #f8f9fa; border-radius: 5px; margin: 20px 0;">
+                        <h3 style="color: #666; margin-bottom: 10px;">No Path Configurations Found</h3>
+                        <p style="color: #666; margin-bottom: 20px;">You need to configure SignalK paths to start collecting data.</p>
+                        <button onclick="showAddPathForm()">➕ Add Your First Path</button>
+                    </div>
+                `;
+                return;
+            }
+
+            let html = '<div class="table-container"><table><thead><tr>';
+            html += '<th>Path</th><th>Always Enabled</th><th>Regimen</th><th>Source</th><th>Context</th><th>Actions</th>';
+            html += '</tr></thead><tbody>';
+
+            paths.forEach((path, index) => {
+                html += `<tr data-index="${index}">
+                    <td><code>${path.path || ''}</code></td>
+                    <td>${path.enabled ? '✅' : '❌'}</td>
+                    <td>${path.regimen || ''}</td>
+                    <td>${path.source || ''}</td>
+                    <td>${path.context || 'vessels.self'}</td>
+                    <td>
+                        <button onclick="editPathConfiguration(${index})" style="padding: 5px 10px; font-size: 12px;">✏️ Edit</button>
+                        <button onclick="removePathConfiguration(${index})" style="padding: 5px 10px; font-size: 12px; background: #dc3545;">🗑️ Remove</button>
+                    </td>
+                </tr>`;
+            });
+
+            html += '</tbody></table></div>';
+            container.innerHTML = html;
+        }
+
+        function showAddPathForm() {
+            document.getElementById('addPathForm').style.display = 'block';
+        }
+
+        function hideAddPathForm() {
+            document.getElementById('addPathForm').style.display = 'none';
+            clearAddPathForm();
+        }
+
+        function clearAddPathForm() {
+            document.getElementById('pathSignalK').value = '';
+            document.getElementById('pathEnabled').checked = false;
+            document.getElementById('pathRegimen').value = '';
+            document.getElementById('pathSource').value = '';
+            document.getElementById('pathContext').value = 'vessels.self';
+        }
+
+        async function addPathConfiguration() {
+            const pathConfig = {
+                path: document.getElementById('pathSignalK').value.trim(),
+                enabled: document.getElementById('pathEnabled').checked,
+                regimen: document.getElementById('pathRegimen').value.trim(),
+                source: document.getElementById('pathSource').value.trim(),
+                context: document.getElementById('pathContext').value.trim() || 'vessels.self'
+            };
+
+            if (!pathConfig.path) {
+                alert('SignalK path is required');
+                return;
+            }
+
+            try {
+                const response = await fetch('/plugins/signalk-parquet/api/config/paths', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(pathConfig)
+                });
+
+                const result = await response.json();
+
+                if (result.success) {
+                    hideAddPathForm();
+                    await loadPathConfigurations();
+                    alert('Path configuration added successfully');
+                } else {
+                    alert(`Error adding path configuration: ${result.error}`);
+                }
+            } catch (error) {
+                alert(`Network error: ${error.message}`);
+            }
+        }
+
+        async function removePathConfiguration(index) {
+            if (!confirm('Are you sure you want to remove this path configuration?')) {
+                return;
+            }
+
+            try {
+                const response = await fetch(`/plugins/signalk-parquet/api/config/paths/${index}`, {
+                    method: 'DELETE'
+                });
+
+                const result = await response.json();
+
+                if (result.success) {
+                    await loadPathConfigurations();
+                    alert('Path configuration removed successfully');
+                } else {
+                    alert(`Error removing path configuration: ${result.error}`);
+                }
+            } catch (error) {
+                alert(`Network error: ${error.message}`);
+            }
+        }
+
+        let editingIndex = -1;
+
+        async function editPathConfiguration(index) {
+            // Cancel any existing edit
+            if (editingIndex !== -1) {
+                cancelEdit();
+            }
+            
+            editingIndex = index;
+            
+            // Get the current path configuration
+            const response = await fetch('/plugins/signalk-parquet/api/config/paths');
+            const result = await response.json();
+            
+            if (!result.success || !result.paths[index]) {
+                alert('Error loading path configuration');
+                return;
+            }
+            
+            const path = result.paths[index];
+            
+            // Replace the row with edit form
+            const row = document.querySelector(`tr[data-index="${index}"]`);
+            if (row) {
+                row.innerHTML = `
+                    <td><input type="text" id="editPath${index}" value="${path.path || ''}" style="width: 100%;"></td>
+                    <td><input type="checkbox" id="editEnabled${index}" ${path.enabled ? 'checked' : ''}></td>
+                    <td><input type="text" id="editRegimen${index}" value="${path.regimen || ''}" style="width: 100%;"></td>
+                    <td><input type="text" id="editSource${index}" value="${path.source || ''}" style="width: 100%;"></td>
+                    <td><input type="text" id="editContext${index}" value="${path.context || 'vessels.self'}" style="width: 100%;"></td>
+                    <td>
+                        <button onclick="saveEdit(${index})" style="padding: 5px 10px; font-size: 12px; background: #28a745;">💾 Save</button>
+                        <button onclick="cancelEdit()" style="padding: 5px 10px; font-size: 12px; background: #6c757d;">❌ Cancel</button>
+                    </td>
+                `;
+            }
+        }
+
+        async function saveEdit(index) {
+            const updatedPath = {
+                path: document.getElementById(`editPath${index}`).value.trim(),
+                enabled: document.getElementById(`editEnabled${index}`).checked,
+                regimen: document.getElementById(`editRegimen${index}`).value.trim(),
+                source: document.getElementById(`editSource${index}`).value.trim(),
+                context: document.getElementById(`editContext${index}`).value.trim() || 'vessels.self'
+            };
+
+            if (!updatedPath.path) {
+                alert('SignalK path is required');
+                return;
+            }
+
+            try {
+                const response = await fetch(`/plugins/signalk-parquet/api/config/paths/${index}`, {
+                    method: 'PUT',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(updatedPath)
+                });
+
+                const result = await response.json();
+
+                if (result.success) {
+                    editingIndex = -1;
+                    await loadPathConfigurations();
+                    alert('Path configuration updated successfully');
+                } else {
+                    alert(`Error updating path configuration: ${result.error}`);
+                }
+            } catch (error) {
+                alert(`Network error: ${error.message}`);
+            }
+        }
+
+        function cancelEdit() {
+            editingIndex = -1;
+            loadPathConfigurations();
+        }
+
+    </script>
+</body>
+</html>
