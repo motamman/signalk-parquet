@@ -51,9 +51,36 @@ export interface PathConfig {
   context?: string;
 }
 
-// Web App Path Configuration (stored separately from plugin config)
+// Command Registration Types
+export interface CommandConfig {
+  command: string;
+  path: string;
+  registered: string;
+  description?: string;
+  active?: boolean;
+  lastExecuted?: string;
+}
+
+export interface CommandRegistrationState {
+  registeredCommands: Map<string, CommandConfig>;
+  putHandlers: Map<string, CommandPutHandler>;
+}
+
+export interface CommandExecutionRequest {
+  command: string;
+  value: boolean;
+  timestamp?: string;
+}
+
+export interface CommandRegistrationRequest {
+  command: string;
+  description?: string;
+}
+
+// Web App Configuration (stored separately from plugin config)
 export interface WebAppPathConfig {
   paths: PathConfig[];
+  commands: CommandConfig[];
 }
 
 export interface S3UploadConfig {
@@ -144,6 +171,20 @@ export interface ApiResponse<T = any> {
   message?: string;
 }
 
+// Command API Response Types
+export interface CommandApiResponse extends ApiResponse {
+  commands?: CommandConfig[];
+  command?: CommandConfig;
+  count?: number;
+}
+
+export interface CommandExecutionResponse extends ApiResponse {
+  command?: string;
+  value?: boolean;
+  executed?: boolean;
+  timestamp?: string;
+}
+
 export interface PathsApiResponse extends ApiResponse {
   dataDirectory?: string;
   paths?: PathInfo[];
@@ -208,6 +249,7 @@ export interface PluginState {
   parquetWriter?: ParquetWriter;
   s3Client?: any;
   currentConfig?: PluginConfig;
+  commandState: CommandRegistrationState;
 }
 
 // Parquet Writer Class Interface
@@ -254,6 +296,37 @@ export interface PathConfigRequest {
   regimen?: string;
   source?: string;
   context?: string;
+}
+
+// Command Types
+export type CommandPutHandler = (
+  context: string,
+  path: string,
+  value: any,
+  callback: (result: CommandExecutionResult) => void
+) => void;
+
+export interface CommandExecutionResult {
+  state: 'COMPLETED' | 'PENDING' | 'FAILED';
+  statusCode?: number;
+  message?: string;
+  timestamp: string;
+}
+
+export interface CommandHistoryEntry {
+  command: string;
+  action: 'EXECUTE' | 'STOP' | 'REGISTER' | 'UNREGISTER';
+  value?: boolean;
+  timestamp: string;
+  success: boolean;
+  error?: string;
+}
+
+export enum CommandStatus {
+  ACTIVE = 'ACTIVE',
+  INACTIVE = 'INACTIVE',
+  PENDING = 'PENDING',
+  ERROR = 'ERROR'
 }
 
 // Utility Types

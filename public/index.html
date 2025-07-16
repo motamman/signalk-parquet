@@ -422,6 +422,7 @@
         <!-- Tab Navigation -->
         <div class="tab-navigation">
             <button class="tab-button active" onclick="showTab('pathConfig')">⚙️ Path Configuration</button>
+            <button class="tab-button" onclick="showTab('commandManager')">🎮 Command Manager</button>
             <button class="tab-button" onclick="showTab('dataPaths')">📁 Available Data Paths</button>
             <button class="tab-button" onclick="showTab('customQuery')">🔍 Custom Query</button>
             <button class="tab-button" onclick="showTab('s3Config')">☁️ Cloud Status</button>
@@ -468,6 +469,46 @@
                 
                     <div id="pathConfigContainer">
                         <div class="loading">Loading path configurations...</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Command Manager Tab -->
+            <div id="commandManager" class="tab-panel">
+                <div class="section">
+                    <h2>🎮 Command Manager</h2>
+                    <p>Register and manage SignalK commands for remote control:</p>
+                    <button onclick="loadCommands()">🔄 Refresh Commands</button>
+                    <button onclick="showAddCommandForm()">➕ Add New Command</button>
+                    
+                    <!-- Add Command Form (hidden by default) -->
+                    <div id="addCommandForm" style="display: none; margin: 20px 0; padding: 20px; background: #f8f9fa; border-radius: 5px;">
+                        <h4>Register New Command</h4>
+                        <div class="form-group">
+                            <label for="commandName">Command Name:</label>
+                            <input type="text" id="commandName" placeholder="e.g., captureWeather, startLogging">
+                        </div>
+                        <div class="form-group">
+                            <label for="commandDescription">Description (optional):</label>
+                            <input type="text" id="commandDescription" placeholder="e.g., Start weather data capture">
+                        </div>
+                        <div style="margin-top: 20px; padding-top: 15px; border-top: 1px solid #ddd;">
+                            <button onclick="registerCommand()">✅ Register Command</button>
+                            <button class="btn-secondary" onclick="hideAddCommandForm()">❌ Cancel</button>
+                        </div>
+                    </div>
+                    
+                    <div id="commandContainer">
+                        <div class="loading">Loading commands...</div>
+                    </div>
+                    
+                    <!-- Command History -->
+                    <div style="margin-top: 30px;">
+                        <h3>📋 Command History</h3>
+                        <button onclick="loadCommandHistory()">🔄 Refresh History</button>
+                        <div id="commandHistoryContainer" style="margin-top: 15px;">
+                            <div class="loading">Loading command history...</div>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -1050,6 +1091,199 @@
         function cancelEdit() {
             editingIndex = -1;
             loadPathConfigurations();
+        }
+
+        // Command Management Functions
+        async function loadCommands() {
+            try {
+                const response = await fetch('/plugins/signalk-parquet/api/commands');
+                const result = await response.json();
+                
+                if (result.success) {
+                    displayCommands(result.commands || []);
+                } else {
+                    document.getElementById('commandContainer').innerHTML = `<div class="error">Error loading commands: ${result.error}</div>`;
+                }
+            } catch (error) {
+                document.getElementById('commandContainer').innerHTML = `<div class="error">Error loading commands: ${error.message}</div>`;
+            }
+        }
+        
+        function displayCommands(commands) {
+            const container = document.getElementById('commandContainer');
+            
+            if (!commands || commands.length === 0) {
+                container.innerHTML = '<div class="info">No commands registered yet.</div>';
+                return;
+            }
+            
+            let html = '<div class="table-container"><table><thead><tr>';
+            html += '<th>Command</th><th>Path</th><th>Description</th><th>Status</th><th>Registered</th><th>Actions</th>';
+            html += '</tr></thead><tbody>';
+            
+            commands.forEach(command => {
+                const status = command.active ? '🟢 Active' : '🔴 Inactive';
+                const registeredDate = new Date(command.registered).toLocaleString();
+                html += `<tr>
+                    <td><strong>${command.command}</strong></td>
+                    <td><code>vessels.self.commands.${command.command}</code></td>
+                    <td>${command.description || 'No description'}</td>
+                    <td>${status}</td>
+                    <td>${registeredDate}</td>
+                    <td>
+                        <button onclick="executeCommand('${command.command}', true)" style="margin-right: 5px;">▶️ Execute</button>
+                        <button onclick="executeCommand('${command.command}', false)" style="margin-right: 5px;">⏹️ Stop</button>
+                        <button onclick="unregisterCommand('${command.command}')" class="btn-danger">❌ Remove</button>
+                    </td>
+                </tr>`;
+            });
+            
+            html += '</tbody></table></div>';
+            container.innerHTML = html;
+        }
+        
+        function showAddCommandForm() {
+            document.getElementById('addCommandForm').style.display = 'block';
+        }
+        
+        function hideAddCommandForm() {
+            document.getElementById('addCommandForm').style.display = 'none';
+            clearAddCommandForm();
+        }
+        
+        function clearAddCommandForm() {
+            document.getElementById('commandName').value = '';
+            document.getElementById('commandDescription').value = '';
+        }
+        
+        async function registerCommand() {
+            try {
+                const command = document.getElementById('commandName').value.trim();
+                const description = document.getElementById('commandDescription').value.trim();
+                
+                if (!command) {
+                    alert('Command name is required');
+                    return;
+                }
+                
+                const response = await fetch('/plugins/signalk-parquet/api/commands', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        command: command,
+                        description: description || undefined
+                    })
+                });
+                
+                const result = await response.json();
+                
+                if (result.success) {
+                    hideAddCommandForm();
+                    await loadCommands();
+                    alert(`Command '${command}' registered successfully`);
+                } else {
+                    alert(`Error registering command: ${result.error}`);
+                }
+            } catch (error) {
+                alert(`Network error: ${error.message}`);
+            }
+        }
+        
+        async function executeCommand(commandName, value) {
+            try {
+                const response = await fetch(`/plugins/signalk-parquet/api/commands/${commandName}/execute`, {
+                    method: 'PUT',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        value: value
+                    })
+                });
+                
+                const result = await response.json();
+                
+                if (result.success) {
+                    await loadCommands();
+                    await loadCommandHistory();
+                    alert(`Command '${commandName}' ${value ? 'executed' : 'stopped'} successfully`);
+                } else {
+                    alert(`Error executing command: ${result.error}`);
+                }
+            } catch (error) {
+                alert(`Network error: ${error.message}`);
+            }
+        }
+        
+        async function unregisterCommand(commandName) {
+            if (!confirm(`Are you sure you want to unregister command '${commandName}'?`)) {
+                return;
+            }
+            
+            try {
+                const response = await fetch(`/plugins/signalk-parquet/api/commands/${commandName}`, {
+                    method: 'DELETE'
+                });
+                
+                const result = await response.json();
+                
+                if (result.success) {
+                    await loadCommands();
+                    await loadCommandHistory();
+                    alert(`Command '${commandName}' unregistered successfully`);
+                } else {
+                    alert(`Error unregistering command: ${result.error}`);
+                }
+            } catch (error) {
+                alert(`Network error: ${error.message}`);
+            }
+        }
+        
+        async function loadCommandHistory() {
+            try {
+                const response = await fetch('/plugins/signalk-parquet/api/commands/history');
+                const result = await response.json();
+                
+                if (result.success) {
+                    displayCommandHistory(result.data || []);
+                } else {
+                    document.getElementById('commandHistoryContainer').innerHTML = `<div class="error">Error loading command history: ${result.error}</div>`;
+                }
+            } catch (error) {
+                document.getElementById('commandHistoryContainer').innerHTML = `<div class="error">Error loading command history: ${error.message}</div>`;
+            }
+        }
+        
+        function displayCommandHistory(history) {
+            const container = document.getElementById('commandHistoryContainer');
+            
+            if (!history || history.length === 0) {
+                container.innerHTML = '<div class="info">No command history available.</div>';
+                return;
+            }
+            
+            let html = '<div class="table-container"><table><thead><tr>';
+            html += '<th>Command</th><th>Action</th><th>Value</th><th>Status</th><th>Time</th><th>Error</th>';
+            html += '</tr></thead><tbody>';
+            
+            history.forEach(entry => {
+                const status = entry.success ? '✅ Success' : '❌ Failed';
+                const timestamp = new Date(entry.timestamp).toLocaleString();
+                const value = entry.value !== undefined ? (entry.value ? 'true' : 'false') : '-';
+                html += `<tr>
+                    <td><strong>${entry.command}</strong></td>
+                    <td>${entry.action}</td>
+                    <td>${value}</td>
+                    <td>${status}</td>
+                    <td>${timestamp}</td>
+                    <td>${entry.error || '-'}</td>
+                </tr>`;
+            });
+            
+            html += '</tbody></table></div>';
+            container.innerHTML = html;
         }
 
     </script>

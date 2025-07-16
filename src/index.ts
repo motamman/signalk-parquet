@@ -28,7 +28,17 @@ import {
   DuckDBInstance,
   DuckDBConnection,
   DuckDBResult,
-  WebAppPathConfig
+  WebAppPathConfig,
+  CommandConfig,
+  CommandRegistrationState,
+  CommandExecutionRequest,
+  CommandRegistrationRequest,
+  CommandApiResponse,
+  CommandExecutionResponse,
+  CommandPutHandler,
+  CommandExecutionResult,
+  CommandHistoryEntry,
+  CommandStatus
 } from './types';
 
 // AWS S3 for file upload
@@ -50,41 +60,61 @@ try {
   console.warn('DuckDB not available for webapp queries');
 }
 
-// Global variables for path management
+// Global variables for path and command management
 let currentPaths: PathConfig[] = [];
+let currentCommands: CommandConfig[] = [];
+let commandHistory: CommandHistoryEntry[] = [];
 let appInstance: SignalKApp;
 
-// Function to load paths from web app configuration
-function loadWebAppPaths(): PathConfig[] {
+// Command state management
+const commandState: CommandRegistrationState = {
+  registeredCommands: new Map<string, CommandConfig>(),
+  putHandlers: new Map<string, CommandPutHandler>()
+};
+
+// Enhanced function to load webapp configuration
+function loadWebAppConfig(): WebAppPathConfig {
   const webAppConfigPath = path.join(appInstance.getDataDirPath(), 'signalk-parquet', 'webapp-config.json');
   try {
     if (fs.existsSync(webAppConfigPath)) {
       const configData = fs.readFileSync(webAppConfigPath, 'utf8');
       const webAppConfig: WebAppPathConfig = JSON.parse(configData);
-      return webAppConfig.paths || [];
+      return {
+        paths: webAppConfig.paths || [],
+        commands: webAppConfig.commands || []
+      };
     }
   } catch (error) {
-    appInstance.debug(`Failed to load web app path configuration: ${error}`);
+    appInstance.debug(`Failed to load webapp configuration: ${error}`);
   }
-  return [];
+  return { paths: [], commands: [] };
 }
 
-// Function to save paths to web app configuration
-function saveWebAppPaths(paths: PathConfig[]): void {
+// Enhanced function to save webapp configuration
+function saveWebAppConfig(paths: PathConfig[], commands: CommandConfig[]): void {
   const webAppConfigPath = path.join(appInstance.getDataDirPath(), 'signalk-parquet', 'webapp-config.json');
   try {
-    // Ensure directory exists
     const configDir = path.dirname(webAppConfigPath);
     if (!fs.existsSync(configDir)) {
       fs.mkdirSync(configDir, { recursive: true });
     }
     
-    const webAppConfig: WebAppPathConfig = { paths };
+    const webAppConfig: WebAppPathConfig = { paths, commands };
     fs.writeFileSync(webAppConfigPath, JSON.stringify(webAppConfig, null, 2));
-    appInstance.debug(`Saved web app path configuration with ${paths.length} paths`);
+    appInstance.debug(`Saved webapp configuration: ${paths.length} paths, ${commands.length} commands`);
   } catch (error) {
-    appInstance.error(`Failed to save web app path configuration: ${error}`);
+    appInstance.error(`Failed to save webapp configuration: ${error}`);
   }
+}
+
+// Legacy function for backward compatibility
+function loadWebAppPaths(): PathConfig[] {
+  return loadWebAppConfig().paths;
+}
+
+// Legacy function for backward compatibility
+function saveWebAppPaths(paths: PathConfig[]): void {
+  saveWebAppConfig(paths, currentCommands);
 }
 
 export = function(app: SignalKApp): SignalKPlugin {
@@ -110,7 +140,8 @@ export = function(app: SignalKApp): SignalKPlugin {
     consolidationInterval: undefined,
     parquetWriter: undefined,
     s3Client: undefined,
-    currentConfig: undefined
+    currentConfig: undefined,
+    commandState: commandState
   };
 
   plugin.start = function(options: Partial<PluginConfig>): void {
@@ -133,8 +164,10 @@ export = function(app: SignalKApp): SignalKPlugin {
       s3Upload: options?.s3Upload || { enabled: false }
     };
 
-    // Load paths from web app configuration
-    currentPaths = loadWebAppPaths();
+    // Load webapp configuration including commands
+    const webAppConfig = loadWebAppConfig();
+    currentPaths = webAppConfig.paths;
+    currentCommands = webAppConfig.commands;
 
     // Initialize ParquetWriter
     state.parquetWriter = new ParquetWriter({ 
@@ -174,6 +207,9 @@ export = function(app: SignalKApp): SignalKPlugin {
     // Check current command values at startup
     initializeRegimenStates(state.currentConfig);
 
+    // Initialize command state
+    initializeCommandState();
+    
     // Subscribe to data paths based on initial regimen states
     updateDataSubscriptions(state.currentConfig);
 
@@ -228,6 +264,298 @@ export = function(app: SignalKApp): SignalKPlugin {
     state.activeRegimens.clear();
     state.subscribedPaths.clear();
   };
+
+  // Command Management Functions
+  
+  // Initialize command state on plugin start
+  function initializeCommandState(): void {
+    // Clear existing command state
+    commandState.registeredCommands.clear();
+    commandState.putHandlers.clear();
+
+    // Re-register commands from configuration
+    currentCommands.forEach((commandConfig: CommandConfig) => {
+      const result = registerCommand(commandConfig.command, commandConfig.description);
+      if (result.state === 'COMPLETED') {
+        app.debug(`✅ Restored command: ${commandConfig.command}`);
+      } else {
+        app.error(`❌ Failed to restore command: ${commandConfig.command} - ${result.message}`);
+      }
+    });
+
+    // Reset all commands to false on startup
+    currentCommands.forEach((commandConfig: CommandConfig) => {
+      initializeCommandValue(commandConfig.command, false);
+    });
+
+    app.debug(`🎮 Command state initialized with ${currentCommands.length} commands`);
+  }
+
+  // Command registration with full type safety
+  function registerCommand(commandName: string, description?: string): CommandExecutionResult {
+    try {
+      // Validate command name
+      if (!isValidCommandName(commandName)) {
+        return {
+          state: 'FAILED',
+          statusCode: 400,
+          message: 'Invalid command name. Use alphanumeric characters and underscores only.',
+          timestamp: new Date().toISOString()
+        };
+      }
+
+      // Check if command already exists
+      if (commandState.registeredCommands.has(commandName)) {
+        return {
+          state: 'FAILED',
+          statusCode: 409,
+          message: `Command '${commandName}' already registered`,
+          timestamp: new Date().toISOString()
+        };
+      }
+
+      const commandPath = `commands.${commandName}`;
+      const fullPath = `vessels.self.${commandPath}`;
+
+      // Create command configuration
+      const commandConfig: CommandConfig = {
+        command: commandName,
+        path: fullPath,
+        registered: new Date().toISOString(),
+        description: description || `Command: ${commandName}`,
+        active: false,
+        lastExecuted: undefined
+      };
+
+      // Create PUT handler with proper typing
+      const putHandler: CommandPutHandler = (
+        context: string,
+        path: string,
+        value: any,
+        callback: (result: CommandExecutionResult) => void
+      ): void => {
+        handleCommandExecution(commandName, Boolean(value), callback);
+      };
+
+      // Register PUT handler with SignalK
+      app.registerPutHandler(
+        'vessels.self',
+        commandPath,
+        putHandler,
+        'zennora-parquet-commands'
+      );
+
+      // Store command and handler
+      commandState.registeredCommands.set(commandName, commandConfig);
+      commandState.putHandlers.set(commandName, putHandler);
+
+      // Initialize command value to false
+      initializeCommandValue(commandName, false);
+
+      // Update current commands and save
+      currentCommands = Array.from(commandState.registeredCommands.values());
+      saveWebAppConfig(currentPaths, currentCommands);
+
+      // Log command registration
+      addCommandHistoryEntry(commandName, 'REGISTER', undefined, true);
+
+      app.debug(`✅ Registered command: ${commandName} at ${fullPath}`);
+
+      return {
+        state: 'COMPLETED',
+        statusCode: 200,
+        message: `Command '${commandName}' registered successfully`,
+        timestamp: new Date().toISOString()
+      };
+
+    } catch (error) {
+      const errorMessage = `Failed to register command '${commandName}': ${error}`;
+      app.error(errorMessage);
+      
+      return {
+        state: 'FAILED',
+        statusCode: 500,
+        message: errorMessage,
+        timestamp: new Date().toISOString()
+      };
+    }
+  }
+
+  // Command unregistration with type safety
+  function unregisterCommand(commandName: string): CommandExecutionResult {
+    try {
+      const commandConfig = commandState.registeredCommands.get(commandName);
+      if (!commandConfig) {
+        return {
+          state: 'FAILED',
+          statusCode: 404,
+          message: `Command '${commandName}' not found`,
+          timestamp: new Date().toISOString()
+        };
+      }
+
+      // Remove PUT handler (SignalK API doesn't have unregister, but we can track it)
+      commandState.putHandlers.delete(commandName);
+      commandState.registeredCommands.delete(commandName);
+
+      // Update current commands and save
+      currentCommands = Array.from(commandState.registeredCommands.values());
+      saveWebAppConfig(currentPaths, currentCommands);
+
+      // Log command unregistration
+      addCommandHistoryEntry(commandName, 'UNREGISTER', undefined, true);
+
+      app.debug(`🗑️ Unregistered command: ${commandName}`);
+
+      return {
+        state: 'COMPLETED',
+        statusCode: 200,
+        message: `Command '${commandName}' unregistered successfully`,
+        timestamp: new Date().toISOString()
+      };
+
+    } catch (error) {
+      const errorMessage = `Failed to unregister command '${commandName}': ${error}`;
+      app.error(errorMessage);
+      
+      return {
+        state: 'FAILED',
+        statusCode: 500,
+        message: errorMessage,
+        timestamp: new Date().toISOString()
+      };
+    }
+  }
+
+  // Command execution with full type safety
+  function executeCommand(commandName: string, value: boolean): CommandExecutionResult {
+    try {
+      const commandConfig = commandState.registeredCommands.get(commandName);
+      if (!commandConfig) {
+        return {
+          state: 'FAILED',
+          statusCode: 404,
+          message: `Command '${commandName}' not found`,
+          timestamp: new Date().toISOString()
+        };
+      }
+
+      // Execute the command by sending delta
+      const timestamp = new Date().toISOString();
+      const delta: SignalKDelta = {
+        context: 'vessels.self',
+        updates: [{
+          source: {
+            label: 'signalk-parquet-commands',
+            type: 'plugin'
+          },
+          timestamp,
+          values: [{
+            path: `commands.${commandName}`,
+            value: value,
+            timestamp
+          }]
+        }]
+      };
+
+      // Send delta message
+      app.handleMessage('signalk-parquet', delta);
+
+      // Update command state
+      commandConfig.active = value;
+      commandConfig.lastExecuted = timestamp;
+      commandState.registeredCommands.set(commandName, commandConfig);
+
+      // Update current commands and save
+      currentCommands = Array.from(commandState.registeredCommands.values());
+      saveWebAppConfig(currentPaths, currentCommands);
+
+      // Log command execution
+      addCommandHistoryEntry(commandName, 'EXECUTE', value, true);
+
+      app.debug(`🎮 Executed command: ${commandName} = ${value}`);
+
+      return {
+        state: 'COMPLETED',
+        statusCode: 200,
+        message: `Command '${commandName}' executed: ${value}`,
+        timestamp
+      };
+
+    } catch (error) {
+      const errorMessage = `Failed to execute command '${commandName}': ${error}`;
+      app.error(errorMessage);
+      
+      addCommandHistoryEntry(commandName, 'EXECUTE', value, false, errorMessage);
+      
+      return {
+        state: 'FAILED',
+        statusCode: 500,
+        message: errorMessage,
+        timestamp: new Date().toISOString()
+      };
+    }
+  }
+
+  // Helper functions with type safety
+  function isValidCommandName(commandName: string): boolean {
+    const validPattern = /^[a-zA-Z0-9_]+$/;
+    return validPattern.test(commandName) && commandName.length > 0 && commandName.length <= 50;
+  }
+
+  function initializeCommandValue(commandName: string, value: boolean): void {
+    const timestamp = new Date().toISOString();
+    const delta: SignalKDelta = {
+      context: 'vessels.self',
+      updates: [{
+        source: {
+          label: 'signalk-parquet-commands',
+          type: 'plugin'
+        },
+        timestamp,
+        values: [{
+          path: `commands.${commandName}`,
+          value,
+          timestamp
+        }]
+      }]
+    };
+
+    app.handleMessage('signalk-parquet', delta);
+  }
+
+  function addCommandHistoryEntry(
+    command: string,
+    action: 'EXECUTE' | 'STOP' | 'REGISTER' | 'UNREGISTER',
+    value?: boolean,
+    success: boolean = true,
+    error?: string
+  ): void {
+    const entry: CommandHistoryEntry = {
+      command,
+      action,
+      value,
+      timestamp: new Date().toISOString(),
+      success,
+      error
+    };
+
+    commandHistory.push(entry);
+    
+    // Keep only last 100 entries
+    if (commandHistory.length > 100) {
+      commandHistory = commandHistory.slice(-100);
+    }
+  }
+
+  function handleCommandExecution(
+    commandName: string,
+    value: boolean,
+    callback: (result: CommandExecutionResult) => void
+  ): void {
+    const result = executeCommand(commandName, value);
+    callback(result);
+  }
 
   // Subscribe to command paths that control regimens using proper subscription manager
   function subscribeToCommandPaths(config: PluginConfig): void {
@@ -1336,6 +1664,197 @@ export = function(app: SignalKApp): SignalKPlugin {
         res.status(500).json({
           success: false,
           error: (error as Error).message
+        });
+      }
+    });
+
+    // Command Management API endpoints
+    
+    // Get all registered commands
+    router.get('/api/commands', (_: TypedRequest, res: TypedResponse<CommandApiResponse>) => {
+      try {
+        const commands = Array.from(commandState.registeredCommands.values());
+        return res.json({
+          success: true,
+          commands: commands,
+          count: commands.length
+        });
+      } catch (error) {
+        app.error('Error retrieving commands:', error);
+        return res.status(500).json({
+          success: false,
+          error: 'Failed to retrieve commands'
+        });
+      }
+    });
+
+    // Register a new command
+    router.post('/api/commands', (req: TypedRequest<CommandRegistrationRequest>, res: TypedResponse<CommandApiResponse>) => {
+      try {
+        const { command, description } = req.body;
+        
+        if (!command || !isValidCommandName(command)) {
+          return res.status(400).json({
+            success: false,
+            error: 'Invalid command name. Must be alphanumeric with underscores, 1-50 characters.'
+          });
+        }
+
+        const result = registerCommand(command, description);
+        
+        if (result.state === 'COMPLETED') {
+          // Add to command history
+          addCommandHistoryEntry(command, 'REGISTER', undefined, true);
+          
+          // Update webapp config
+          const webAppConfig = loadWebAppConfig();
+          saveWebAppConfig(webAppConfig.paths, currentCommands);
+          
+          const commandConfig = commandState.registeredCommands.get(command);
+          return res.json({
+            success: true,
+            message: `Command '${command}' registered successfully`,
+            command: commandConfig
+          });
+        } else {
+          return res.status(400).json({
+            success: false,
+            error: result.message || 'Failed to register command'
+          });
+        }
+      } catch (error) {
+        app.error('Error registering command:', error);
+        return res.status(500).json({
+          success: false,
+          error: 'Internal server error'
+        });
+      }
+    });
+
+    // Execute a command
+    router.put('/api/commands/:command/execute', (req: TypedRequest<CommandExecutionRequest>, res: TypedResponse<CommandExecutionResponse>) => {
+      try {
+        const { command } = req.params;
+        const { value } = req.body;
+        
+        if (typeof value !== 'boolean') {
+          return res.status(400).json({
+            success: false,
+            error: 'Command value must be a boolean'
+          });
+        }
+
+        const result = executeCommand(command, value);
+        
+        if (result.state === 'COMPLETED') {
+          // Add to command history
+          addCommandHistoryEntry(command, 'EXECUTE', value, true);
+          
+          return res.json({
+            success: true,
+            command: command,
+            value: value,
+            executed: true,
+            timestamp: result.timestamp
+          });
+        } else {
+          // Add to command history for failed execution
+          addCommandHistoryEntry(command, 'EXECUTE', value, false, result.message);
+          
+          return res.status(400).json({
+            success: false,
+            error: result.message || 'Failed to execute command'
+          });
+        }
+      } catch (error) {
+        app.error('Error executing command:', error);
+        return res.status(500).json({
+          success: false,
+          error: 'Internal server error'
+        });
+      }
+    });
+
+    // Unregister a command
+    router.delete('/api/commands/:command', (req: TypedRequest, res: TypedResponse<CommandApiResponse>) => {
+      try {
+        const { command } = req.params;
+        
+        const result = unregisterCommand(command);
+        
+        if (result.state === 'COMPLETED') {
+          // Add to command history
+          addCommandHistoryEntry(command, 'UNREGISTER', undefined, true);
+          
+          // Update webapp config
+          const webAppConfig = loadWebAppConfig();
+          saveWebAppConfig(webAppConfig.paths, currentCommands);
+          
+          return res.json({
+            success: true,
+            message: `Command '${command}' unregistered successfully`
+          });
+        } else {
+          return res.status(404).json({
+            success: false,
+            error: result.message || 'Command not found'
+          });
+        }
+      } catch (error) {
+        app.error('Error unregistering command:', error);
+        return res.status(500).json({
+          success: false,
+          error: 'Internal server error'
+        });
+      }
+    });
+
+    // Get command history
+    router.get('/api/commands/history', (_: TypedRequest, res: TypedResponse<CommandApiResponse>) => {
+      try {
+        // Return the last 50 history entries
+        const recentHistory = commandHistory.slice(-50);
+        return res.json({
+          success: true,
+          data: recentHistory
+        });
+      } catch (error) {
+        app.error('Error retrieving command history:', error);
+        return res.status(500).json({
+          success: false,
+          error: 'Failed to retrieve command history'
+        });
+      }
+    });
+
+    // Get command status
+    router.get('/api/commands/:command/status', (req: TypedRequest, res: TypedResponse<CommandApiResponse>) => {
+      try {
+        const { command } = req.params;
+        const commandConfig = commandState.registeredCommands.get(command);
+        
+        if (!commandConfig) {
+          return res.status(404).json({
+            success: false,
+            error: 'Command not found'
+          });
+        }
+
+        // Get current value from SignalK
+        const currentValue = app.getSelfPath(`commands.${command}`);
+        
+        return res.json({
+          success: true,
+          command: {
+            ...commandConfig,
+            active: currentValue === true
+          }
+        });
+      } catch (error) {
+        app.error('Error retrieving command status:', error);
+        return res.status(500).json({
+          success: false,
+          error: 'Failed to retrieve command status'
         });
       }
     });
