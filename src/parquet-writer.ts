@@ -3,10 +3,10 @@ import * as path from 'path';
 import {
   DataRecord,
   ParquetWriterOptions,
-  SignalKApp,
   ParquetField,
   FileFormat,
 } from './types';
+import { ServerAPI } from '@signalk/server-api';
 
 // Try to import ParquetJS, fall back if not available
 let parquet: any;
@@ -18,7 +18,7 @@ try {
 
 export class ParquetWriter {
   private format: FileFormat;
-  private app?: SignalKApp;
+  private app?: ServerAPI;
 
   constructor(options: ParquetWriterOptions = { format: 'json' }) {
     this.format = options.format || 'json';
@@ -99,8 +99,10 @@ export class ParquetWriter {
       this.app?.debug(
         `Attempting to write ${records.length} records to Parquet`
       );
-      this.app?.debug('Sample record keys:', Object.keys(records[0]));
-      this.app?.debug('Sample record:', JSON.stringify(records[0], null, 2));
+      this.app?.debug(
+        `Sample record keys: ${Object.keys(records[0]).join(', ')}`
+      );
+      this.app?.debug(`Sample record: ${JSON.stringify(records[0], null, 2)}`);
 
       // Define schema based on SignalK data structure
       const schemaFields: { [key: string]: ParquetField } = {
@@ -132,8 +134,7 @@ export class ParquetWriter {
 
       const schema = new parquet.ParquetSchema(schemaFields);
       this.app?.debug(
-        `Creating Parquet schema with ${Object.keys(schemaFields).length} fields:`,
-        Object.keys(schemaFields)
+        `Creating Parquet schema with ${Object.keys(schemaFields).length} fields: ${Object.keys(schemaFields).join(', ')}`
       );
 
       // Create Parquet writer
@@ -170,8 +171,8 @@ export class ParquetWriter {
       );
       return filepath;
     } catch (error) {
-      this.app?.debug('❌ Parquet writing failed:', (error as Error).message);
-      this.app?.debug('Error stack:', (error as Error).stack);
+      this.app?.debug(`❌ Parquet writing failed: ${(error as Error).message}`);
+      this.app?.debug(`Error stack: ${(error as Error).stack}`);
 
       // Save to failed directory to maintain schema consistency
       const failedDir = path.join(path.dirname(filepath), 'failed');
@@ -290,8 +291,7 @@ export class ParquetWriter {
                 await reader.close();
               } catch (parquetError) {
                 this.app?.debug(
-                  `Failed to read Parquet file ${sourceFile}:`,
-                  (parquetError as Error).message
+                  `Failed to read Parquet file ${sourceFile}: ${(parquetError as Error).message}`
                 );
               }
             }

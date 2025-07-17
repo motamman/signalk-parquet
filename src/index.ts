@@ -4,14 +4,10 @@ import express from 'express';
 import { Router } from 'express';
 import { ParquetWriter } from './parquet-writer';
 import {
-  SignalKApp,
   SignalKPlugin,
   PluginConfig,
   PathConfig,
   DataRecord,
-  SignalKDelta,
-  SignalKUpdate,
-  SignalKValue,
   PluginState,
   TypedRequest,
   TypedResponse,
@@ -38,6 +34,16 @@ import {
   CommandHistoryEntry,
 } from './types';
 import { glob } from 'glob';
+import {
+  Context,
+  Delta,
+  hasValues,
+  Path,
+  PathValue,
+  ServerAPI,
+  Update,
+  Timestamp,
+} from '@signalk/server-api';
 
 // AWS S3 for file upload
 let S3Client: any, PutObjectCommand: any, ListObjectsV2Command: any;
@@ -65,7 +71,7 @@ import('@duckdb/node-api')
 let currentPaths: PathConfig[] = [];
 let currentCommands: CommandConfig[] = [];
 let commandHistory: CommandHistoryEntry[] = [];
-let appInstance: SignalKApp;
+let appInstance: ServerAPI;
 
 // Command state management
 const commandState: CommandRegistrationState = {
@@ -131,7 +137,7 @@ function saveWebAppPaths(paths: PathConfig[]): void {
   saveWebAppConfig(paths, currentCommands);
 }
 
-export = function (app: SignalKApp): SignalKPlugin {
+export = function (app: ServerAPI): SignalKPlugin {
   // Store app instance for global access
   appInstance = app;
   const plugin: SignalKPlugin = {
@@ -211,11 +217,10 @@ export = function (app: SignalKApp): SignalKPlugin {
 
         state.s3Client = new S3Client(s3Config);
         app.debug(
-          'S3 client initialized for bucket:',
-          state.currentConfig.s3Upload.bucket
+          `S3 client initialized for bucket: ${state.currentConfig.s3Upload.bucket}`
         );
       } catch (error) {
-        app.debug('Error initializing S3 client:', error);
+        app.debug(`Error initializing S3 client: ${error}`);
         state.s3Client = undefined;
       }
     }
@@ -383,8 +388,7 @@ export = function (app: SignalKApp): SignalKPlugin {
         _callback?: (result: CommandExecutionResult) => void
       ): CommandExecutionResult => {
         app.debug(
-          `Handling PUT for commands.${commandName} with value:`,
-          value
+          `Handling PUT for commands.${commandName} with value: ${JSON.stringify(value)}`
         );
         return executeCommand(commandName, Boolean(value));
       };
@@ -393,7 +397,7 @@ export = function (app: SignalKApp): SignalKPlugin {
       app.registerPutHandler(
         'vessels.self',
         commandPath,
-        putHandler,
+        putHandler as unknown as () => void, //FIXME server api registerPutHandler is incorrectly typed https://github.com/SignalK/signalk-server/pull/2043
         'zennora-parquet-commands'
       );
 
@@ -495,18 +499,18 @@ export = function (app: SignalKApp): SignalKPlugin {
 
       // Execute the command by sending delta
       const timestamp = new Date().toISOString();
-      const delta: SignalKDelta = {
-        context: 'vessels.self',
+      const delta: Delta = {
+        context: 'vessels.self' as Context,
         updates: [
           {
             source: {
               label: 'signalk-parquet-commands',
               type: 'plugin',
             },
-            timestamp,
+            timestamp: timestamp as Timestamp,
             values: [
               {
-                path: `commands.${commandName}`,
+                path: `commands.${commandName}` as Path,
                 value: value,
               },
             ],
@@ -515,7 +519,8 @@ export = function (app: SignalKApp): SignalKPlugin {
       };
 
       // Send delta message
-      app.handleMessage('signalk-parquet', delta);
+      //FIXME see if delta can be Delta from the beginning
+      app.handleMessage('signalk-parquet', delta as Delta);
 
       // Update command state
       commandConfig.active = value;
@@ -569,9 +574,9 @@ export = function (app: SignalKApp): SignalKPlugin {
   }
 
   function initializeCommandValue(commandName: string, value: boolean): void {
-    const timestamp = new Date().toISOString();
-    const delta: SignalKDelta = {
-      context: 'vessels.self',
+    const timestamp = new Date().toISOString() as Timestamp;
+    const delta: Delta = {
+      context: 'vessels.self' as Context,
       updates: [
         {
           source: {
@@ -581,7 +586,7 @@ export = function (app: SignalKApp): SignalKPlugin {
           timestamp,
           values: [
             {
-              path: `commands.${commandName}`,
+              path: `commands.${commandName}` as Path,
               value,
             },
           ],
@@ -589,7 +594,8 @@ export = function (app: SignalKApp): SignalKPlugin {
       ],
     };
 
-    app.handleMessage('signalk-parquet', delta);
+    //FIXME
+    app.handleMessage('signalk-parquet', delta as Delta);
   }
 
   function addCommandHistoryEntry(
@@ -629,10 +635,11 @@ export = function (app: SignalKApp): SignalKPlugin {
     if (commandPaths.length === 0) return;
 
     const commandSubscription = {
-      context: 'vessels.self',
+      context: 'vessels.self' as Context,
       subscribe: commandPaths.map((pathConfig: PathConfig) => ({
         path: pathConfig.path,
         period: 1000, // Check commands every second
+        policy: 'fixed' as const,
       })),
     };
 
@@ -644,14 +651,14 @@ export = function (app: SignalKApp): SignalKPlugin {
       commandSubscription,
       state.unsubscribes,
       (subscriptionError: any) => {
-        app.debug('Command subscription error:', subscriptionError);
+        app.debug(`Command subscription error: ${subscriptionError}`);
       },
-      (delta: SignalKDelta) => {
+      (delta: Delta) => {
         // Process each update in the delta
         if (delta.updates) {
-          delta.updates.forEach((update: SignalKUpdate) => {
-            if (update.values) {
-              update.values.forEach((valueUpdate: SignalKValue) => {
+          delta.updates.forEach(update => {
+            if (hasValues(update)) {
+              update.values.forEach(valueUpdate => {
                 const pathConfig = commandPaths.find(
                   p => p.path === valueUpdate.path
                 );
@@ -672,15 +679,14 @@ export = function (app: SignalKApp): SignalKPlugin {
 
   // Handle command messages (regimen control) - now receives complete delta structure
   function handleCommandMessage(
-    valueUpdate: SignalKValue,
+    valueUpdate: PathValue,
     pathConfig: PathConfig,
     config: PluginConfig,
-    update: SignalKUpdate
+    update: Update
   ): void {
     try {
       app.debug(
-        `📦 Received command update for ${pathConfig.path}:`,
-        JSON.stringify(valueUpdate, null, 2)
+        `📦 Received command update for ${pathConfig.path}: ${JSON.stringify(valueUpdate, null, 2)}`
       );
 
       // Check source filter if specified for commands too
@@ -723,7 +729,7 @@ export = function (app: SignalKApp): SignalKPlugin {
           bufferKey,
           {
             received_timestamp: new Date().toISOString(),
-            signalk_timestamp: update.timestamp,
+            signalk_timestamp: update.timestamp || new Date().toISOString(),
             context: 'vessels.self',
             path: valueUpdate.path,
             value: valueUpdate.value,
@@ -734,15 +740,16 @@ export = function (app: SignalKApp): SignalKPlugin {
             source_type: update.source ? update.source.type : undefined,
             source_pgn: update.source ? update.source.pgn : undefined,
             source_src: update.source ? update.source.src : undefined,
-            meta: valueUpdate.meta
-              ? JSON.stringify(valueUpdate.meta)
-              : undefined,
+            //FIXME
+            // meta: valueUpdate.meta
+            //   ? JSON.stringify(valueUpdate.meta)
+            //   : undefined,
           },
           config
         );
       }
     } catch (error) {
-      app.debug('Error handling command message:', error);
+      app.debug(`Error handling command message: ${error}`);
     }
   }
 
@@ -780,9 +787,9 @@ export = function (app: SignalKApp): SignalKPlugin {
     }
 
     // Group paths by context for separate subscriptions
-    const contextGroups = new Map<string, PathConfig[]>();
+    const contextGroups = new Map<Context, PathConfig[]>();
     shouldSubscribePaths.forEach((pathConfig: PathConfig) => {
-      const context = pathConfig.context || 'vessels.self';
+      const context = (pathConfig.context || 'vessels.self') as Context;
       if (!contextGroups.has(context)) {
         contextGroups.set(context, []);
       }
@@ -794,8 +801,9 @@ export = function (app: SignalKApp): SignalKPlugin {
       const dataSubscription = {
         context: context,
         subscribe: pathConfigs.map(pathConfig => ({
-          path: pathConfig.path,
+          path: pathConfig.path as Path,
           period: 1000, // Get updates every second max
+          policy: 'fixed' as const,
         })),
       };
 
@@ -808,16 +816,15 @@ export = function (app: SignalKApp): SignalKPlugin {
         state.unsubscribes,
         (subscriptionError: any) => {
           app.debug(
-            `Data subscription error for ${context}:`,
-            subscriptionError
+            `Data subscription error for ${context}: ${subscriptionError}`
           );
         },
-        (delta: SignalKDelta) => {
+        (delta: Delta) => {
           // Process each update in the delta
           if (delta.updates) {
-            delta.updates.forEach((update: SignalKUpdate) => {
-              if (update.values) {
-                update.values.forEach((valueUpdate: SignalKValue) => {
+            delta.updates.forEach(update => {
+              if (hasValues(update)) {
+                update.values.forEach(valueUpdate => {
                   const pathConfig = pathConfigs.find(
                     (p: PathConfig) => p.path === valueUpdate.path
                   );
@@ -871,11 +878,11 @@ export = function (app: SignalKApp): SignalKPlugin {
 
   // Handle data messages from SignalK - now receives complete delta structure
   function handleDataMessage(
-    valueUpdate: SignalKValue,
+    valueUpdate: PathValue,
     pathConfig: PathConfig,
     config: PluginConfig,
-    update: SignalKUpdate,
-    delta: SignalKDelta
+    update: Update,
+    delta: Delta
   ): void {
     try {
       // Check if we should still process this path
@@ -895,7 +902,7 @@ export = function (app: SignalKApp): SignalKPlugin {
 
       const record: DataRecord = {
         received_timestamp: new Date().toISOString(),
-        signalk_timestamp: update.timestamp,
+        signalk_timestamp: update.timestamp || new Date().toISOString(),
         context: delta.context || pathConfig.context || 'vessels.self', // Use actual context from delta message
         path: valueUpdate.path,
         value: null,
@@ -906,7 +913,8 @@ export = function (app: SignalKApp): SignalKPlugin {
         source_type: update.source ? update.source.type : undefined,
         source_pgn: update.source ? update.source.pgn : undefined,
         source_src: update.source ? update.source.src : undefined,
-        meta: valueUpdate.meta ? JSON.stringify(valueUpdate.meta) : undefined,
+        //FIXME should meta be removed from the stored values? normal value updates don't have them
+        // meta: valueUpdate.meta ? JSON.stringify(valueUpdate.meta) : undefined,
       };
 
       // Handle different value types (matching Python logic)
@@ -934,7 +942,7 @@ export = function (app: SignalKApp): SignalKPlugin {
       const bufferKey = `${actualContext}:${pathConfig.path}`;
       bufferData(bufferKey, record, config);
     } catch (error) {
-      app.debug('Error handling data message:', error);
+      app.debug(`Error handling data message: ${error}`);
     }
   }
 
@@ -1066,7 +1074,7 @@ export = function (app: SignalKApp): SignalKPlugin {
         await uploadToS3(savedPath, config);
       }
     } catch (error) {
-      app.debug(`❌ Error saving buffer for ${signalkPath}:`, error);
+      app.debug(`❌ Error saving buffer for ${signalkPath}: ${error}`);
     }
   }
 
@@ -1096,7 +1104,7 @@ export = function (app: SignalKApp): SignalKPlugin {
         }
       }
     } catch (error) {
-      app.debug('Error during daily consolidation:', error);
+      app.debug(`Error during daily consolidation: ${error}`);
     }
   }
 
@@ -1125,7 +1133,7 @@ export = function (app: SignalKApp): SignalKPlugin {
         await uploadToS3(filePath, config);
       }
     } catch (error) {
-      app.debug('Error uploading consolidated files to S3:', error);
+      app.debug(`Error uploading consolidated files to S3: ${error}`);
     }
   }
 
@@ -1150,8 +1158,7 @@ export = function (app: SignalKApp): SignalKPlugin {
 
         if (currentData !== undefined && currentData !== null) {
           app.debug(
-            `📋 Found current value for ${pathConfig.path}:`,
-            currentData
+            `📋 Found current value for ${pathConfig.path}: ${JSON.stringify(currentData)}`
           );
 
           // Check if there's source information
@@ -1191,8 +1198,7 @@ export = function (app: SignalKApp): SignalKPlugin {
         }
       } catch (error) {
         app.debug(
-          `❌ Error checking startup value for ${pathConfig.path}:`,
-          error
+          `❌ Error checking startup value for ${pathConfig.path}: ${error}`
         );
       }
     });
@@ -1253,7 +1259,7 @@ export = function (app: SignalKApp): SignalKPlugin {
 
       return true;
     } catch (error) {
-      app.debug(`❌ Error uploading ${filePath} to S3:`, error);
+      app.debug(`❌ Error uploading ${filePath} to S3: ${error}`);
       return false;
     }
   }
@@ -1377,7 +1383,7 @@ export = function (app: SignalKApp): SignalKPlugin {
     const publicPath = path.join(__dirname, '../public');
     if (fs.existsSync(publicPath)) {
       router.use(express.static(publicPath));
-      app.debug('Static files served from:', publicPath);
+      app.debug(`Static files served from: ${publicPath}`);
     }
 
     // Get the current configuration for data directory
@@ -1705,7 +1711,7 @@ export = function (app: SignalKApp): SignalKPlugin {
             });
           }
 
-          app.debug('Executing query:', processedQuery);
+          app.debug(`Executing query: ${processedQuery}`);
 
           const instance = await DuckDBInstance.create();
           const connection = await instance.connect();
@@ -1730,7 +1736,7 @@ export = function (app: SignalKApp): SignalKPlugin {
               data: data,
             });
           } catch (err) {
-            app.error('Query error:', err);
+            app.error(`Query error: ${err}`);
             return res.status(400).json({
               success: false,
               error: (err as Error).message,
@@ -1789,7 +1795,7 @@ export = function (app: SignalKApp): SignalKPlugin {
             keyPrefix: state.currentConfig.s3Upload.keyPrefix || 'none',
           });
         } catch (error) {
-          app.debug('S3 test connection error:', error);
+          app.debug(`S3 test connection error: ${error}`);
           return res.status(500).json({
             success: false,
             error: (error as Error).message || 'S3 connection failed',
@@ -1965,7 +1971,7 @@ export = function (app: SignalKApp): SignalKPlugin {
             count: commands.length,
           });
         } catch (error) {
-          app.error('Error retrieving commands:', error);
+          app.error(`Error retrieving commands: ${error}`);
           return res.status(500).json({
             success: false,
             error: 'Failed to retrieve commands',
@@ -2015,7 +2021,7 @@ export = function (app: SignalKApp): SignalKPlugin {
             });
           }
         } catch (error) {
-          app.error('Error registering command:', error);
+          app.error(`Error registering command: ${error}`);
           return res.status(500).json({
             success: false,
             error: 'Internal server error',
@@ -2071,7 +2077,7 @@ export = function (app: SignalKApp): SignalKPlugin {
             });
           }
         } catch (error) {
-          app.error('Error executing command:', error);
+          app.error(`Error executing command: ${error}`);
           return res.status(500).json({
             success: false,
             error: 'Internal server error',
@@ -2108,7 +2114,7 @@ export = function (app: SignalKApp): SignalKPlugin {
             });
           }
         } catch (error) {
-          app.error('Error unregistering command:', error);
+          app.error(`Error unregistering command: ${error}`);
           return res.status(500).json({
             success: false,
             error: 'Internal server error',
@@ -2129,7 +2135,7 @@ export = function (app: SignalKApp): SignalKPlugin {
             data: recentHistory,
           });
         } catch (error) {
-          app.error('Error retrieving command history:', error);
+          app.error(`Error retrieving command history: ${error}`);
           return res.status(500).json({
             success: false,
             error: 'Failed to retrieve command history',
@@ -2164,7 +2170,7 @@ export = function (app: SignalKApp): SignalKPlugin {
             },
           });
         } catch (error) {
-          app.error('Error retrieving command status:', error);
+          app.error(`Error retrieving command status: ${error}`);
           return res.status(500).json({
             success: false,
             error: 'Failed to retrieve command status',

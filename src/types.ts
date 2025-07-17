@@ -1,29 +1,5 @@
+import { Context, Path, ServerAPI } from '@signalk/server-api';
 import { Request, Response, Router } from 'express';
-
-// SignalK App Interface
-export interface SignalKApp {
-  debug: (message: string, ...args: any[]) => void;
-  error: (message: string, ...args: any[]) => void;
-  getSelfPath: (path: string) => any;
-  getDataDirPath: () => string;
-  selfContext: string;
-  subscriptionmanager: {
-    subscribe: (
-      subscription: SignalKSubscription,
-      unsubscribes: Array<() => void>,
-      errorCallback: (error: any) => void,
-      deltaCallback: (delta: SignalKDelta) => void
-    ) => void;
-  };
-  savePluginOptions: (options: any, callback: (error?: Error) => void) => void;
-  handleMessage: (pluginId: string, delta: SignalKDelta) => void;
-  registerPutHandler: (
-    context: string,
-    path: string,
-    handler: CommandPutHandler,
-    source?: string
-  ) => void;
-}
 
 // SignalK Plugin Interface
 export interface SignalKPlugin {
@@ -49,12 +25,12 @@ export interface PluginConfig {
 }
 
 export interface PathConfig {
-  path: string;
+  path: Path;
   name?: string;
   enabled?: boolean;
   regimen?: string;
   source?: string;
-  context?: string;
+  context?: Context;
 }
 
 // Command Registration Types
@@ -109,29 +85,6 @@ export interface SignalKSubscription {
   }>;
 }
 
-export interface SignalKDelta {
-  context: string;
-  updates: SignalKUpdate[];
-}
-
-export interface SignalKUpdate {
-  source?: {
-    label?: string;
-    type?: string;
-    pgn?: number;
-    src?: string;
-  };
-  $source?: string;
-  timestamp: string;
-  values: SignalKValue[];
-}
-
-export interface SignalKValue {
-  path: string;
-  value: any;
-  meta?: any;
-}
-
 // Data Record Structure
 export interface DataRecord {
   received_timestamp: string;
@@ -152,7 +105,7 @@ export interface DataRecord {
 // Parquet Writer Options
 export interface ParquetWriterOptions {
   format: 'json' | 'csv' | 'parquet';
-  app?: SignalKApp;
+  app?: ServerAPI;
 }
 
 // File System Related
@@ -300,14 +253,14 @@ export interface QueryRequest {
 }
 
 export interface PathConfigRequest {
-  path: string;
+  path: Path;
   name?: string;
   enabled?: boolean;
   regimen?: string;
   source?: string;
-  context?: string;
+  context?: Context;
 }
-
+//FIXME https://github.com/SignalK/signalk-server/pull/2043
 // Command Types
 export type CommandPutHandler = (
   context: string,
