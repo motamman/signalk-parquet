@@ -16,7 +16,8 @@
     "lint": "eslint src/**/*.ts",
     "lint:fix": "eslint src/**/*.ts --fix",
     "format": "prettier --write src/**/*.ts *.json --ignore-unknown",
-    "format:check": "prettier --check src/**/*.ts *.json --ignore-unknown"
+    "format:check": "prettier --check src/**/*.ts *.json --ignore-unknown",
+    "ci": "npm run format:check && npm run lint"
   },
   "keywords": [
     "signalk-node-server-plugin",
