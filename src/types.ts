@@ -264,7 +264,11 @@ export interface ParquetWriter {
   writeJSON(filepath: string, records: DataRecord[]): Promise<string>;
   writeCSV(filepath: string, records: DataRecord[]): Promise<string>;
   writeParquet(filepath: string, records: DataRecord[]): Promise<string>;
-  consolidateDaily(outputDirectory: string, date: Date, filenamePrefix: string): Promise<number>;
+  consolidateDaily(
+    outputDirectory: string,
+    date: Date,
+    filenamePrefix: string
+  ): Promise<number>;
 }
 
 // DuckDB Related Types
@@ -332,7 +336,7 @@ export enum CommandStatus {
   ACTIVE = 'ACTIVE',
   INACTIVE = 'INACTIVE',
   PENDING = 'PENDING',
-  ERROR = 'ERROR'
+  ERROR = 'ERROR',
 }
 
 // Utility Types

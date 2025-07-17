@@ -38,13 +38,16 @@ import {
   CommandPutHandler,
   CommandExecutionResult,
   CommandHistoryEntry,
-  CommandStatus
+  CommandStatus,
 } from './types';
 
 // AWS S3 for file upload
 let S3Client: any, PutObjectCommand: any;
 try {
-  const { S3Client: S3ClientClass, PutObjectCommand: PutObjectCommandClass } = require('@aws-sdk/client-s3');
+  const {
+    S3Client: S3ClientClass,
+    PutObjectCommand: PutObjectCommandClass,
+  } = require('@aws-sdk/client-s3');
   S3Client = S3ClientClass;
   PutObjectCommand = PutObjectCommandClass;
 } catch (error) {
@@ -69,19 +72,23 @@ let appInstance: SignalKApp;
 // Command state management
 const commandState: CommandRegistrationState = {
   registeredCommands: new Map<string, CommandConfig>(),
-  putHandlers: new Map<string, CommandPutHandler>()
+  putHandlers: new Map<string, CommandPutHandler>(),
 };
 
 // Enhanced function to load webapp configuration
 function loadWebAppConfig(): WebAppPathConfig {
-  const webAppConfigPath = path.join(appInstance.getDataDirPath(), 'signalk-parquet', 'webapp-config.json');
+  const webAppConfigPath = path.join(
+    appInstance.getDataDirPath(),
+    'signalk-parquet',
+    'webapp-config.json'
+  );
   try {
     if (fs.existsSync(webAppConfigPath)) {
       const configData = fs.readFileSync(webAppConfigPath, 'utf8');
       const webAppConfig: WebAppPathConfig = JSON.parse(configData);
       return {
         paths: webAppConfig.paths || [],
-        commands: webAppConfig.commands || []
+        commands: webAppConfig.commands || [],
       };
     }
   } catch (error) {
@@ -91,17 +98,26 @@ function loadWebAppConfig(): WebAppPathConfig {
 }
 
 // Enhanced function to save webapp configuration
-function saveWebAppConfig(paths: PathConfig[], commands: CommandConfig[]): void {
-  const webAppConfigPath = path.join(appInstance.getDataDirPath(), 'signalk-parquet', 'webapp-config.json');
+function saveWebAppConfig(
+  paths: PathConfig[],
+  commands: CommandConfig[]
+): void {
+  const webAppConfigPath = path.join(
+    appInstance.getDataDirPath(),
+    'signalk-parquet',
+    'webapp-config.json'
+  );
   try {
     const configDir = path.dirname(webAppConfigPath);
     if (!fs.existsSync(configDir)) {
       fs.mkdirSync(configDir, { recursive: true });
     }
-    
+
     const webAppConfig: WebAppPathConfig = { paths, commands };
     fs.writeFileSync(webAppConfigPath, JSON.stringify(webAppConfig, null, 2));
-    appInstance.debug(`Saved webapp configuration: ${paths.length} paths, ${commands.length} commands`);
+    appInstance.debug(
+      `Saved webapp configuration: ${paths.length} paths, ${commands.length} commands`
+    );
   } catch (error) {
     appInstance.error(`Failed to save webapp configuration: ${error}`);
   }
@@ -117,17 +133,18 @@ function saveWebAppPaths(paths: PathConfig[]): void {
   saveWebAppConfig(paths, currentCommands);
 }
 
-export = function(app: SignalKApp): SignalKPlugin {
+export = function (app: SignalKApp): SignalKPlugin {
   // Store app instance for global access
   appInstance = app;
   const plugin: SignalKPlugin = {
     id: 'signalk-parquet',
     name: 'SignalK to Parquet',
-    description: 'Save SignalK marine data directly to Parquet files with regimen-based control',
+    description:
+      'Save SignalK marine data directly to Parquet files with regimen-based control',
     schema: {},
     start: () => {},
     stop: () => {},
-    registerWithRouter: undefined
+    registerWithRouter: undefined,
   };
 
   // Plugin state
@@ -141,18 +158,19 @@ export = function(app: SignalKApp): SignalKPlugin {
     parquetWriter: undefined,
     s3Client: undefined,
     currentConfig: undefined,
-    commandState: commandState
+    commandState: commandState,
   };
 
-  plugin.start = function(options: Partial<PluginConfig>): void {
+  plugin.start = function (options: Partial<PluginConfig>): void {
     app.debug('Starting...');
 
     // Get vessel MMSI from SignalK
-    const vesselMMSI = app.getSelfPath('mmsi') || app.getSelfPath('name') || 'unknown_vessel';
-    
+    const vesselMMSI =
+      app.getSelfPath('mmsi') || app.getSelfPath('name') || 'unknown_vessel';
+
     // Use SignalK's application data directory
     const defaultOutputDir = path.join(app.getDataDirPath(), 'signalk-parquet');
-    
+
     state.currentConfig = {
       bufferSize: options?.bufferSize || 1000,
       saveIntervalSeconds: options?.saveIntervalSeconds || 30,
@@ -161,7 +179,7 @@ export = function(app: SignalKApp): SignalKPlugin {
       retentionDays: options?.retentionDays || 7,
       fileFormat: options?.fileFormat || 'parquet',
       vesselMMSI: vesselMMSI,
-      s3Upload: options?.s3Upload || { enabled: false }
+      s3Upload: options?.s3Upload || { enabled: false },
     };
 
     // Load webapp configuration including commands
@@ -170,28 +188,34 @@ export = function(app: SignalKApp): SignalKPlugin {
     currentCommands = webAppConfig.commands;
 
     // Initialize ParquetWriter
-    state.parquetWriter = new ParquetWriter({ 
-      format: state.currentConfig.fileFormat, 
-      app: app 
+    state.parquetWriter = new ParquetWriter({
+      format: state.currentConfig.fileFormat,
+      app: app,
     });
 
     // Initialize S3 client if enabled
     if (state.currentConfig.s3Upload.enabled && S3Client) {
       try {
         const s3Config: any = {
-          region: state.currentConfig.s3Upload.region || 'us-east-1'
+          region: state.currentConfig.s3Upload.region || 'us-east-1',
         };
-        
+
         // Add credentials if provided
-        if (state.currentConfig.s3Upload.accessKeyId && state.currentConfig.s3Upload.secretAccessKey) {
+        if (
+          state.currentConfig.s3Upload.accessKeyId &&
+          state.currentConfig.s3Upload.secretAccessKey
+        ) {
           s3Config.credentials = {
             accessKeyId: state.currentConfig.s3Upload.accessKeyId,
-            secretAccessKey: state.currentConfig.s3Upload.secretAccessKey
+            secretAccessKey: state.currentConfig.s3Upload.secretAccessKey,
           };
         }
-        
+
         state.s3Client = new S3Client(s3Config);
-        app.debug('S3 client initialized for bucket:', state.currentConfig.s3Upload.bucket);
+        app.debug(
+          'S3 client initialized for bucket:',
+          state.currentConfig.s3Upload.bucket
+        );
       } catch (error) {
         app.debug('Error initializing S3 client:', error);
         state.s3Client = undefined;
@@ -209,7 +233,7 @@ export = function(app: SignalKApp): SignalKPlugin {
 
     // Initialize command state
     initializeCommandState();
-    
+
     // Subscribe to data paths based on initial regimen states
     updateDataSubscriptions(state.currentConfig);
 
@@ -220,26 +244,41 @@ export = function(app: SignalKApp): SignalKPlugin {
 
     // Set up daily consolidation (run at midnight UTC)
     const now = new Date();
-    const nextMidnightUTC = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1, 0, 0, 0, 0));
+    const nextMidnightUTC = new Date(
+      Date.UTC(
+        now.getUTCFullYear(),
+        now.getUTCMonth(),
+        now.getUTCDate() + 1,
+        0,
+        0,
+        0,
+        0
+      )
+    );
     const msUntilMidnightUTC = nextMidnightUTC.getTime() - now.getTime();
-    
-    app.debug(`Next consolidation at ${nextMidnightUTC.toISOString()} (in ${Math.round(msUntilMidnightUTC / 1000 / 60)} minutes)`);
-    
+
+    app.debug(
+      `Next consolidation at ${nextMidnightUTC.toISOString()} (in ${Math.round(msUntilMidnightUTC / 1000 / 60)} minutes)`
+    );
+
     setTimeout(() => {
       consolidateYesterday(state.currentConfig!);
-      
+
       // Then run daily consolidation every 24 hours
-      state.consolidationInterval = setInterval(() => {
-        consolidateYesterday(state.currentConfig!);
-      }, 24 * 60 * 60 * 1000);
+      state.consolidationInterval = setInterval(
+        () => {
+          consolidateYesterday(state.currentConfig!);
+        },
+        24 * 60 * 60 * 1000
+      );
     }, msUntilMidnightUTC);
 
     app.debug('Started');
   };
 
-  plugin.stop = function(): void {
+  plugin.stop = function (): void {
     app.debug('Stopping...');
-    
+
     // Clear intervals
     if (state.saveInterval) {
       clearInterval(state.saveInterval);
@@ -258,7 +297,7 @@ export = function(app: SignalKApp): SignalKPlugin {
       }
     });
     state.unsubscribes = [];
-    
+
     // Clear data structures
     state.dataBuffers.clear();
     state.activeRegimens.clear();
@@ -266,7 +305,7 @@ export = function(app: SignalKApp): SignalKPlugin {
   };
 
   // Command Management Functions
-  
+
   // Initialize command state on plugin start
   function initializeCommandState(): void {
     // Clear existing command state
@@ -275,11 +314,16 @@ export = function(app: SignalKApp): SignalKPlugin {
 
     // Re-register commands from configuration
     currentCommands.forEach((commandConfig: CommandConfig) => {
-      const result = registerCommand(commandConfig.command, commandConfig.description);
+      const result = registerCommand(
+        commandConfig.command,
+        commandConfig.description
+      );
       if (result.state === 'COMPLETED') {
         app.debug(`✅ Restored command: ${commandConfig.command}`);
       } else {
-        app.error(`❌ Failed to restore command: ${commandConfig.command} - ${result.message}`);
+        app.error(
+          `❌ Failed to restore command: ${commandConfig.command} - ${result.message}`
+        );
       }
     });
 
@@ -288,19 +332,25 @@ export = function(app: SignalKApp): SignalKPlugin {
       initializeCommandValue(commandConfig.command, false);
     });
 
-    app.debug(`🎮 Command state initialized with ${currentCommands.length} commands`);
+    app.debug(
+      `🎮 Command state initialized with ${currentCommands.length} commands`
+    );
   }
 
   // Command registration with full type safety
-  function registerCommand(commandName: string, description?: string): CommandExecutionResult {
+  function registerCommand(
+    commandName: string,
+    description?: string
+  ): CommandExecutionResult {
     try {
       // Validate command name
       if (!isValidCommandName(commandName)) {
         return {
           state: 'FAILED',
           statusCode: 400,
-          message: 'Invalid command name. Use alphanumeric characters and underscores only.',
-          timestamp: new Date().toISOString()
+          message:
+            'Invalid command name. Use alphanumeric characters and underscores only.',
+          timestamp: new Date().toISOString(),
         };
       }
 
@@ -310,7 +360,7 @@ export = function(app: SignalKApp): SignalKPlugin {
           state: 'FAILED',
           statusCode: 409,
           message: `Command '${commandName}' already registered`,
-          timestamp: new Date().toISOString()
+          timestamp: new Date().toISOString(),
         };
       }
 
@@ -324,7 +374,7 @@ export = function(app: SignalKApp): SignalKPlugin {
         registered: new Date().toISOString(),
         description: description || `Command: ${commandName}`,
         active: false,
-        lastExecuted: undefined
+        lastExecuted: undefined,
       };
 
       // Create PUT handler with proper typing
@@ -334,7 +384,10 @@ export = function(app: SignalKApp): SignalKPlugin {
         value: any,
         callback?: (result: CommandExecutionResult) => void
       ): CommandExecutionResult => {
-        app.debug(`Handling PUT for commands.${commandName} with value:`, value);
+        app.debug(
+          `Handling PUT for commands.${commandName} with value:`,
+          value
+        );
         return executeCommand(commandName, Boolean(value));
       };
 
@@ -366,18 +419,17 @@ export = function(app: SignalKApp): SignalKPlugin {
         state: 'COMPLETED',
         statusCode: 200,
         message: `Command '${commandName}' registered successfully`,
-        timestamp: new Date().toISOString()
+        timestamp: new Date().toISOString(),
       };
-
     } catch (error) {
       const errorMessage = `Failed to register command '${commandName}': ${error}`;
       app.error(errorMessage);
-      
+
       return {
         state: 'FAILED',
         statusCode: 500,
         message: errorMessage,
-        timestamp: new Date().toISOString()
+        timestamp: new Date().toISOString(),
       };
     }
   }
@@ -391,7 +443,7 @@ export = function(app: SignalKApp): SignalKPlugin {
           state: 'FAILED',
           statusCode: 404,
           message: `Command '${commandName}' not found`,
-          timestamp: new Date().toISOString()
+          timestamp: new Date().toISOString(),
         };
       }
 
@@ -412,24 +464,26 @@ export = function(app: SignalKApp): SignalKPlugin {
         state: 'COMPLETED',
         statusCode: 200,
         message: `Command '${commandName}' unregistered successfully`,
-        timestamp: new Date().toISOString()
+        timestamp: new Date().toISOString(),
       };
-
     } catch (error) {
       const errorMessage = `Failed to unregister command '${commandName}': ${error}`;
       app.error(errorMessage);
-      
+
       return {
         state: 'FAILED',
         statusCode: 500,
         message: errorMessage,
-        timestamp: new Date().toISOString()
+        timestamp: new Date().toISOString(),
       };
     }
   }
 
   // Command execution with full type safety
-  function executeCommand(commandName: string, value: boolean): CommandExecutionResult {
+  function executeCommand(
+    commandName: string,
+    value: boolean
+  ): CommandExecutionResult {
     try {
       const commandConfig = commandState.registeredCommands.get(commandName);
       if (!commandConfig) {
@@ -437,7 +491,7 @@ export = function(app: SignalKApp): SignalKPlugin {
           state: 'FAILED',
           statusCode: 404,
           message: `Command '${commandName}' not found`,
-          timestamp: new Date().toISOString()
+          timestamp: new Date().toISOString(),
         };
       }
 
@@ -445,17 +499,21 @@ export = function(app: SignalKApp): SignalKPlugin {
       const timestamp = new Date().toISOString();
       const delta: SignalKDelta = {
         context: 'vessels.self',
-        updates: [{
-          source: {
-            label: 'signalk-parquet-commands',
-            type: 'plugin'
+        updates: [
+          {
+            source: {
+              label: 'signalk-parquet-commands',
+              type: 'plugin',
+            },
+            timestamp,
+            values: [
+              {
+                path: `commands.${commandName}`,
+                value: value,
+              },
+            ],
           },
-          timestamp,
-          values: [{
-            path: `commands.${commandName}`,
-            value: value
-          }]
-        }]
+        ],
       };
 
       // Send delta message
@@ -479,20 +537,25 @@ export = function(app: SignalKApp): SignalKPlugin {
         state: 'COMPLETED',
         statusCode: 200,
         message: `Command '${commandName}' executed: ${value}`,
-        timestamp: timestamp
+        timestamp: timestamp,
       };
-
     } catch (error) {
       const errorMessage = `Failed to execute command '${commandName}': ${error}`;
       app.error(errorMessage);
-      
-      addCommandHistoryEntry(commandName, 'EXECUTE', value, false, errorMessage);
-      
+
+      addCommandHistoryEntry(
+        commandName,
+        'EXECUTE',
+        value,
+        false,
+        errorMessage
+      );
+
       return {
         state: 'FAILED',
         statusCode: 500,
         message: errorMessage,
-        timestamp: new Date().toISOString()
+        timestamp: new Date().toISOString(),
       };
     }
   }
@@ -500,24 +563,32 @@ export = function(app: SignalKApp): SignalKPlugin {
   // Helper functions with type safety
   function isValidCommandName(commandName: string): boolean {
     const validPattern = /^[a-zA-Z0-9_]+$/;
-    return validPattern.test(commandName) && commandName.length > 0 && commandName.length <= 50;
+    return (
+      validPattern.test(commandName) &&
+      commandName.length > 0 &&
+      commandName.length <= 50
+    );
   }
 
   function initializeCommandValue(commandName: string, value: boolean): void {
     const timestamp = new Date().toISOString();
     const delta: SignalKDelta = {
       context: 'vessels.self',
-      updates: [{
-        source: {
-          label: 'signalk-parquet-commands',
-          type: 'plugin'
+      updates: [
+        {
+          source: {
+            label: 'signalk-parquet-commands',
+            type: 'plugin',
+          },
+          timestamp,
+          values: [
+            {
+              path: `commands.${commandName}`,
+              value,
+            },
+          ],
         },
-        timestamp,
-        values: [{
-          path: `commands.${commandName}`,
-          value
-        }]
-      }]
+      ],
     };
 
     app.handleMessage('signalk-parquet', delta);
@@ -536,22 +607,25 @@ export = function(app: SignalKApp): SignalKPlugin {
       value,
       timestamp: new Date().toISOString(),
       success,
-      error
+      error,
     };
 
     commandHistory.push(entry);
-    
+
     // Keep only last 100 entries
     if (commandHistory.length > 100) {
       commandHistory = commandHistory.slice(-100);
     }
   }
 
-
   // Subscribe to command paths that control regimens using proper subscription manager
   function subscribeToCommandPaths(config: PluginConfig): void {
-    const commandPaths = currentPaths.filter((pathConfig: PathConfig) => 
-      pathConfig && pathConfig.path && pathConfig.path.startsWith('commands.') && pathConfig.enabled
+    const commandPaths = currentPaths.filter(
+      (pathConfig: PathConfig) =>
+        pathConfig &&
+        pathConfig.path &&
+        pathConfig.path.startsWith('commands.') &&
+        pathConfig.enabled
     );
 
     if (commandPaths.length === 0) return;
@@ -560,11 +634,13 @@ export = function(app: SignalKApp): SignalKPlugin {
       context: 'vessels.self',
       subscribe: commandPaths.map((pathConfig: PathConfig) => ({
         path: pathConfig.path,
-        period: 1000  // Check commands every second
-      }))
+        period: 1000, // Check commands every second
+      })),
     };
 
-    app.debug(`Subscribing to ${commandPaths.length} command paths via subscription manager`);
+    app.debug(
+      `Subscribing to ${commandPaths.length} command paths via subscription manager`
+    );
 
     app.subscriptionmanager.subscribe(
       commandSubscription,
@@ -578,7 +654,9 @@ export = function(app: SignalKApp): SignalKPlugin {
           delta.updates.forEach((update: SignalKUpdate) => {
             if (update.values) {
               update.values.forEach((valueUpdate: SignalKValue) => {
-                const pathConfig = commandPaths.find(p => p.path === valueUpdate.path);
+                const pathConfig = commandPaths.find(
+                  p => p.path === valueUpdate.path
+                );
                 if (pathConfig) {
                   handleCommandMessage(valueUpdate, pathConfig, config, update);
                 }
@@ -595,52 +673,75 @@ export = function(app: SignalKApp): SignalKPlugin {
   }
 
   // Handle command messages (regimen control) - now receives complete delta structure
-  function handleCommandMessage(valueUpdate: SignalKValue, pathConfig: PathConfig, config: PluginConfig, update: SignalKUpdate): void {
+  function handleCommandMessage(
+    valueUpdate: SignalKValue,
+    pathConfig: PathConfig,
+    config: PluginConfig,
+    update: SignalKUpdate
+  ): void {
     try {
-      app.debug(`📦 Received command update for ${pathConfig.path}:`, JSON.stringify(valueUpdate, null, 2));
-      
+      app.debug(
+        `📦 Received command update for ${pathConfig.path}:`,
+        JSON.stringify(valueUpdate, null, 2)
+      );
+
       // Check source filter if specified for commands too
       if (pathConfig.source && pathConfig.source.trim() !== '') {
-        const messageSource = update.$source || (update.source ? update.source.label : null);
+        const messageSource =
+          update.$source || (update.source ? update.source.label : null);
         if (messageSource !== pathConfig.source.trim()) {
-          app.debug(`🚫 Command from source "${messageSource}" filtered out (expecting "${pathConfig.source.trim()}")`);
+          app.debug(
+            `🚫 Command from source "${messageSource}" filtered out (expecting "${pathConfig.source.trim()}")`
+          );
           return;
         }
       }
-      
+
       if (valueUpdate.value !== undefined) {
         const commandName = extractCommandName(pathConfig.path);
         const isActive = Boolean(valueUpdate.value);
-        
-        app.debug(`Command ${commandName}: ${isActive ? 'ACTIVE' : 'INACTIVE'}`);
-        
+
+        app.debug(
+          `Command ${commandName}: ${isActive ? 'ACTIVE' : 'INACTIVE'}`
+        );
+
         if (isActive) {
           state.activeRegimens.add(commandName);
         } else {
           state.activeRegimens.delete(commandName);
         }
-        
+
         // Debug active regimens state
-        app.debug(`🎯 Active regimens: [${Array.from(state.activeRegimens).join(', ')}]`);
-        
+        app.debug(
+          `🎯 Active regimens: [${Array.from(state.activeRegimens).join(', ')}]`
+        );
+
         // Update data subscriptions based on new regimen state
         updateDataSubscriptions(config);
-        
+
         // Buffer this command change with complete metadata
         const bufferKey = `${pathConfig.context || 'vessels.self'}:${pathConfig.path}`;
-        bufferData(bufferKey, {
-          received_timestamp: new Date().toISOString(),
-          signalk_timestamp: update.timestamp,
-          context: 'vessels.self',
-          path: valueUpdate.path,
-          value: valueUpdate.value,
-          source: update.source ? JSON.stringify(update.source) : undefined,
-          source_label: update.$source || (update.source ? update.source.label : undefined),
-          source_type: update.source ? update.source.type : undefined,
-          source_pgn: update.source ? update.source.pgn : undefined,
-          source_src: update.source ? update.source.src : undefined,
-          meta: valueUpdate.meta ? JSON.stringify(valueUpdate.meta) : undefined
-        }, config);
+        bufferData(
+          bufferKey,
+          {
+            received_timestamp: new Date().toISOString(),
+            signalk_timestamp: update.timestamp,
+            context: 'vessels.self',
+            path: valueUpdate.path,
+            value: valueUpdate.value,
+            source: update.source ? JSON.stringify(update.source) : undefined,
+            source_label:
+              update.$source ||
+              (update.source ? update.source.label : undefined),
+            source_type: update.source ? update.source.type : undefined,
+            source_pgn: update.source ? update.source.pgn : undefined,
+            source_src: update.source ? update.source.src : undefined,
+            meta: valueUpdate.meta
+              ? JSON.stringify(valueUpdate.meta)
+              : undefined,
+          },
+          config
+        );
       }
     } catch (error) {
       app.debug('Error handling command message:', error);
@@ -664,12 +765,17 @@ export = function(app: SignalKApp): SignalKPlugin {
     subscribeToCommandPaths(config);
 
     // Now subscribe to data paths using currentPaths
-    const dataPaths = currentPaths.filter((pathConfig: PathConfig) => 
-      pathConfig && pathConfig.path && !pathConfig.path.startsWith('commands.')
+    const dataPaths = currentPaths.filter(
+      (pathConfig: PathConfig) =>
+        pathConfig &&
+        pathConfig.path &&
+        !pathConfig.path.startsWith('commands.')
     );
 
-    const shouldSubscribePaths = dataPaths.filter((pathConfig: PathConfig) => shouldSubscribeToPath(pathConfig));
-    
+    const shouldSubscribePaths = dataPaths.filter((pathConfig: PathConfig) =>
+      shouldSubscribeToPath(pathConfig)
+    );
+
     if (shouldSubscribePaths.length === 0) {
       app.debug('No data paths need subscription currently');
       return;
@@ -691,17 +797,22 @@ export = function(app: SignalKApp): SignalKPlugin {
         context: context,
         subscribe: pathConfigs.map(pathConfig => ({
           path: pathConfig.path,
-          period: 1000  // Get updates every second max
-        }))
+          period: 1000, // Get updates every second max
+        })),
       };
 
-      app.debug(`Subscribing to ${pathConfigs.length} data paths for context ${context}`);
+      app.debug(
+        `Subscribing to ${pathConfigs.length} data paths for context ${context}`
+      );
 
       app.subscriptionmanager.subscribe(
         dataSubscription,
         state.unsubscribes,
         (subscriptionError: any) => {
-          app.debug(`Data subscription error for ${context}:`, subscriptionError);
+          app.debug(
+            `Data subscription error for ${context}:`,
+            subscriptionError
+          );
         },
         (delta: SignalKDelta) => {
           // Process each update in the delta
@@ -709,9 +820,17 @@ export = function(app: SignalKApp): SignalKPlugin {
             delta.updates.forEach((update: SignalKUpdate) => {
               if (update.values) {
                 update.values.forEach((valueUpdate: SignalKValue) => {
-                  const pathConfig = pathConfigs.find((p: PathConfig) => p.path === valueUpdate.path);
+                  const pathConfig = pathConfigs.find(
+                    (p: PathConfig) => p.path === valueUpdate.path
+                  );
                   if (pathConfig) {
-                    handleDataMessage(valueUpdate, pathConfig, config, update, delta);
+                    handleDataMessage(
+                      valueUpdate,
+                      pathConfig,
+                      config,
+                      update,
+                      delta
+                    );
                   }
                 });
               }
@@ -737,17 +856,29 @@ export = function(app: SignalKApp): SignalKPlugin {
     // Check if any required regimens are active
     if (pathConfig.regimen) {
       const requiredRegimens = pathConfig.regimen.split(',').map(r => r.trim());
-      const hasActiveRegimen = requiredRegimens.some(regimen => state.activeRegimens.has(regimen));
-      app.debug(`🔍 Path ${pathConfig.path} requires regimens [${requiredRegimens.join(', ')}], active: [${Array.from(state.activeRegimens).join(', ')}] → ${hasActiveRegimen ? 'SUBSCRIBE' : 'SKIP'}`);
+      const hasActiveRegimen = requiredRegimens.some(regimen =>
+        state.activeRegimens.has(regimen)
+      );
+      app.debug(
+        `🔍 Path ${pathConfig.path} requires regimens [${requiredRegimens.join(', ')}], active: [${Array.from(state.activeRegimens).join(', ')}] → ${hasActiveRegimen ? 'SUBSCRIBE' : 'SKIP'}`
+      );
       return hasActiveRegimen;
     }
 
-    app.debug(`❌ Path ${pathConfig.path} has no regimen control and not enabled`);
+    app.debug(
+      `❌ Path ${pathConfig.path} has no regimen control and not enabled`
+    );
     return false;
   }
 
   // Handle data messages from SignalK - now receives complete delta structure
-  function handleDataMessage(valueUpdate: SignalKValue, pathConfig: PathConfig, config: PluginConfig, update: SignalKUpdate, delta: SignalKDelta): void {
+  function handleDataMessage(
+    valueUpdate: SignalKValue,
+    pathConfig: PathConfig,
+    config: PluginConfig,
+    update: SignalKUpdate,
+    delta: SignalKDelta
+  ): void {
     try {
       // Check if we should still process this path
       if (!shouldSubscribeToPath(pathConfig)) {
@@ -756,7 +887,8 @@ export = function(app: SignalKApp): SignalKPlugin {
 
       // Check source filter if specified
       if (pathConfig.source && pathConfig.source.trim() !== '') {
-        const messageSource = update.$source || (update.source ? update.source.label : null);
+        const messageSource =
+          update.$source || (update.source ? update.source.label : null);
         if (messageSource !== pathConfig.source.trim()) {
           // Source doesn't match filter, skip this message
           return;
@@ -771,20 +903,25 @@ export = function(app: SignalKApp): SignalKPlugin {
         value: null,
         value_json: undefined,
         source: update.source ? JSON.stringify(update.source) : undefined,
-        source_label: update.$source || (update.source ? update.source.label : undefined),
+        source_label:
+          update.$source || (update.source ? update.source.label : undefined),
         source_type: update.source ? update.source.type : undefined,
         source_pgn: update.source ? update.source.pgn : undefined,
         source_src: update.source ? update.source.src : undefined,
-        meta: valueUpdate.meta ? JSON.stringify(valueUpdate.meta) : undefined
+        meta: valueUpdate.meta ? JSON.stringify(valueUpdate.meta) : undefined,
       };
 
       // Handle different value types (matching Python logic)
       if (typeof valueUpdate.value === 'object' && valueUpdate.value !== null) {
         record.value_json = JSON.stringify(valueUpdate.value);
-        
+
         // Flatten object properties for easier querying
         for (const [key, val] of Object.entries(valueUpdate.value)) {
-          if (typeof val === 'string' || typeof val === 'number' || typeof val === 'boolean') {
+          if (
+            typeof val === 'string' ||
+            typeof val === 'number' ||
+            typeof val === 'boolean'
+          ) {
             (record as any)[`value_${key}`] = val;
           }
         }
@@ -793,33 +930,41 @@ export = function(app: SignalKApp): SignalKPlugin {
       }
 
       // Use actual context + path as buffer key to separate data from different vessels
-      const actualContext = delta.context || pathConfig.context || 'vessels.self';
-      
+      const actualContext =
+        delta.context || pathConfig.context || 'vessels.self';
+
       const bufferKey = `${actualContext}:${pathConfig.path}`;
       bufferData(bufferKey, record, config);
-
     } catch (error) {
       app.debug('Error handling data message:', error);
     }
   }
 
   // Buffer data and trigger save if buffer is full
-  function bufferData(signalkPath: string, record: DataRecord, config: PluginConfig): void {
+  function bufferData(
+    signalkPath: string,
+    record: DataRecord,
+    config: PluginConfig
+  ): void {
     if (!state.dataBuffers.has(signalkPath)) {
       state.dataBuffers.set(signalkPath, []);
       app.debug(`🆕 Created new buffer for path: ${signalkPath}`);
     }
-    
+
     const buffer = state.dataBuffers.get(signalkPath)!;
     buffer.push(record);
-    
+
     // Debug every 100 records to show buffer growth
     if (buffer.length % 100 === 0) {
-      app.debug(`📊 Buffer for ${signalkPath}: ${buffer.length}/${config.bufferSize} records`);
+      app.debug(
+        `📊 Buffer for ${signalkPath}: ${buffer.length}/${config.bufferSize} records`
+      );
     }
-    
+
     if (buffer.length >= config.bufferSize) {
-      app.debug(`🚀 Buffer full for ${signalkPath} (${buffer.length} records) - triggering save`);
+      app.debug(
+        `🚀 Buffer full for ${signalkPath} (${buffer.length} records) - triggering save`
+      );
       // Extract the actual SignalK path from the buffer key (context:path format)
       // Find the separator between context and path - look for the last colon followed by a valid SignalK path
       const pathMatch = signalkPath.match(/^.*:([a-zA-Z][a-zA-Z0-9._]*)$/);
@@ -835,12 +980,14 @@ export = function(app: SignalKApp): SignalKPlugin {
     const totalBuffers = state.dataBuffers.size;
     let buffersWithData = 0;
     let totalRecords = 0;
-    
+
     state.dataBuffers.forEach((buffer, signalkPath) => {
       if (buffer.length > 0) {
         buffersWithData++;
         totalRecords += buffer.length;
-        app.debug(`⏰ Periodic save for ${signalkPath}: ${buffer.length} records`);
+        app.debug(
+          `⏰ Periodic save for ${signalkPath}: ${buffer.length} records`
+        );
         // Extract the actual SignalK path from the buffer key (context:path format)
         // Find the separator between context and path - look for the last colon followed by a valid SignalK path
         const pathMatch = signalkPath.match(/^.*:([a-zA-Z][a-zA-Z0-9._]*)$/);
@@ -849,18 +996,24 @@ export = function(app: SignalKApp): SignalKPlugin {
         state.dataBuffers.set(signalkPath, []); // Clear buffer
       }
     });
-    
+
     if (buffersWithData > 0) {
-      app.debug(`💾 Periodic save completed: ${buffersWithData}/${totalBuffers} paths, ${totalRecords} total records`);
+      app.debug(
+        `💾 Periodic save completed: ${buffersWithData}/${totalBuffers} paths, ${totalRecords} total records`
+      );
     }
   }
 
   // Save buffer to Parquet file
-  async function saveBufferToParquet(signalkPath: string, buffer: DataRecord[], config: PluginConfig): Promise<void> {
+  async function saveBufferToParquet(
+    signalkPath: string,
+    buffer: DataRecord[],
+    config: PluginConfig
+  ): Promise<void> {
     try {
       // Get context from first record in buffer (all records in buffer have same path/context)
       const context = buffer.length > 0 ? buffer[0].context : 'vessels.self';
-      
+
       // Create proper directory structure
       let contextPath: string;
       if (context === 'vessels.self') {
@@ -871,33 +1024,49 @@ export = function(app: SignalKApp): SignalKPlugin {
         const vesselId = context.replace('vessels.', '').replace(/:/g, '_');
         contextPath = `vessels/${vesselId}`;
       } else if (context.startsWith('meteo.')) {
-        // Extract meteo station identifier and clean it for filesystem  
+        // Extract meteo station identifier and clean it for filesystem
         const meteoId = context.replace('meteo.', '').replace(/:/g, '_');
         contextPath = `meteo/${meteoId}`;
       } else {
         // Fallback: clean the entire context
         contextPath = context.replace(/:/g, '_').replace(/\./g, '/');
       }
-      
-      const dirPath = path.join(config.outputDirectory, contextPath, signalkPath.replace(/\./g, '/'));
+
+      const dirPath = path.join(
+        config.outputDirectory,
+        contextPath,
+        signalkPath.replace(/\./g, '/')
+      );
       await fs.ensureDir(dirPath);
-      
+
       // Generate filename with timestamp
-      const timestamp = new Date().toISOString().replace(/[:.]/g, '').slice(0, 15);
-      const fileExt = config.fileFormat === 'csv' ? 'csv' : (config.fileFormat === 'parquet' ? 'parquet' : 'json');
+      const timestamp = new Date()
+        .toISOString()
+        .replace(/[:.]/g, '')
+        .slice(0, 15);
+      const fileExt =
+        config.fileFormat === 'csv'
+          ? 'csv'
+          : config.fileFormat === 'parquet'
+            ? 'parquet'
+            : 'json';
       const filename = `${config.filenamePrefix}_${timestamp}.${fileExt}`;
       const filepath = path.join(dirPath, filename);
-      
+
       // Use ParquetWriter to save in the configured format
-      const savedPath = await state.parquetWriter!.writeRecords(filepath, buffer);
-      
-      app.debug(`💾 Saved ${buffer.length} records to ${path.basename(savedPath)} for path: ${signalkPath}`);
-      
+      const savedPath = await state.parquetWriter!.writeRecords(
+        filepath,
+        buffer
+      );
+
+      app.debug(
+        `💾 Saved ${buffer.length} records to ${path.basename(savedPath)} for path: ${signalkPath}`
+      );
+
       // Upload to S3 if enabled and timing is real-time
       if (config.s3Upload.enabled && config.s3Upload.timing === 'realtime') {
         await uploadToS3(savedPath, config);
       }
-      
     } catch (error) {
       app.debug(`❌ Error saving buffer for ${signalkPath}:`, error);
     }
@@ -908,18 +1077,23 @@ export = function(app: SignalKApp): SignalKPlugin {
     try {
       const yesterday = new Date();
       yesterday.setUTCDate(yesterday.getUTCDate() - 1);
-      
+
       const consolidatedCount = await state.parquetWriter!.consolidateDaily(
-        config.outputDirectory, 
-        yesterday, 
+        config.outputDirectory,
+        yesterday,
         config.filenamePrefix
       );
-      
+
       if (consolidatedCount > 0) {
-        app.debug(`Consolidated ${consolidatedCount} topic directories for ${yesterday.toISOString().split('T')[0]}`);
-        
+        app.debug(
+          `Consolidated ${consolidatedCount} topic directories for ${yesterday.toISOString().split('T')[0]}`
+        );
+
         // Upload consolidated files to S3 if enabled and timing is consolidation
-        if (config.s3Upload.enabled && config.s3Upload.timing === 'consolidation') {
+        if (
+          config.s3Upload.enabled &&
+          config.s3Upload.timing === 'consolidation'
+        ) {
           await uploadConsolidatedFilesToS3(config, yesterday);
         }
       }
@@ -929,26 +1103,30 @@ export = function(app: SignalKApp): SignalKPlugin {
   }
 
   // Upload consolidated files to S3
-  async function uploadConsolidatedFilesToS3(config: PluginConfig, date: Date): Promise<void> {
+  async function uploadConsolidatedFilesToS3(
+    config: PluginConfig,
+    date: Date
+  ): Promise<void> {
     try {
       const dateStr = date.toISOString().split('T')[0];
       const consolidatedPattern = `**/*_${dateStr}_consolidated.parquet`;
-      
+
       // Find all consolidated files for the date
       const { glob } = require('glob');
       const consolidatedFiles = await glob(consolidatedPattern, {
         cwd: config.outputDirectory,
         absolute: true,
-        nodir: true
+        nodir: true,
       });
-      
-      app.debug(`Found ${consolidatedFiles.length} consolidated files to upload for ${dateStr}`);
-      
+
+      app.debug(
+        `Found ${consolidatedFiles.length} consolidated files to upload for ${dateStr}`
+      );
+
       // Upload each consolidated file
       for (const filePath of consolidatedFiles) {
         await uploadToS3(filePath, config);
       }
-      
     } catch (error) {
       app.debug('Error uploading consolidated files to S3:', error);
     }
@@ -956,40 +1134,55 @@ export = function(app: SignalKApp): SignalKPlugin {
 
   // Initialize regimen states from current API values at startup
   function initializeRegimenStates(config: PluginConfig): void {
-    const commandPaths = currentPaths.filter((pathConfig: PathConfig) => 
-      pathConfig && pathConfig.path && pathConfig.path.startsWith('commands.') && pathConfig.enabled
+    const commandPaths = currentPaths.filter(
+      (pathConfig: PathConfig) =>
+        pathConfig &&
+        pathConfig.path &&
+        pathConfig.path.startsWith('commands.') &&
+        pathConfig.enabled
     );
 
-    app.debug(`🔍 Checking current command values for ${commandPaths.length} command paths at startup`);
+    app.debug(
+      `🔍 Checking current command values for ${commandPaths.length} command paths at startup`
+    );
 
     commandPaths.forEach((pathConfig: PathConfig) => {
       try {
         // Get current value from SignalK API
         const currentData = app.getSelfPath(pathConfig.path);
-        
+
         if (currentData !== undefined && currentData !== null) {
-          app.debug(`📋 Found current value for ${pathConfig.path}:`, currentData);
-          
+          app.debug(
+            `📋 Found current value for ${pathConfig.path}:`,
+            currentData
+          );
+
           // Check if there's source information
-          let shouldProcess = true;
-          
+          const shouldProcess = true;
+
           // If source filter is specified, check it
           if (pathConfig.source && pathConfig.source.trim() !== '') {
             // For startup, we need to check the API source info
             // This is a simplified check - in real deltas we get more source info
-            app.debug(`🔍 Source filter specified for ${pathConfig.path}: "${pathConfig.source.trim()}"`);
-            
+            app.debug(
+              `🔍 Source filter specified for ${pathConfig.path}: "${pathConfig.source.trim()}"`
+            );
+
             // For now, we'll process the value if it exists and log a warning
             // In practice, you might want to check the source here too
-            app.debug(`⚠️  Startup value processed without source verification for ${pathConfig.path}`);
+            app.debug(
+              `⚠️  Startup value processed without source verification for ${pathConfig.path}`
+            );
           }
-          
+
           if (shouldProcess && currentData.value !== undefined) {
             const commandName = extractCommandName(pathConfig.path);
             const isActive = Boolean(currentData.value);
-            
-            app.debug(`🚀 Startup: Command ${commandName}: ${isActive ? 'ACTIVE' : 'INACTIVE'}`);
-            
+
+            app.debug(
+              `🚀 Startup: Command ${commandName}: ${isActive ? 'ACTIVE' : 'INACTIVE'}`
+            );
+
             if (isActive) {
               state.activeRegimens.add(commandName);
             } else {
@@ -1000,11 +1193,16 @@ export = function(app: SignalKApp): SignalKPlugin {
           app.debug(`📭 No current value found for ${pathConfig.path}`);
         }
       } catch (error) {
-        app.debug(`❌ Error checking startup value for ${pathConfig.path}:`, error);
+        app.debug(
+          `❌ Error checking startup value for ${pathConfig.path}:`,
+          error
+        );
       }
     });
 
-    app.debug(`🎯 Startup regimens initialized: [${Array.from(state.activeRegimens).join(', ')}]`);
+    app.debug(
+      `🎯 Startup regimens initialized: [${Array.from(state.activeRegimens).join(', ')}]`
+    );
   }
 
   // Helper functions
@@ -1015,7 +1213,10 @@ export = function(app: SignalKApp): SignalKPlugin {
   }
 
   // S3 upload function
-  async function uploadToS3(filePath: string, config: PluginConfig): Promise<boolean> {
+  async function uploadToS3(
+    filePath: string,
+    config: PluginConfig
+  ): Promise<boolean> {
     if (!config.s3Upload.enabled || !state.s3Client || !PutObjectCommand) {
       return false;
     }
@@ -1023,13 +1224,13 @@ export = function(app: SignalKApp): SignalKPlugin {
     try {
       // Read the file
       const fileContent = await fs.readFile(filePath);
-      
+
       // Generate S3 key
       const relativePath = path.relative(config.outputDirectory, filePath);
       let s3Key = relativePath;
       if (config.s3Upload.keyPrefix) {
-        const prefix = config.s3Upload.keyPrefix.endsWith('/') 
-          ? config.s3Upload.keyPrefix 
+        const prefix = config.s3Upload.keyPrefix.endsWith('/')
+          ? config.s3Upload.keyPrefix
           : `${config.s3Upload.keyPrefix}/`;
         s3Key = `${prefix}${relativePath}`;
       }
@@ -1039,7 +1240,9 @@ export = function(app: SignalKApp): SignalKPlugin {
         Bucket: config.s3Upload.bucket,
         Key: s3Key,
         Body: fileContent,
-        ContentType: filePath.endsWith('.parquet') ? 'application/octet-stream' : 'application/json'
+        ContentType: filePath.endsWith('.parquet')
+          ? 'application/octet-stream'
+          : 'application/json',
       });
 
       await state.s3Client.send(command);
@@ -1067,34 +1270,35 @@ export = function(app: SignalKApp): SignalKPlugin {
         description: 'Number of records to buffer before writing to file',
         default: 1000,
         minimum: 10,
-        maximum: 10000
+        maximum: 10000,
       },
       saveIntervalSeconds: {
-        type: 'number', 
+        type: 'number',
         title: 'Save Interval (seconds)',
         description: 'How often to save buffered data to files',
         default: 30,
         minimum: 5,
-        maximum: 300
+        maximum: 300,
       },
       outputDirectory: {
         type: 'string',
         title: 'Output Directory',
-        description: 'Directory to save data files (defaults to application_data/{vessel}/signalk-parquet)',
-        default: ''
+        description:
+          'Directory to save data files (defaults to application_data/{vessel}/signalk-parquet)',
+        default: '',
       },
       filenamePrefix: {
         type: 'string',
-        title: 'Filename Prefix', 
+        title: 'Filename Prefix',
         description: 'Prefix for generated filenames',
-        default: 'signalk_data'
+        default: 'signalk_data',
       },
       fileFormat: {
         type: 'string',
         title: 'File Format',
         description: 'Format for saved data files',
         enum: ['json', 'csv', 'parquet'],
-        default: 'parquet'
+        default: 'parquet',
       },
       retentionDays: {
         type: 'number',
@@ -1102,7 +1306,7 @@ export = function(app: SignalKApp): SignalKPlugin {
         description: 'Days to keep processed files',
         default: 7,
         minimum: 1,
-        maximum: 365
+        maximum: 365,
       },
       s3Upload: {
         type: 'object',
@@ -1113,61 +1317,67 @@ export = function(app: SignalKApp): SignalKPlugin {
             type: 'boolean',
             title: 'Enable S3 Upload',
             description: 'Enable uploading files to Amazon S3',
-            default: false
+            default: false,
           },
           timing: {
             type: 'string',
             title: 'Upload Timing',
             description: 'When to upload files to S3',
             enum: ['realtime', 'consolidation'],
-            enumNames: ['Real-time (after each file save)', 'At consolidation (daily)'],
-            default: 'consolidation'
+            enumNames: [
+              'Real-time (after each file save)',
+              'At consolidation (daily)',
+            ],
+            default: 'consolidation',
           },
           bucket: {
             type: 'string',
             title: 'S3 Bucket Name',
             description: 'Name of the S3 bucket to upload to',
-            default: ''
+            default: '',
           },
           region: {
             type: 'string',
             title: 'AWS Region',
             description: 'AWS region where the S3 bucket is located',
-            default: 'us-east-1'
+            default: 'us-east-1',
           },
           keyPrefix: {
             type: 'string',
             title: 'S3 Key Prefix',
-            description: 'Optional prefix for S3 object keys (e.g., "marine-data/")',
-            default: ''
+            description:
+              'Optional prefix for S3 object keys (e.g., "marine-data/")',
+            default: '',
           },
           accessKeyId: {
             type: 'string',
             title: 'AWS Access Key ID',
-            description: 'AWS Access Key ID (leave empty to use IAM role or environment variables)',
-            default: ''
+            description:
+              'AWS Access Key ID (leave empty to use IAM role or environment variables)',
+            default: '',
           },
           secretAccessKey: {
             type: 'string',
             title: 'AWS Secret Access Key',
-            description: 'AWS Secret Access Key (leave empty to use IAM role or environment variables)',
-            default: ''
+            description:
+              'AWS Secret Access Key (leave empty to use IAM role or environment variables)',
+            default: '',
           },
           deleteAfterUpload: {
             type: 'boolean',
             title: 'Delete Local Files After Upload',
             description: 'Delete local files after successful upload to S3',
-            default: false
-          }
-        }
-      }
-    }
+            default: false,
+          },
+        },
+      },
+    },
   };
 
   // Webapp static files and API routes
-  plugin.registerWithRouter = function(router: Router): void {
+  plugin.registerWithRouter = function (router: Router): void {
     const express = require('express');
-    
+
     // Serve static files from public directory
     const publicPath = path.join(__dirname, '../public');
     if (fs.existsSync(publicPath)) {
@@ -1185,680 +1395,802 @@ export = function(app: SignalKApp): SignalKPlugin {
     function getAvailablePaths(dataDir: string): PathInfo[] {
       const paths: PathInfo[] = [];
       // Clean the self context for filesystem usage (replace dots with slashes, colons with underscores)
-      const selfContextPath = app.selfContext.replace(/\./g, '/').replace(/:/g, '_');
+      const selfContextPath = app.selfContext
+        .replace(/\./g, '/')
+        .replace(/:/g, '_');
       const vesselsDir = path.join(dataDir, selfContextPath);
-      
+
       app.debug(`🔍 Looking for paths in vessel directory: ${vesselsDir}`);
-      app.debug(`📡 Using vessel context: ${app.selfContext} → ${selfContextPath}`);
-      
+      app.debug(
+        `📡 Using vessel context: ${app.selfContext} → ${selfContextPath}`
+      );
+
       if (!fs.existsSync(vesselsDir)) {
         app.debug(`❌ Vessel directory does not exist: ${vesselsDir}`);
         return paths;
       }
-      
+
       function walkPaths(currentPath: string, relativePath: string = ''): void {
         try {
-          app.debug(`🚶 Walking path: ${currentPath} (relative: ${relativePath})`);
+          app.debug(
+            `🚶 Walking path: ${currentPath} (relative: ${relativePath})`
+          );
           const items = fs.readdirSync(currentPath);
           items.forEach((item: string) => {
             const fullPath = path.join(currentPath, item);
             const stat = fs.statSync(fullPath);
-            
-            if (stat.isDirectory() && item !== 'processed' && item !== 'failed') {
-              const newRelativePath = relativePath ? `${relativePath}.${item}` : item;
-              
+
+            if (
+              stat.isDirectory() &&
+              item !== 'processed' &&
+              item !== 'failed'
+            ) {
+              const newRelativePath = relativePath
+                ? `${relativePath}.${item}`
+                : item;
+
               // Check if this directory has parquet files
-              const hasParquetFiles = fs.readdirSync(fullPath).some((file: string) => file.endsWith('.parquet'));
-              
+              const hasParquetFiles = fs
+                .readdirSync(fullPath)
+                .some((file: string) => file.endsWith('.parquet'));
+
               if (hasParquetFiles) {
-                const fileCount = fs.readdirSync(fullPath).filter((file: string) => file.endsWith('.parquet')).length;
-                app.debug(`✅ Found SignalK path with data: ${newRelativePath} (${fileCount} files)`);
+                const fileCount = fs
+                  .readdirSync(fullPath)
+                  .filter((file: string) => file.endsWith('.parquet')).length;
+                app.debug(
+                  `✅ Found SignalK path with data: ${newRelativePath} (${fileCount} files)`
+                );
                 paths.push({
                   path: newRelativePath,
                   directory: fullPath,
-                  fileCount: fileCount
+                  fileCount: fileCount,
                 });
               } else {
-                app.debug(`📁 Directory ${newRelativePath} has no parquet files`);
+                app.debug(
+                  `📁 Directory ${newRelativePath} has no parquet files`
+                );
               }
-              
+
               walkPaths(fullPath, newRelativePath);
             }
           });
         } catch (error) {
-          app.debug(`❌ Error reading directory ${currentPath}: ${(error as Error).message}`);
+          app.debug(
+            `❌ Error reading directory ${currentPath}: ${(error as Error).message}`
+          );
         }
       }
-      
+
       if (fs.existsSync(vesselsDir)) {
         walkPaths(vesselsDir);
       }
-      
-      app.debug(`📊 Path discovery complete: found ${paths.length} paths with data`);
+
+      app.debug(
+        `📊 Path discovery complete: found ${paths.length} paths with data`
+      );
       return paths;
     }
 
     // Get available SignalK paths
-    router.get('/api/paths', (_: TypedRequest, res: TypedResponse<PathsApiResponse>) => {
-      try {
-        const dataDir = getDataDir();
-        const paths = getAvailablePaths(dataDir);
-        
-        return res.json({
-          success: true,
-          dataDirectory: dataDir,
-          paths: paths
-        });
-      } catch (error) {
-        return res.status(500).json({
-          success: false,
-          error: (error as Error).message
-        });
+    router.get(
+      '/api/paths',
+      (_: TypedRequest, res: TypedResponse<PathsApiResponse>) => {
+        try {
+          const dataDir = getDataDir();
+          const paths = getAvailablePaths(dataDir);
+
+          return res.json({
+            success: true,
+            dataDirectory: dataDir,
+            paths: paths,
+          });
+        } catch (error) {
+          return res.status(500).json({
+            success: false,
+            error: (error as Error).message,
+          });
+        }
       }
-    });
+    );
 
     // Get files for a specific path
-    router.get('/api/files/:path(*)', (req: TypedRequest, res: TypedResponse<FilesApiResponse>) => {
-      try {
-        const dataDir = getDataDir();
-        const signalkPath = req.params.path;
-        const selfContextPath = app.selfContext.replace(/\./g, '/').replace(/:/g, '_');
-        const pathDir = path.join(dataDir, selfContextPath, signalkPath.replace(/\./g, '/'));
-        
-        if (!fs.existsSync(pathDir)) {
-          return res.status(404).json({
-            success: false,
-            error: `Path not found: ${signalkPath}`
-          });
-        }
-        
-        const files = fs.readdirSync(pathDir)
-          .filter((file: string) => file.endsWith('.parquet'))
-          .map((file: string) => {
-            const filePath = path.join(pathDir, file);
-            const stat = fs.statSync(filePath);
-            return {
-              name: file,
-              path: filePath,
-              size: stat.size,
-              modified: stat.mtime.toISOString()
-            };
-          })
-          .sort((a: any, b: any) => new Date(b.modified).getTime() - new Date(a.modified).getTime());
-        
-        return res.json({
-          success: true,
-          path: signalkPath,
-          directory: pathDir,
-          files: files
-        });
-      } catch (error) {
-        return res.status(500).json({
-          success: false,
-          error: (error as Error).message
-        });
-      }
-    });
-
-    // Get sample data from a specific file
-    router.get('/api/sample/:path(*)', async (req: TypedRequest, res: TypedResponse<SampleApiResponse>) => {
-      try {
-        if (!DuckDBInstance) {
-          return res.status(503).json({
-            success: false,
-            error: 'DuckDB not available'
-          });
-        }
-
-        const dataDir = getDataDir();
-        const signalkPath = req.params.path;
-        const limit = parseInt(req.query.limit as string) || 10;
-        
-        const selfContextPath = app.selfContext.replace(/\./g, '/').replace(/:/g, '_');
-        const pathDir = path.join(dataDir, selfContextPath, signalkPath.replace(/\./g, '/'));
-        
-        if (!fs.existsSync(pathDir)) {
-          return res.status(404).json({
-            success: false,
-            error: `Path not found: ${signalkPath}`
-          });
-        }
-        
-        // Get the most recent parquet file
-        const files = fs.readdirSync(pathDir)
-          .filter((file: string) => file.endsWith('.parquet'))
-          .map((file: string) => {
-            const filePath = path.join(pathDir, file);
-            const stat = fs.statSync(filePath);
-            return { name: file, path: filePath, modified: stat.mtime };
-          })
-          .sort((a: any, b: any) => b.modified.getTime() - a.modified.getTime());
-        
-        if (files.length === 0) {
-          return res.status(404).json({
-            success: false,
-            error: `No parquet files found for path: ${signalkPath}`
-          });
-        }
-        
-        const sampleFile = files[0];
-        const query = `SELECT * FROM '${sampleFile.path}' LIMIT ${limit}`;
-        
-        const instance = await DuckDBInstance.create();
-        const connection = await instance.connect();
+    router.get(
+      '/api/files/:path(*)',
+      (req: TypedRequest, res: TypedResponse<FilesApiResponse>) => {
         try {
-          const reader = await connection.runAndReadAll(query);
-          const rawData = reader.getRowObjects();
-          
-          // Convert BigInt values to regular numbers for JSON serialization
-          const data = rawData.map((row: any) => {
-            const convertedRow: any = {};
-            for (const [key, value] of Object.entries(row)) {
-              convertedRow[key] = typeof value === 'bigint' ? Number(value) : value;
-            }
-            return convertedRow;
-          });
-          
-          // Get column info
-          const columns = data.length > 0 ? Object.keys(data[0]) : [];
-          
+          const dataDir = getDataDir();
+          const signalkPath = req.params.path;
+          const selfContextPath = app.selfContext
+            .replace(/\./g, '/')
+            .replace(/:/g, '_');
+          const pathDir = path.join(
+            dataDir,
+            selfContextPath,
+            signalkPath.replace(/\./g, '/')
+          );
+
+          if (!fs.existsSync(pathDir)) {
+            return res.status(404).json({
+              success: false,
+              error: `Path not found: ${signalkPath}`,
+            });
+          }
+
+          const files = fs
+            .readdirSync(pathDir)
+            .filter((file: string) => file.endsWith('.parquet'))
+            .map((file: string) => {
+              const filePath = path.join(pathDir, file);
+              const stat = fs.statSync(filePath);
+              return {
+                name: file,
+                path: filePath,
+                size: stat.size,
+                modified: stat.mtime.toISOString(),
+              };
+            })
+            .sort(
+              (a: any, b: any) =>
+                new Date(b.modified).getTime() - new Date(a.modified).getTime()
+            );
+
           return res.json({
             success: true,
             path: signalkPath,
-            file: sampleFile.name,
-            columns: columns,
-            rowCount: data.length,
-            data: data
+            directory: pathDir,
+            files: files,
           });
-        } catch (err) {
-          return res.status(400).json({
-            success: false,
-            error: (err as Error).message
-          });
-        } finally {
-          connection.disconnectSync();
-        }
-        
-      } catch (error) {
-        return res.status(500).json({
-          success: false,
-          error: (error as Error).message
-        });
-      }
-    });
-
-    // Query parquet data
-    router.post('/api/query', async (req: TypedRequest<QueryRequest>, res: TypedResponse<QueryApiResponse>) => {
-      try {
-        if (!DuckDBInstance) {
-          return res.status(503).json({
-            success: false,
-            error: 'DuckDB not available'
-          });
-        }
-
-        const { query } = req.body;
-        
-        if (!query) {
-          return res.status(400).json({
-            success: false,
-            error: 'Query is required'
-          });
-        }
-        
-        const dataDir = getDataDir();
-        
-        // Replace placeholder paths in query with actual file paths
-        let processedQuery = query;
-        
-        // Find all quoted paths in the query that might be SignalK paths
-        const pathMatches = query.match(/'([^']+)'/g);
-        if (pathMatches) {
-          pathMatches.forEach(match => {
-            const quotedPath = match.slice(1, -1); // Remove quotes
-            
-            // If it looks like a SignalK path, convert to file path
-            const selfContextPath = app.selfContext.replace(/\./g, '/').replace(/:/g, '_');
-            if (quotedPath.includes(`/${selfContextPath}/`) || quotedPath.includes('.parquet')) {
-              // It's already a file path, use as is
-              return;
-            } else if (quotedPath.includes('.') && !quotedPath.includes('/')) {
-              // It's a SignalK path, convert to file path
-              const filePath = path.join(dataDir, selfContextPath, quotedPath.replace(/\./g, '/'), '*.parquet');
-              processedQuery = processedQuery.replace(match, `'${filePath}'`);
-            }
-          });
-        }
-        
-        console.log('Executing query:', processedQuery);
-        
-        const instance = await DuckDBInstance.create();
-        const connection = await instance.connect();
-        try {
-          const reader = await connection.runAndReadAll(processedQuery);
-          const rawData = reader.getRowObjects();
-          
-          // Convert BigInt values to regular numbers for JSON serialization
-          const data = rawData.map((row: any) => {
-            const convertedRow: any = {};
-            for (const [key, value] of Object.entries(row)) {
-              convertedRow[key] = typeof value === 'bigint' ? Number(value) : value;
-            }
-            return convertedRow;
-          });
-          
-          return res.json({
-            success: true,
-            query: processedQuery,
-            rowCount: data.length,
-            data: data
-          });
-        } catch (err) {
-          console.error('Query error:', err);
-          return res.status(400).json({
-            success: false,
-            error: (err as Error).message
-          });
-        } finally {
-          connection.disconnectSync();
-        }
-        
-      } catch (error) {
-        return res.status(500).json({
-          success: false,
-          error: (error as Error).message
-        });
-      }
-    });
-
-    // Test S3 connection
-    router.post('/api/test-s3', async (_: TypedRequest, res: TypedResponse<S3TestApiResponse>) => {
-      try {
-        if (!state.currentConfig) {
+        } catch (error) {
           return res.status(500).json({
             success: false,
-            error: 'Plugin not started or configuration not available'
+            error: (error as Error).message,
           });
         }
-        
-        if (!state.currentConfig.s3Upload.enabled) {
-          return res.status(400).json({
-            success: false,
-            error: 'S3 upload is not enabled in configuration'
-          });
-        }
-
-        if (!S3Client || !state.s3Client) {
-          return res.status(503).json({
-            success: false,
-            error: 'S3 client not available or not initialized'
-          });
-        }
-
-        // Test S3 connection by listing bucket
-        const { ListObjectsV2Command } = require('@aws-sdk/client-s3');
-        const listCommand = new ListObjectsV2Command({
-          Bucket: state.currentConfig.s3Upload.bucket,
-          MaxKeys: 1
-        });
-
-        await state.s3Client.send(listCommand);
-        
-        return res.json({
-          success: true,
-          message: 'S3 connection successful',
-          bucket: state.currentConfig.s3Upload.bucket,
-          region: state.currentConfig.s3Upload.region || 'us-east-1',
-          keyPrefix: state.currentConfig.s3Upload.keyPrefix || 'none'
-        });
-      } catch (error) {
-        app.debug('S3 test connection error:', error);
-        return res.status(500).json({
-          success: false,
-          error: (error as Error).message || 'S3 connection failed'
-        });
       }
-    });
+    );
+
+    // Get sample data from a specific file
+    router.get(
+      '/api/sample/:path(*)',
+      async (req: TypedRequest, res: TypedResponse<SampleApiResponse>) => {
+        try {
+          if (!DuckDBInstance) {
+            return res.status(503).json({
+              success: false,
+              error: 'DuckDB not available',
+            });
+          }
+
+          const dataDir = getDataDir();
+          const signalkPath = req.params.path;
+          const limit = parseInt(req.query.limit as string) || 10;
+
+          const selfContextPath = app.selfContext
+            .replace(/\./g, '/')
+            .replace(/:/g, '_');
+          const pathDir = path.join(
+            dataDir,
+            selfContextPath,
+            signalkPath.replace(/\./g, '/')
+          );
+
+          if (!fs.existsSync(pathDir)) {
+            return res.status(404).json({
+              success: false,
+              error: `Path not found: ${signalkPath}`,
+            });
+          }
+
+          // Get the most recent parquet file
+          const files = fs
+            .readdirSync(pathDir)
+            .filter((file: string) => file.endsWith('.parquet'))
+            .map((file: string) => {
+              const filePath = path.join(pathDir, file);
+              const stat = fs.statSync(filePath);
+              return { name: file, path: filePath, modified: stat.mtime };
+            })
+            .sort(
+              (a: any, b: any) => b.modified.getTime() - a.modified.getTime()
+            );
+
+          if (files.length === 0) {
+            return res.status(404).json({
+              success: false,
+              error: `No parquet files found for path: ${signalkPath}`,
+            });
+          }
+
+          const sampleFile = files[0];
+          const query = `SELECT * FROM '${sampleFile.path}' LIMIT ${limit}`;
+
+          const instance = await DuckDBInstance.create();
+          const connection = await instance.connect();
+          try {
+            const reader = await connection.runAndReadAll(query);
+            const rawData = reader.getRowObjects();
+
+            // Convert BigInt values to regular numbers for JSON serialization
+            const data = rawData.map((row: any) => {
+              const convertedRow: any = {};
+              for (const [key, value] of Object.entries(row)) {
+                convertedRow[key] =
+                  typeof value === 'bigint' ? Number(value) : value;
+              }
+              return convertedRow;
+            });
+
+            // Get column info
+            const columns = data.length > 0 ? Object.keys(data[0]) : [];
+
+            return res.json({
+              success: true,
+              path: signalkPath,
+              file: sampleFile.name,
+              columns: columns,
+              rowCount: data.length,
+              data: data,
+            });
+          } catch (err) {
+            return res.status(400).json({
+              success: false,
+              error: (err as Error).message,
+            });
+          } finally {
+            connection.disconnectSync();
+          }
+        } catch (error) {
+          return res.status(500).json({
+            success: false,
+            error: (error as Error).message,
+          });
+        }
+      }
+    );
+
+    // Query parquet data
+    router.post(
+      '/api/query',
+      async (
+        req: TypedRequest<QueryRequest>,
+        res: TypedResponse<QueryApiResponse>
+      ) => {
+        try {
+          if (!DuckDBInstance) {
+            return res.status(503).json({
+              success: false,
+              error: 'DuckDB not available',
+            });
+          }
+
+          const { query } = req.body;
+
+          if (!query) {
+            return res.status(400).json({
+              success: false,
+              error: 'Query is required',
+            });
+          }
+
+          const dataDir = getDataDir();
+
+          // Replace placeholder paths in query with actual file paths
+          let processedQuery = query;
+
+          // Find all quoted paths in the query that might be SignalK paths
+          const pathMatches = query.match(/'([^']+)'/g);
+          if (pathMatches) {
+            pathMatches.forEach(match => {
+              const quotedPath = match.slice(1, -1); // Remove quotes
+
+              // If it looks like a SignalK path, convert to file path
+              const selfContextPath = app.selfContext
+                .replace(/\./g, '/')
+                .replace(/:/g, '_');
+              if (
+                quotedPath.includes(`/${selfContextPath}/`) ||
+                quotedPath.includes('.parquet')
+              ) {
+                // It's already a file path, use as is
+                return;
+              } else if (
+                quotedPath.includes('.') &&
+                !quotedPath.includes('/')
+              ) {
+                // It's a SignalK path, convert to file path
+                const filePath = path.join(
+                  dataDir,
+                  selfContextPath,
+                  quotedPath.replace(/\./g, '/'),
+                  '*.parquet'
+                );
+                processedQuery = processedQuery.replace(match, `'${filePath}'`);
+              }
+            });
+          }
+
+          console.log('Executing query:', processedQuery);
+
+          const instance = await DuckDBInstance.create();
+          const connection = await instance.connect();
+          try {
+            const reader = await connection.runAndReadAll(processedQuery);
+            const rawData = reader.getRowObjects();
+
+            // Convert BigInt values to regular numbers for JSON serialization
+            const data = rawData.map((row: any) => {
+              const convertedRow: any = {};
+              for (const [key, value] of Object.entries(row)) {
+                convertedRow[key] =
+                  typeof value === 'bigint' ? Number(value) : value;
+              }
+              return convertedRow;
+            });
+
+            return res.json({
+              success: true,
+              query: processedQuery,
+              rowCount: data.length,
+              data: data,
+            });
+          } catch (err) {
+            console.error('Query error:', err);
+            return res.status(400).json({
+              success: false,
+              error: (err as Error).message,
+            });
+          } finally {
+            connection.disconnectSync();
+          }
+        } catch (error) {
+          return res.status(500).json({
+            success: false,
+            error: (error as Error).message,
+          });
+        }
+      }
+    );
+
+    // Test S3 connection
+    router.post(
+      '/api/test-s3',
+      async (_: TypedRequest, res: TypedResponse<S3TestApiResponse>) => {
+        try {
+          if (!state.currentConfig) {
+            return res.status(500).json({
+              success: false,
+              error: 'Plugin not started or configuration not available',
+            });
+          }
+
+          if (!state.currentConfig.s3Upload.enabled) {
+            return res.status(400).json({
+              success: false,
+              error: 'S3 upload is not enabled in configuration',
+            });
+          }
+
+          if (!S3Client || !state.s3Client) {
+            return res.status(503).json({
+              success: false,
+              error: 'S3 client not available or not initialized',
+            });
+          }
+
+          // Test S3 connection by listing bucket
+          const { ListObjectsV2Command } = require('@aws-sdk/client-s3');
+          const listCommand = new ListObjectsV2Command({
+            Bucket: state.currentConfig.s3Upload.bucket,
+            MaxKeys: 1,
+          });
+
+          await state.s3Client.send(listCommand);
+
+          return res.json({
+            success: true,
+            message: 'S3 connection successful',
+            bucket: state.currentConfig.s3Upload.bucket,
+            region: state.currentConfig.s3Upload.region || 'us-east-1',
+            keyPrefix: state.currentConfig.s3Upload.keyPrefix || 'none',
+          });
+        } catch (error) {
+          app.debug('S3 test connection error:', error);
+          return res.status(500).json({
+            success: false,
+            error: (error as Error).message || 'S3 connection failed',
+          });
+        }
+      }
+    );
 
     // Web App Path Configuration API Routes (manages separate config file)
-    
+
     // Get current path configurations
-    router.get('/api/config/paths', (_: TypedRequest, res: TypedResponse<ConfigApiResponse>) => {
-      try {
-        const paths = loadWebAppPaths();
-        return res.json({
-          success: true,
-          paths: paths
-        });
-      } catch (error) {
-        return res.status(500).json({
-          success: false,
-          error: (error as Error).message
-        });
+    router.get(
+      '/api/config/paths',
+      (_: TypedRequest, res: TypedResponse<ConfigApiResponse>) => {
+        try {
+          const paths = loadWebAppPaths();
+          return res.json({
+            success: true,
+            paths: paths,
+          });
+        } catch (error) {
+          return res.status(500).json({
+            success: false,
+            error: (error as Error).message,
+          });
+        }
       }
-    });
+    );
 
     // Add new path configuration
-    router.post('/api/config/paths', (req: TypedRequest<PathConfigRequest>, res: TypedResponse): void => {
-      try {
-        const newPath = req.body;
-        
-        // Validate required fields
-        if (!newPath.path) {
-          res.status(400).json({
-            success: false,
-            error: 'Path is required'
-          });
-          return;
-        }
+    router.post(
+      '/api/config/paths',
+      (req: TypedRequest<PathConfigRequest>, res: TypedResponse): void => {
+        try {
+          const newPath = req.body;
 
-        // Add to current paths
-        currentPaths.push(newPath);
-        
-        // Save to web app configuration
-        saveWebAppPaths(currentPaths);
-        
-        // Update subscriptions
-        updateDataSubscriptions(state.currentConfig!);
-        
-        res.json({
-          success: true,
-          message: 'Path configuration added successfully',
-          path: newPath
-        });
-      } catch (error) {
-        res.status(500).json({
-          success: false,
-          error: (error as Error).message
-        });
+          // Validate required fields
+          if (!newPath.path) {
+            res.status(400).json({
+              success: false,
+              error: 'Path is required',
+            });
+            return;
+          }
+
+          // Add to current paths
+          currentPaths.push(newPath);
+
+          // Save to web app configuration
+          saveWebAppPaths(currentPaths);
+
+          // Update subscriptions
+          updateDataSubscriptions(state.currentConfig!);
+
+          res.json({
+            success: true,
+            message: 'Path configuration added successfully',
+            path: newPath,
+          });
+        } catch (error) {
+          res.status(500).json({
+            success: false,
+            error: (error as Error).message,
+          });
+        }
       }
-    });
+    );
 
     // Update existing path configuration
-    router.put('/api/config/paths/:index', (req: TypedRequest<PathConfigRequest>, res: TypedResponse): void => {
-      try {
-        const index = parseInt(req.params.index);
-        const updatedPath = req.body;
-        
-        if (index < 0 || index >= currentPaths.length) {
-          res.status(404).json({
-            success: false,
-            error: 'Path configuration not found'
-          });
-          return;
-        }
+    router.put(
+      '/api/config/paths/:index',
+      (req: TypedRequest<PathConfigRequest>, res: TypedResponse): void => {
+        try {
+          const index = parseInt(req.params.index);
+          const updatedPath = req.body;
 
-        // Validate required fields
-        if (!updatedPath.path) {
-          res.status(400).json({
-            success: false,
-            error: 'Path is required'
-          });
-          return;
-        }
+          if (index < 0 || index >= currentPaths.length) {
+            res.status(404).json({
+              success: false,
+              error: 'Path configuration not found',
+            });
+            return;
+          }
 
-        // Update the path configuration
-        currentPaths[index] = updatedPath;
-        
-        // Save to web app configuration
-        saveWebAppPaths(currentPaths);
-        
-        // Update subscriptions
-        updateDataSubscriptions(state.currentConfig!);
-        
-        res.json({
-          success: true,
-          message: 'Path configuration updated successfully',
-          path: updatedPath
-        });
-      } catch (error) {
-        res.status(500).json({
-          success: false,
-          error: (error as Error).message
-        });
+          // Validate required fields
+          if (!updatedPath.path) {
+            res.status(400).json({
+              success: false,
+              error: 'Path is required',
+            });
+            return;
+          }
+
+          // Update the path configuration
+          currentPaths[index] = updatedPath;
+
+          // Save to web app configuration
+          saveWebAppPaths(currentPaths);
+
+          // Update subscriptions
+          updateDataSubscriptions(state.currentConfig!);
+
+          res.json({
+            success: true,
+            message: 'Path configuration updated successfully',
+            path: updatedPath,
+          });
+        } catch (error) {
+          res.status(500).json({
+            success: false,
+            error: (error as Error).message,
+          });
+        }
       }
-    });
+    );
 
     // Remove path configuration
-    router.delete('/api/config/paths/:index', (req: TypedRequest, res: TypedResponse): void => {
-      try {
-        const index = parseInt(req.params.index);
-        
-        if (index < 0 || index >= currentPaths.length) {
-          res.status(404).json({
-            success: false,
-            error: 'Path configuration not found'
-          });
-          return;
-        }
+    router.delete(
+      '/api/config/paths/:index',
+      (req: TypedRequest, res: TypedResponse): void => {
+        try {
+          const index = parseInt(req.params.index);
 
-        // Get the path being removed for response
-        const removedPath = currentPaths[index];
-        
-        // Remove from current paths
-        currentPaths.splice(index, 1);
-        
-        // Save to web app configuration
-        saveWebAppPaths(currentPaths);
-        
-        // Update subscriptions
-        updateDataSubscriptions(state.currentConfig!);
-        
-        app.debug(`Removed path configuration: ${removedPath.name} (${removedPath.path})`);
-        
-        res.json({
-          success: true,
-          message: 'Path configuration removed successfully',
-          removedPath: removedPath
-        });
-      } catch (error) {
-        res.status(500).json({
-          success: false,
-          error: (error as Error).message
-        });
+          if (index < 0 || index >= currentPaths.length) {
+            res.status(404).json({
+              success: false,
+              error: 'Path configuration not found',
+            });
+            return;
+          }
+
+          // Get the path being removed for response
+          const removedPath = currentPaths[index];
+
+          // Remove from current paths
+          currentPaths.splice(index, 1);
+
+          // Save to web app configuration
+          saveWebAppPaths(currentPaths);
+
+          // Update subscriptions
+          updateDataSubscriptions(state.currentConfig!);
+
+          app.debug(
+            `Removed path configuration: ${removedPath.name} (${removedPath.path})`
+          );
+
+          res.json({
+            success: true,
+            message: 'Path configuration removed successfully',
+            removedPath: removedPath,
+          });
+        } catch (error) {
+          res.status(500).json({
+            success: false,
+            error: (error as Error).message,
+          });
+        }
       }
-    });
+    );
 
     // Command Management API endpoints
-    
+
     // Get all registered commands
-    router.get('/api/commands', (_: TypedRequest, res: TypedResponse<CommandApiResponse>) => {
-      try {
-        const commands = Array.from(commandState.registeredCommands.values());
-        return res.json({
-          success: true,
-          commands: commands,
-          count: commands.length
-        });
-      } catch (error) {
-        app.error('Error retrieving commands:', error);
-        return res.status(500).json({
-          success: false,
-          error: 'Failed to retrieve commands'
-        });
+    router.get(
+      '/api/commands',
+      (_: TypedRequest, res: TypedResponse<CommandApiResponse>) => {
+        try {
+          const commands = Array.from(commandState.registeredCommands.values());
+          return res.json({
+            success: true,
+            commands: commands,
+            count: commands.length,
+          });
+        } catch (error) {
+          app.error('Error retrieving commands:', error);
+          return res.status(500).json({
+            success: false,
+            error: 'Failed to retrieve commands',
+          });
+        }
       }
-    });
+    );
 
     // Register a new command
-    router.post('/api/commands', (req: TypedRequest<CommandRegistrationRequest>, res: TypedResponse<CommandApiResponse>) => {
-      try {
-        const { command, description } = req.body;
-        
-        if (!command || !isValidCommandName(command)) {
-          return res.status(400).json({
-            success: false,
-            error: 'Invalid command name. Must be alphanumeric with underscores, 1-50 characters.'
-          });
-        }
+    router.post(
+      '/api/commands',
+      (
+        req: TypedRequest<CommandRegistrationRequest>,
+        res: TypedResponse<CommandApiResponse>
+      ) => {
+        try {
+          const { command, description } = req.body;
 
-        const result = registerCommand(command, description);
-        
-        if (result.state === 'COMPLETED') {
-          // Add to command history
-          addCommandHistoryEntry(command, 'REGISTER', undefined, true);
-          
-          // Update webapp config
-          const webAppConfig = loadWebAppConfig();
-          saveWebAppConfig(webAppConfig.paths, currentCommands);
-          
-          const commandConfig = commandState.registeredCommands.get(command);
-          return res.json({
-            success: true,
-            message: `Command '${command}' registered successfully`,
-            command: commandConfig
-          });
-        } else {
-          return res.status(400).json({
+          if (!command || !isValidCommandName(command)) {
+            return res.status(400).json({
+              success: false,
+              error:
+                'Invalid command name. Must be alphanumeric with underscores, 1-50 characters.',
+            });
+          }
+
+          const result = registerCommand(command, description);
+
+          if (result.state === 'COMPLETED') {
+            // Add to command history
+            addCommandHistoryEntry(command, 'REGISTER', undefined, true);
+
+            // Update webapp config
+            const webAppConfig = loadWebAppConfig();
+            saveWebAppConfig(webAppConfig.paths, currentCommands);
+
+            const commandConfig = commandState.registeredCommands.get(command);
+            return res.json({
+              success: true,
+              message: `Command '${command}' registered successfully`,
+              command: commandConfig,
+            });
+          } else {
+            return res.status(400).json({
+              success: false,
+              error: result.message || 'Failed to register command',
+            });
+          }
+        } catch (error) {
+          app.error('Error registering command:', error);
+          return res.status(500).json({
             success: false,
-            error: result.message || 'Failed to register command'
+            error: 'Internal server error',
           });
         }
-      } catch (error) {
-        app.error('Error registering command:', error);
-        return res.status(500).json({
-          success: false,
-          error: 'Internal server error'
-        });
       }
-    });
+    );
 
     // Execute a command
-    router.put('/api/commands/:command/execute', (req: TypedRequest<CommandExecutionRequest>, res: TypedResponse<CommandExecutionResponse>) => {
-      try {
-        const { command } = req.params;
-        const { value } = req.body;
-        
-        if (typeof value !== 'boolean') {
-          return res.status(400).json({
-            success: false,
-            error: 'Command value must be a boolean'
-          });
-        }
+    router.put(
+      '/api/commands/:command/execute',
+      (
+        req: TypedRequest<CommandExecutionRequest>,
+        res: TypedResponse<CommandExecutionResponse>
+      ) => {
+        try {
+          const { command } = req.params;
+          const { value } = req.body;
 
-        const result = executeCommand(command, value);
-        
-        if (result.state === 'COMPLETED') {
-          // Add to command history
-          addCommandHistoryEntry(command, 'EXECUTE', value, true);
-          
-          return res.json({
-            success: true,
-            command: command,
-            value: value,
-            executed: true,
-            timestamp: result.timestamp
-          });
-        } else {
-          // Add to command history for failed execution
-          addCommandHistoryEntry(command, 'EXECUTE', value, false, result.message);
-          
-          return res.status(400).json({
+          if (typeof value !== 'boolean') {
+            return res.status(400).json({
+              success: false,
+              error: 'Command value must be a boolean',
+            });
+          }
+
+          const result = executeCommand(command, value);
+
+          if (result.state === 'COMPLETED') {
+            // Add to command history
+            addCommandHistoryEntry(command, 'EXECUTE', value, true);
+
+            return res.json({
+              success: true,
+              command: command,
+              value: value,
+              executed: true,
+              timestamp: result.timestamp,
+            });
+          } else {
+            // Add to command history for failed execution
+            addCommandHistoryEntry(
+              command,
+              'EXECUTE',
+              value,
+              false,
+              result.message
+            );
+
+            return res.status(400).json({
+              success: false,
+              error: result.message || 'Failed to execute command',
+            });
+          }
+        } catch (error) {
+          app.error('Error executing command:', error);
+          return res.status(500).json({
             success: false,
-            error: result.message || 'Failed to execute command'
+            error: 'Internal server error',
           });
         }
-      } catch (error) {
-        app.error('Error executing command:', error);
-        return res.status(500).json({
-          success: false,
-          error: 'Internal server error'
-        });
       }
-    });
+    );
 
     // Unregister a command
-    router.delete('/api/commands/:command', (req: TypedRequest, res: TypedResponse<CommandApiResponse>) => {
-      try {
-        const { command } = req.params;
-        
-        const result = unregisterCommand(command);
-        
-        if (result.state === 'COMPLETED') {
-          // Add to command history
-          addCommandHistoryEntry(command, 'UNREGISTER', undefined, true);
-          
-          // Update webapp config
-          const webAppConfig = loadWebAppConfig();
-          saveWebAppConfig(webAppConfig.paths, currentCommands);
-          
-          return res.json({
-            success: true,
-            message: `Command '${command}' unregistered successfully`
-          });
-        } else {
-          return res.status(404).json({
+    router.delete(
+      '/api/commands/:command',
+      (req: TypedRequest, res: TypedResponse<CommandApiResponse>) => {
+        try {
+          const { command } = req.params;
+
+          const result = unregisterCommand(command);
+
+          if (result.state === 'COMPLETED') {
+            // Add to command history
+            addCommandHistoryEntry(command, 'UNREGISTER', undefined, true);
+
+            // Update webapp config
+            const webAppConfig = loadWebAppConfig();
+            saveWebAppConfig(webAppConfig.paths, currentCommands);
+
+            return res.json({
+              success: true,
+              message: `Command '${command}' unregistered successfully`,
+            });
+          } else {
+            return res.status(404).json({
+              success: false,
+              error: result.message || 'Command not found',
+            });
+          }
+        } catch (error) {
+          app.error('Error unregistering command:', error);
+          return res.status(500).json({
             success: false,
-            error: result.message || 'Command not found'
+            error: 'Internal server error',
           });
         }
-      } catch (error) {
-        app.error('Error unregistering command:', error);
-        return res.status(500).json({
-          success: false,
-          error: 'Internal server error'
-        });
       }
-    });
+    );
 
     // Get command history
-    router.get('/api/commands/history', (_: TypedRequest, res: TypedResponse<CommandApiResponse>) => {
-      try {
-        // Return the last 50 history entries
-        const recentHistory = commandHistory.slice(-50);
-        return res.json({
-          success: true,
-          data: recentHistory
-        });
-      } catch (error) {
-        app.error('Error retrieving command history:', error);
-        return res.status(500).json({
-          success: false,
-          error: 'Failed to retrieve command history'
-        });
-      }
-    });
-
-    // Get command status
-    router.get('/api/commands/:command/status', (req: TypedRequest, res: TypedResponse<CommandApiResponse>) => {
-      try {
-        const { command } = req.params;
-        const commandConfig = commandState.registeredCommands.get(command);
-        
-        if (!commandConfig) {
-          return res.status(404).json({
+    router.get(
+      '/api/commands/history',
+      (_: TypedRequest, res: TypedResponse<CommandApiResponse>) => {
+        try {
+          // Return the last 50 history entries
+          const recentHistory = commandHistory.slice(-50);
+          return res.json({
+            success: true,
+            data: recentHistory,
+          });
+        } catch (error) {
+          app.error('Error retrieving command history:', error);
+          return res.status(500).json({
             success: false,
-            error: 'Command not found'
+            error: 'Failed to retrieve command history',
           });
         }
-
-        // Get current value from SignalK
-        const currentValue = app.getSelfPath(`commands.${command}`);
-        
-        return res.json({
-          success: true,
-          command: {
-            ...commandConfig,
-            active: currentValue === true
-          }
-        });
-      } catch (error) {
-        app.error('Error retrieving command status:', error);
-        return res.status(500).json({
-          success: false,
-          error: 'Failed to retrieve command status'
-        });
       }
-    });
+    );
+
+    // Get command status
+    router.get(
+      '/api/commands/:command/status',
+      (req: TypedRequest, res: TypedResponse<CommandApiResponse>) => {
+        try {
+          const { command } = req.params;
+          const commandConfig = commandState.registeredCommands.get(command);
+
+          if (!commandConfig) {
+            return res.status(404).json({
+              success: false,
+              error: 'Command not found',
+            });
+          }
+
+          // Get current value from SignalK
+          const currentValue = app.getSelfPath(`commands.${command}`);
+
+          return res.json({
+            success: true,
+            command: {
+              ...commandConfig,
+              active: currentValue === true,
+            },
+          });
+        } catch (error) {
+          app.error('Error retrieving command status:', error);
+          return res.status(500).json({
+            success: false,
+            error: 'Failed to retrieve command status',
+          });
+        }
+      }
+    );
 
     // Health check
-    router.get('/api/health', (_: TypedRequest, res: TypedResponse<HealthApiResponse>) => {
-      return res.json({
-        success: true,
-        status: 'healthy',
-        timestamp: new Date().toISOString(),
-        duckdb: DuckDBInstance ? 'available' : 'not available'
-      });
-    });
+    router.get(
+      '/api/health',
+      (_: TypedRequest, res: TypedResponse<HealthApiResponse>) => {
+        return res.json({
+          success: true,
+          status: 'healthy',
+          timestamp: new Date().toISOString(),
+          duckdb: DuckDBInstance ? 'available' : 'not available',
+        });
+      }
+    );
 
     app.debug('Webapp API routes registered');
   };
