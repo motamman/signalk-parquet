@@ -23,11 +23,8 @@ import {
   S3TestApiResponse,
   QueryRequest,
   PathConfigRequest,
-  FileInfo,
   PathInfo,
   DuckDBInstance,
-  DuckDBConnection,
-  DuckDBResult,
   WebAppPathConfig,
   CommandConfig,
   CommandRegistrationState,
@@ -38,7 +35,6 @@ import {
   CommandPutHandler,
   CommandExecutionResult,
   CommandHistoryEntry,
-  CommandStatus,
 } from './types';
 
 // AWS S3 for file upload
@@ -382,7 +378,7 @@ export = function (app: SignalKApp): SignalKPlugin {
         context: string,
         path: string,
         value: any,
-        callback?: (result: CommandExecutionResult) => void
+        _callback?: (result: CommandExecutionResult) => void
       ): CommandExecutionResult => {
         app.debug(
           `Handling PUT for commands.${commandName} with value:`,
@@ -1133,7 +1129,7 @@ export = function (app: SignalKApp): SignalKPlugin {
   }
 
   // Initialize regimen states from current API values at startup
-  function initializeRegimenStates(config: PluginConfig): void {
+  function initializeRegimenStates(_config: PluginConfig): void {
     const commandPaths = currentPaths.filter(
       (pathConfig: PathConfig) =>
         pathConfig &&

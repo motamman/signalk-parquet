@@ -4,7 +4,6 @@ import {
   DataRecord,
   ParquetWriterOptions,
   SignalKApp,
-  ParquetSchema,
   ParquetField,
   FileFormat,
 } from './types';
