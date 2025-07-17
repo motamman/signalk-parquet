@@ -6,6 +6,7 @@ export interface SignalKPlugin {
   id: string;
   name: string;
   description: string;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   schema: any;
   start: (options: Partial<PluginConfig>) => void;
   stop: () => void;
@@ -91,6 +92,7 @@ export interface DataRecord {
   signalk_timestamp: string;
   context: string;
   path: string;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   value: any;
   value_json?: string;
   source?: string;
@@ -99,6 +101,7 @@ export interface DataRecord {
   source_pgn?: number;
   source_src?: string;
   meta?: string;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   [key: string]: any; // For flattened object properties
 }
 
@@ -123,6 +126,7 @@ export interface PathInfo {
 }
 
 // API Response Types
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 export interface ApiResponse<T = any> {
   success: boolean;
   data?: T;
@@ -158,6 +162,7 @@ export interface FilesApiResponse extends ApiResponse {
 export interface QueryApiResponse extends ApiResponse {
   query?: string;
   rowCount?: number;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   data?: any[];
 }
 
@@ -166,6 +171,7 @@ export interface SampleApiResponse extends ApiResponse {
   file?: string;
   columns?: string[];
   rowCount?: number;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   data?: any[];
 }
 
@@ -186,12 +192,14 @@ export interface S3TestApiResponse extends ApiResponse {
 }
 
 // Express Router Types
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 export interface TypedRequest<T = any> extends Request {
   body: T;
   params: { [key: string]: string };
   query: { [key: string]: string };
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 export interface TypedResponse<T = any> extends Response {
   json: (body: T) => this;
   status: (code: number) => this;
@@ -206,6 +214,7 @@ export interface PluginState {
   saveInterval?: NodeJS.Timeout;
   consolidationInterval?: NodeJS.Timeout;
   parquetWriter?: ParquetWriter;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   s3Client?: any;
   currentConfig?: PluginConfig;
   commandState: CommandRegistrationState;
@@ -231,6 +240,7 @@ export interface DuckDBConnection {
 }
 
 export interface DuckDBResult {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   getRowObjects(): any[];
 }
 
@@ -265,6 +275,7 @@ export interface PathConfigRequest {
 export type CommandPutHandler = (
   context: string,
   path: string,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   value: any,
   callback?: (result: CommandExecutionResult) => void
 ) => CommandExecutionResult;
@@ -300,6 +311,7 @@ export type BufferKey = string; // Format: "context:path"
 // Error Types
 export interface PluginError extends Error {
   code?: string;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   details?: any;
 }
 

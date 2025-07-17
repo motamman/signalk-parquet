@@ -9,6 +9,7 @@ import {
 import { ServerAPI } from '@signalk/server-api';
 
 // Try to import ParquetJS, fall back if not available
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 let parquet: any;
 try {
   parquet = require('@dsnp/parquetjs');
@@ -66,6 +67,7 @@ export class ParquetWriter {
 
     records.forEach(record => {
       const row = headers.map(header => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const value = (record as any)[header];
         if (value === null || value === undefined) return '';
         if (
@@ -144,10 +146,12 @@ export class ParquetWriter {
       // Write records to Parquet file
       for (let i = 0; i < records.length; i++) {
         const record = records[i];
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const cleanRecord: { [key: string]: any } = {};
 
         // Ensure all schema fields are present and properly formatted
         Object.keys(schemaFields).forEach(fieldName => {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
           const value = (record as any)[fieldName];
           if (value === null || value === undefined) {
             cleanRecord[fieldName] = null;
@@ -199,6 +203,7 @@ export class ParquetWriter {
   }
 
   // Create Parquet schema based on sample records
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   createParquetSchema(records: DataRecord[]): any {
     if (!parquet || records.length === 0) {
       throw new Error('Cannot create Parquet schema');
@@ -216,6 +221,7 @@ export class ParquetWriter {
     // Analyze each column to determine the best Parquet type
     columns.forEach(colName => {
       const values = records
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         .map(r => (r as any)[colName])
         .filter(v => v !== null && v !== undefined);
 
@@ -248,7 +254,9 @@ export class ParquetWriter {
   }
 
   // Prepare a record for Parquet writing (type conversion)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   prepareRecordForParquet(record: DataRecord): { [key: string]: any } {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const prepared: { [key: string]: any } = {};
 
     // Get all fields from the record (ParquetJS schema handling)

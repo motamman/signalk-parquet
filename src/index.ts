@@ -46,6 +46,7 @@ import {
 } from '@signalk/server-api';
 
 // AWS S3 for file upload
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 let S3Client: any, PutObjectCommand: any, ListObjectsV2Command: any;
 import('@aws-sdk/client-s3')
   .then(s3 => {
@@ -59,6 +60,7 @@ import('@aws-sdk/client-s3')
   });
 
 // DuckDB for webapp queries
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 let DuckDBInstance: any;
 import('@duckdb/node-api')
   .then(duckdb => (DuckDBInstance = duckdb.DuckDBInstance))
@@ -200,7 +202,10 @@ export = function (app: ServerAPI): SignalKPlugin {
     // Initialize S3 client if enabled
     if (state.currentConfig.s3Upload.enabled && S3Client) {
       try {
-        const s3Config: any = {
+        const s3Config: {
+          region: string;
+          credentials?: { accessKeyId: string; secretAccessKey: string };
+        } = {
           region: state.currentConfig.s3Upload.region || 'us-east-1',
         };
 
@@ -384,6 +389,7 @@ export = function (app: ServerAPI): SignalKPlugin {
       const putHandler: CommandPutHandler = (
         context: string,
         path: string,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         value: any,
         _callback?: (result: CommandExecutionResult) => void
       ): CommandExecutionResult => {
@@ -650,7 +656,7 @@ export = function (app: ServerAPI): SignalKPlugin {
     app.subscriptionmanager.subscribe(
       commandSubscription,
       state.unsubscribes,
-      (subscriptionError: any) => {
+      subscriptionError => {
         app.debug(`Command subscription error: ${subscriptionError}`);
       },
       (delta: Delta) => {
@@ -814,7 +820,7 @@ export = function (app: ServerAPI): SignalKPlugin {
       app.subscriptionmanager.subscribe(
         dataSubscription,
         state.unsubscribes,
-        (subscriptionError: any) => {
+        subscriptionError => {
           app.debug(
             `Data subscription error for ${context}: ${subscriptionError}`
           );
@@ -928,6 +934,7 @@ export = function (app: ServerAPI): SignalKPlugin {
             typeof val === 'number' ||
             typeof val === 'boolean'
           ) {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
             (record as any)[`value_${key}`] = val;
           }
         }
@@ -1213,6 +1220,18 @@ export = function (app: ServerAPI): SignalKPlugin {
     // Extract command name from "commands.captureWeather"
     const parts = signalkPath.split('.');
     return parts[parts.length - 1];
+  }
+
+  // Convert BigInt values to regular numbers for JSON serialization
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  function mapForJSON(rawData: any[]): any[] {
+    return rawData.map(row => {
+      const convertedRow: typeof row = {};
+      for (const [key, value] of Object.entries(row)) {
+        convertedRow[key] = typeof value === 'bigint' ? Number(value) : value;
+      }
+      return convertedRow;
+    });
   }
 
   // S3 upload function
@@ -1532,7 +1551,7 @@ export = function (app: ServerAPI): SignalKPlugin {
               };
             })
             .sort(
-              (a: any, b: any) =>
+              (a, b) =>
                 new Date(b.modified).getTime() - new Date(a.modified).getTime()
             );
 
@@ -1592,9 +1611,7 @@ export = function (app: ServerAPI): SignalKPlugin {
               const stat = fs.statSync(filePath);
               return { name: file, path: filePath, modified: stat.mtime };
             })
-            .sort(
-              (a: any, b: any) => b.modified.getTime() - a.modified.getTime()
-            );
+            .sort((a, b) => b.modified.getTime() - a.modified.getTime());
 
           if (files.length === 0) {
             return res.status(404).json({
@@ -1612,15 +1629,7 @@ export = function (app: ServerAPI): SignalKPlugin {
             const reader = await connection.runAndReadAll(query);
             const rawData = reader.getRowObjects();
 
-            // Convert BigInt values to regular numbers for JSON serialization
-            const data = rawData.map((row: any) => {
-              const convertedRow: any = {};
-              for (const [key, value] of Object.entries(row)) {
-                convertedRow[key] =
-                  typeof value === 'bigint' ? Number(value) : value;
-              }
-              return convertedRow;
-            });
+            const data = mapForJSON(rawData);
 
             // Get column info
             const columns = data.length > 0 ? Object.keys(data[0]) : [];
@@ -1719,15 +1728,7 @@ export = function (app: ServerAPI): SignalKPlugin {
             const reader = await connection.runAndReadAll(processedQuery);
             const rawData = reader.getRowObjects();
 
-            // Convert BigInt values to regular numbers for JSON serialization
-            const data = rawData.map((row: any) => {
-              const convertedRow: any = {};
-              for (const [key, value] of Object.entries(row)) {
-                convertedRow[key] =
-                  typeof value === 'bigint' ? Number(value) : value;
-              }
-              return convertedRow;
-            });
+            const data = mapForJSON(rawData);
 
             return res.json({
               success: true,
