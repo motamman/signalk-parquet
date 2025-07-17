@@ -47,6 +47,7 @@ try {
   S3Client = S3ClientClass;
   PutObjectCommand = PutObjectCommandClass;
 } catch (error) {
+  // eslint-disable-next-line no-console
   console.warn('AWS S3 SDK not available for file uploads');
 }
 
@@ -56,6 +57,7 @@ try {
   const duckdb = require('@duckdb/node-api');
   DuckDBInstance = duckdb.DuckDBInstance;
 } catch (error) {
+  // eslint-disable-next-line no-console
   console.warn('DuckDB not available for webapp queries');
 }
 
@@ -1706,7 +1708,7 @@ export = function (app: SignalKApp): SignalKPlugin {
             });
           }
 
-          console.log('Executing query:', processedQuery);
+          app.debug('Executing query:', processedQuery);
 
           const instance = await DuckDBInstance.create();
           const connection = await instance.connect();
@@ -1731,7 +1733,7 @@ export = function (app: SignalKApp): SignalKPlugin {
               data: data,
             });
           } catch (err) {
-            console.error('Query error:', err);
+            app.error('Query error:', err);
             return res.status(400).json({
               success: false,
               error: (err as Error).message,
