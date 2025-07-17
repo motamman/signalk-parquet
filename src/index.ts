@@ -1,5 +1,6 @@
 import * as fs from 'fs-extra';
 import * as path from 'path';
+import express from 'express';
 import { Router } from 'express';
 import { ParquetWriter } from './parquet-writer';
 import {
@@ -36,30 +37,29 @@ import {
   CommandExecutionResult,
   CommandHistoryEntry,
 } from './types';
+import { glob } from 'glob';
 
 // AWS S3 for file upload
-let S3Client: any, PutObjectCommand: any;
-try {
-  const {
-    S3Client: S3ClientClass,
-    PutObjectCommand: PutObjectCommandClass,
-  } = require('@aws-sdk/client-s3');
-  S3Client = S3ClientClass;
-  PutObjectCommand = PutObjectCommandClass;
-} catch (error) {
-  // eslint-disable-next-line no-console
-  console.warn('AWS S3 SDK not available for file uploads');
-}
+let S3Client: any, PutObjectCommand: any, ListObjectsV2Command: any;
+import('@aws-sdk/client-s3')
+  .then(s3 => {
+    S3Client = s3.S3Client;
+    PutObjectCommand = s3.PutObjectCommand;
+    ListObjectsV2Command = s3.ListObjectsV2Command;
+  })
+  .catch(() => {
+    // eslint-disable-next-line no-console
+    console.warn('AWS S3 SDK not available for file uploads');
+  });
 
 // DuckDB for webapp queries
 let DuckDBInstance: any;
-try {
-  const duckdb = require('@duckdb/node-api');
-  DuckDBInstance = duckdb.DuckDBInstance;
-} catch (error) {
-  // eslint-disable-next-line no-console
-  console.warn('DuckDB not available for webapp queries');
-}
+import('@duckdb/node-api')
+  .then(duckdb => (DuckDBInstance = duckdb.DuckDBInstance))
+  .catch(() => {
+    // eslint-disable-next-line no-console
+    console.warn('DuckDB not available for webapp queries');
+  });
 
 // Global variables for path and command management
 let currentPaths: PathConfig[] = [];
@@ -1110,7 +1110,6 @@ export = function (app: SignalKApp): SignalKPlugin {
       const consolidatedPattern = `**/*_${dateStr}_consolidated.parquet`;
 
       // Find all consolidated files for the date
-      const { glob } = require('glob');
       const consolidatedFiles = await glob(consolidatedPattern, {
         cwd: config.outputDirectory,
         absolute: true,
@@ -1374,8 +1373,6 @@ export = function (app: SignalKApp): SignalKPlugin {
 
   // Webapp static files and API routes
   plugin.registerWithRouter = function (router: Router): void {
-    const express = require('express');
-
     // Serve static files from public directory
     const publicPath = path.join(__dirname, '../public');
     if (fs.existsSync(publicPath)) {
@@ -1777,7 +1774,6 @@ export = function (app: SignalKApp): SignalKPlugin {
           }
 
           // Test S3 connection by listing bucket
-          const { ListObjectsV2Command } = require('@aws-sdk/client-s3');
           const listCommand = new ListObjectsV2Command({
             Bucket: state.currentConfig.s3Upload.bucket,
             MaxKeys: 1,
