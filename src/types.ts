@@ -1,35 +1,12 @@
+import { Context, Path, ServerAPI } from '@signalk/server-api';
 import { Request, Response, Router } from 'express';
-
-// SignalK App Interface
-export interface SignalKApp {
-  debug: (message: string, ...args: any[]) => void;
-  error: (message: string, ...args: any[]) => void;
-  getSelfPath: (path: string) => any;
-  getDataDirPath: () => string;
-  selfContext: string;
-  subscriptionmanager: {
-    subscribe: (
-      subscription: SignalKSubscription,
-      unsubscribes: Array<() => void>,
-      errorCallback: (error: any) => void,
-      deltaCallback: (delta: SignalKDelta) => void
-    ) => void;
-  };
-  savePluginOptions: (options: any, callback: (error?: Error) => void) => void;
-  handleMessage: (pluginId: string, delta: SignalKDelta) => void;
-  registerPutHandler: (
-    context: string,
-    path: string,
-    handler: CommandPutHandler,
-    source?: string
-  ) => void;
-}
 
 // SignalK Plugin Interface
 export interface SignalKPlugin {
   id: string;
   name: string;
   description: string;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   schema: any;
   start: (options: Partial<PluginConfig>) => void;
   stop: () => void;
@@ -49,12 +26,12 @@ export interface PluginConfig {
 }
 
 export interface PathConfig {
-  path: string;
+  path: Path;
   name?: string;
   enabled?: boolean;
   regimen?: string;
   source?: string;
-  context?: string;
+  context?: Context;
 }
 
 // Command Registration Types
@@ -109,35 +86,13 @@ export interface SignalKSubscription {
   }>;
 }
 
-export interface SignalKDelta {
-  context: string;
-  updates: SignalKUpdate[];
-}
-
-export interface SignalKUpdate {
-  source?: {
-    label?: string;
-    type?: string;
-    pgn?: number;
-    src?: string;
-  };
-  $source?: string;
-  timestamp: string;
-  values: SignalKValue[];
-}
-
-export interface SignalKValue {
-  path: string;
-  value: any;
-  meta?: any;
-}
-
 // Data Record Structure
 export interface DataRecord {
   received_timestamp: string;
   signalk_timestamp: string;
   context: string;
   path: string;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   value: any;
   value_json?: string;
   source?: string;
@@ -146,13 +101,14 @@ export interface DataRecord {
   source_pgn?: number;
   source_src?: string;
   meta?: string;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   [key: string]: any; // For flattened object properties
 }
 
 // Parquet Writer Options
 export interface ParquetWriterOptions {
   format: 'json' | 'csv' | 'parquet';
-  app?: SignalKApp;
+  app?: ServerAPI;
 }
 
 // File System Related
@@ -170,6 +126,7 @@ export interface PathInfo {
 }
 
 // API Response Types
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 export interface ApiResponse<T = any> {
   success: boolean;
   data?: T;
@@ -205,6 +162,7 @@ export interface FilesApiResponse extends ApiResponse {
 export interface QueryApiResponse extends ApiResponse {
   query?: string;
   rowCount?: number;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   data?: any[];
 }
 
@@ -213,6 +171,7 @@ export interface SampleApiResponse extends ApiResponse {
   file?: string;
   columns?: string[];
   rowCount?: number;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   data?: any[];
 }
 
@@ -233,12 +192,14 @@ export interface S3TestApiResponse extends ApiResponse {
 }
 
 // Express Router Types
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 export interface TypedRequest<T = any> extends Request {
   body: T;
   params: { [key: string]: string };
   query: { [key: string]: string };
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 export interface TypedResponse<T = any> extends Response {
   json: (body: T) => this;
   status: (code: number) => this;
@@ -253,6 +214,7 @@ export interface PluginState {
   saveInterval?: NodeJS.Timeout;
   consolidationInterval?: NodeJS.Timeout;
   parquetWriter?: ParquetWriter;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   s3Client?: any;
   currentConfig?: PluginConfig;
   commandState: CommandRegistrationState;
@@ -264,7 +226,11 @@ export interface ParquetWriter {
   writeJSON(filepath: string, records: DataRecord[]): Promise<string>;
   writeCSV(filepath: string, records: DataRecord[]): Promise<string>;
   writeParquet(filepath: string, records: DataRecord[]): Promise<string>;
-  consolidateDaily(outputDirectory: string, date: Date, filenamePrefix: string): Promise<number>;
+  consolidateDaily(
+    outputDirectory: string,
+    date: Date,
+    filenamePrefix: string
+  ): Promise<number>;
 }
 
 // DuckDB Related Types
@@ -274,6 +240,7 @@ export interface DuckDBConnection {
 }
 
 export interface DuckDBResult {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   getRowObjects(): any[];
 }
 
@@ -296,18 +263,19 @@ export interface QueryRequest {
 }
 
 export interface PathConfigRequest {
-  path: string;
+  path: Path;
   name?: string;
   enabled?: boolean;
   regimen?: string;
   source?: string;
-  context?: string;
+  context?: Context;
 }
-
+//FIXME https://github.com/SignalK/signalk-server/pull/2043
 // Command Types
 export type CommandPutHandler = (
   context: string,
   path: string,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   value: any,
   callback?: (result: CommandExecutionResult) => void
 ) => CommandExecutionResult;
@@ -332,7 +300,7 @@ export enum CommandStatus {
   ACTIVE = 'ACTIVE',
   INACTIVE = 'INACTIVE',
   PENDING = 'PENDING',
-  ERROR = 'ERROR'
+  ERROR = 'ERROR',
 }
 
 // Utility Types
@@ -343,6 +311,7 @@ export type BufferKey = string; // Format: "context:path"
 // Error Types
 export interface PluginError extends Error {
   code?: string;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   details?: any;
 }
 
