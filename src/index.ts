@@ -656,15 +656,15 @@ export = function (app: ServerAPI): SignalKPlugin {
     app.subscriptionmanager.subscribe(
       commandSubscription,
       state.unsubscribes,
-      subscriptionError => {
+      (subscriptionError: unknown) => {
         app.debug(`Command subscription error: ${subscriptionError}`);
       },
       (delta: Delta) => {
         // Process each update in the delta
         if (delta.updates) {
-          delta.updates.forEach(update => {
+          delta.updates.forEach((update: Update) => {
             if (hasValues(update)) {
-              update.values.forEach(valueUpdate => {
+              update.values.forEach((valueUpdate: PathValue) => {
                 const pathConfig = commandPaths.find(
                   p => p.path === valueUpdate.path
                 );
@@ -759,6 +759,54 @@ export = function (app: ServerAPI): SignalKPlugin {
     }
   }
 
+  // Helper function to handle wildcard contexts
+  function handleWildcardContext(pathConfig: PathConfig): PathConfig {
+    const context = pathConfig.context || 'vessels.self';
+
+    if (context === 'vessels.*') {
+      // For vessels.*, we create a subscription that will receive deltas from any vessel
+      // The actual filtering by MMSI will happen in the delta handler
+      return {
+        ...pathConfig,
+        context: 'vessels.*' as Context, // Keep the wildcard for the subscription
+      };
+    }
+
+    // Not a wildcard, return as-is
+    return pathConfig;
+  }
+
+  // Helper function to check if a vessel should be excluded based on MMSI
+  function shouldExcludeVessel(
+    vesselContext: string,
+    pathConfig: PathConfig
+  ): boolean {
+    if (!pathConfig.excludeMMSI || pathConfig.excludeMMSI.length === 0) {
+      return false; // No exclusions specified
+    }
+
+    try {
+      // For vessels.self, use getSelfPath
+      if (vesselContext === 'vessels.self') {
+        const mmsiData = app.getSelfPath('mmsi');
+        if (mmsiData && mmsiData.value) {
+          const mmsi = String(mmsiData.value);
+          return pathConfig.excludeMMSI.includes(mmsi);
+        }
+      } else {
+        // For other vessels, we would need to get their MMSI from the delta or other means
+        // For now, we'll skip MMSI filtering for other vessels
+        app.debug(
+          `MMSI filtering not implemented for vessel context: ${vesselContext}`
+        );
+      }
+    } catch (error) {
+      app.debug(`Error checking MMSI for vessel ${vesselContext}: ${error}`);
+    }
+
+    return false; // Don't exclude if we can't determine MMSI
+  }
+
   // Update data path subscriptions based on active regimens
   function updateDataSubscriptions(config: PluginConfig): void {
     // First, unsubscribe from all existing subscriptions
@@ -787,14 +835,19 @@ export = function (app: ServerAPI): SignalKPlugin {
       shouldSubscribeToPath(pathConfig)
     );
 
-    if (shouldSubscribePaths.length === 0) {
+    // Handle wildcard contexts (like vessels.*)
+    const processedPaths: PathConfig[] = shouldSubscribePaths.map(pathConfig =>
+      handleWildcardContext(pathConfig)
+    );
+
+    if (processedPaths.length === 0) {
       app.debug('No data paths need subscription currently');
       return;
     }
 
     // Group paths by context for separate subscriptions
     const contextGroups = new Map<Context, PathConfig[]>();
-    shouldSubscribePaths.forEach((pathConfig: PathConfig) => {
+    processedPaths.forEach((pathConfig: PathConfig) => {
       const context = (pathConfig.context || 'vessels.self') as Context;
       if (!contextGroups.has(context)) {
         contextGroups.set(context, []);
@@ -820,7 +873,7 @@ export = function (app: ServerAPI): SignalKPlugin {
       app.subscriptionmanager.subscribe(
         dataSubscription,
         state.unsubscribes,
-        subscriptionError => {
+        (subscriptionError: unknown) => {
           app.debug(
             `Data subscription error for ${context}: ${subscriptionError}`
           );
@@ -828,9 +881,9 @@ export = function (app: ServerAPI): SignalKPlugin {
         (delta: Delta) => {
           // Process each update in the delta
           if (delta.updates) {
-            delta.updates.forEach(update => {
+            delta.updates.forEach((update: Update) => {
               if (hasValues(update)) {
-                update.values.forEach(valueUpdate => {
+                update.values.forEach((valueUpdate: PathValue) => {
                   const pathConfig = pathConfigs.find(
                     (p: PathConfig) => p.path === valueUpdate.path
                   );
@@ -893,6 +946,15 @@ export = function (app: ServerAPI): SignalKPlugin {
     try {
       // Check if we should still process this path
       if (!shouldSubscribeToPath(pathConfig)) {
+        return;
+      }
+
+      // Check if this vessel should be excluded based on MMSI
+      const vesselContext = delta.context || 'vessels.self';
+      if (shouldExcludeVessel(vesselContext, pathConfig)) {
+        app.debug(
+          `Excluding data from vessel ${vesselContext} due to MMSI filter`
+        );
         return;
       }
 

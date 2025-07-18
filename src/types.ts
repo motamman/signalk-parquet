@@ -32,6 +32,7 @@ export interface PathConfig {
   regimen?: string;
   source?: string;
   context?: Context;
+  excludeMMSI?: string[]; // Array of MMSI numbers to exclude when using vessels.*
 }
 
 // Command Registration Types
