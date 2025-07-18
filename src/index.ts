@@ -339,7 +339,9 @@ export = function (app: ServerAPI): SignalKPlugin {
     let addedMissingPaths = false;
     currentCommands.forEach((commandConfig: CommandConfig) => {
       const commandPath = `commands.${commandConfig.command}`;
-      const existingCommandPath = currentPaths.find(p => p.path === commandPath);
+      const existingCommandPath = currentPaths.find(
+        p => p.path === commandPath
+      );
       if (!existingCommandPath) {
         const commandPathConfig: PathConfig = {
           path: commandPath as Path,
@@ -352,7 +354,9 @@ export = function (app: ServerAPI): SignalKPlugin {
         };
         currentPaths.push(commandPathConfig);
         addedMissingPaths = true;
-        app.debug(`✅ Added missing path configuration for existing command: ${commandConfig.command}`);
+        app.debug(
+          `✅ Added missing path configuration for existing command: ${commandConfig.command}`
+        );
       }
     });
 
@@ -455,10 +459,14 @@ export = function (app: ServerAPI): SignalKPlugin {
       };
 
       // Check if this command path already exists
-      const existingCommandPath = currentPaths.find(p => p.path === commandPath);
+      const existingCommandPath = currentPaths.find(
+        p => p.path === commandPath
+      );
       if (!existingCommandPath) {
         currentPaths.push(commandPathConfig);
-        app.debug(`✅ Auto-created path configuration for command: ${commandName}`);
+        app.debug(
+          `✅ Auto-created path configuration for command: ${commandName}`
+        );
       }
 
       saveWebAppConfig(currentPaths, currentCommands);
@@ -506,10 +514,14 @@ export = function (app: ServerAPI): SignalKPlugin {
 
       // Remove the auto-created path configuration for this command
       const commandPath = `commands.${commandName}`;
-      const commandPathIndex = currentPaths.findIndex(p => p.path === commandPath);
+      const commandPathIndex = currentPaths.findIndex(
+        p => p.path === commandPath
+      );
       if (commandPathIndex !== -1) {
         currentPaths.splice(commandPathIndex, 1);
-        app.debug(`🗑️ Removed auto-created path configuration for command: ${commandName}`);
+        app.debug(
+          `🗑️ Removed auto-created path configuration for command: ${commandName}`
+        );
       }
 
       // Update current commands and save
