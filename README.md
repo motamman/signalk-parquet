@@ -7,15 +7,17 @@ A comprehensive TypeScript-based SignalK plugin that saves marine data directly 
 ## Features
 
 - **TypeScript Implementation**: Full TypeScript support with comprehensive type safety
+- **Command Management**: Register, execute, and manage SignalK commands with automatic path configuration
 - **Regimen-Based Data Collection**: Control data collection with command-based regimens
+- **Multi-Vessel Support**: Wildcard vessel contexts (`vessels.*`) with MMSI-based exclusion filtering
 - **Multiple File Formats**: Support for Parquet, JSON, and CSV output formats
-- **Web Interface**: Beautiful, responsive web interface for data exploration
+- **Web Interface**: Beautiful, responsive web interface for data exploration and configuration
 - **DuckDB Integration**: Query Parquet files directly with SQL
 - **S3 Integration**: Upload files to Amazon S3 with configurable timing
 - **Daily Consolidation**: Automatic daily file consolidation
 - **Real-time Buffering**: Efficient data buffering with configurable thresholds
 - **Source Filtering**: Filter data by SignalK source labels
-- **Context Support**: Support for multiple vessel contexts
+- **Context Support**: Support for multiple vessel contexts with exclusion controls
 
 ## Installation
 
@@ -119,7 +121,8 @@ Use the web interface to configure which SignalK paths to collect:
    - **Always Enabled**: Collect data regardless of regimen state
    - **Regimen Control**: Command name that controls collection
    - **Source Filter**: Only collect from specific sources
-   - **Context**: SignalK context (usually `vessels.self`)
+   - **Context**: SignalK context (`vessels.self`, `vessels.*`, or specific vessel)
+   - **Exclude MMSI**: For `vessels.*` context, exclude specific MMSI numbers
 3. Click **✅ Add Path**
 
 ### Managing Existing Paths
@@ -127,6 +130,18 @@ Use the web interface to configure which SignalK paths to collect:
 - **Edit Path**: Click ✏️ Edit button to modify path settings
 - **Delete Path**: Click 🗑️ Remove button to delete a path
 - **Refresh**: Click 🔄 Refresh Paths to reload configuration
+- **Show/Hide Commands**: Toggle button to show/hide command paths in the table
+
+### Command Management
+
+The plugin now streamlines command management with automatic path configuration:
+
+1. **Register Command**: Commands are automatically registered with enabled path configurations
+2. **Start Command**: Click **Start** button to activate a command regimen
+3. **Stop Command**: Click **Stop** button to deactivate a command regimen
+4. **Remove Command**: Click **Remove** button to delete a command and its path configuration
+
+This eliminates the previous 3-step process of registering commands, adding paths, and enabling them separately.
 
 ### Path Configuration Storage
 
@@ -156,7 +171,17 @@ Regimens allow you to control data collection based on SignalK commands:
 }
 ```
 
-**Command Path**: Add the corresponding command path
+**Multi-Vessel Example**: Collect navigation data from all vessels except specific MMSI numbers
+```json
+{
+  "path": "navigation.position",
+  "enabled": true,
+  "context": "vessels.*",
+  "excludeMMSI": ["123456789", "987654321"]
+}
+```
+
+**Command Path**: Command paths are automatically created when registering commands
 ```json
 {
   "path": "commands.captureWeather",
@@ -182,6 +207,15 @@ interface PluginConfig {
   fileFormat: 'json' | 'csv' | 'parquet';
   paths: PathConfig[];
   s3Upload: S3UploadConfig;
+}
+
+interface PathConfig {
+  path: string;
+  enabled: boolean;
+  regimen?: string;
+  source?: string;
+  context: string;
+  excludeMMSI?: string[];
 }
 
 interface DataRecord {
@@ -265,11 +299,13 @@ Each record contains:
 
 ### Features
 
-- **Path Configuration**: Manage data collection paths
+- **Path Configuration**: Manage data collection paths with multi-vessel support
+- **Command Management**: Streamlined command registration and control
 - **Data Exploration**: Browse available data paths
 - **SQL Queries**: Execute DuckDB queries against Parquet files
 - **S3 Status**: Test S3 connectivity and configuration
 - **Responsive Design**: Works on desktop and mobile
+- **MMSI Filtering**: Exclude specific vessels from wildcard contexts
 
 ### API Endpoints
 
@@ -507,3 +543,7 @@ For detailed testing procedures, see [TESTING.md](TESTING.md).
 - Better documentation
 - Updated web interface
 - Performance optimizations
+- **Multi-vessel support**: `vessels.*` wildcard context with MMSI exclusion
+- **Streamlined command management**: Automatic path configuration for commands
+- **Enhanced UI**: Show/hide command paths toggle, improved button labels
+- **SignalK API compliance**: Proper subscription patterns for vessel contexts
