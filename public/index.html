@@ -1199,7 +1199,7 @@
                     <td>${status}</td>
                     <td>${registeredDate}</td>
                     <td>
-                        <button onclick="executeCommand('${command.command}', true)" style="margin-right: 5px;">▶️ Execute</button>
+                        <button onclick="executeCommand('${command.command}', true)" style="margin-right: 5px;">▶️ Start</button>
                         <button onclick="executeCommand('${command.command}', false)" style="margin-right: 5px;">⏹️ Stop</button>
                         <button onclick="unregisterCommand('${command.command}')" class="btn-danger">❌ Remove</button>
                     </td>
@@ -1277,7 +1277,7 @@
                 if (result.success) {
                     await loadCommands();
                     await loadCommandHistory();
-                    alert(`Command '${commandName}' ${value ? 'executed' : 'stopped'} successfully`);
+                    alert(`Command '${commandName}' ${value ? 'started' : 'stopped'} successfully`);
                 } else {
                     alert(`Error executing command: ${result.error}`);
                 }
