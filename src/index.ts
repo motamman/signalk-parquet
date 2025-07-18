@@ -335,6 +335,32 @@ export = function (app: ServerAPI): SignalKPlugin {
       }
     });
 
+    // Ensure all commands have path configurations (for backwards compatibility)
+    let addedMissingPaths = false;
+    currentCommands.forEach((commandConfig: CommandConfig) => {
+      const commandPath = `commands.${commandConfig.command}`;
+      const existingCommandPath = currentPaths.find(p => p.path === commandPath);
+      if (!existingCommandPath) {
+        const commandPathConfig: PathConfig = {
+          path: commandPath as Path,
+          name: `Command: ${commandConfig.command}`,
+          enabled: true,
+          regimen: undefined,
+          source: undefined,
+          context: 'vessels.self' as Context,
+          excludeMMSI: undefined,
+        };
+        currentPaths.push(commandPathConfig);
+        addedMissingPaths = true;
+        app.debug(`✅ Added missing path configuration for existing command: ${commandConfig.command}`);
+      }
+    });
+
+    // Save the updated configuration if we added missing paths
+    if (addedMissingPaths) {
+      saveWebAppConfig(currentPaths, currentCommands);
+    }
+
     // Reset all commands to false on startup
     currentCommands.forEach((commandConfig: CommandConfig) => {
       initializeCommandValue(commandConfig.command, false);
@@ -416,6 +442,25 @@ export = function (app: ServerAPI): SignalKPlugin {
 
       // Update current commands and save
       currentCommands = Array.from(commandState.registeredCommands.values());
+
+      // Automatically create a path configuration for this command
+      const commandPathConfig: PathConfig = {
+        path: commandPath as Path,
+        name: `Command: ${commandName}`,
+        enabled: true, // Always enabled so it gets subscribed to
+        regimen: undefined, // Commands don't need regimen control
+        source: undefined,
+        context: 'vessels.self' as Context,
+        excludeMMSI: undefined,
+      };
+
+      // Check if this command path already exists
+      const existingCommandPath = currentPaths.find(p => p.path === commandPath);
+      if (!existingCommandPath) {
+        currentPaths.push(commandPathConfig);
+        app.debug(`✅ Auto-created path configuration for command: ${commandName}`);
+      }
+
       saveWebAppConfig(currentPaths, currentCommands);
 
       // Log command registration
@@ -426,7 +471,7 @@ export = function (app: ServerAPI): SignalKPlugin {
       return {
         state: 'COMPLETED',
         statusCode: 200,
-        message: `Command '${commandName}' registered successfully`,
+        message: `Command '${commandName}' registered successfully with automatic path configuration`,
         timestamp: new Date().toISOString(),
       };
     } catch (error) {
@@ -459,6 +504,14 @@ export = function (app: ServerAPI): SignalKPlugin {
       commandState.putHandlers.delete(commandName);
       commandState.registeredCommands.delete(commandName);
 
+      // Remove the auto-created path configuration for this command
+      const commandPath = `commands.${commandName}`;
+      const commandPathIndex = currentPaths.findIndex(p => p.path === commandPath);
+      if (commandPathIndex !== -1) {
+        currentPaths.splice(commandPathIndex, 1);
+        app.debug(`🗑️ Removed auto-created path configuration for command: ${commandName}`);
+      }
+
       // Update current commands and save
       currentCommands = Array.from(commandState.registeredCommands.values());
       saveWebAppConfig(currentPaths, currentCommands);
@@ -471,7 +524,7 @@ export = function (app: ServerAPI): SignalKPlugin {
       return {
         state: 'COMPLETED',
         statusCode: 200,
-        message: `Command '${commandName}' unregistered successfully`,
+        message: `Command '${commandName}' unregistered successfully with path cleanup`,
         timestamp: new Date().toISOString(),
       };
     } catch (error) {

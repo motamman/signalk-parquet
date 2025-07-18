@@ -1203,7 +1203,8 @@
                 if (result.success) {
                     hideAddCommandForm();
                     await loadCommands();
-                    alert(`Command '${command}' registered successfully`);
+                    await loadPathConfigurations(); // Refresh paths to show the auto-created path
+                    alert(`Command '${command}' registered successfully!\n\nA path configuration has been automatically created and enabled for this command.`);
                 } else {
                     alert(`Error registering command: ${result.error}`);
                 }
@@ -1253,7 +1254,8 @@
                 if (result.success) {
                     await loadCommands();
                     await loadCommandHistory();
-                    alert(`Command '${commandName}' unregistered successfully`);
+                    await loadPathConfigurations(); // Refresh paths to show the removed path
+                    alert(`Command '${commandName}' unregistered successfully!\n\nThe associated path configuration has been automatically removed.`);
                 } else {
                     alert(`Error unregistering command: ${result.error}`);
                 }
