@@ -141,12 +141,13 @@
             word-wrap: break-word;
         }
         
-        th:nth-child(1), td:nth-child(1) { min-width: 200px; } /* Path */
-        th:nth-child(2), td:nth-child(2) { width: 70px; } /* Enabled */
-        th:nth-child(3), td:nth-child(3) { min-width: 120px; } /* Regimen */
-        th:nth-child(4), td:nth-child(4) { min-width: 100px; } /* Source */
-        th:nth-child(5), td:nth-child(5) { width: 100px; } /* Context */
-        th:nth-child(6), td:nth-child(6) { width: 140px; } /* Actions */
+        th:nth-child(1), td:nth-child(1) { min-width: 180px; } /* Path */
+        th:nth-child(2), td:nth-child(2) { width: 60px; } /* Enabled */
+        th:nth-child(3), td:nth-child(3) { min-width: 100px; } /* Regimen */
+        th:nth-child(4), td:nth-child(4) { min-width: 90px; } /* Source */
+        th:nth-child(5), td:nth-child(5) { width: 90px; } /* Context */
+        th:nth-child(6), td:nth-child(6) { min-width: 120px; } /* Exclude MMSI */
+        th:nth-child(7), td:nth-child(7) { width: 140px; } /* Actions */
 
         th {
             background-color: #f8f9fa;
@@ -459,7 +460,14 @@
                     </div>
                     <div class="form-group">
                         <label for="pathContext">Context:</label>
-                        <input type="text" id="pathContext" placeholder="e.g., vessels.self" value="vessels.self">
+                        <input type="text" id="pathContext" placeholder="e.g., vessels.self or vessels.*" value="vessels.self">
+                    </div>
+                    <div class="form-group">
+                        <label for="pathExcludeMMSI">Exclude MMSI (for vessels.* context):</label>
+                        <input type="text" id="pathExcludeMMSI" placeholder="e.g., 123456789, 987654321 (comma-separated)">
+                        <small style="color: #666; display: block; margin-top: 5px;">
+                            Only applicable when context is "vessels.*". Leave empty to include all vessels.
+                        </small>
                     </div>
                     <div style="margin-top: 20px; padding-top: 15px; border-top: 1px solid #ddd; min-height: 60px; display: flex; gap: 10px; align-items: center;">
                         <button onclick="addPathConfiguration()">✅ Add Path</button>
@@ -915,16 +923,18 @@
             }
 
             let html = '<div class="table-container"><table><thead><tr>';
-            html += '<th>Path</th><th>Always Enabled</th><th>Regimen</th><th>Source</th><th>Context</th><th>Actions</th>';
+            html += '<th>Path</th><th>Always Enabled</th><th>Regimen</th><th>Source</th><th>Context</th><th>Exclude MMSI</th><th>Actions</th>';
             html += '</tr></thead><tbody>';
 
             paths.forEach((path, index) => {
+                const excludeMMSI = path.excludeMMSI && path.excludeMMSI.length > 0 ? path.excludeMMSI.join(', ') : '';
                 html += `<tr data-index="${index}">
                     <td><code>${path.path || ''}</code></td>
                     <td>${path.enabled ? '✅' : '❌'}</td>
                     <td>${path.regimen || ''}</td>
                     <td>${path.source || ''}</td>
                     <td>${path.context || 'vessels.self'}</td>
+                    <td>${excludeMMSI}</td>
                     <td>
                         <button onclick="editPathConfiguration(${index})" style="padding: 5px 10px; font-size: 12px;">✏️ Edit</button>
                         <button onclick="removePathConfiguration(${index})" style="padding: 5px 10px; font-size: 12px; background: #dc3545;">🗑️ Remove</button>
@@ -951,15 +961,20 @@
             document.getElementById('pathRegimen').value = '';
             document.getElementById('pathSource').value = '';
             document.getElementById('pathContext').value = 'vessels.self';
+            document.getElementById('pathExcludeMMSI').value = '';
         }
 
         async function addPathConfiguration() {
+            const excludeMMSIInput = document.getElementById('pathExcludeMMSI').value.trim();
+            const excludeMMSI = excludeMMSIInput ? excludeMMSIInput.split(',').map(mmsi => mmsi.trim()).filter(mmsi => mmsi) : [];
+            
             const pathConfig = {
                 path: document.getElementById('pathSignalK').value.trim(),
                 enabled: document.getElementById('pathEnabled').checked,
                 regimen: document.getElementById('pathRegimen').value.trim(),
                 source: document.getElementById('pathSource').value.trim(),
-                context: document.getElementById('pathContext').value.trim() || 'vessels.self'
+                context: document.getElementById('pathContext').value.trim() || 'vessels.self',
+                excludeMMSI: excludeMMSI.length > 0 ? excludeMMSI : undefined
             };
 
             if (!pathConfig.path) {
@@ -1037,12 +1052,14 @@
             // Replace the row with edit form
             const row = document.querySelector(`tr[data-index="${index}"]`);
             if (row) {
+                const excludeMMSIValue = path.excludeMMSI && path.excludeMMSI.length > 0 ? path.excludeMMSI.join(', ') : '';
                 row.innerHTML = `
                     <td><input type="text" id="editPath${index}" value="${path.path || ''}" style="width: 100%;"></td>
                     <td><input type="checkbox" id="editEnabled${index}" ${path.enabled ? 'checked' : ''}></td>
                     <td><input type="text" id="editRegimen${index}" value="${path.regimen || ''}" style="width: 100%;"></td>
                     <td><input type="text" id="editSource${index}" value="${path.source || ''}" style="width: 100%;"></td>
                     <td><input type="text" id="editContext${index}" value="${path.context || 'vessels.self'}" style="width: 100%;"></td>
+                    <td><input type="text" id="editExcludeMMSI${index}" value="${excludeMMSIValue}" style="width: 100%;" placeholder="123456789, 987654321"></td>
                     <td>
                         <button onclick="saveEdit(${index})" style="padding: 5px 10px; font-size: 12px; background: #28a745;">💾 Save</button>
                         <button onclick="cancelEdit()" style="padding: 5px 10px; font-size: 12px; background: #6c757d;">❌ Cancel</button>
@@ -1052,12 +1069,16 @@
         }
 
         async function saveEdit(index) {
+            const excludeMMSIInput = document.getElementById(`editExcludeMMSI${index}`).value.trim();
+            const excludeMMSI = excludeMMSIInput ? excludeMMSIInput.split(',').map(mmsi => mmsi.trim()).filter(mmsi => mmsi) : [];
+            
             const updatedPath = {
                 path: document.getElementById(`editPath${index}`).value.trim(),
                 enabled: document.getElementById(`editEnabled${index}`).checked,
                 regimen: document.getElementById(`editRegimen${index}`).value.trim(),
                 source: document.getElementById(`editSource${index}`).value.trim(),
-                context: document.getElementById(`editContext${index}`).value.trim() || 'vessels.self'
+                context: document.getElementById(`editContext${index}`).value.trim() || 'vessels.self',
+                excludeMMSI: excludeMMSI.length > 0 ? excludeMMSI : undefined
             };
 
             if (!updatedPath.path) {
