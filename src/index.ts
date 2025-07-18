@@ -1641,60 +1641,6 @@ export = function (app: ServerAPI): SignalKPlugin {
       }
     );
 
-    // Cleanup invalid files for a specific path
-    router.post(
-      '/api/paths/:pathName/cleanup',
-      async (req: TypedRequest, res: TypedResponse<{ success: boolean; message: string; removedFiles: string[] }>) => {
-        try {
-          const pathName = req.params.pathName;
-          const dataDir = getDataDir();
-          const pathDir = path.join(dataDir, pathName);
-
-          app.debug(`🧹 Starting cleanup for path: ${pathName}`);
-
-          if (!await fs.pathExists(pathDir)) {
-            return res.status(404).json({
-              success: false,
-              message: `Path directory not found: ${pathName}`,
-              removedFiles: []
-            });
-          }
-
-          const removedFiles: string[] = [];
-          const files = await fs.readdir(pathDir);
-
-          for (const file of files) {
-            const filePath = path.join(pathDir, file);
-            const stat = await fs.stat(filePath);
-
-            if (stat.isFile() && file.endsWith('.parquet')) {
-              // Check if parquet file is too small (invalid)
-              if (stat.size < 100) {
-                app.debug(`🗑️ Removing invalid parquet file: ${file} (${stat.size} bytes)`);
-                await fs.remove(filePath);
-                removedFiles.push(file);
-              }
-            }
-          }
-
-          app.debug(`🧹 Cleanup complete for ${pathName}: removed ${removedFiles.length} invalid files`);
-
-          return res.json({
-            success: true,
-            message: `Cleanup completed for ${pathName}. Removed ${removedFiles.length} invalid files.`,
-            removedFiles: removedFiles
-          });
-        } catch (error) {
-          app.error(`Cleanup failed for path: ${(error as Error).message}`);
-          return res.status(500).json({
-            success: false,
-            message: `Cleanup failed: ${(error as Error).message}`,
-            removedFiles: []
-          });
-        }
-      }
-    );
-
     // Get files for a specific path
     router.get(
       '/api/files/:path(*)',
