@@ -1,7 +1,7 @@
 {
   "name": "signalk-parquet",
   "version": "0.5.0-alpha.2",
-  "description": "SignalK plugin to save marine data directly to Parquet files with regimen-based control (TypeScript version)",
+  "description": "SignalK plugin to save marine data directly to Parquet files with regimen-based control",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
