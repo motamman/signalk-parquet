@@ -438,6 +438,7 @@
                 <p>Manage which SignalK paths to collect data from:</p>
                 <button onclick="loadPathConfigurations()">🔄 Refresh Paths</button>
                 <button onclick="showAddPathForm()">➕ Add New Path</button>
+                <button id="toggleCommandsBtn" onclick="toggleCommandPaths()">👁️ Show Commands</button>
                 
                 <!-- Add Path Form (hidden by default) -->
                 <div id="addPathForm" style="display: none; margin: 20px 0; padding: 20px; background: #f8f9fa; border-radius: 5px; min-height: 400px; overflow: visible;">
@@ -598,6 +599,7 @@
     <script>
         let availablePaths = [];
         let dataDirectory = '';
+        let showCommandPaths = false; // Default to hiding command paths
 
         // Get the plugin path dynamically
         function getPluginPath() {
@@ -922,28 +924,73 @@
                 return;
             }
 
+            // Filter paths based on showCommandPaths setting
+            const filteredPaths = showCommandPaths ? paths : paths.filter(path => !path.path || !path.path.startsWith('commands.'));
+            
+            if (filteredPaths.length === 0) {
+                const commandCount = paths.filter(path => path.path && path.path.startsWith('commands.')).length;
+                container.innerHTML = `
+                    <div style="text-align: center; padding: 40px; background: #f8f9fa; border-radius: 5px; margin: 20px 0;">
+                        <h3 style="color: #666; margin-bottom: 10px;">No Data Paths Found</h3>
+                        <p style="color: #666; margin-bottom: 20px;">
+                            ${commandCount > 0 ? `${commandCount} command path${commandCount > 1 ? 's' : ''} hidden. ` : ''}
+                            Add data paths to start collecting SignalK data.
+                        </p>
+                        <button onclick="showAddPathForm()">➕ Add Your First Data Path</button>
+                    </div>
+                `;
+                return;
+            }
+
             let html = '<div class="table-container"><table><thead><tr>';
             html += '<th>Path</th><th>Always Enabled</th><th>Regimen</th><th>Source</th><th>Context</th><th>Exclude MMSI</th><th>Actions</th>';
             html += '</tr></thead><tbody>';
 
-            paths.forEach((path, index) => {
+            filteredPaths.forEach((path, filteredIndex) => {
+                // Find the original index in the full paths array
+                const originalIndex = paths.findIndex(p => p === path);
                 const excludeMMSI = path.excludeMMSI && path.excludeMMSI.length > 0 ? path.excludeMMSI.join(', ') : '';
-                html += `<tr data-index="${index}">
-                    <td><code>${path.path || ''}</code></td>
+                const isCommand = path.path && path.path.startsWith('commands.');
+                const rowClass = isCommand ? 'style="background-color: #fff3cd;"' : '';
+                
+                html += `<tr data-index="${originalIndex}" ${rowClass}>
+                    <td><code>${path.path || ''}</code>${isCommand ? ' <span style="color: #856404; font-size: 11px;">(Command)</span>' : ''}</td>
                     <td>${path.enabled ? '✅' : '❌'}</td>
                     <td>${path.regimen || ''}</td>
                     <td>${path.source || ''}</td>
                     <td>${path.context || 'vessels.self'}</td>
                     <td>${excludeMMSI}</td>
                     <td>
-                        <button onclick="editPathConfiguration(${index})" style="padding: 5px 10px; font-size: 12px;">✏️ Edit</button>
-                        <button onclick="removePathConfiguration(${index})" style="padding: 5px 10px; font-size: 12px; background: #dc3545;">🗑️ Remove</button>
+                        <button onclick="editPathConfiguration(${originalIndex})" style="padding: 5px 10px; font-size: 12px;">✏️ Edit</button>
+                        <button onclick="removePathConfiguration(${originalIndex})" style="padding: 5px 10px; font-size: 12px; background: #dc3545;">🗑️ Remove</button>
                     </td>
                 </tr>`;
             });
 
             html += '</tbody></table></div>';
-            container.innerHTML = html;
+            
+            // Add summary info
+            const totalPaths = paths.length;
+            const commandPaths = paths.filter(path => path.path && path.path.startsWith('commands.')).length;
+            const dataPaths = totalPaths - commandPaths;
+            
+            const summaryHtml = `
+                <div style="margin-top: 10px; padding: 10px; background: #f8f9fa; border-radius: 5px; font-size: 14px; color: #666;">
+                    Showing ${filteredPaths.length} of ${totalPaths} paths 
+                    (${dataPaths} data path${dataPaths !== 1 ? 's' : ''}, ${commandPaths} command path${commandPaths !== 1 ? 's' : ''})
+                </div>
+            `;
+            
+            container.innerHTML = html + summaryHtml;
+        }
+
+        function toggleCommandPaths() {
+            showCommandPaths = !showCommandPaths;
+            const button = document.getElementById('toggleCommandsBtn');
+            button.textContent = showCommandPaths ? '🙈 Hide Commands' : '👁️ Show Commands';
+            
+            // Re-display the paths with the new filter
+            loadPathConfigurations();
         }
 
         function showAddPathForm() {
