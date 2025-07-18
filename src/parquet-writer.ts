@@ -170,8 +170,16 @@ export class ParquetWriter {
       this.app?.debug('Closing Parquet writer...');
       await writer.close();
 
+      // Validate the written file size
+      const stats = await fs.stat(filepath);
+      this.app?.debug(`Parquet file size: ${stats.size} bytes`);
+      
+      if (stats.size < 100) {
+        throw new Error(`Parquet file too small (${stats.size} bytes) - likely empty or corrupted`);
+      }
+
       this.app?.debug(
-        `✅ Successfully wrote ${records.length} records to Parquet: ${filepath}`
+        `✅ Successfully wrote ${records.length} records to Parquet: ${filepath} (${stats.size} bytes)`
       );
       return filepath;
     } catch (error) {

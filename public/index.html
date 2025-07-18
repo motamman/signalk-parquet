@@ -213,6 +213,31 @@
             font-size: 12px;
         }
 
+        .path-actions {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            margin-top: 10px;
+        }
+
+        .path-actions button {
+            margin-top: 0;
+        }
+
+        .cleanup-btn {
+            background: #ff6b6b !important;
+            color: white !important;
+            border: none;
+            padding: 5px 10px;
+            border-radius: 3px;
+            cursor: pointer;
+            font-size: 12px;
+        }
+
+        .cleanup-btn:hover {
+            background: #ff5252 !important;
+        }
+
         .query-examples {
             background: #f8f9fa;
             padding: 15px;
@@ -656,7 +681,10 @@
                     <div class="path-item">
                         <h4>${pathInfo.path}</h4>
                         <p>${pathInfo.fileCount} files</p>
-                        <button onclick="generateQueryForPath('${pathInfo.path}', '${pathInfo.directory}')">📋 Generate Query</button>
+                        <div class="path-actions">
+                            <button onclick="generateQueryForPath('${pathInfo.path}', '${pathInfo.directory}')">📋 Generate Query</button>
+                            <button onclick="cleanupPath('${pathInfo.path}')" class="cleanup-btn">🧹 Cleanup</button>
+                        </div>
                     </div>
                 `;
             });
@@ -668,6 +696,33 @@
         function generateQueryForPath(signalkPath, directory) {
             const query = `SELECT * FROM '${directory}/*.parquet' ORDER BY received_timestamp DESC LIMIT 10`;
             setDataPathsQuery(query);
+        }
+
+        async function cleanupPath(pathName) {
+            if (!confirm(`Are you sure you want to cleanup invalid files for path: ${pathName}?\n\nThis will remove all parquet files smaller than 100 bytes (empty/corrupted files).`)) {
+                return;
+            }
+
+            try {
+                const response = await fetch(`${getPluginPath()}/api/paths/${encodeURIComponent(pathName)}/cleanup`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    }
+                });
+
+                const result = await response.json();
+
+                if (result.success) {
+                    alert(`✅ Cleanup completed for ${pathName}!\n\n${result.message}\n\nRemoved files: ${result.removedFiles.length > 0 ? result.removedFiles.join(', ') : 'None'}`);
+                    // Refresh the available paths to update file counts
+                    await loadAvailablePaths();
+                } else {
+                    alert(`❌ Cleanup failed for ${pathName}:\n${result.message}`);
+                }
+            } catch (error) {
+                alert(`❌ Network error during cleanup:\n${error.message}`);
+            }
         }
 
         function generateExampleQueries() {
