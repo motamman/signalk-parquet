@@ -100,7 +100,69 @@ function loadWebAppConfig(): WebAppPathConfig {
   } catch (error) {
     appInstance.debug(`Failed to load webapp configuration: ${error}`);
   }
-  return { paths: [], commands: [] };
+  
+  // Return default configuration for first-time installation
+  const defaultConfig = getDefaultWebAppConfig();
+  appInstance.debug('No existing configuration found, using default installation');
+  
+  // Save the default configuration for future use
+  try {
+    const configDir = path.dirname(webAppConfigPath);
+    if (!fs.existsSync(configDir)) {
+      fs.mkdirSync(configDir, { recursive: true });
+    }
+    fs.writeFileSync(webAppConfigPath, JSON.stringify(defaultConfig, null, 2));
+    appInstance.debug('Saved default installation configuration');
+  } catch (error) {
+    appInstance.debug(`Failed to save default configuration: ${error}`);
+  }
+  
+  return defaultConfig;
+}
+
+// Get default configuration for first-time installation
+function getDefaultWebAppConfig(): WebAppPathConfig {
+  const defaultCommands: CommandConfig[] = [
+    {
+      command: 'captureMoored',
+      path: 'commands.captureMoored',
+      registered: 'COMPLETED',
+      description: 'Capture data when moored (position and wind)',
+      active: false,
+    },
+  ];
+
+  const defaultPaths: PathConfig[] = [
+    {
+      path: 'commands.captureMoored' as Path,
+      name: 'Command: captureMoored',
+      enabled: true,
+      regimen: 'commands',
+      source: undefined,
+      context: 'vessels.self' as Context,
+    },
+    {
+      path: 'navigation.position' as Path,
+      name: 'Navigation Position',
+      enabled: true,
+      regimen: 'captureMoored',
+      source: undefined,
+      context: 'vessels.self' as Context,
+    },
+    {
+      path: 'environment.wind.speedApparent' as Path,
+      name: 'Apparent Wind Speed',
+      enabled: true,
+      regimen: 'captureMoored',
+      source: undefined,
+      context: 'vessels.self' as Context,
+    },
+  ];
+
+  return {
+    commands: defaultCommands,
+    paths: defaultPaths,
+  };
 }
 
 // Enhanced function to save webapp configuration
@@ -1088,30 +1150,22 @@ export = function (app: ServerAPI): SignalKPlugin {
   ): void {
     if (!state.dataBuffers.has(signalkPath)) {
       state.dataBuffers.set(signalkPath, []);
-      app.debug(`🆕 Created new buffer for path: ${signalkPath}`);
     }
 
     const buffer = state.dataBuffers.get(signalkPath)!;
     buffer.push(record);
 
-    // Debug every 100 records to show buffer growth
-    if (buffer.length % 100 === 0) {
-      app.debug(
-        `📊 Buffer for ${signalkPath}: ${buffer.length}/${config.bufferSize} records`
-      );
-    }
 
     if (buffer.length >= config.bufferSize) {
-      app.debug(
-        `🚀 Buffer full for ${signalkPath} (${buffer.length} records) - triggering save`
-      );
       // Extract the actual SignalK path from the buffer key (context:path format)
       // Find the separator between context and path - look for the last colon followed by a valid SignalK path
       const pathMatch = signalkPath.match(/^.*:([a-zA-Z][a-zA-Z0-9._]*)$/);
       const actualPath = pathMatch ? pathMatch[1] : signalkPath;
+      const urnMatch = signalkPath.match(/^([^:]+):/);
+      const urn = urnMatch ? urnMatch[1] : 'vessels.self';
+      app.debug(`💾 Buffer full: ${buffer.length} rows | ${urn} | ${actualPath} | trigger=buffer_full`);
       saveBufferToParquet(actualPath, buffer, config);
       state.dataBuffers.set(signalkPath, []); // Clear buffer
-      app.debug(`🧹 Buffer cleared for ${signalkPath}`);
     }
   }
 
@@ -1125,23 +1179,18 @@ export = function (app: ServerAPI): SignalKPlugin {
       if (buffer.length > 0) {
         buffersWithData++;
         totalRecords += buffer.length;
-        app.debug(
-          `⏰ Periodic save for ${signalkPath}: ${buffer.length} records`
-        );
         // Extract the actual SignalK path from the buffer key (context:path format)
         // Find the separator between context and path - look for the last colon followed by a valid SignalK path
         const pathMatch = signalkPath.match(/^.*:([a-zA-Z][a-zA-Z0-9._]*)$/);
         const actualPath = pathMatch ? pathMatch[1] : signalkPath;
+        const urnMatch = signalkPath.match(/^([^:]+):/);
+        const urn = urnMatch ? urnMatch[1] : 'vessels.self';
+        app.debug(`💾 Timer flush: ${buffer.length} rows | ${urn} | ${actualPath} | trigger=timer`);
         saveBufferToParquet(actualPath, buffer, config || state.currentConfig!);
         state.dataBuffers.set(signalkPath, []); // Clear buffer
       }
     });
 
-    if (buffersWithData > 0) {
-      app.debug(
-        `💾 Periodic save completed: ${buffersWithData}/${totalBuffers} paths, ${totalRecords} total records`
-      );
-    }
   }
 
   // Save buffer to Parquet file
@@ -1199,9 +1248,6 @@ export = function (app: ServerAPI): SignalKPlugin {
         buffer
       );
 
-      app.debug(
-        `💾 Saved ${buffer.length} records to ${path.basename(savedPath)} for path: ${signalkPath}`
-      );
 
       // Upload to S3 if enabled and timing is real-time
       if (config.s3Upload.enabled && config.s3Upload.timing === 'realtime') {
