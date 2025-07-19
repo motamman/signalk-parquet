@@ -996,8 +996,10 @@ export = function (app: ServerAPI): SignalKPlugin {
       };
 
       app.debug(
-        `Subscribing to ${pathConfigs.length} data paths for context ${context}`
+        `Subscribing to ${pathConfigs.length} data paths for context ${context}: ${JSON.stringify(dataSubscription, null, 2)}`
       );
+
+      const pathConfigLookup = new PathConfigLookup(pathConfigs, app.debug);
 
       app.subscriptionmanager.subscribe(
         dataSubscription,
@@ -1013,8 +1015,8 @@ export = function (app: ServerAPI): SignalKPlugin {
             delta.updates.forEach((update: Update) => {
               if (hasValues(update)) {
                 update.values.forEach((valueUpdate: PathValue) => {
-                  const pathConfig = pathConfigs.find(
-                    (p: PathConfig) => p.path === valueUpdate.path
+                  const pathConfig = pathConfigLookup.getPathConfig(
+                    valueUpdate.path
                   );
                   if (pathConfig) {
                     handleDataMessage(
@@ -1137,7 +1139,7 @@ export = function (app: ServerAPI): SignalKPlugin {
       const actualContext =
         delta.context || pathConfig.context || 'vessels.self';
 
-      const bufferKey = `${actualContext}:${pathConfig.path}`;
+      const bufferKey = `${actualContext}:${valueUpdate.path}`;
       bufferData(bufferKey, record, config);
     } catch (error) {
       app.debug(`Error handling data message: ${error}`);
@@ -2371,3 +2373,48 @@ export = function (app: ServerAPI): SignalKPlugin {
 
   return plugin;
 };
+
+/*
+ * Object for efficient PathConfig lookup by path, supporting wildcard paths.
+ */
+
+class PathConfigLookup {
+  private lookup: Map<Path, PathConfig | undefined> = new Map<
+    Path,
+    PathConfig
+  >();
+  private matchers: {
+    match: (aPath: Path) => boolean;
+    pathConfig: PathConfig;
+  }[];
+
+  constructor(
+    configuredPaths: PathConfig[],
+    private debug: (s: string) => void
+  ) {
+    this.matchers = configuredPaths.map(pathConfig => {
+      let match = (aPath: Path) => pathConfig.path === aPath;
+      if (pathConfig.path.endsWith('*')) {
+        const basePath = pathConfig.path.slice(0, -1);
+        if (basePath.length === 0) {
+          // Match all paths if the path is just '*'
+          match = (_aPath: Path) => true;
+        } else {
+          match = (aPath: Path) => aPath.startsWith(basePath);
+        }
+      }
+      return { match, pathConfig };
+    });
+  }
+
+  public getPathConfig(path: Path): PathConfig | undefined {
+    let result = this.lookup.get(path);
+    if (!result) {
+      result = this.matchers.find(matcher => matcher.match(path))?.pathConfig;
+
+      //store also undefined values to avoid repeated lookups
+      this.lookup.set(path, result);
+    }
+    return result;
+  }
+}
