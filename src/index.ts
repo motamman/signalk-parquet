@@ -1459,7 +1459,7 @@ export = function (app: ServerAPI): SignalKPlugin {
   plugin.schema = {
     type: 'object',
     title: 'SignalK to Parquet Data Store',
-    description: 'The archiving commands, paths and other processes are managed in the companion webapp. These settings are the underlying settings that underpin the system.\n\nManage your data collection via the [SignalK to Parquet Data Store](/signalk-parquet) webapp.',
+    description: 'The archiving commands, paths and other processes are managed in the companion \'SignalK to Parquet Data Store\' in the Webapp section.\n\nThese settings here underpin the system.',
     properties: {
       bufferSize: {
         type: 'number',
