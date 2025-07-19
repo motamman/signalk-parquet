@@ -173,9 +173,11 @@ export class ParquetWriter {
       // Validate the written file size
       const stats = await fs.stat(filepath);
       this.app?.debug(`Parquet file size: ${stats.size} bytes`);
-      
+
       if (stats.size < 100) {
-        throw new Error(`Parquet file too small (${stats.size} bytes) - likely empty or corrupted`);
+        throw new Error(
+          `Parquet file too small (${stats.size} bytes) - likely empty or corrupted`
+        );
       }
 
       this.app?.debug(

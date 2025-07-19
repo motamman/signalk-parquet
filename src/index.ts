@@ -100,11 +100,13 @@ function loadWebAppConfig(): WebAppPathConfig {
   } catch (error) {
     appInstance.debug(`Failed to load webapp configuration: ${error}`);
   }
-  
+
   // Return default configuration for first-time installation
   const defaultConfig = getDefaultWebAppConfig();
-  appInstance.debug('No existing configuration found, using default installation');
-  
+  appInstance.debug(
+    'No existing configuration found, using default installation'
+  );
+
   // Save the default configuration for future use
   try {
     const configDir = path.dirname(webAppConfigPath);
@@ -116,7 +118,7 @@ function loadWebAppConfig(): WebAppPathConfig {
   } catch (error) {
     appInstance.debug(`Failed to save default configuration: ${error}`);
   }
-  
+
   return defaultConfig;
 }
 
@@ -1155,7 +1157,6 @@ export = function (app: ServerAPI): SignalKPlugin {
     const buffer = state.dataBuffers.get(signalkPath)!;
     buffer.push(record);
 
-
     if (buffer.length >= config.bufferSize) {
       // Extract the actual SignalK path from the buffer key (context:path format)
       // Find the separator between context and path - look for the last colon followed by a valid SignalK path
@@ -1163,7 +1164,9 @@ export = function (app: ServerAPI): SignalKPlugin {
       const actualPath = pathMatch ? pathMatch[1] : signalkPath;
       const urnMatch = signalkPath.match(/^([^:]+):/);
       const urn = urnMatch ? urnMatch[1] : 'vessels.self';
-      app.debug(`💾 Buffer full: ${buffer.length} rows | ${urn} | ${actualPath} | trigger=buffer_full`);
+      app.debug(
+        `💾 Buffer full: ${buffer.length} rows | ${urn} | ${actualPath} | trigger=buffer_full`
+      );
       saveBufferToParquet(actualPath, buffer, config);
       state.dataBuffers.set(signalkPath, []); // Clear buffer
     }
@@ -1171,26 +1174,21 @@ export = function (app: ServerAPI): SignalKPlugin {
 
   // Save all buffers (called periodically and on shutdown)
   function saveAllBuffers(config?: PluginConfig): void {
-    const totalBuffers = state.dataBuffers.size;
-    let buffersWithData = 0;
-    let totalRecords = 0;
-
     state.dataBuffers.forEach((buffer, signalkPath) => {
       if (buffer.length > 0) {
-        buffersWithData++;
-        totalRecords += buffer.length;
         // Extract the actual SignalK path from the buffer key (context:path format)
         // Find the separator between context and path - look for the last colon followed by a valid SignalK path
         const pathMatch = signalkPath.match(/^.*:([a-zA-Z][a-zA-Z0-9._]*)$/);
         const actualPath = pathMatch ? pathMatch[1] : signalkPath;
         const urnMatch = signalkPath.match(/^([^:]+):/);
         const urn = urnMatch ? urnMatch[1] : 'vessels.self';
-        app.debug(`💾 Timer flush: ${buffer.length} rows | ${urn} | ${actualPath} | trigger=timer`);
+        app.debug(
+          `💾 Timer flush: ${buffer.length} rows | ${urn} | ${actualPath} | trigger=timer`
+        );
         saveBufferToParquet(actualPath, buffer, config || state.currentConfig!);
         state.dataBuffers.set(signalkPath, []); // Clear buffer
       }
     });
-
   }
 
   // Save buffer to Parquet file
@@ -1247,7 +1245,6 @@ export = function (app: ServerAPI): SignalKPlugin {
         filepath,
         buffer
       );
-
 
       // Upload to S3 if enabled and timing is real-time
       if (config.s3Upload.enabled && config.s3Upload.timing === 'realtime') {
@@ -1459,7 +1456,8 @@ export = function (app: ServerAPI): SignalKPlugin {
   plugin.schema = {
     type: 'object',
     title: 'SignalK to Parquet Data Store',
-    description: 'The archiving commands, paths and other processes are managed in the companion \'SignalK to Parquet Data Store\' in the Webapp section.\n\nThese settings here underpin the system.',
+    description:
+      "The archiving commands, paths and other processes are managed in the companion 'SignalK to Parquet Data Store' in the Webapp section.\n\nThese settings here underpin the system.",
     properties: {
       bufferSize: {
         type: 'number',
