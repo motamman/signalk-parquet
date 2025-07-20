@@ -1471,21 +1471,22 @@ export = function (app: ServerAPI): SignalKPlugin {
           continue;
         }
 
-        // Extract date from filename (format: signalk_data_20250720T123456.parquet)
+        // Extract date from filename (format: signalk_data_2025-07-14T1847.parquet)
         const filename = path.basename(file);
-        const dateMatch = filename.match(/(\d{8})T\d{6}\.parquet$/);
+        const dateMatch = filename.match(
+          /(\d{4})-(\d{2})-(\d{2})T\d{4}\.parquet$/
+        );
 
         if (dateMatch) {
-          const dateStr = dateMatch[1];
-          const fileDate = new Date(
-            parseInt(dateStr.substring(0, 4)),
-            parseInt(dateStr.substring(4, 6)) - 1,
-            parseInt(dateStr.substring(6, 8))
-          );
+          const year = parseInt(dateMatch[1]);
+          const month = parseInt(dateMatch[2]) - 1; // Month is 0-based
+          const day = parseInt(dateMatch[3]);
+          const fileDate = new Date(year, month, day);
           fileDate.setUTCHours(0, 0, 0, 0);
 
           // Only consolidate if file is from before today
           if (fileDate < today) {
+            const dateStr = `${year}-${month + 1 < 10 ? '0' : ''}${month + 1}-${day < 10 ? '0' : ''}${day}`;
             datesNeedingConsolidation.add(dateStr);
           }
         }
@@ -1493,10 +1494,12 @@ export = function (app: ServerAPI): SignalKPlugin {
 
       // Consolidate each missed day
       for (const dateStr of datesNeedingConsolidation) {
+        // Parse date string format: 2025-07-14
+        const [yearStr, monthStr, dayStr] = dateStr.split('-');
         const date = new Date(
-          parseInt(dateStr.substring(0, 4)),
-          parseInt(dateStr.substring(4, 6)) - 1,
-          parseInt(dateStr.substring(6, 8))
+          parseInt(yearStr),
+          parseInt(monthStr) - 1,
+          parseInt(dayStr)
         );
 
         app.debug(`Consolidating missed day: ${dateStr}`);
