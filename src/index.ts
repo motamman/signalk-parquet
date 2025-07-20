@@ -83,45 +83,108 @@ const commandState: CommandRegistrationState = {
   putHandlers: new Map<string, CommandPutHandler>(),
 };
 
-// Enhanced function to load webapp configuration
+// Enhanced function to load webapp configuration with backward compatibility
 function loadWebAppConfig(): WebAppPathConfig {
   const webAppConfigPath = path.join(
     appInstance.getDataDirPath(),
     'signalk-parquet',
     'webapp-config.json'
   );
+
   try {
     if (fs.existsSync(webAppConfigPath)) {
       const configData = fs.readFileSync(webAppConfigPath, 'utf8');
-      const webAppConfig: WebAppPathConfig = JSON.parse(configData);
-      return {
-        paths: webAppConfig.paths || [],
-        commands: webAppConfig.commands || [],
+      const rawConfig = JSON.parse(configData);
+
+      // Migrate old config format to new format with backward compatibility
+      const migratedPaths = (rawConfig.paths || []).map(
+        (path: Partial<PathConfig>) => ({
+          path: path.path,
+          name: path.name,
+          enabled: path.enabled,
+          regimen: path.regimen,
+          source: path.source || undefined, // Add missing source field for streamer branch
+          context: path.context,
+          excludeMMSI: path.excludeMMSI,
+        })
+      );
+
+      const migratedCommands = rawConfig.commands || [];
+
+      const migratedConfig = {
+        paths: migratedPaths,
+        commands: migratedCommands,
       };
+
+      appInstance.debug(
+        `Loaded and migrated ${migratedPaths.length} paths and ${migratedCommands.length} commands from existing config`
+      );
+
+      // Save the migrated config back to preserve the new format
+      try {
+        fs.writeFileSync(
+          webAppConfigPath,
+          JSON.stringify(migratedConfig, null, 2)
+        );
+        appInstance.debug(
+          'Saved migrated configuration with source field compatibility'
+        );
+      } catch (saveError) {
+        appInstance.debug(
+          `Warning: Could not save migrated config: ${saveError}`
+        );
+      }
+
+      return migratedConfig;
     }
   } catch (error) {
-    appInstance.debug(`Failed to load webapp configuration: ${error}`);
+    appInstance.error(`Failed to load webapp configuration: ${error}`);
+
+    // BACKUP the broken file instead of destroying it
+    try {
+      const backupPath = webAppConfigPath + '.backup.' + Date.now();
+      if (fs.existsSync(webAppConfigPath)) {
+        fs.copyFileSync(webAppConfigPath, backupPath);
+        appInstance.debug(`Backed up broken config to: ${backupPath}`);
+      }
+    } catch (backupError) {
+      appInstance.debug(`Could not backup broken config: ${backupError}`);
+    }
   }
 
-  // Return default configuration for first-time installation
-  const defaultConfig = getDefaultWebAppConfig();
+  // Only create defaults if NO config file exists
+  if (!fs.existsSync(webAppConfigPath)) {
+    const defaultConfig = getDefaultWebAppConfig();
+    appInstance.debug(
+      'No existing configuration found, using default installation'
+    );
+
+    // Save the default configuration for future use
+    try {
+      const configDir = path.dirname(webAppConfigPath);
+      if (!fs.existsSync(configDir)) {
+        fs.mkdirSync(configDir, { recursive: true });
+      }
+      fs.writeFileSync(
+        webAppConfigPath,
+        JSON.stringify(defaultConfig, null, 2)
+      );
+      appInstance.debug('Saved default installation configuration');
+    } catch (error) {
+      appInstance.debug(`Failed to save default configuration: ${error}`);
+    }
+
+    return defaultConfig;
+  }
+
+  // If file exists but couldn't be parsed, return empty config to avoid data loss
   appInstance.debug(
-    'No existing configuration found, using default installation'
+    'Config file exists but could not be parsed, returning empty config to avoid data loss'
   );
-
-  // Save the default configuration for future use
-  try {
-    const configDir = path.dirname(webAppConfigPath);
-    if (!fs.existsSync(configDir)) {
-      fs.mkdirSync(configDir, { recursive: true });
-    }
-    fs.writeFileSync(webAppConfigPath, JSON.stringify(defaultConfig, null, 2));
-    appInstance.debug('Saved default installation configuration');
-  } catch (error) {
-    appInstance.debug(`Failed to save default configuration: ${error}`);
-  }
-
-  return defaultConfig;
+  return {
+    paths: [],
+    commands: [],
+  };
 }
 
 // Get default configuration for first-time installation
@@ -1006,9 +1069,11 @@ export = function (app: ServerAPI): SignalKPlugin {
       pathConfigs.forEach((pathConfig: PathConfig) => {
         // Debug: Show exclusion settings for this path
         if (pathConfig.excludeMMSI && pathConfig.excludeMMSI.length > 0) {
-          app.debug(`🔧 Path ${pathConfig.path} has MMSI exclusions: [${pathConfig.excludeMMSI.join(', ')}]`);
+          app.debug(
+            `🔧 Path ${pathConfig.path} has MMSI exclusions: [${pathConfig.excludeMMSI.join(', ')}]`
+          );
         }
-        
+
         // Create individual stream for each path (developer's recommended approach)
         const stream = app.streambundle
           .getBus(pathConfig.path as Path)
@@ -1036,20 +1101,26 @@ export = function (app: ServerAPI): SignalKPlugin {
               const selfVessel = app.getSelfPath('') || {};
               const selfMMSI = selfVessel.mmsi;
               const selfUuid = app.getSelfPath('uuid');
-              
+
               // Check if the context matches the server's self vessel
               let isSelfVessel = false;
-              
+
               if (normalizedDelta.context === 'vessels.self') {
                 isSelfVessel = true;
               } else if (normalizedDelta.context === selfContext) {
                 isSelfVessel = true;
-              } else if (selfMMSI && normalizedDelta.context.includes(selfMMSI)) {
+              } else if (
+                selfMMSI &&
+                normalizedDelta.context.includes(selfMMSI)
+              ) {
                 isSelfVessel = true;
-              } else if (selfUuid && normalizedDelta.context.includes(selfUuid)) {
+              } else if (
+                selfUuid &&
+                normalizedDelta.context.includes(selfUuid)
+              ) {
                 isSelfVessel = true;
               }
-              
+
               if (!isSelfVessel) {
                 return false;
               }
@@ -1066,10 +1137,14 @@ export = function (app: ServerAPI): SignalKPlugin {
                 normalizedDelta.context.includes(mmsi)
               );
               if (contextHasExcludedMMSI) {
-                app.debug(`🚫 MMSI exclusion: "${normalizedDelta.context}" contains excluded MMSI from [${pathConfig.excludeMMSI.join(', ')}]`);
+                app.debug(
+                  `🚫 MMSI exclusion: "${normalizedDelta.context}" contains excluded MMSI from [${pathConfig.excludeMMSI.join(', ')}]`
+                );
                 return false;
               } else {
-                app.debug(`✅ MMSI check passed: "${normalizedDelta.context}" not in exclusion list [${pathConfig.excludeMMSI.join(', ')}]`);
+                app.debug(
+                  `✅ MMSI check passed: "${normalizedDelta.context}" not in exclusion list [${pathConfig.excludeMMSI.join(', ')}]`
+                );
               }
             }
 
