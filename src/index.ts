@@ -33,7 +33,6 @@ import {
   CommandExecutionResult,
   CommandHistoryEntry,
   NormalizedDelta,
-  SourceRef,
 } from './types';
 import { glob } from 'glob';
 import {
@@ -1063,11 +1062,11 @@ export = function (app: ServerAPI): SignalKPlugin {
     // This avoids server arbitration and provides true source filtering
     contextGroups.forEach((pathConfigs, context) => {
       app.debug(
-        `Creating streambundle subscriptions for ${pathConfigs.length} data paths for context ${context}`
+        `Creating ${pathConfigs.length} streambundle subscriptions for context ${context}`
       );
 
       pathConfigs.forEach((pathConfig: PathConfig) => {
-        // Debug: Show exclusion settings for this path
+        // Show MMSI exclusion config for troubleshooting
         if (pathConfig.excludeMMSI && pathConfig.excludeMMSI.length > 0) {
           app.debug(
             `🔧 Path ${pathConfig.path} has MMSI exclusions: [${pathConfig.excludeMMSI.join(', ')}]`
@@ -1080,10 +1079,10 @@ export = function (app: ServerAPI): SignalKPlugin {
           .filter((normalizedDelta: NormalizedDelta) => {
             // Filter by source if specified
             if (pathConfig.source && pathConfig.source.trim() !== '') {
-              if (
-                normalizedDelta.$source !==
-                (pathConfig.source.trim() as SourceRef)
-              ) {
+              const expectedSource = pathConfig.source.trim();
+              const actualSource = normalizedDelta.$source;
+
+              if (actualSource !== expectedSource) {
                 return false;
               }
             }
@@ -1137,14 +1136,7 @@ export = function (app: ServerAPI): SignalKPlugin {
                 normalizedDelta.context.includes(mmsi)
               );
               if (contextHasExcludedMMSI) {
-                app.debug(
-                  `🚫 MMSI exclusion: "${normalizedDelta.context}" contains excluded MMSI from [${pathConfig.excludeMMSI.join(', ')}]`
-                );
                 return false;
-              } else {
-                app.debug(
-                  `✅ MMSI check passed: "${normalizedDelta.context}" not in exclusion list [${pathConfig.excludeMMSI.join(', ')}]`
-                );
               }
             }
 
