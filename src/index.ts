@@ -1030,6 +1030,28 @@ export = function (app: ServerAPI): SignalKPlugin {
                 app.debug(`🚫 Context filter rejected: "${normalizedDelta.context}" doesn't start with "vessels."`);
                 return false;
               }
+            } else if (targetContext === 'vessels.self') {
+              // For vessels.self, we need to check if this is the server's own vessel
+              // Get the self vessel identifier from the server
+              const selfVessel = app.getSelfPath('') || {};
+              const selfMMSI = selfVessel.mmsi;
+              const selfUuid = app.getSelfPath('uuid');
+              
+              // Check if the context matches the server's self vessel
+              let isSelfVessel = false;
+              
+              if (normalizedDelta.context === 'vessels.self') {
+                isSelfVessel = true;
+              } else if (selfMMSI && normalizedDelta.context.includes(selfMMSI)) {
+                isSelfVessel = true;
+              } else if (selfUuid && normalizedDelta.context.includes(selfUuid)) {
+                isSelfVessel = true;
+              }
+              
+              if (!isSelfVessel) {
+                app.debug(`🚫 Context filter rejected: "${normalizedDelta.context}" is not vessels.self (selfMMSI: ${selfMMSI}, selfUuid: ${selfUuid})`);
+                return false;
+              }
             } else {
               // For specific context, match exactly
               if (normalizedDelta.context !== targetContext) {
