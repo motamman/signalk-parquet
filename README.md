@@ -1,6 +1,6 @@
 # SignalK Parquet Data Store (TypeScript)
 
-**Version 0.5.0-alpha.2**
+**Version 0.5.0-beta.1**
 
 A comprehensive TypeScript-based SignalK plugin that saves marine data directly to Parquet files with regimen-based control, web interface for querying, and S3 upload capabilities.
 
@@ -16,7 +16,7 @@ A comprehensive TypeScript-based SignalK plugin that saves marine data directly 
 - **S3 Integration**: Upload files to Amazon S3 with configurable timing
 - **Daily Consolidation**: Automatic daily file consolidation
 - **Real-time Buffering**: Efficient data buffering with configurable thresholds
-- **Source Filtering**: Filter data by SignalK source labels
+- **Source Filtering**: Filter data by SignalK source labels (bypasses server arbitration for raw data access)
 - **Context Support**: Support for multiple vessel contexts with exclusion controls
 
 ## Installation
@@ -26,7 +26,10 @@ A comprehensive TypeScript-based SignalK plugin that saves marine data directly 
 # Navigate to folder
 cd ~/.signalk/node_modules/
 
-# Install
+# Install from npm (after publishing)
+npm install signalk-parquet
+
+# Or install from GitHub
 npm install motamman/signalk-parquet
 
 # Restart SignalK
@@ -160,7 +163,7 @@ This allows for:
 
 Regimens allow you to control data collection based on SignalK commands:
 
-**Example**: Weather data collection controlled by regimen
+**Example**: Weather data collection with source filtering
 ```json
 {
   "path": "environment.wind.angleApparent",
@@ -170,6 +173,8 @@ Regimens allow you to control data collection based on SignalK commands:
   "context": "vessels.self"
 }
 ```
+
+**Note**: Source filtering accesses raw data streams before SignalK server arbitration, allowing collection of data from specific sources that might otherwise be filtered out.
 
 **Multi-Vessel Example**: Collect navigation data from all vessels except specific MMSI numbers
 ```json
@@ -536,14 +541,13 @@ For detailed testing procedures, see [TESTING.md](TESTING.md).
 
 ## Changelog
 
-### Version 0.5.0-alpha.2
-- Complete TypeScript rewrite
-- Enhanced type safety
-- Improved error handling
-- Better documentation
-- Updated web interface
-- Performance optimizations
-- **Multi-vessel support**: `vessels.*` wildcard context with MMSI exclusion
+### Version 0.5.0-beta.1
+- Complete TypeScript rewrite with enhanced type safety
+- **Source filtering with raw data access**: Bypass SignalK server arbitration for specific sources
+- **Streambundle API integration**: Improved performance with app.streambundle instead of subscription manager
+- **Backward compatibility**: Automatic config migration for older path configurations
+- **Multi-vessel support**: `vessels.*` wildcard context with MMSI exclusion filtering
+- **Enhanced web interface**: Restored source filtering UI with improved controls
 - **Streamlined command management**: Automatic path configuration for commands
-- **Enhanced UI**: Show/hide command paths toggle, improved button labels
 - **SignalK API compliance**: Proper subscription patterns for vessel contexts
+- Performance optimizations and better error handling
