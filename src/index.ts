@@ -1078,13 +1078,21 @@ export = function (app: ServerAPI): SignalKPlugin {
         const stream = app.streambundle
           .getBus(pathConfig.path as Path)
           .filter((normalizedDelta: NormalizedDelta) => {
+            // Debug: Log all incoming data for troubleshooting
+            app.debug(`🔍 Stream filter check for ${pathConfig.path}: source="${normalizedDelta.$source}", context="${normalizedDelta.context}"`);
+            
             // Filter by source if specified
             if (pathConfig.source && pathConfig.source.trim() !== '') {
-              if (
-                normalizedDelta.$source !==
-                (pathConfig.source.trim() as SourceRef)
-              ) {
+              const expectedSource = pathConfig.source.trim();
+              const actualSource = normalizedDelta.$source;
+              
+              app.debug(`🎯 Source filter: expecting="${expectedSource}", got="${actualSource}", match=${actualSource === expectedSource}`);
+              
+              if (actualSource !== expectedSource) {
+                app.debug(`🚫 Source filter REJECTED: "${actualSource}" !== "${expectedSource}"`);
                 return false;
+              } else {
+                app.debug(`✅ Source filter ACCEPTED: "${actualSource}" === "${expectedSource}"`);
               }
             }
 
