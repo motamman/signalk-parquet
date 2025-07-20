@@ -1197,11 +1197,6 @@ export = function (app: ServerAPI): SignalKPlugin {
     delta: Delta
   ): void {
     try {
-      // Check if we should still process this path
-      if (!shouldSubscribeToPath(pathConfig)) {
-        return;
-      }
-
       // Check if this vessel should be excluded based on MMSI
       const vesselContext = delta.context || 'vessels.self';
       if (shouldExcludeVessel(vesselContext, pathConfig)) {
@@ -1275,11 +1270,6 @@ export = function (app: ServerAPI): SignalKPlugin {
     config: PluginConfig
   ): void {
     try {
-      // Check if we should still process this path
-      if (!shouldSubscribeToPath(pathConfig)) {
-        return;
-      }
-
       const record: DataRecord = {
         received_timestamp: new Date().toISOString(),
         signalk_timestamp:
