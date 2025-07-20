@@ -10,6 +10,7 @@ temp/
 *.csv
 *.json.backup
 *.ts.backup
+IMPLEMENTATION_SUMMARY.md
 
 # Ignore build artifacts
 build/
