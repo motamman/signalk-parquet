@@ -1004,6 +1004,11 @@ export = function (app: ServerAPI): SignalKPlugin {
       );
 
       pathConfigs.forEach((pathConfig: PathConfig) => {
+        // Debug: Show exclusion settings for this path
+        if (pathConfig.excludeMMSI && pathConfig.excludeMMSI.length > 0) {
+          app.debug(`🔧 Path ${pathConfig.path} has MMSI exclusions: [${pathConfig.excludeMMSI.join(', ')}]`);
+        }
+        
         // Create individual stream for each path (developer's recommended approach)
         const stream = app.streambundle
           .getBus(pathConfig.path as Path)
