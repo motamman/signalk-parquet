@@ -54,6 +54,7 @@ data/
 *.parquet
 *.csv
 *.json.backup
+*.ts.backup
 
 # Package files
 *.tgz

@@ -9,6 +9,7 @@ temp/
 *.parquet
 *.csv
 *.json.backup
+*.ts.backup
 
 # Ignore build artifacts
 build/
