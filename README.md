@@ -10,8 +10,8 @@ A comprehensive TypeScript-based SignalK plugin that saves marine data directly 
 - **Command Management**: Register, execute, and manage SignalK commands with automatic path configuration
 - **Regimen-Based Data Collection**: Control data collection with command-based regimens
 - **Multi-Vessel Support**: Wildcard vessel contexts (`vessels.*`) with MMSI-based exclusion filtering
-- **Multiple File Formats**: Support for Parquet, JSON, and CSV output formats
-- **Web Interface**: Beautiful, responsive web interface for data exploration and configuration
+- **Multiple File Formats**: Support for Parquet, JSON, and CSV output formats (querying in parquet only)
+- **Web Interface**: Responsive web interface for data exploration and configuration
 - **DuckDB Integration**: Query Parquet files directly with SQL
 - **S3 Integration**: Upload files to Amazon S3 with configurable timing
 - **Daily Consolidation**: Automatic daily file consolidation
@@ -529,6 +529,13 @@ curl http://localhost:3000/plugins/signalk-parquet/api/paths
 ```
 
 For detailed testing procedures, see [TESTING.md](TESTING.md).
+
+## TODO
+
+- [x] Implement startup consolidation for missed previous days (exclude current day)
+- [ ] Add Grafana integration
+- [ ] Add history API integration
+- [ ] Create SignalK app store listing with screenshots
 
 ## Contributing
 

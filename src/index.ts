@@ -409,6 +409,11 @@ export = function (app: ServerAPI): SignalKPlugin {
       );
     }, msUntilMidnightUTC);
 
+    // Run startup consolidation for missed previous days
+    setTimeout(() => {
+      consolidateMissedDays(state.currentConfig!);
+    }, 5000); // Wait 5 seconds after startup to avoid conflicts
+
     app.debug('Started');
   };
 
@@ -1436,6 +1441,96 @@ export = function (app: ServerAPI): SignalKPlugin {
       }
     } catch (error) {
       app.debug(`❌ Error saving buffer for ${signalkPath}: ${error}`);
+    }
+  }
+
+  // Startup consolidation for missed previous days (excludes current day)
+  async function consolidateMissedDays(config: PluginConfig): Promise<void> {
+    try {
+      app.debug('Checking for missed consolidations at startup...');
+
+      // Get list of all date directories that exist
+      const outputDir = config.outputDirectory;
+      if (!(await fs.pathExists(outputDir))) {
+        return;
+      }
+
+      // Find all non-consolidated files older than today
+      const today = new Date();
+      today.setUTCHours(0, 0, 0, 0);
+
+      const pattern = path.join(outputDir, '**/*.parquet');
+      const files = await glob(pattern);
+
+      // Extract dates from files and find days that need consolidation
+      const datesNeedingConsolidation = new Set<string>();
+
+      for (const file of files) {
+        // Skip already consolidated files
+        if (file.includes('_consolidated.parquet')) {
+          continue;
+        }
+
+        // Extract date from filename (format: signalk_data_20250720T123456.parquet)
+        const filename = path.basename(file);
+        const dateMatch = filename.match(/(\d{8})T\d{6}\.parquet$/);
+
+        if (dateMatch) {
+          const dateStr = dateMatch[1];
+          const fileDate = new Date(
+            parseInt(dateStr.substring(0, 4)),
+            parseInt(dateStr.substring(4, 6)) - 1,
+            parseInt(dateStr.substring(6, 8))
+          );
+          fileDate.setUTCHours(0, 0, 0, 0);
+
+          // Only consolidate if file is from before today
+          if (fileDate < today) {
+            datesNeedingConsolidation.add(dateStr);
+          }
+        }
+      }
+
+      // Consolidate each missed day
+      for (const dateStr of datesNeedingConsolidation) {
+        const date = new Date(
+          parseInt(dateStr.substring(0, 4)),
+          parseInt(dateStr.substring(4, 6)) - 1,
+          parseInt(dateStr.substring(6, 8))
+        );
+
+        app.debug(`Consolidating missed day: ${dateStr}`);
+
+        const consolidatedCount = await state.parquetWriter!.consolidateDaily(
+          config.outputDirectory,
+          date,
+          config.filenamePrefix
+        );
+
+        if (consolidatedCount > 0) {
+          app.debug(
+            `Consolidated ${consolidatedCount} topic directories for ${dateStr}`
+          );
+
+          // Upload consolidated files to S3 if enabled and timing is consolidation
+          if (
+            config.s3Upload.enabled &&
+            config.s3Upload.timing === 'consolidation'
+          ) {
+            await uploadConsolidatedFilesToS3(config, date);
+          }
+        }
+      }
+
+      if (datesNeedingConsolidation.size > 0) {
+        app.debug(
+          `Startup consolidation completed for ${datesNeedingConsolidation.size} missed days`
+        );
+      } else {
+        app.debug('No missed consolidations found at startup');
+      }
+    } catch (error) {
+      app.debug(`Error during startup consolidation: ${error}`);
     }
   }
 
