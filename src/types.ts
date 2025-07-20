@@ -1,4 +1,13 @@
-import { Context, Path, ServerAPI } from '@signalk/server-api';
+import {
+  Context,
+  Path,
+  ServerAPI,
+  NormalizedDelta,
+  SourceRef,
+} from '@signalk/server-api';
+
+// Re-export SignalK types for convenience
+export { NormalizedDelta, SourceRef };
 import { Request, Response, Router } from 'express';
 
 // SignalK Plugin Interface
@@ -209,6 +218,8 @@ export interface TypedResponse<T = any> extends Response {
 // Internal Plugin State
 export interface PluginState {
   unsubscribes: Array<() => void>;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  streamSubscriptions?: any[]; // Store streambundle stream references for cleanup
   dataBuffers: Map<string, DataRecord[]>;
   activeRegimens: Set<string>;
   subscribedPaths: Set<string>;
