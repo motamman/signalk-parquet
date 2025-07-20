@@ -144,9 +144,10 @@
         th:nth-child(1), td:nth-child(1) { min-width: 180px; } /* Path */
         th:nth-child(2), td:nth-child(2) { width: 60px; } /* Enabled */
         th:nth-child(3), td:nth-child(3) { min-width: 100px; } /* Regimen */
-        th:nth-child(4), td:nth-child(4) { width: 90px; } /* Context */
-        th:nth-child(5), td:nth-child(5) { min-width: 120px; } /* Exclude MMSI */
-        th:nth-child(6), td:nth-child(6) { width: 140px; } /* Actions */
+        th:nth-child(4), td:nth-child(4) { min-width: 120px; } /* Source */
+        th:nth-child(5), td:nth-child(5) { width: 90px; } /* Context */
+        th:nth-child(6), td:nth-child(6) { min-width: 120px; } /* Exclude MMSI */
+        th:nth-child(7), td:nth-child(7) { width: 140px; } /* Actions */
 
         th {
             background-color: #f8f9fa;
@@ -458,6 +459,13 @@
                     <div class="form-group">
                         <label for="pathContext">Context:</label>
                         <input type="text" id="pathContext" placeholder="e.g., vessels.self or vessels.*" value="vessels.self">
+                    </div>
+                    <div class="form-group">
+                        <label for="pathSource">Source Filter (optional):</label>
+                        <input type="text" id="pathSource" placeholder="e.g., mqtt-weatherflow-udp">
+                        <small style="color: #666; display: block; margin-top: 5px;">
+                            Filter by specific data source. Leave empty to accept all sources.
+                        </small>
                     </div>
                     <div class="form-group">
                         <label for="pathExcludeMMSI">Exclude MMSI (for vessels.* context):</label>
@@ -940,7 +948,7 @@
             }
 
             let html = '<div class="table-container"><table><thead><tr>';
-            html += '<th>Path</th><th>Always Enabled</th><th>Regimen</th><th>Context</th><th>Exclude MMSI</th><th>Actions</th>';
+            html += '<th>Path</th><th>Always Enabled</th><th>Regimen</th><th>Source</th><th>Context</th><th>Exclude MMSI</th><th>Actions</th>'
             html += '</tr></thead><tbody>';
 
             filteredPaths.forEach((path, filteredIndex) => {
@@ -954,6 +962,7 @@
                     <td><code>${path.path || ''}</code>${isCommand ? ' <span style="color: #856404; font-size: 11px;">(Command)</span>' : ''}</td>
                     <td>${path.enabled ? '✅' : '❌'}</td>
                     <td>${path.regimen || ''}</td>
+                    <td><code>${path.source || ''}</code></td>
                     <td>${path.context || 'vessels.self'}</td>
                     <td>${excludeMMSI}</td>
                     <td>
@@ -1002,6 +1011,7 @@
             document.getElementById('pathSignalK').value = '';
             document.getElementById('pathEnabled').checked = false;
             document.getElementById('pathRegimen').value = '';
+            document.getElementById('pathSource').value = '';
             document.getElementById('pathContext').value = 'vessels.self';
             document.getElementById('pathExcludeMMSI').value = '';
         }
@@ -1014,6 +1024,7 @@
                 path: document.getElementById('pathSignalK').value.trim(),
                 enabled: document.getElementById('pathEnabled').checked,
                 regimen: document.getElementById('pathRegimen').value.trim(),
+                source: document.getElementById('pathSource').value.trim() || undefined,
                 context: document.getElementById('pathContext').value.trim() || 'vessels.self',
                 excludeMMSI: excludeMMSI.length > 0 ? excludeMMSI : undefined
             };
@@ -1098,6 +1109,7 @@
                     <td><input type="text" id="editPath${index}" value="${path.path || ''}" style="width: 100%;"></td>
                     <td><input type="checkbox" id="editEnabled${index}" ${path.enabled ? 'checked' : ''}></td>
                     <td><input type="text" id="editRegimen${index}" value="${path.regimen || ''}" style="width: 100%;"></td>
+                    <td><input type="text" id="editSource${index}" value="${path.source || ''}" style="width: 100%;" placeholder="e.g., mqtt-weatherflow-udp"></td>
                     <td><input type="text" id="editContext${index}" value="${path.context || 'vessels.self'}" style="width: 100%;"></td>
                     <td><input type="text" id="editExcludeMMSI${index}" value="${excludeMMSIValue}" style="width: 100%;" placeholder="123456789, 987654321"></td>
                     <td>
@@ -1116,6 +1128,7 @@
                 path: document.getElementById(`editPath${index}`).value.trim(),
                 enabled: document.getElementById(`editEnabled${index}`).checked,
                 regimen: document.getElementById(`editRegimen${index}`).value.trim(),
+                source: document.getElementById(`editSource${index}`).value.trim() || undefined,
                 context: document.getElementById(`editContext${index}`).value.trim() || 'vessels.self',
                 excludeMMSI: excludeMMSI.length > 0 ? excludeMMSI : undefined
             };

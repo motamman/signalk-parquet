@@ -32,6 +32,8 @@ import {
   CommandPutHandler,
   CommandExecutionResult,
   CommandHistoryEntry,
+  NormalizedDelta,
+  SourceRef,
 } from './types';
 import { glob } from 'glob';
 import {
@@ -81,45 +83,108 @@ const commandState: CommandRegistrationState = {
   putHandlers: new Map<string, CommandPutHandler>(),
 };
 
-// Enhanced function to load webapp configuration
+// Enhanced function to load webapp configuration with backward compatibility
 function loadWebAppConfig(): WebAppPathConfig {
   const webAppConfigPath = path.join(
     appInstance.getDataDirPath(),
     'signalk-parquet',
     'webapp-config.json'
   );
+
   try {
     if (fs.existsSync(webAppConfigPath)) {
       const configData = fs.readFileSync(webAppConfigPath, 'utf8');
-      const webAppConfig: WebAppPathConfig = JSON.parse(configData);
-      return {
-        paths: webAppConfig.paths || [],
-        commands: webAppConfig.commands || [],
+      const rawConfig = JSON.parse(configData);
+
+      // Migrate old config format to new format with backward compatibility
+      const migratedPaths = (rawConfig.paths || []).map(
+        (path: Partial<PathConfig>) => ({
+          path: path.path,
+          name: path.name,
+          enabled: path.enabled,
+          regimen: path.regimen,
+          source: path.source || undefined, // Add missing source field for streamer branch
+          context: path.context,
+          excludeMMSI: path.excludeMMSI,
+        })
+      );
+
+      const migratedCommands = rawConfig.commands || [];
+
+      const migratedConfig = {
+        paths: migratedPaths,
+        commands: migratedCommands,
       };
+
+      appInstance.debug(
+        `Loaded and migrated ${migratedPaths.length} paths and ${migratedCommands.length} commands from existing config`
+      );
+
+      // Save the migrated config back to preserve the new format
+      try {
+        fs.writeFileSync(
+          webAppConfigPath,
+          JSON.stringify(migratedConfig, null, 2)
+        );
+        appInstance.debug(
+          'Saved migrated configuration with source field compatibility'
+        );
+      } catch (saveError) {
+        appInstance.debug(
+          `Warning: Could not save migrated config: ${saveError}`
+        );
+      }
+
+      return migratedConfig;
     }
   } catch (error) {
-    appInstance.debug(`Failed to load webapp configuration: ${error}`);
+    appInstance.error(`Failed to load webapp configuration: ${error}`);
+
+    // BACKUP the broken file instead of destroying it
+    try {
+      const backupPath = webAppConfigPath + '.backup.' + Date.now();
+      if (fs.existsSync(webAppConfigPath)) {
+        fs.copyFileSync(webAppConfigPath, backupPath);
+        appInstance.debug(`Backed up broken config to: ${backupPath}`);
+      }
+    } catch (backupError) {
+      appInstance.debug(`Could not backup broken config: ${backupError}`);
+    }
   }
 
-  // Return default configuration for first-time installation
-  const defaultConfig = getDefaultWebAppConfig();
+  // Only create defaults if NO config file exists
+  if (!fs.existsSync(webAppConfigPath)) {
+    const defaultConfig = getDefaultWebAppConfig();
+    appInstance.debug(
+      'No existing configuration found, using default installation'
+    );
+
+    // Save the default configuration for future use
+    try {
+      const configDir = path.dirname(webAppConfigPath);
+      if (!fs.existsSync(configDir)) {
+        fs.mkdirSync(configDir, { recursive: true });
+      }
+      fs.writeFileSync(
+        webAppConfigPath,
+        JSON.stringify(defaultConfig, null, 2)
+      );
+      appInstance.debug('Saved default installation configuration');
+    } catch (error) {
+      appInstance.debug(`Failed to save default configuration: ${error}`);
+    }
+
+    return defaultConfig;
+  }
+
+  // If file exists but couldn't be parsed, return empty config to avoid data loss
   appInstance.debug(
-    'No existing configuration found, using default installation'
+    'Config file exists but could not be parsed, returning empty config to avoid data loss'
   );
-
-  // Save the default configuration for future use
-  try {
-    const configDir = path.dirname(webAppConfigPath);
-    if (!fs.existsSync(configDir)) {
-      fs.mkdirSync(configDir, { recursive: true });
-    }
-    fs.writeFileSync(webAppConfigPath, JSON.stringify(defaultConfig, null, 2));
-    appInstance.debug('Saved default installation configuration');
-  } catch (error) {
-    appInstance.debug(`Failed to save default configuration: ${error}`);
-  }
-
-  return defaultConfig;
+  return {
+    paths: [],
+    commands: [],
+  };
 }
 
 // Get default configuration for first-time installation
@@ -232,6 +297,8 @@ export = function (app: ServerAPI): SignalKPlugin {
   };
 
   plugin.start = function (options: Partial<PluginConfig>): void {
+    app.debug('Starting...');
+
     // Get vessel MMSI from SignalK
     const vesselMMSI =
       app.getSelfPath('mmsi') || app.getSelfPath('name') || 'unknown_vessel';
@@ -283,7 +350,11 @@ export = function (app: ServerAPI): SignalKPlugin {
         }
 
         state.s3Client = new S3Client(s3Config);
+        app.debug(
+          `S3 client initialized for bucket: ${state.currentConfig.s3Upload.bucket}`
+        );
       } catch (error) {
+        app.debug(`Error initializing S3 client: ${error}`);
         state.s3Client = undefined;
       }
     }
@@ -323,6 +394,10 @@ export = function (app: ServerAPI): SignalKPlugin {
     );
     const msUntilMidnightUTC = nextMidnightUTC.getTime() - now.getTime();
 
+    app.debug(
+      `Next consolidation at ${nextMidnightUTC.toISOString()} (in ${Math.round(msUntilMidnightUTC / 1000 / 60)} minutes)`
+    );
+
     setTimeout(() => {
       consolidateYesterday(state.currentConfig!);
 
@@ -334,9 +409,13 @@ export = function (app: ServerAPI): SignalKPlugin {
         24 * 60 * 60 * 1000
       );
     }, msUntilMidnightUTC);
+
+    app.debug('Started');
   };
 
   plugin.stop = function (): void {
+    app.debug('Stopping...');
+
     // Clear intervals
     if (state.saveInterval) {
       clearInterval(state.saveInterval);
@@ -355,6 +434,16 @@ export = function (app: ServerAPI): SignalKPlugin {
       }
     });
     state.unsubscribes = [];
+
+    // Clean up stream subscriptions (new streambundle approach)
+    if (state.streamSubscriptions) {
+      state.streamSubscriptions.forEach(stream => {
+        if (stream && typeof stream.end === 'function') {
+          stream.end();
+        }
+      });
+      state.streamSubscriptions = [];
+    }
 
     // Clear data structures
     state.dataBuffers.clear();
@@ -377,7 +466,7 @@ export = function (app: ServerAPI): SignalKPlugin {
         commandConfig.description
       );
       if (result.state === 'COMPLETED') {
-        // Command restored successfully
+        app.debug(`✅ Restored command: ${commandConfig.command}`);
       } else {
         app.error(
           `❌ Failed to restore command: ${commandConfig.command} - ${result.message}`
@@ -404,6 +493,9 @@ export = function (app: ServerAPI): SignalKPlugin {
         };
         currentPaths.push(commandPathConfig);
         addedMissingPaths = true;
+        app.debug(
+          `✅ Added missing path configuration for existing command: ${commandConfig.command}`
+        );
       }
     });
 
@@ -416,6 +508,10 @@ export = function (app: ServerAPI): SignalKPlugin {
     currentCommands.forEach((commandConfig: CommandConfig) => {
       initializeCommandValue(commandConfig.command, false);
     });
+
+    app.debug(
+      `🎮 Command state initialized with ${currentCommands.length} commands`
+    );
   }
 
   // Command registration with full type safety
@@ -466,6 +562,9 @@ export = function (app: ServerAPI): SignalKPlugin {
         value: any,
         _callback?: (result: CommandExecutionResult) => void
       ): CommandExecutionResult => {
+        app.debug(
+          `Handling PUT for commands.${commandName} with value: ${JSON.stringify(value)}`
+        );
         return executeCommand(commandName, Boolean(value));
       };
 
@@ -504,12 +603,17 @@ export = function (app: ServerAPI): SignalKPlugin {
       );
       if (!existingCommandPath) {
         currentPaths.push(commandPathConfig);
+        app.debug(
+          `✅ Auto-created path configuration for command: ${commandName}`
+        );
       }
 
       saveWebAppConfig(currentPaths, currentCommands);
 
       // Log command registration
       addCommandHistoryEntry(commandName, 'REGISTER', undefined, true);
+
+      app.debug(`✅ Registered command: ${commandName} at ${fullPath}`);
 
       return {
         state: 'COMPLETED',
@@ -554,6 +658,9 @@ export = function (app: ServerAPI): SignalKPlugin {
       );
       if (commandPathIndex !== -1) {
         currentPaths.splice(commandPathIndex, 1);
+        app.debug(
+          `🗑️ Removed auto-created path configuration for command: ${commandName}`
+        );
       }
 
       // Update current commands and save
@@ -562,6 +669,8 @@ export = function (app: ServerAPI): SignalKPlugin {
 
       // Log command unregistration
       addCommandHistoryEntry(commandName, 'UNREGISTER', undefined, true);
+
+      app.debug(`🗑️ Unregistered command: ${commandName}`);
 
       return {
         state: 'COMPLETED',
@@ -634,6 +743,8 @@ export = function (app: ServerAPI): SignalKPlugin {
 
       // Log command execution
       addCommandHistoryEntry(commandName, 'EXECUTE', value, true);
+
+      app.debug(`🎮 Executed command: ${commandName} = ${value}`);
 
       return {
         state: 'COMPLETED',
@@ -742,10 +853,16 @@ export = function (app: ServerAPI): SignalKPlugin {
       })),
     };
 
+    app.debug(
+      `Subscribing to ${commandPaths.length} command paths via subscription manager`
+    );
+
     app.subscriptionmanager.subscribe(
       commandSubscription,
       state.unsubscribes,
-      (_subscriptionError: unknown) => {},
+      (subscriptionError: unknown) => {
+        app.debug(`Command subscription error: ${subscriptionError}`);
+      },
       (delta: Delta) => {
         // Process each update in the delta
         if (delta.updates) {
@@ -778,11 +895,18 @@ export = function (app: ServerAPI): SignalKPlugin {
     update: Update
   ): void {
     try {
+      app.debug(
+        `📦 Received command update for ${pathConfig.path}: ${JSON.stringify(valueUpdate, null, 2)}`
+      );
+
       // Check source filter if specified for commands too
       if (pathConfig.source && pathConfig.source.trim() !== '') {
         const messageSource =
           update.$source || (update.source ? update.source.label : null);
         if (messageSource !== pathConfig.source.trim()) {
+          app.debug(
+            `🚫 Command from source "${messageSource}" filtered out (expecting "${pathConfig.source.trim()}")`
+          );
           return;
         }
       }
@@ -791,6 +915,10 @@ export = function (app: ServerAPI): SignalKPlugin {
         const commandName = extractCommandName(pathConfig.path);
         const isActive = Boolean(valueUpdate.value);
 
+        app.debug(
+          `Command ${commandName}: ${isActive ? 'ACTIVE' : 'INACTIVE'}`
+        );
+
         if (isActive) {
           state.activeRegimens.add(commandName);
         } else {
@@ -798,6 +926,9 @@ export = function (app: ServerAPI): SignalKPlugin {
         }
 
         // Debug active regimens state
+        app.debug(
+          `🎯 Active regimens: [${Array.from(state.activeRegimens).join(', ')}]`
+        );
 
         // Update data subscriptions based on new regimen state
         updateDataSubscriptions(config);
@@ -828,7 +959,7 @@ export = function (app: ServerAPI): SignalKPlugin {
         );
       }
     } catch (error) {
-      // Error handling command message
+      app.debug(`Error handling command message: ${error}`);
     }
   }
 
@@ -869,9 +1000,12 @@ export = function (app: ServerAPI): SignalKPlugin {
       } else {
         // For other vessels, we would need to get their MMSI from the delta or other means
         // For now, we'll skip MMSI filtering for other vessels
+        app.debug(
+          `MMSI filtering not implemented for vessel context: ${vesselContext}`
+        );
       }
     } catch (error) {
-      // Error handling command message
+      app.debug(`Error checking MMSI for vessel ${vesselContext}: ${error}`);
     }
 
     return false; // Don't exclude if we can't determine MMSI
@@ -887,6 +1021,8 @@ export = function (app: ServerAPI): SignalKPlugin {
     });
     state.unsubscribes = [];
     state.subscribedPaths.clear();
+
+    app.debug('Cleared all existing subscriptions');
 
     // Re-subscribe to command paths
     subscribeToCommandPaths(config);
@@ -909,6 +1045,7 @@ export = function (app: ServerAPI): SignalKPlugin {
     );
 
     if (processedPaths.length === 0) {
+      app.debug('No data paths need subscription currently');
       return;
     }
 
@@ -922,47 +1059,105 @@ export = function (app: ServerAPI): SignalKPlugin {
       contextGroups.get(context)!.push(pathConfig);
     });
 
-    // Create subscriptions for each context group
+    // Use app.streambundle approach as recommended by SignalK developer
+    // This avoids server arbitration and provides true source filtering
     contextGroups.forEach((pathConfigs, context) => {
-      const dataSubscription = {
-        context: context,
-        subscribe: pathConfigs.map(pathConfig => ({
-          path: pathConfig.path as Path,
-          period: 1000, // Get updates every second max
-          policy: 'fixed' as const,
-        })),
-      };
-
-      app.subscriptionmanager.subscribe(
-        dataSubscription,
-        state.unsubscribes,
-        (_subscriptionError: unknown) => {},
-        (delta: Delta) => {
-          // Process each update in the delta
-          if (delta.updates) {
-            delta.updates.forEach((update: Update) => {
-              if (hasValues(update)) {
-                update.values.forEach((valueUpdate: PathValue) => {
-                  const pathConfig = pathConfigs.find(
-                    (p: PathConfig) => p.path === valueUpdate.path
-                  );
-                  if (pathConfig) {
-                    handleDataMessage(
-                      valueUpdate,
-                      pathConfig,
-                      config,
-                      update,
-                      delta
-                    );
-                  }
-                });
-              }
-            });
-          }
-        }
+      app.debug(
+        `Creating streambundle subscriptions for ${pathConfigs.length} data paths for context ${context}`
       );
 
-      pathConfigs.forEach(pathConfig => {
+      pathConfigs.forEach((pathConfig: PathConfig) => {
+        // Debug: Show exclusion settings for this path
+        if (pathConfig.excludeMMSI && pathConfig.excludeMMSI.length > 0) {
+          app.debug(
+            `🔧 Path ${pathConfig.path} has MMSI exclusions: [${pathConfig.excludeMMSI.join(', ')}]`
+          );
+        }
+
+        // Create individual stream for each path (developer's recommended approach)
+        const stream = app.streambundle
+          .getBus(pathConfig.path as Path)
+          .filter((normalizedDelta: NormalizedDelta) => {
+            // Filter by source if specified
+            if (pathConfig.source && pathConfig.source.trim() !== '') {
+              if (
+                normalizedDelta.$source !==
+                (pathConfig.source.trim() as SourceRef)
+              ) {
+                return false;
+              }
+            }
+
+            // Filter by context
+            const targetContext = pathConfig.context || 'vessels.self';
+            if (targetContext === 'vessels.*') {
+              // For wildcard, accept any vessel context
+              if (!normalizedDelta.context.startsWith('vessels.')) {
+                return false;
+              }
+            } else if (targetContext === 'vessels.self') {
+              // For vessels.self, check if this is the server's own vessel
+              const selfContext = app.selfContext;
+              const selfVessel = app.getSelfPath('') || {};
+              const selfMMSI = selfVessel.mmsi;
+              const selfUuid = app.getSelfPath('uuid');
+
+              // Check if the context matches the server's self vessel
+              let isSelfVessel = false;
+
+              if (normalizedDelta.context === 'vessels.self') {
+                isSelfVessel = true;
+              } else if (normalizedDelta.context === selfContext) {
+                isSelfVessel = true;
+              } else if (
+                selfMMSI &&
+                normalizedDelta.context.includes(selfMMSI)
+              ) {
+                isSelfVessel = true;
+              } else if (
+                selfUuid &&
+                normalizedDelta.context.includes(selfUuid)
+              ) {
+                isSelfVessel = true;
+              }
+
+              if (!isSelfVessel) {
+                return false;
+              }
+            } else {
+              // For specific context, match exactly
+              if (normalizedDelta.context !== targetContext) {
+                return false;
+              }
+            }
+
+            // MMSI exclusion filtering
+            if (pathConfig.excludeMMSI && pathConfig.excludeMMSI.length > 0) {
+              const contextHasExcludedMMSI = pathConfig.excludeMMSI.some(mmsi =>
+                normalizedDelta.context.includes(mmsi)
+              );
+              if (contextHasExcludedMMSI) {
+                app.debug(
+                  `🚫 MMSI exclusion: "${normalizedDelta.context}" contains excluded MMSI from [${pathConfig.excludeMMSI.join(', ')}]`
+                );
+                return false;
+              } else {
+                app.debug(
+                  `✅ MMSI check passed: "${normalizedDelta.context}" not in exclusion list [${pathConfig.excludeMMSI.join(', ')}]`
+                );
+              }
+            }
+
+            return true;
+          })
+          .debounceImmediate(1000) // Built-in debouncing as recommended
+          .onValue((normalizedDelta: NormalizedDelta) => {
+            handleStreamData(normalizedDelta, pathConfig, config);
+          });
+
+        // Store stream reference for cleanup (instead of unsubscribe functions)
+        state.streamSubscriptions = state.streamSubscriptions || [];
+        state.streamSubscriptions.push(stream);
         state.subscribedPaths.add(pathConfig.path);
       });
     });
@@ -972,6 +1167,7 @@ export = function (app: ServerAPI): SignalKPlugin {
   function shouldSubscribeToPath(pathConfig: PathConfig): boolean {
     // Always subscribe if explicitly enabled
     if (pathConfig.enabled) {
+      app.debug(`✅ Path ${pathConfig.path} enabled (always on)`);
       return true;
     }
 
@@ -981,13 +1177,21 @@ export = function (app: ServerAPI): SignalKPlugin {
       const hasActiveRegimen = requiredRegimens.some(regimen =>
         state.activeRegimens.has(regimen)
       );
+      app.debug(
+        `🔍 Path ${pathConfig.path} requires regimens [${requiredRegimens.join(', ')}], active: [${Array.from(state.activeRegimens).join(', ')}] → ${hasActiveRegimen ? 'SUBSCRIBE' : 'SKIP'}`
+      );
       return hasActiveRegimen;
     }
 
+    app.debug(
+      `❌ Path ${pathConfig.path} has no regimen control and not enabled`
+    );
     return false;
   }
 
   // Handle data messages from SignalK - now receives complete delta structure
+  // Legacy handler - kept for rollback capability
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   function handleDataMessage(
     valueUpdate: PathValue,
     pathConfig: PathConfig,
@@ -1004,6 +1208,9 @@ export = function (app: ServerAPI): SignalKPlugin {
       // Check if this vessel should be excluded based on MMSI
       const vesselContext = delta.context || 'vessels.self';
       if (shouldExcludeVessel(vesselContext, pathConfig)) {
+        app.debug(
+          `Excluding data from vessel ${vesselContext} due to MMSI filter`
+        );
         return;
       }
 
@@ -1060,7 +1267,72 @@ export = function (app: ServerAPI): SignalKPlugin {
       const bufferKey = `${actualContext}:${pathConfig.path}`;
       bufferData(bufferKey, record, config);
     } catch (error) {
-      // Error handling command message
+      app.debug(`Error handling data message: ${error}`);
+    }
+  }
+
+  // New handler for streambundle data (developer's recommended approach)
+  function handleStreamData(
+    normalizedDelta: NormalizedDelta,
+    pathConfig: PathConfig,
+    config: PluginConfig
+  ): void {
+    try {
+      // Check if we should still process this path
+      if (!shouldSubscribeToPath(pathConfig)) {
+        return;
+      }
+
+      const record: DataRecord = {
+        received_timestamp: new Date().toISOString(),
+        signalk_timestamp:
+          normalizedDelta.timestamp || new Date().toISOString(),
+        context:
+          normalizedDelta.context || pathConfig.context || 'vessels.self',
+        path: normalizedDelta.path,
+        value: null,
+        value_json: undefined,
+        source: normalizedDelta.source
+          ? JSON.stringify(normalizedDelta.source)
+          : undefined,
+        source_label: normalizedDelta.$source || undefined,
+        source_type: normalizedDelta.source
+          ? normalizedDelta.source.type
+          : undefined,
+        source_pgn: normalizedDelta.source
+          ? normalizedDelta.source.pgn
+          : undefined,
+        source_src: normalizedDelta.source
+          ? normalizedDelta.source.src
+          : undefined,
+      };
+
+      // Handle complex values
+      if (
+        typeof normalizedDelta.value === 'object' &&
+        normalizedDelta.value !== null
+      ) {
+        record.value_json = JSON.stringify(normalizedDelta.value);
+        // Extract key properties as columns for easier querying
+        Object.entries(normalizedDelta.value).forEach(([key, val]) => {
+          if (
+            typeof val === 'string' ||
+            typeof val === 'number' ||
+            typeof val === 'boolean'
+          ) {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            (record as any)[`value_${key}`] = val;
+          }
+        });
+      } else {
+        record.value = normalizedDelta.value;
+      }
+
+      // Use actual context + path as buffer key to separate data from different vessels
+      const bufferKey = `${normalizedDelta.context}:${pathConfig.path}`;
+      bufferData(bufferKey, record, config);
+    } catch (error) {
+      app.debug(`Error handling stream data: ${error}`);
     }
   }
 
@@ -1171,7 +1443,7 @@ export = function (app: ServerAPI): SignalKPlugin {
         await uploadToS3(savedPath, config);
       }
     } catch (error) {
-      // Error handling command message
+      app.debug(`❌ Error saving buffer for ${signalkPath}: ${error}`);
     }
   }
 
@@ -1188,6 +1460,10 @@ export = function (app: ServerAPI): SignalKPlugin {
       );
 
       if (consolidatedCount > 0) {
+        app.debug(
+          `Consolidated ${consolidatedCount} topic directories for ${yesterday.toISOString().split('T')[0]}`
+        );
+
         // Upload consolidated files to S3 if enabled and timing is consolidation
         if (
           config.s3Upload.enabled &&
@@ -1197,7 +1473,7 @@ export = function (app: ServerAPI): SignalKPlugin {
         }
       }
     } catch (error) {
-      // Error handling command message
+      app.debug(`Error during daily consolidation: ${error}`);
     }
   }
 
@@ -1217,12 +1493,16 @@ export = function (app: ServerAPI): SignalKPlugin {
         nodir: true,
       });
 
+      app.debug(
+        `Found ${consolidatedFiles.length} consolidated files to upload for ${dateStr}`
+      );
+
       // Upload each consolidated file
       for (const filePath of consolidatedFiles) {
         await uploadToS3(filePath, config);
       }
     } catch (error) {
-      // Error handling command message
+      app.debug(`Error uploading consolidated files to S3: ${error}`);
     }
   }
 
@@ -1236,12 +1516,20 @@ export = function (app: ServerAPI): SignalKPlugin {
         pathConfig.enabled
     );
 
+    app.debug(
+      `🔍 Checking current command values for ${commandPaths.length} command paths at startup`
+    );
+
     commandPaths.forEach((pathConfig: PathConfig) => {
       try {
         // Get current value from SignalK API
         const currentData = app.getSelfPath(pathConfig.path);
 
         if (currentData !== undefined && currentData !== null) {
+          app.debug(
+            `📋 Found current value for ${pathConfig.path}: ${JSON.stringify(currentData)}`
+          );
+
           // Check if there's source information
           const shouldProcess = true;
 
@@ -1249,13 +1537,24 @@ export = function (app: ServerAPI): SignalKPlugin {
           if (pathConfig.source && pathConfig.source.trim() !== '') {
             // For startup, we need to check the API source info
             // This is a simplified check - in real deltas we get more source info
+            app.debug(
+              `🔍 Source filter specified for ${pathConfig.path}: "${pathConfig.source.trim()}"`
+            );
+
             // For now, we'll process the value if it exists and log a warning
             // In practice, you might want to check the source here too
+            app.debug(
+              `⚠️  Startup value processed without source verification for ${pathConfig.path}`
+            );
           }
 
           if (shouldProcess && currentData.value !== undefined) {
             const commandName = extractCommandName(pathConfig.path);
             const isActive = Boolean(currentData.value);
+
+            app.debug(
+              `🚀 Startup: Command ${commandName}: ${isActive ? 'ACTIVE' : 'INACTIVE'}`
+            );
 
             if (isActive) {
               state.activeRegimens.add(commandName);
@@ -1264,12 +1563,18 @@ export = function (app: ServerAPI): SignalKPlugin {
             }
           }
         } else {
-          // No current value found
+          app.debug(`📭 No current value found for ${pathConfig.path}`);
         }
       } catch (error) {
-        // Error handling command message
+        app.debug(
+          `❌ Error checking startup value for ${pathConfig.path}: ${error}`
+        );
       }
     });
+
+    app.debug(
+      `🎯 Startup regimens initialized: [${Array.from(state.activeRegimens).join(', ')}]`
+    );
   }
 
   // Helper functions
@@ -1325,14 +1630,17 @@ export = function (app: ServerAPI): SignalKPlugin {
       });
 
       await state.s3Client.send(command);
+      app.debug(`✅ Uploaded to S3: s3://${config.s3Upload.bucket}/${s3Key}`);
 
       // Delete local file if configured
       if (config.s3Upload.deleteAfterUpload) {
         await fs.unlink(filePath);
+        app.debug(`🗑️ Deleted local file: ${filePath}`);
       }
 
       return true;
     } catch (error) {
+      app.debug(`❌ Error uploading ${filePath} to S3: ${error}`);
       return false;
     }
   }
@@ -1459,6 +1767,7 @@ export = function (app: ServerAPI): SignalKPlugin {
     const publicPath = path.join(__dirname, '../public');
     if (fs.existsSync(publicPath)) {
       router.use(express.static(publicPath));
+      app.debug(`Static files served from: ${publicPath}`);
     }
 
     // Get the current configuration for data directory
@@ -1476,12 +1785,21 @@ export = function (app: ServerAPI): SignalKPlugin {
         .replace(/:/g, '_');
       const vesselsDir = path.join(dataDir, selfContextPath);
 
+      app.debug(`🔍 Looking for paths in vessel directory: ${vesselsDir}`);
+      app.debug(
+        `📡 Using vessel context: ${app.selfContext} → ${selfContextPath}`
+      );
+
       if (!fs.existsSync(vesselsDir)) {
+        app.debug(`❌ Vessel directory does not exist: ${vesselsDir}`);
         return paths;
       }
 
       function walkPaths(currentPath: string, relativePath: string = ''): void {
         try {
+          app.debug(
+            `🚶 Walking path: ${currentPath} (relative: ${relativePath})`
+          );
           const items = fs.readdirSync(currentPath);
           items.forEach((item: string) => {
             const fullPath = path.join(currentPath, item);
@@ -1505,20 +1823,27 @@ export = function (app: ServerAPI): SignalKPlugin {
                 const fileCount = fs
                   .readdirSync(fullPath)
                   .filter((file: string) => file.endsWith('.parquet')).length;
+                app.debug(
+                  `✅ Found SignalK path with data: ${newRelativePath} (${fileCount} files)`
+                );
                 paths.push({
                   path: newRelativePath,
                   directory: fullPath,
                   fileCount: fileCount,
                 });
               } else {
-                // Directory has no parquet files
+                app.debug(
+                  `📁 Directory ${newRelativePath} has no parquet files`
+                );
               }
 
               walkPaths(fullPath, newRelativePath);
             }
           });
         } catch (error) {
-          // Error handling command message
+          app.debug(
+            `❌ Error reading directory ${currentPath}: ${(error as Error).message}`
+          );
         }
       }
 
@@ -1526,6 +1851,9 @@ export = function (app: ServerAPI): SignalKPlugin {
         walkPaths(vesselsDir);
       }
 
+      app.debug(
+        `📊 Path discovery complete: found ${paths.length} paths with data`
+      );
       return paths;
     }
 
@@ -1757,6 +2085,8 @@ export = function (app: ServerAPI): SignalKPlugin {
             });
           }
 
+          app.debug(`Executing query: ${processedQuery}`);
+
           const instance = await DuckDBInstance.create();
           const connection = await instance.connect();
           try {
@@ -1831,6 +2161,7 @@ export = function (app: ServerAPI): SignalKPlugin {
             keyPrefix: state.currentConfig.s3Upload.keyPrefix || 'none',
           });
         } catch (error) {
+          app.debug(`S3 test connection error: ${error}`);
           return res.status(500).json({
             success: false,
             error: (error as Error).message || 'S3 connection failed',
@@ -1973,6 +2304,10 @@ export = function (app: ServerAPI): SignalKPlugin {
 
           // Update subscriptions
           updateDataSubscriptions(state.currentConfig!);
+
+          app.debug(
+            `Removed path configuration: ${removedPath.name} (${removedPath.path})`
+          );
 
           res.json({
             success: true,
@@ -2222,6 +2557,8 @@ export = function (app: ServerAPI): SignalKPlugin {
         });
       }
     );
+
+    app.debug('Webapp API routes registered');
   };
 
   return plugin;
