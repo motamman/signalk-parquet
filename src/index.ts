@@ -232,8 +232,6 @@ export = function (app: ServerAPI): SignalKPlugin {
   };
 
   plugin.start = function (options: Partial<PluginConfig>): void {
-    app.debug('Starting...');
-
     // Get vessel MMSI from SignalK
     const vesselMMSI =
       app.getSelfPath('mmsi') || app.getSelfPath('name') || 'unknown_vessel';
@@ -285,11 +283,7 @@ export = function (app: ServerAPI): SignalKPlugin {
         }
 
         state.s3Client = new S3Client(s3Config);
-        app.debug(
-          `S3 client initialized for bucket: ${state.currentConfig.s3Upload.bucket}`
-        );
       } catch (error) {
-        app.debug(`Error initializing S3 client: ${error}`);
         state.s3Client = undefined;
       }
     }
@@ -329,10 +323,6 @@ export = function (app: ServerAPI): SignalKPlugin {
     );
     const msUntilMidnightUTC = nextMidnightUTC.getTime() - now.getTime();
 
-    app.debug(
-      `Next consolidation at ${nextMidnightUTC.toISOString()} (in ${Math.round(msUntilMidnightUTC / 1000 / 60)} minutes)`
-    );
-
     setTimeout(() => {
       consolidateYesterday(state.currentConfig!);
 
@@ -344,13 +334,9 @@ export = function (app: ServerAPI): SignalKPlugin {
         24 * 60 * 60 * 1000
       );
     }, msUntilMidnightUTC);
-
-    app.debug('Started');
   };
 
   plugin.stop = function (): void {
-    app.debug('Stopping...');
-
     // Clear intervals
     if (state.saveInterval) {
       clearInterval(state.saveInterval);
@@ -391,7 +377,7 @@ export = function (app: ServerAPI): SignalKPlugin {
         commandConfig.description
       );
       if (result.state === 'COMPLETED') {
-        app.debug(`✅ Restored command: ${commandConfig.command}`);
+        // Command restored successfully
       } else {
         app.error(
           `❌ Failed to restore command: ${commandConfig.command} - ${result.message}`
@@ -418,9 +404,6 @@ export = function (app: ServerAPI): SignalKPlugin {
         };
         currentPaths.push(commandPathConfig);
         addedMissingPaths = true;
-        app.debug(
-          `✅ Added missing path configuration for existing command: ${commandConfig.command}`
-        );
       }
     });
 
@@ -433,10 +416,6 @@ export = function (app: ServerAPI): SignalKPlugin {
     currentCommands.forEach((commandConfig: CommandConfig) => {
       initializeCommandValue(commandConfig.command, false);
     });
-
-    app.debug(
-      `🎮 Command state initialized with ${currentCommands.length} commands`
-    );
   }
 
   // Command registration with full type safety
@@ -487,9 +466,6 @@ export = function (app: ServerAPI): SignalKPlugin {
         value: any,
         _callback?: (result: CommandExecutionResult) => void
       ): CommandExecutionResult => {
-        app.debug(
-          `Handling PUT for commands.${commandName} with value: ${JSON.stringify(value)}`
-        );
         return executeCommand(commandName, Boolean(value));
       };
 
@@ -528,17 +504,12 @@ export = function (app: ServerAPI): SignalKPlugin {
       );
       if (!existingCommandPath) {
         currentPaths.push(commandPathConfig);
-        app.debug(
-          `✅ Auto-created path configuration for command: ${commandName}`
-        );
       }
 
       saveWebAppConfig(currentPaths, currentCommands);
 
       // Log command registration
       addCommandHistoryEntry(commandName, 'REGISTER', undefined, true);
-
-      app.debug(`✅ Registered command: ${commandName} at ${fullPath}`);
 
       return {
         state: 'COMPLETED',
@@ -583,9 +554,6 @@ export = function (app: ServerAPI): SignalKPlugin {
       );
       if (commandPathIndex !== -1) {
         currentPaths.splice(commandPathIndex, 1);
-        app.debug(
-          `🗑️ Removed auto-created path configuration for command: ${commandName}`
-        );
       }
 
       // Update current commands and save
@@ -594,8 +562,6 @@ export = function (app: ServerAPI): SignalKPlugin {
 
       // Log command unregistration
       addCommandHistoryEntry(commandName, 'UNREGISTER', undefined, true);
-
-      app.debug(`🗑️ Unregistered command: ${commandName}`);
 
       return {
         state: 'COMPLETED',
@@ -668,8 +634,6 @@ export = function (app: ServerAPI): SignalKPlugin {
 
       // Log command execution
       addCommandHistoryEntry(commandName, 'EXECUTE', value, true);
-
-      app.debug(`🎮 Executed command: ${commandName} = ${value}`);
 
       return {
         state: 'COMPLETED',
@@ -778,16 +742,10 @@ export = function (app: ServerAPI): SignalKPlugin {
       })),
     };
 
-    app.debug(
-      `Subscribing to ${commandPaths.length} command paths via subscription manager`
-    );
-
     app.subscriptionmanager.subscribe(
       commandSubscription,
       state.unsubscribes,
-      (subscriptionError: unknown) => {
-        app.debug(`Command subscription error: ${subscriptionError}`);
-      },
+      (_subscriptionError: unknown) => {},
       (delta: Delta) => {
         // Process each update in the delta
         if (delta.updates) {
@@ -820,18 +778,11 @@ export = function (app: ServerAPI): SignalKPlugin {
     update: Update
   ): void {
     try {
-      app.debug(
-        `📦 Received command update for ${pathConfig.path}: ${JSON.stringify(valueUpdate, null, 2)}`
-      );
-
       // Check source filter if specified for commands too
       if (pathConfig.source && pathConfig.source.trim() !== '') {
         const messageSource =
           update.$source || (update.source ? update.source.label : null);
         if (messageSource !== pathConfig.source.trim()) {
-          app.debug(
-            `🚫 Command from source "${messageSource}" filtered out (expecting "${pathConfig.source.trim()}")`
-          );
           return;
         }
       }
@@ -840,10 +791,6 @@ export = function (app: ServerAPI): SignalKPlugin {
         const commandName = extractCommandName(pathConfig.path);
         const isActive = Boolean(valueUpdate.value);
 
-        app.debug(
-          `Command ${commandName}: ${isActive ? 'ACTIVE' : 'INACTIVE'}`
-        );
-
         if (isActive) {
           state.activeRegimens.add(commandName);
         } else {
@@ -851,9 +798,6 @@ export = function (app: ServerAPI): SignalKPlugin {
         }
 
         // Debug active regimens state
-        app.debug(
-          `🎯 Active regimens: [${Array.from(state.activeRegimens).join(', ')}]`
-        );
 
         // Update data subscriptions based on new regimen state
         updateDataSubscriptions(config);
@@ -884,7 +828,7 @@ export = function (app: ServerAPI): SignalKPlugin {
         );
       }
     } catch (error) {
-      app.debug(`Error handling command message: ${error}`);
+      // Error handling command message
     }
   }
 
@@ -925,12 +869,9 @@ export = function (app: ServerAPI): SignalKPlugin {
       } else {
         // For other vessels, we would need to get their MMSI from the delta or other means
         // For now, we'll skip MMSI filtering for other vessels
-        app.debug(
-          `MMSI filtering not implemented for vessel context: ${vesselContext}`
-        );
       }
     } catch (error) {
-      app.debug(`Error checking MMSI for vessel ${vesselContext}: ${error}`);
+      // Error handling command message
     }
 
     return false; // Don't exclude if we can't determine MMSI
@@ -946,8 +887,6 @@ export = function (app: ServerAPI): SignalKPlugin {
     });
     state.unsubscribes = [];
     state.subscribedPaths.clear();
-
-    app.debug('Cleared all existing subscriptions');
 
     // Re-subscribe to command paths
     subscribeToCommandPaths(config);
@@ -970,7 +909,6 @@ export = function (app: ServerAPI): SignalKPlugin {
     );
 
     if (processedPaths.length === 0) {
-      app.debug('No data paths need subscription currently');
       return;
     }
 
@@ -995,18 +933,10 @@ export = function (app: ServerAPI): SignalKPlugin {
         })),
       };
 
-      app.debug(
-        `Subscribing to ${pathConfigs.length} data paths for context ${context}`
-      );
-
       app.subscriptionmanager.subscribe(
         dataSubscription,
         state.unsubscribes,
-        (subscriptionError: unknown) => {
-          app.debug(
-            `Data subscription error for ${context}: ${subscriptionError}`
-          );
-        },
+        (_subscriptionError: unknown) => {},
         (delta: Delta) => {
           // Process each update in the delta
           if (delta.updates) {
@@ -1042,7 +972,6 @@ export = function (app: ServerAPI): SignalKPlugin {
   function shouldSubscribeToPath(pathConfig: PathConfig): boolean {
     // Always subscribe if explicitly enabled
     if (pathConfig.enabled) {
-      app.debug(`✅ Path ${pathConfig.path} enabled (always on)`);
       return true;
     }
 
@@ -1052,15 +981,9 @@ export = function (app: ServerAPI): SignalKPlugin {
       const hasActiveRegimen = requiredRegimens.some(regimen =>
         state.activeRegimens.has(regimen)
       );
-      app.debug(
-        `🔍 Path ${pathConfig.path} requires regimens [${requiredRegimens.join(', ')}], active: [${Array.from(state.activeRegimens).join(', ')}] → ${hasActiveRegimen ? 'SUBSCRIBE' : 'SKIP'}`
-      );
       return hasActiveRegimen;
     }
 
-    app.debug(
-      `❌ Path ${pathConfig.path} has no regimen control and not enabled`
-    );
     return false;
   }
 
@@ -1081,14 +1004,18 @@ export = function (app: ServerAPI): SignalKPlugin {
       // Check if this vessel should be excluded based on MMSI
       const vesselContext = delta.context || 'vessels.self';
       if (shouldExcludeVessel(vesselContext, pathConfig)) {
-        app.debug(
-          `Excluding data from vessel ${vesselContext} due to MMSI filter`
-        );
         return;
       }
 
-      // Note: Source filtering removed due to server arbitration limitations
-      // See streambundle backup for implementation that bypassed this issue
+      // Check source filter if specified
+      if (pathConfig.source && pathConfig.source.trim() !== '') {
+        const messageSource =
+          update.$source || (update.source ? update.source.label : null);
+        if (messageSource !== pathConfig.source.trim()) {
+          // Source doesn't match filter, skip this message
+          return;
+        }
+      }
 
       const record: DataRecord = {
         received_timestamp: new Date().toISOString(),
@@ -1133,7 +1060,7 @@ export = function (app: ServerAPI): SignalKPlugin {
       const bufferKey = `${actualContext}:${pathConfig.path}`;
       bufferData(bufferKey, record, config);
     } catch (error) {
-      app.debug(`Error handling data message: ${error}`);
+      // Error handling command message
     }
   }
 
@@ -1244,7 +1171,7 @@ export = function (app: ServerAPI): SignalKPlugin {
         await uploadToS3(savedPath, config);
       }
     } catch (error) {
-      app.debug(`❌ Error saving buffer for ${signalkPath}: ${error}`);
+      // Error handling command message
     }
   }
 
@@ -1261,10 +1188,6 @@ export = function (app: ServerAPI): SignalKPlugin {
       );
 
       if (consolidatedCount > 0) {
-        app.debug(
-          `Consolidated ${consolidatedCount} topic directories for ${yesterday.toISOString().split('T')[0]}`
-        );
-
         // Upload consolidated files to S3 if enabled and timing is consolidation
         if (
           config.s3Upload.enabled &&
@@ -1274,7 +1197,7 @@ export = function (app: ServerAPI): SignalKPlugin {
         }
       }
     } catch (error) {
-      app.debug(`Error during daily consolidation: ${error}`);
+      // Error handling command message
     }
   }
 
@@ -1294,16 +1217,12 @@ export = function (app: ServerAPI): SignalKPlugin {
         nodir: true,
       });
 
-      app.debug(
-        `Found ${consolidatedFiles.length} consolidated files to upload for ${dateStr}`
-      );
-
       // Upload each consolidated file
       for (const filePath of consolidatedFiles) {
         await uploadToS3(filePath, config);
       }
     } catch (error) {
-      app.debug(`Error uploading consolidated files to S3: ${error}`);
+      // Error handling command message
     }
   }
 
@@ -1317,20 +1236,12 @@ export = function (app: ServerAPI): SignalKPlugin {
         pathConfig.enabled
     );
 
-    app.debug(
-      `🔍 Checking current command values for ${commandPaths.length} command paths at startup`
-    );
-
     commandPaths.forEach((pathConfig: PathConfig) => {
       try {
         // Get current value from SignalK API
         const currentData = app.getSelfPath(pathConfig.path);
 
         if (currentData !== undefined && currentData !== null) {
-          app.debug(
-            `📋 Found current value for ${pathConfig.path}: ${JSON.stringify(currentData)}`
-          );
-
           // Check if there's source information
           const shouldProcess = true;
 
@@ -1338,24 +1249,13 @@ export = function (app: ServerAPI): SignalKPlugin {
           if (pathConfig.source && pathConfig.source.trim() !== '') {
             // For startup, we need to check the API source info
             // This is a simplified check - in real deltas we get more source info
-            app.debug(
-              `🔍 Source filter specified for ${pathConfig.path}: "${pathConfig.source.trim()}"`
-            );
-
             // For now, we'll process the value if it exists and log a warning
             // In practice, you might want to check the source here too
-            app.debug(
-              `⚠️  Startup value processed without source verification for ${pathConfig.path}`
-            );
           }
 
           if (shouldProcess && currentData.value !== undefined) {
             const commandName = extractCommandName(pathConfig.path);
             const isActive = Boolean(currentData.value);
-
-            app.debug(
-              `🚀 Startup: Command ${commandName}: ${isActive ? 'ACTIVE' : 'INACTIVE'}`
-            );
 
             if (isActive) {
               state.activeRegimens.add(commandName);
@@ -1364,18 +1264,12 @@ export = function (app: ServerAPI): SignalKPlugin {
             }
           }
         } else {
-          app.debug(`📭 No current value found for ${pathConfig.path}`);
+          // No current value found
         }
       } catch (error) {
-        app.debug(
-          `❌ Error checking startup value for ${pathConfig.path}: ${error}`
-        );
+        // Error handling command message
       }
     });
-
-    app.debug(
-      `🎯 Startup regimens initialized: [${Array.from(state.activeRegimens).join(', ')}]`
-    );
   }
 
   // Helper functions
@@ -1431,17 +1325,14 @@ export = function (app: ServerAPI): SignalKPlugin {
       });
 
       await state.s3Client.send(command);
-      app.debug(`✅ Uploaded to S3: s3://${config.s3Upload.bucket}/${s3Key}`);
 
       // Delete local file if configured
       if (config.s3Upload.deleteAfterUpload) {
         await fs.unlink(filePath);
-        app.debug(`🗑️ Deleted local file: ${filePath}`);
       }
 
       return true;
     } catch (error) {
-      app.debug(`❌ Error uploading ${filePath} to S3: ${error}`);
       return false;
     }
   }
@@ -1568,7 +1459,6 @@ export = function (app: ServerAPI): SignalKPlugin {
     const publicPath = path.join(__dirname, '../public');
     if (fs.existsSync(publicPath)) {
       router.use(express.static(publicPath));
-      app.debug(`Static files served from: ${publicPath}`);
     }
 
     // Get the current configuration for data directory
@@ -1586,21 +1476,12 @@ export = function (app: ServerAPI): SignalKPlugin {
         .replace(/:/g, '_');
       const vesselsDir = path.join(dataDir, selfContextPath);
 
-      app.debug(`🔍 Looking for paths in vessel directory: ${vesselsDir}`);
-      app.debug(
-        `📡 Using vessel context: ${app.selfContext} → ${selfContextPath}`
-      );
-
       if (!fs.existsSync(vesselsDir)) {
-        app.debug(`❌ Vessel directory does not exist: ${vesselsDir}`);
         return paths;
       }
 
       function walkPaths(currentPath: string, relativePath: string = ''): void {
         try {
-          app.debug(
-            `🚶 Walking path: ${currentPath} (relative: ${relativePath})`
-          );
           const items = fs.readdirSync(currentPath);
           items.forEach((item: string) => {
             const fullPath = path.join(currentPath, item);
@@ -1624,27 +1505,20 @@ export = function (app: ServerAPI): SignalKPlugin {
                 const fileCount = fs
                   .readdirSync(fullPath)
                   .filter((file: string) => file.endsWith('.parquet')).length;
-                app.debug(
-                  `✅ Found SignalK path with data: ${newRelativePath} (${fileCount} files)`
-                );
                 paths.push({
                   path: newRelativePath,
                   directory: fullPath,
                   fileCount: fileCount,
                 });
               } else {
-                app.debug(
-                  `📁 Directory ${newRelativePath} has no parquet files`
-                );
+                // Directory has no parquet files
               }
 
               walkPaths(fullPath, newRelativePath);
             }
           });
         } catch (error) {
-          app.debug(
-            `❌ Error reading directory ${currentPath}: ${(error as Error).message}`
-          );
+          // Error handling command message
         }
       }
 
@@ -1652,9 +1526,6 @@ export = function (app: ServerAPI): SignalKPlugin {
         walkPaths(vesselsDir);
       }
 
-      app.debug(
-        `📊 Path discovery complete: found ${paths.length} paths with data`
-      );
       return paths;
     }
 
@@ -1886,8 +1757,6 @@ export = function (app: ServerAPI): SignalKPlugin {
             });
           }
 
-          app.debug(`Executing query: ${processedQuery}`);
-
           const instance = await DuckDBInstance.create();
           const connection = await instance.connect();
           try {
@@ -1962,7 +1831,6 @@ export = function (app: ServerAPI): SignalKPlugin {
             keyPrefix: state.currentConfig.s3Upload.keyPrefix || 'none',
           });
         } catch (error) {
-          app.debug(`S3 test connection error: ${error}`);
           return res.status(500).json({
             success: false,
             error: (error as Error).message || 'S3 connection failed',
@@ -2105,10 +1973,6 @@ export = function (app: ServerAPI): SignalKPlugin {
 
           // Update subscriptions
           updateDataSubscriptions(state.currentConfig!);
-
-          app.debug(
-            `Removed path configuration: ${removedPath.name} (${removedPath.path})`
-          );
 
           res.json({
             success: true,
@@ -2358,8 +2222,6 @@ export = function (app: ServerAPI): SignalKPlugin {
         });
       }
     );
-
-    app.debug('Webapp API routes registered');
   };
 
   return plugin;
