@@ -11,6 +11,7 @@ temp/
 *.json.backup
 *.ts.backup
 IMPLEMENTATION_SUMMARY.md
+*-backup
 
 # Ignore build artifacts
 build/

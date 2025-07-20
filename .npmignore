@@ -55,9 +55,12 @@ data/
 *.csv
 *.json.backup
 *.ts.backup
+*-backup
 
 # Package files
 *.tgz
 
 # Testing documentation
 TESTING.md
+# Ignore specific files
+IMPLEMENTATION_SUMMARY.md
