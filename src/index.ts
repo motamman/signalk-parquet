@@ -32,8 +32,6 @@ import {
   CommandPutHandler,
   CommandExecutionResult,
   CommandHistoryEntry,
-  NormalizedDelta,
-  SourceRef,
 } from './types';
 import { glob } from 'glob';
 import {
@@ -371,16 +369,6 @@ export = function (app: ServerAPI): SignalKPlugin {
       }
     });
     state.unsubscribes = [];
-
-    // Clean up stream subscriptions (new streambundle approach)
-    if (state.streamSubscriptions) {
-      state.streamSubscriptions.forEach(stream => {
-        if (stream && typeof stream.end === 'function') {
-          stream.end();
-        }
-      });
-      state.streamSubscriptions = [];
-    }
 
     // Clear data structures
     state.dataBuffers.clear();
@@ -996,93 +984,55 @@ export = function (app: ServerAPI): SignalKPlugin {
       contextGroups.get(context)!.push(pathConfig);
     });
 
-    // Use app.streambundle approach as recommended by SignalK developer
-    // This avoids server arbitration and provides true source filtering
+    // Create subscriptions for each context group
     contextGroups.forEach((pathConfigs, context) => {
+      const dataSubscription = {
+        context: context,
+        subscribe: pathConfigs.map(pathConfig => ({
+          path: pathConfig.path as Path,
+          period: 1000, // Get updates every second max
+          policy: 'fixed' as const,
+        })),
+      };
+
       app.debug(
-        `Creating streambundle subscriptions for ${pathConfigs.length} data paths for context ${context}`
+        `Subscribing to ${pathConfigs.length} data paths for context ${context}`
       );
 
-      pathConfigs.forEach((pathConfig: PathConfig) => {
-        // Debug: Show exclusion settings for this path
-        if (pathConfig.excludeMMSI && pathConfig.excludeMMSI.length > 0) {
-          app.debug(`🔧 Path ${pathConfig.path} has MMSI exclusions: [${pathConfig.excludeMMSI.join(', ')}]`);
+      app.subscriptionmanager.subscribe(
+        dataSubscription,
+        state.unsubscribes,
+        (subscriptionError: unknown) => {
+          app.debug(
+            `Data subscription error for ${context}: ${subscriptionError}`
+          );
+        },
+        (delta: Delta) => {
+          // Process each update in the delta
+          if (delta.updates) {
+            delta.updates.forEach((update: Update) => {
+              if (hasValues(update)) {
+                update.values.forEach((valueUpdate: PathValue) => {
+                  const pathConfig = pathConfigs.find(
+                    (p: PathConfig) => p.path === valueUpdate.path
+                  );
+                  if (pathConfig) {
+                    handleDataMessage(
+                      valueUpdate,
+                      pathConfig,
+                      config,
+                      update,
+                      delta
+                    );
+                  }
+                });
+              }
+            });
+          }
         }
-        
-        // Create individual stream for each path (developer's recommended approach)
-        const stream = app.streambundle
-          .getBus(pathConfig.path as Path)
-          .filter((normalizedDelta: NormalizedDelta) => {
-            // Filter by source if specified
-            if (pathConfig.source && pathConfig.source.trim() !== '') {
-              if (
-                normalizedDelta.$source !==
-                (pathConfig.source.trim() as SourceRef)
-              ) {
-                return false;
-              }
-            }
+      );
 
-            // Filter by context
-            const targetContext = pathConfig.context || 'vessels.self';
-            if (targetContext === 'vessels.*') {
-              // For wildcard, accept any vessel context
-              if (!normalizedDelta.context.startsWith('vessels.')) {
-                return false;
-              }
-            } else if (targetContext === 'vessels.self') {
-              // For vessels.self, check if this is the server's own vessel
-              const selfContext = app.selfContext;
-              const selfVessel = app.getSelfPath('') || {};
-              const selfMMSI = selfVessel.mmsi;
-              const selfUuid = app.getSelfPath('uuid');
-              
-              // Check if the context matches the server's self vessel
-              let isSelfVessel = false;
-              
-              if (normalizedDelta.context === 'vessels.self') {
-                isSelfVessel = true;
-              } else if (normalizedDelta.context === selfContext) {
-                isSelfVessel = true;
-              } else if (selfMMSI && normalizedDelta.context.includes(selfMMSI)) {
-                isSelfVessel = true;
-              } else if (selfUuid && normalizedDelta.context.includes(selfUuid)) {
-                isSelfVessel = true;
-              }
-              
-              if (!isSelfVessel) {
-                return false;
-              }
-            } else {
-              // For specific context, match exactly
-              if (normalizedDelta.context !== targetContext) {
-                return false;
-              }
-            }
-
-            // MMSI exclusion filtering
-            if (pathConfig.excludeMMSI && pathConfig.excludeMMSI.length > 0) {
-              const contextHasExcludedMMSI = pathConfig.excludeMMSI.some(mmsi =>
-                normalizedDelta.context.includes(mmsi)
-              );
-              if (contextHasExcludedMMSI) {
-                app.debug(`🚫 MMSI exclusion: "${normalizedDelta.context}" contains excluded MMSI from [${pathConfig.excludeMMSI.join(', ')}]`);
-                return false;
-              } else {
-                app.debug(`✅ MMSI check passed: "${normalizedDelta.context}" not in exclusion list [${pathConfig.excludeMMSI.join(', ')}]`);
-              }
-            }
-
-            return true;
-          })
-          .debounceImmediate(1000) // Built-in debouncing as recommended
-          .onValue((normalizedDelta: NormalizedDelta) => {
-            handleStreamData(normalizedDelta, pathConfig, config);
-          });
-
-        // Store stream reference for cleanup (instead of unsubscribe functions)
-        state.streamSubscriptions = state.streamSubscriptions || [];
-        state.streamSubscriptions.push(stream);
+      pathConfigs.forEach(pathConfig => {
         state.subscribedPaths.add(pathConfig.path);
       });
     });
@@ -1115,8 +1065,6 @@ export = function (app: ServerAPI): SignalKPlugin {
   }
 
   // Handle data messages from SignalK - now receives complete delta structure
-  // Legacy handler - kept for rollback capability
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   function handleDataMessage(
     valueUpdate: PathValue,
     pathConfig: PathConfig,
@@ -1139,15 +1087,8 @@ export = function (app: ServerAPI): SignalKPlugin {
         return;
       }
 
-      // Check source filter if specified
-      if (pathConfig.source && pathConfig.source.trim() !== '') {
-        const messageSource =
-          update.$source || (update.source ? update.source.label : null);
-        if (messageSource !== pathConfig.source.trim()) {
-          // Source doesn't match filter, skip this message
-          return;
-        }
-      }
+      // Note: Source filtering removed due to server arbitration limitations
+      // See streambundle backup for implementation that bypassed this issue
 
       const record: DataRecord = {
         received_timestamp: new Date().toISOString(),
@@ -1193,71 +1134,6 @@ export = function (app: ServerAPI): SignalKPlugin {
       bufferData(bufferKey, record, config);
     } catch (error) {
       app.debug(`Error handling data message: ${error}`);
-    }
-  }
-
-  // New handler for streambundle data (developer's recommended approach)
-  function handleStreamData(
-    normalizedDelta: NormalizedDelta,
-    pathConfig: PathConfig,
-    config: PluginConfig
-  ): void {
-    try {
-      // Check if we should still process this path
-      if (!shouldSubscribeToPath(pathConfig)) {
-        return;
-      }
-
-      const record: DataRecord = {
-        received_timestamp: new Date().toISOString(),
-        signalk_timestamp:
-          normalizedDelta.timestamp || new Date().toISOString(),
-        context:
-          normalizedDelta.context || pathConfig.context || 'vessels.self',
-        path: normalizedDelta.path,
-        value: null,
-        value_json: undefined,
-        source: normalizedDelta.source
-          ? JSON.stringify(normalizedDelta.source)
-          : undefined,
-        source_label: normalizedDelta.$source || undefined,
-        source_type: normalizedDelta.source
-          ? normalizedDelta.source.type
-          : undefined,
-        source_pgn: normalizedDelta.source
-          ? normalizedDelta.source.pgn
-          : undefined,
-        source_src: normalizedDelta.source
-          ? normalizedDelta.source.src
-          : undefined,
-      };
-
-      // Handle complex values
-      if (
-        typeof normalizedDelta.value === 'object' &&
-        normalizedDelta.value !== null
-      ) {
-        record.value_json = JSON.stringify(normalizedDelta.value);
-        // Extract key properties as columns for easier querying
-        Object.entries(normalizedDelta.value).forEach(([key, val]) => {
-          if (
-            typeof val === 'string' ||
-            typeof val === 'number' ||
-            typeof val === 'boolean'
-          ) {
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            (record as any)[`value_${key}`] = val;
-          }
-        });
-      } else {
-        record.value = normalizedDelta.value;
-      }
-
-      // Use actual context + path as buffer key to separate data from different vessels
-      const bufferKey = `${normalizedDelta.context}:${pathConfig.path}`;
-      bufferData(bufferKey, record, config);
-    } catch (error) {
-      app.debug(`Error handling stream data: ${error}`);
     }
   }
 
