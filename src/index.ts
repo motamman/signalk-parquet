@@ -1008,16 +1008,12 @@ export = function (app: ServerAPI): SignalKPlugin {
         const stream = app.streambundle
           .getBus(pathConfig.path as Path)
           .filter((normalizedDelta: NormalizedDelta) => {
-            // Debug: Log every message that comes through (before filtering)
-            app.debug(`🌊 Stream data for ${pathConfig.path}: context=${normalizedDelta.context}, source=${normalizedDelta.$source}, value=${JSON.stringify(normalizedDelta.value)}`);
-            
-            // Filter by source if specified (this is the key fix!)
+            // Filter by source if specified
             if (pathConfig.source && pathConfig.source.trim() !== '') {
               if (
                 normalizedDelta.$source !==
                 (pathConfig.source.trim() as SourceRef)
               ) {
-                app.debug(`🚫 Source filter rejected: expected "${pathConfig.source.trim()}" got "${normalizedDelta.$source}"`);
                 return false;
               }
             }
@@ -1027,18 +1023,14 @@ export = function (app: ServerAPI): SignalKPlugin {
             if (targetContext === 'vessels.*') {
               // For wildcard, accept any vessel context
               if (!normalizedDelta.context.startsWith('vessels.')) {
-                app.debug(`🚫 Context filter rejected: "${normalizedDelta.context}" doesn't start with "vessels."`);
                 return false;
               }
             } else if (targetContext === 'vessels.self') {
-              // For vessels.self, we need to check if this is the server's own vessel
-              // Get the self vessel identifier from the server
+              // For vessels.self, check if this is the server's own vessel
+              const selfContext = app.selfContext;
               const selfVessel = app.getSelfPath('') || {};
               const selfMMSI = selfVessel.mmsi;
               const selfUuid = app.getSelfPath('uuid');
-              const selfContext = app.selfContext;
-              
-              app.debug(`🔍 Self vessel check: selfMMSI="${selfMMSI}", selfUuid="${selfUuid}", selfContext="${selfContext}", incoming="${normalizedDelta.context}"`);
               
               // Check if the context matches the server's self vessel
               let isSelfVessel = false;
@@ -1054,13 +1046,11 @@ export = function (app: ServerAPI): SignalKPlugin {
               }
               
               if (!isSelfVessel) {
-                app.debug(`🚫 Context filter rejected: "${normalizedDelta.context}" is not vessels.self`);
                 return false;
               }
             } else {
               // For specific context, match exactly
               if (normalizedDelta.context !== targetContext) {
-                app.debug(`🚫 Context filter rejected: expected "${targetContext}" got "${normalizedDelta.context}"`);
                 return false;
               }
             }
@@ -1071,17 +1061,17 @@ export = function (app: ServerAPI): SignalKPlugin {
                 normalizedDelta.context.includes(mmsi)
               );
               if (contextHasExcludedMMSI) {
-                app.debug(`🚫 MMSI exclusion filter rejected: "${normalizedDelta.context}" contains excluded MMSI`);
+                app.debug(`🚫 MMSI exclusion: "${normalizedDelta.context}" contains excluded MMSI from [${pathConfig.excludeMMSI.join(', ')}]`);
                 return false;
+              } else {
+                app.debug(`✅ MMSI check passed: "${normalizedDelta.context}" not in exclusion list [${pathConfig.excludeMMSI.join(', ')}]`);
               }
             }
 
-            app.debug(`✅ Stream filter passed for ${pathConfig.path}`);
             return true;
           })
           .debounceImmediate(1000) // Built-in debouncing as recommended
           .onValue((normalizedDelta: NormalizedDelta) => {
-            app.debug(`🎯 Processing stream data after debounce for ${pathConfig.path}`);
             handleStreamData(normalizedDelta, pathConfig, config);
           });
 
