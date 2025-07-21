@@ -42,6 +42,7 @@ import {
   Path,
   PathValue,
   ServerAPI,
+  SourceRef,
   Update,
   Timestamp,
 } from '@signalk/server-api';
@@ -717,10 +718,7 @@ export = function (app: ServerAPI): SignalKPlugin {
         context: 'vessels.self' as Context,
         updates: [
           {
-            source: {
-              label: 'signalk-parquet-commands',
-              type: 'plugin',
-            },
+            $source: 'signalk-parquet-commands' as SourceRef,
             timestamp: timestamp as Timestamp,
             values: [
               {
@@ -793,10 +791,7 @@ export = function (app: ServerAPI): SignalKPlugin {
       context: 'vessels.self' as Context,
       updates: [
         {
-          source: {
-            label: 'signalk-parquet-commands',
-            type: 'plugin',
-          },
+          $source: 'signalk-parquet-commands' as SourceRef,
           timestamp,
           values: [
             {
