@@ -533,6 +533,7 @@ For detailed testing procedures, see [TESTING.md](TESTING.md).
 ## TODO
 
 - [x] Implement startup consolidation for missed previous days (exclude current day)
+- [ ] Clean up data output of sourcing
 - [ ] Add Grafana integration
 - [ ] Add history API integration
 - [ ] Create SignalK app store listing with screenshots
