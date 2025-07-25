@@ -367,7 +367,7 @@ export class ParquetWriter {
           const itemPath = path.join(dir, item);
           const stat = await fs.stat(itemPath);
 
-          if (stat.isDirectory()) {
+          if (stat.isDirectory() && item !== 'processed') {
             await walkDir(itemPath);
           } else if (
             item.includes(dateStr) &&
