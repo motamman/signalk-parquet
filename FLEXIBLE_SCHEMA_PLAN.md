@@ -1,5 +1,5 @@
 # Flexible Parquet Schema Plan for SignalK Data Types
-
+give
 ## Problem Statement
 SignalK `value` fields can contain multiple data types:
 - **Numbers**: Sensor readings (temperature: 23.5, rpm: 1500)

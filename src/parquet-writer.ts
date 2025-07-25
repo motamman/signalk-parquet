@@ -114,7 +114,6 @@ export class ParquetWriter {
 
       // Create Parquet writer
       const writer = await parquet.ParquetWriter.openFile(schema, filepath);
-      this.app?.debug('Parquet writer created successfully');
 
       // Write records to Parquet file
       for (let i = 0; i < records.length; i++) {
@@ -126,12 +125,10 @@ export class ParquetWriter {
         const preparedRecord = this.prepareRecordForParquet(record, schema);
         Object.assign(cleanRecord, preparedRecord);
 
-        this.app?.debug(`Writing record ${i + 1}/${records.length}`);
         await writer.appendRow(cleanRecord);
       }
 
       // Close the writer
-      this.app?.debug('Closing Parquet writer...');
       await writer.close();
 
       // Validate the written file size
