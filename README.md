@@ -1,12 +1,13 @@
 # SignalK Parquet Data Store (TypeScript)
 
-**Version 0.5.0-beta.2**
+**Version 0.5.0-beta.3**
 
 A comprehensive TypeScript-based SignalK plugin that saves marine data directly to Parquet files with regimen-based control, web interface for querying, and S3 upload capabilities.
 
 ## Features
 
 - **TypeScript Implementation**: Full TypeScript support with comprehensive type safety
+- **Smart Data Types**: Intelligent Parquet schema detection preserves native data types (DOUBLE, BOOLEAN) instead of forcing everything to strings
 - **Command Management**: Register, execute, and manage SignalK commands with automatic path configuration
 - **Regimen-Based Data Collection**: Control data collection with command-based regimens
 - **Multi-Vessel Support**: Wildcard vessel contexts (`vessels.*`) with MMSI-based exclusion filtering
@@ -35,6 +36,33 @@ npm install motamman/signalk-parquet
 # Restart SignalK
 sudo systemctl restart signalk
 ```
+
+## ⚠️ IMPORTANT: Consolidation Bug Fix
+
+**THIS VERSION FIXES A RECURSIVE BUG THAT WAS CREATING NESTED PROCESSED DIRECTORIES AND REPEATEDLY PROCESSING THE SAME FILES. THIS SHOULD FIX THAT PROBLEM BUT ANY `processed` FOLDERS NESTED INSIDE A `processed` FOLDER SHOULD BE MANUALLY DELETED.**
+
+### Cleaning Up Nested Processed Directories
+
+If you're upgrading from a previous version, you may have nested processed directories that need cleanup:
+
+```bash
+# Check for nested processed directories
+find data -name "*processed*" -type d | head -20
+
+# See the deepest nesting levels
+find data -name "*processed*" -type d | awk -F'/' '{print NF-1, $0}' | sort -nr | head -5
+
+# Count files in nested processed directories
+find data -path "*/processed/processed/*" -type f | wc -l
+
+# Remove ALL nested processed directories (RECOMMENDED)
+find data -name "processed" -type d -exec rm -rf {} +
+
+# Verify cleanup completed
+find data -path "*/processed/processed/*" -type f | wc -l  # Should show 0
+```
+
+**Note**: The processed directories only contain files that were moved during consolidation - removing them does not delete your original data.
 
 ### Development Setup
 
@@ -292,13 +320,25 @@ Each record contains:
 | `signalk_timestamp` | string | Original SignalK timestamp |
 | `context` | string | SignalK context (e.g., `vessels.self`) |
 | `path` | string | SignalK path |
-| `value` | any | The actual data value |
+| `value` | DOUBLE/BOOLEAN/INT64/UTF8 | **Smart typed values** - numbers stored as DOUBLE, booleans as BOOLEAN, etc. |
 | `value_json` | string | JSON representation for complex values |
 | `source` | string | Complete source information |
 | `source_label` | string | Source label |
 | `source_type` | string | Source type |
 | `source_pgn` | number | PGN number (if applicable) |
 | `meta` | string | Metadata information |
+
+#### Smart Data Types
+
+The plugin now intelligently detects and preserves native data types:
+
+- **Numbers**: Stored as `DOUBLE` (floating point) or `INT64` (integers)
+- **Booleans**: Stored as `BOOLEAN` 
+- **Strings**: Stored as `UTF8`
+- **Objects**: Serialized to JSON and stored as `UTF8`
+- **Mixed Types**: Falls back to `UTF8` when a path contains multiple data types
+
+This provides better compression, faster queries, and proper type safety for data analysis.
 
 ## Web Interface
 
@@ -548,6 +588,12 @@ For detailed testing procedures, see [TESTING.md](TESTING.md).
 6. Submit a pull request
 
 ## Changelog
+
+### Version 0.5.0-beta.3
+- **🔥 CRITICAL BUG FIX**: Fixed recursive consolidation bug that created infinite nested `/processed/processed/processed/...` directories
+- **🎯 Smart Data Types**: Implemented intelligent Parquet schema detection that preserves native data types (DOUBLE, BOOLEAN, INT64) instead of forcing everything to UTF8 strings
+- **⚡ Performance**: Numeric data now stored as native types for better compression and faster queries
+- **🛠️ Type Safety**: Fixed schema field type access bug (`primitiveType` → `type`) in data conversion logic
 
 ### Version 0.5.0-beta.2
 - **🐛 Fixed SignalK Source Naming**: Corrected delta updates to use `$source` instead of `source` object format for proper source label recognition

@@ -21,7 +21,6 @@ import {
   QueryRequest,
   PathConfigRequest,
   PathInfo,
-  DuckDBInstance,
   WebAppPathConfig,
   CommandConfig,
   CommandRegistrationState,
@@ -62,14 +61,8 @@ import('@aws-sdk/client-s3')
   });
 
 // DuckDB for webapp queries
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-let DuckDBInstance: any;
-import('@duckdb/node-api')
-  .then(duckdb => (DuckDBInstance = duckdb.DuckDBInstance))
-  .catch(() => {
-    // eslint-disable-next-line no-console
-    console.warn('DuckDB not available for webapp queries');
-  });
+import { DuckDBInstance } from '@duckdb/node-api';
+const duckDBInstance = DuckDBInstance;
 
 // Global variables for path and command management
 let currentPaths: PathConfig[] = [];
@@ -1211,6 +1204,21 @@ export = function (app: ServerAPI): SignalKPlugin {
         }
       }
 
+      // Retrieve metadata for this path
+      let metadata: string | undefined;
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const pathMetadata = (app as any).getMetadata?.(valueUpdate.path);
+        if (pathMetadata) {
+          metadata = JSON.stringify(pathMetadata);
+        }
+      } catch (error) {
+        // Metadata retrieval failed, continue without it
+        app.debug(
+          `Failed to retrieve metadata for ${valueUpdate.path}: ${error}`
+        );
+      }
+
       const record: DataRecord = {
         received_timestamp: new Date().toISOString(),
         signalk_timestamp: update.timestamp || new Date().toISOString(),
@@ -1224,8 +1232,13 @@ export = function (app: ServerAPI): SignalKPlugin {
         source_type: update.source ? update.source.type : undefined,
         source_pgn: update.source ? update.source.pgn : undefined,
         source_src: update.source ? update.source.src : undefined,
-        //FIXME should meta be removed from the stored values? normal value updates don't have them
-        // meta: valueUpdate.meta ? JSON.stringify(valueUpdate.meta) : undefined,
+        meta:
+          metadata ||
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          ((valueUpdate as any).meta
+            ? // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              JSON.stringify((valueUpdate as any).meta)
+            : undefined),
       };
 
       // Handle different value types (matching Python logic)
@@ -1265,6 +1278,21 @@ export = function (app: ServerAPI): SignalKPlugin {
     config: PluginConfig
   ): void {
     try {
+      // Retrieve metadata for this path
+      let metadata: string | undefined;
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const pathMetadata = (app as any).getMetadata?.(normalizedDelta.path);
+        if (pathMetadata) {
+          metadata = JSON.stringify(pathMetadata);
+        }
+      } catch (error) {
+        // Metadata retrieval failed, continue without it
+        app.debug(
+          `Failed to retrieve metadata for ${normalizedDelta.path}: ${error}`
+        );
+      }
+
       const record: DataRecord = {
         received_timestamp: new Date().toISOString(),
         signalk_timestamp:
@@ -1287,6 +1315,7 @@ export = function (app: ServerAPI): SignalKPlugin {
         source_src: normalizedDelta.source
           ? normalizedDelta.source.src
           : undefined,
+        meta: metadata,
       };
 
       // Handle complex values
@@ -2015,7 +2044,7 @@ export = function (app: ServerAPI): SignalKPlugin {
       '/api/sample/:path(*)',
       async (req: TypedRequest, res: TypedResponse<SampleApiResponse>) => {
         try {
-          if (!DuckDBInstance) {
+          if (!duckDBInstance) {
             return res.status(503).json({
               success: false,
               error: 'DuckDB not available',
@@ -2063,7 +2092,7 @@ export = function (app: ServerAPI): SignalKPlugin {
           const sampleFile = files[0];
           const query = `SELECT * FROM '${sampleFile.path}' LIMIT ${limit}`;
 
-          const instance = await DuckDBInstance.create();
+          const instance = await duckDBInstance.create();
           const connection = await instance.connect();
           try {
             const reader = await connection.runAndReadAll(query);
@@ -2107,7 +2136,7 @@ export = function (app: ServerAPI): SignalKPlugin {
         res: TypedResponse<QueryApiResponse>
       ) => {
         try {
-          if (!DuckDBInstance) {
+          if (!duckDBInstance) {
             return res.status(503).json({
               success: false,
               error: 'DuckDB not available',
@@ -2162,7 +2191,7 @@ export = function (app: ServerAPI): SignalKPlugin {
 
           app.debug(`Executing query: ${processedQuery}`);
 
-          const instance = await DuckDBInstance.create();
+          const instance = await duckDBInstance.create();
           const connection = await instance.connect();
           try {
             const reader = await connection.runAndReadAll(processedQuery);
@@ -2628,7 +2657,7 @@ export = function (app: ServerAPI): SignalKPlugin {
           success: true,
           status: 'healthy',
           timestamp: new Date().toISOString(),
-          duckdb: DuckDBInstance ? 'available' : 'not available',
+          duckdb: duckDBInstance ? 'available' : 'not available',
         });
       }
     );

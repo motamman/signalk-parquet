@@ -106,42 +106,14 @@ export class ParquetWriter {
       );
       this.app?.debug(`Sample record: ${JSON.stringify(records[0], null, 2)}`);
 
-      // Define schema based on SignalK data structure
-      const schemaFields: { [key: string]: ParquetField } = {
-        received_timestamp: { type: 'UTF8', optional: true },
-        signalk_timestamp: { type: 'UTF8', optional: true },
-        context: { type: 'UTF8', optional: true },
-        path: { type: 'UTF8', optional: true },
-        value: { type: 'UTF8', optional: true }, // Store as string for flexibility
-        value_json: { type: 'UTF8', optional: true },
-        source: { type: 'UTF8', optional: true },
-        source_label: { type: 'UTF8', optional: true },
-        source_type: { type: 'UTF8', optional: true },
-        source_pgn: { type: 'UTF8', optional: true },
-        source_src: { type: 'UTF8', optional: true },
-        meta: { type: 'UTF8', optional: true },
-      };
-
-      // Add any additional fields from the actual data
-      const allKeys = new Set<string>();
-      records.forEach(record => {
-        Object.keys(record).forEach(key => allKeys.add(key));
-      });
-
-      allKeys.forEach(key => {
-        if (!schemaFields[key]) {
-          schemaFields[key] = { type: 'UTF8', optional: true };
-        }
-      });
-
-      const schema = new parquet.ParquetSchema(schemaFields);
+      // Use intelligent schema detection for optimal data types
+      const schema = this.createParquetSchema(records);
       this.app?.debug(
-        `Creating Parquet schema with ${Object.keys(schemaFields).length} fields: ${Object.keys(schemaFields).join(', ')}`
+        `Creating Parquet schema with ${Object.keys(schema.schema).length} fields: ${Object.keys(schema.schema).join(', ')}`
       );
 
       // Create Parquet writer
       const writer = await parquet.ParquetWriter.openFile(schema, filepath);
-      this.app?.debug('Parquet writer created successfully');
 
       // Write records to Parquet file
       for (let i = 0; i < records.length; i++) {
@@ -149,25 +121,14 @@ export class ParquetWriter {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const cleanRecord: { [key: string]: any } = {};
 
-        // Ensure all schema fields are present and properly formatted
-        Object.keys(schemaFields).forEach(fieldName => {
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const value = (record as any)[fieldName];
-          if (value === null || value === undefined) {
-            cleanRecord[fieldName] = null;
-          } else if (typeof value === 'object') {
-            cleanRecord[fieldName] = JSON.stringify(value);
-          } else {
-            cleanRecord[fieldName] = String(value);
-          }
-        });
+        // Prepare record for typed Parquet schema
+        const preparedRecord = this.prepareRecordForParquet(record, schema);
+        Object.assign(cleanRecord, preparedRecord);
 
-        this.app?.debug(`Writing record ${i + 1}/${records.length}`);
         await writer.appendRow(cleanRecord);
       }
 
       // Close the writer
-      this.app?.debug('Closing Parquet writer...');
       await writer.close();
 
       // Validate the written file size
@@ -215,7 +176,14 @@ export class ParquetWriter {
   // Create Parquet schema based on sample records
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   createParquetSchema(records: DataRecord[]): any {
+    this.app?.debug(
+      `createParquetSchema called with ${records.length} records`
+    );
+
     if (!parquet || records.length === 0) {
+      this.app?.debug(
+        'createParquetSchema: No parquet lib or empty records, throwing error'
+      );
       throw new Error('Cannot create Parquet schema');
     }
 
@@ -226,6 +194,9 @@ export class ParquetWriter {
     });
 
     const columns = Array.from(allColumns).sort();
+    this.app?.debug(
+      `createParquetSchema: Found columns: ${columns.join(', ')}`
+    );
     const schemaFields: { [key: string]: ParquetField } = {};
 
     // Analyze each column to determine the best Parquet type
@@ -245,6 +216,16 @@ export class ParquetWriter {
       const hasStrings = values.some(v => typeof v === 'string');
       const hasBooleans = values.some(v => typeof v === 'boolean');
 
+      // Only log details for the value column that we care about
+      if (colName === 'value') {
+        this.app?.debug(
+          `createParquetSchema: Value column - numbers: ${hasNumbers}, strings: ${hasStrings}, booleans: ${hasBooleans}`
+        );
+        this.app?.debug(
+          `createParquetSchema: Value column sample: ${JSON.stringify(values.slice(0, 3))}`
+        );
+      }
+
       if (hasNumbers && !hasStrings && !hasBooleans) {
         // All numbers - check if integers or floats
         const allIntegers = values.every(v => Number.isInteger(v));
@@ -252,36 +233,77 @@ export class ParquetWriter {
           type: allIntegers ? 'INT64' : 'DOUBLE',
           optional: true,
         };
+        if (colName === 'value') {
+          this.app?.debug(
+            `createParquetSchema: Value column -> ${allIntegers ? 'INT64' : 'DOUBLE'}`
+          );
+        }
       } else if (hasBooleans && !hasNumbers && !hasStrings) {
         schemaFields[colName] = { type: 'BOOLEAN', optional: true };
       } else {
         // Mixed types or strings - use UTF8
         schemaFields[colName] = { type: 'UTF8', optional: true };
+        if (colName === 'value') {
+          this.app?.debug(
+            `createParquetSchema: Value column -> UTF8 (mixed/strings)`
+          );
+        }
       }
     });
 
     return new parquet.ParquetSchema(schemaFields);
   }
 
-  // Prepare a record for Parquet writing (type conversion)
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  prepareRecordForParquet(record: DataRecord): { [key: string]: any } {
+  // Prepare a record for typed Parquet writing
+  prepareRecordForParquet(
+    record: DataRecord,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const prepared: { [key: string]: any } = {};
+    schema: any
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  ): { [key: string]: any } {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const cleanRecord: { [key: string]: any } = {};
 
-    // Get all fields from the record (ParquetJS schema handling)
-    for (const [fieldName, value] of Object.entries(record)) {
+    const schemaFields = schema.schema;
+
+    Object.keys(schemaFields).forEach(fieldName => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const value = (record as any)[fieldName];
+      const fieldType = schemaFields[fieldName].type;
+
       if (value === null || value === undefined) {
-        prepared[fieldName] = null;
-      } else if (typeof value === 'object') {
-        // Convert complex objects to JSON strings
-        prepared[fieldName] = JSON.stringify(value);
+        cleanRecord[fieldName] = null;
       } else {
-        prepared[fieldName] = value;
+        switch (fieldType) {
+          case 'DOUBLE':
+          case 'FLOAT':
+            cleanRecord[fieldName] =
+              typeof value === 'number' ? value : parseFloat(String(value));
+            break;
+          case 'INT64':
+          case 'INT32':
+            cleanRecord[fieldName] =
+              typeof value === 'number'
+                ? Math.round(value)
+                : parseInt(String(value));
+            break;
+          case 'BOOLEAN':
+            cleanRecord[fieldName] =
+              typeof value === 'boolean' ? value : Boolean(value);
+            break;
+          case 'UTF8':
+          default:
+            if (typeof value === 'object') {
+              cleanRecord[fieldName] = JSON.stringify(value);
+            } else {
+              cleanRecord[fieldName] = String(value);
+            }
+            break;
+        }
       }
-    }
+    });
 
-    return prepared;
+    return cleanRecord;
   }
 
   // Merge multiple files (for daily consolidation like Python version)
@@ -357,7 +379,7 @@ export class ParquetWriter {
           const itemPath = path.join(dir, item);
           const stat = await fs.stat(itemPath);
 
-          if (stat.isDirectory()) {
+          if (stat.isDirectory() && item !== 'processed') {
             await walkDir(itemPath);
           } else if (
             item.includes(dateStr) &&
