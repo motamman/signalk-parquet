@@ -235,6 +235,11 @@ export class ParquetWriter {
   ): { [key: string]: any } {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const cleanRecord: { [key: string]: any } = {};
+    
+    // Debug: log schema structure to understand ParquetJS API
+    this.app?.debug(`Schema object keys: ${Object.keys(schema)}`);
+    this.app?.debug(`Schema object: ${JSON.stringify(schema, null, 2)}`);
+    
     const schemaFields = schema.schema;
 
     Object.keys(schemaFields).forEach(fieldName => {
