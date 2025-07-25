@@ -1234,8 +1234,10 @@ export = function (app: ServerAPI): SignalKPlugin {
         source_src: update.source ? update.source.src : undefined,
         meta:
           metadata ||
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
           ((valueUpdate as any).meta
-            ? JSON.stringify((valueUpdate as any).meta)
+            ? // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              JSON.stringify((valueUpdate as any).meta)
             : undefined),
       };
 

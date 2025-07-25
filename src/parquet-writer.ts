@@ -176,10 +176,14 @@ export class ParquetWriter {
   // Create Parquet schema based on sample records
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   createParquetSchema(records: DataRecord[]): any {
-    this.app?.debug(`createParquetSchema called with ${records.length} records`);
-    
+    this.app?.debug(
+      `createParquetSchema called with ${records.length} records`
+    );
+
     if (!parquet || records.length === 0) {
-      this.app?.debug('createParquetSchema: No parquet lib or empty records, throwing error');
+      this.app?.debug(
+        'createParquetSchema: No parquet lib or empty records, throwing error'
+      );
       throw new Error('Cannot create Parquet schema');
     }
 
@@ -190,7 +194,9 @@ export class ParquetWriter {
     });
 
     const columns = Array.from(allColumns).sort();
-    this.app?.debug(`createParquetSchema: Found columns: ${columns.join(', ')}`);
+    this.app?.debug(
+      `createParquetSchema: Found columns: ${columns.join(', ')}`
+    );
     const schemaFields: { [key: string]: ParquetField } = {};
 
     // Analyze each column to determine the best Parquet type
@@ -209,11 +215,15 @@ export class ParquetWriter {
       const hasNumbers = values.some(v => typeof v === 'number');
       const hasStrings = values.some(v => typeof v === 'string');
       const hasBooleans = values.some(v => typeof v === 'boolean');
-      
+
       // Only log details for the value column that we care about
       if (colName === 'value') {
-        this.app?.debug(`createParquetSchema: Value column - numbers: ${hasNumbers}, strings: ${hasStrings}, booleans: ${hasBooleans}`);
-        this.app?.debug(`createParquetSchema: Value column sample: ${JSON.stringify(values.slice(0, 3))}`);
+        this.app?.debug(
+          `createParquetSchema: Value column - numbers: ${hasNumbers}, strings: ${hasStrings}, booleans: ${hasBooleans}`
+        );
+        this.app?.debug(
+          `createParquetSchema: Value column sample: ${JSON.stringify(values.slice(0, 3))}`
+        );
       }
 
       if (hasNumbers && !hasStrings && !hasBooleans) {
@@ -224,7 +234,9 @@ export class ParquetWriter {
           optional: true,
         };
         if (colName === 'value') {
-          this.app?.debug(`createParquetSchema: Value column -> ${allIntegers ? 'INT64' : 'DOUBLE'}`);
+          this.app?.debug(
+            `createParquetSchema: Value column -> ${allIntegers ? 'INT64' : 'DOUBLE'}`
+          );
         }
       } else if (hasBooleans && !hasNumbers && !hasStrings) {
         schemaFields[colName] = { type: 'BOOLEAN', optional: true };
@@ -232,7 +244,9 @@ export class ParquetWriter {
         // Mixed types or strings - use UTF8
         schemaFields[colName] = { type: 'UTF8', optional: true };
         if (colName === 'value') {
-          this.app?.debug(`createParquetSchema: Value column -> UTF8 (mixed/strings)`);
+          this.app?.debug(
+            `createParquetSchema: Value column -> UTF8 (mixed/strings)`
+          );
         }
       }
     });
@@ -241,14 +255,15 @@ export class ParquetWriter {
   }
 
   // Prepare a record for typed Parquet writing
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   prepareRecordForParquet(
     record: DataRecord,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     schema: any
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
   ): { [key: string]: any } {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const cleanRecord: { [key: string]: any } = {};
-    
+
     const schemaFields = schema.schema;
 
     Object.keys(schemaFields).forEach(fieldName => {
