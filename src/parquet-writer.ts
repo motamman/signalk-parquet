@@ -257,7 +257,7 @@ export class ParquetWriter {
     Object.keys(schemaFields).forEach(fieldName => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const value = (record as any)[fieldName];
-      const fieldType = schemaFields[fieldName].primitiveType;
+      const fieldType = schemaFields[fieldName].type;
 
       if (value === null || value === undefined) {
         cleanRecord[fieldName] = null;
