@@ -405,21 +405,41 @@ export class MigrationService extends EventEmitter {
 
       // For migration: attempt to parse string values as numbers
       const parsedValues = values.map(v => {
+        // Skip null, undefined, or empty string values
+        if (v === null || v === undefined || v === '') {
+          return v;
+        }
+        
         if (typeof v === 'string') {
-          // Try to parse as number
-          const parsed = parseFloat(v);
+          // Try to parse as number (handle whitespace)
+          const trimmed = v.trim();
+          if (trimmed === '') {
+            return null; // Treat whitespace-only as null
+          }
+          const parsed = parseFloat(trimmed);
           return !isNaN(parsed) ? parsed : v;
         }
         return v;
       });
 
-      const hasNumbers = parsedValues.some(v => typeof v === 'number');
-      const hasStrings = parsedValues.some(v => typeof v === 'string');
-      const hasBooleans = parsedValues.some(v => typeof v === 'boolean');
+      // Filter out null/undefined/empty values for type analysis
+      const nonNullValues = parsedValues.filter(v => v !== null && v !== undefined && v !== '');
+
+      // Use non-null values for type detection to avoid null skewing results
+      const hasNumbers = nonNullValues.some(v => typeof v === 'number');
+      const hasStrings = nonNullValues.some(v => typeof v === 'string');
+      const hasBooleans = nonNullValues.some(v => typeof v === 'boolean');
+
+      // If all non-null values are the same type, use that type
+      if (nonNullValues.length === 0) {
+        // All values are null - default to UTF8 but this is fine
+        schemaFields[colName] = { type: 'UTF8', optional: true };
+        return;
+      }
 
       if (hasNumbers && !hasStrings && !hasBooleans) {
-        // All numbers - check if integers or floats
-        const allIntegers = parsedValues.every(
+        // All non-null values are numbers - check if integers or floats
+        const allIntegers = nonNullValues.every(
           v => typeof v === 'number' && Number.isInteger(v)
         );
         const detectedType = allIntegers ? 'INT64' : 'DOUBLE';
@@ -431,7 +451,7 @@ export class MigrationService extends EventEmitter {
         if (colName === 'value' || (colName.startsWith('value_') && colName !== 'value_json')) {
           this.emitProgress({
             type: 'log',
-            message: `🔍 ${colName} detected as ${detectedType} (sample: ${parsedValues.slice(0, 3).join(', ')})`,
+            message: `🔍 ${colName} detected as ${detectedType} (${nonNullValues.length}/${values.length} non-null, sample: ${nonNullValues.slice(0, 3).join(', ')})`,
           });
         }
       } else if (hasBooleans && !hasNumbers && !hasStrings) {
@@ -443,7 +463,7 @@ export class MigrationService extends EventEmitter {
         if (colName === 'value' || (colName.startsWith('value_') && colName !== 'value_json')) {
           this.emitProgress({
             type: 'log',
-            message: `⚠️  ${colName} staying as UTF8 - hasNumbers:${hasNumbers}, hasStrings:${hasStrings}, hasBooleans:${hasBooleans} (sample: ${values.slice(0, 3).join(', ')})`,
+            message: `⚠️  ${colName} staying as UTF8 - hasNumbers:${hasNumbers}, hasStrings:${hasStrings}, hasBooleans:${hasBooleans} (${nonNullValues.length}/${values.length} non-null, sample: ${nonNullValues.slice(0, 3).join(', ')})`,
           });
         }
       }
