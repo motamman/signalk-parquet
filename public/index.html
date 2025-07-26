@@ -558,6 +558,7 @@
                     <div style="margin: 20px 0; display: flex; gap: 15px; align-items: center;">
                         <button id="checkFilesBtn" onclick="startMigrationCheck()" style="padding: 10px 20px;">📊 Check Files</button>
                         <button id="repairSelectedBtn" onclick="startMigrationRepair()" disabled style="opacity: 0.5; padding: 10px 20px; background: #28a745; color: white; border: none; border-radius: 5px; font-weight: bold;">🔧 Repair Selected</button>
+                        <button id="restoreBackupsBtn" onclick="startMigrationRestore()" style="padding: 10px 20px; background: #dc3545; color: white; border: none; border-radius: 5px; font-weight: bold;">⚠️ Restore from Backups</button>
                         <div id="migrationProgress" style="display: none; background: #e9ecef; border-radius: 10px; padding: 5px; min-width: 200px;">
                             <div id="migrationProgressBar" style="background: #007bff; height: 20px; border-radius: 5px; width: 0%; transition: width 0.3s; text-align: center; color: white; font-size: 12px; line-height: 20px;"></div>
                         </div>
@@ -1714,6 +1715,78 @@
                 repairBtn.disabled = false;
                 repairBtn.style.opacity = '1';
             });
+        }
+
+        function startMigrationRestore() {
+            const statusDiv = document.getElementById('migrationStatus');
+            const restoreBtn = document.getElementById('restoreBackupsBtn');
+            
+            if (confirm('⚠️ DANGER: This will restore ALL corrupted files from .backup-utf8 files. This will replace the current files. Are you sure?')) {
+                restoreBtn.disabled = true;
+                statusDiv.textContent = 'Starting restore from backups...\n';
+                statusDiv.style.display = 'block';
+
+                fetch(getPluginPath() + '/api/migration/restore', {
+                    method: 'POST'
+                }).then(response => {
+                    if (!response.ok) {
+                        throw new Error('Network error');
+                    }
+
+                    const reader = response.body.getReader();
+                    
+                    function readStream() {
+                        return reader.read().then(({ done, value }) => {
+                            if (done) {
+                                restoreBtn.disabled = false;
+                                return;
+                            }
+
+                            const chunk = new TextDecoder().decode(value);
+                            const lines = chunk.split('\n');
+
+                            lines.forEach(line => {
+                                if (line.startsWith('data: ')) {
+                                    try {
+                                        const data = JSON.parse(line.substring(6));
+                                        const timestamp = new Date().toLocaleTimeString();
+
+                                        switch (data.type) {
+                                            case 'log':
+                                                statusDiv.textContent += `[${timestamp}] ${data.message}\n`;
+                                                statusDiv.scrollTop = statusDiv.scrollHeight;
+                                                break;
+                                            case 'complete':
+                                                statusDiv.textContent += `[${timestamp}] ${data.message}\n`;
+                                                statusDiv.scrollTop = statusDiv.scrollHeight;
+                                                restoreBtn.disabled = false;
+                                                return;
+                                            case 'error':
+                                                statusDiv.textContent += `[${timestamp}] ERROR: ${data.message}\n`;
+                                                statusDiv.scrollTop = statusDiv.scrollHeight;
+                                                restoreBtn.disabled = false;
+                                                return;
+                                        }
+
+                                        // Auto-scroll to bottom
+                                        statusDiv.scrollTop = statusDiv.scrollHeight;
+                                    } catch (e) {
+                                        // Ignore JSON parse errors for partial chunks
+                                    }
+                                }
+                            });
+
+                            readStream();
+                        });
+                    }
+
+                    readStream();
+                }).catch(error => {
+                    const timestamp = new Date().toLocaleTimeString();
+                    statusDiv.textContent += `[${timestamp}] ERROR: ${error.message}\n`;
+                    restoreBtn.disabled = false;
+                });
+            }
         }
 
     </script>

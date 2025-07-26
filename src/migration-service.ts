@@ -127,6 +127,66 @@ export class MigrationService extends EventEmitter {
     }
   }
 
+  async restoreFromBackups(dataDir: string): Promise<void> {
+    this.emitProgress({
+      type: 'log',
+      message: `🔄 Restoring corrupted files from backups...`,
+    });
+
+    try {
+      // Find all backup files
+      const backupFiles = await glob(`${dataDir}/**/*.backup-utf8`, {
+        ignore: '**/processed/**',
+      });
+
+      this.emitProgress({
+        type: 'log',
+        message: `📁 Found ${backupFiles.length} backup files to restore`,
+      });
+
+      let restored = 0;
+      let errors = 0;
+
+      for (const backupPath of backupFiles) {
+        try {
+          const originalPath = backupPath.replace('.backup-utf8', '');
+          
+          // Check if corrupted file exists
+          if (await fs.pathExists(originalPath)) {
+            await fs.remove(originalPath);
+          }
+          
+          // Restore from backup
+          await fs.move(backupPath, originalPath);
+          restored++;
+          
+          this.emitProgress({
+            type: 'log',
+            message: `✅ Restored: ${path.relative(dataDir, originalPath)}`,
+          });
+        } catch (error) {
+          errors++;
+          this.emitProgress({
+            type: 'log',
+            message: `❌ Error restoring ${backupPath}: ${(error as Error).message}`,
+          });
+        }
+      }
+
+      this.emitProgress({
+        type: 'complete',
+        message: `🎉 Restore complete: ${restored} files restored, ${errors} errors`,
+        data: { restored, errors },
+      });
+    } catch (error) {
+      this.emitProgress({
+        type: 'error',
+        message: `❌ Restore failed: ${(error as Error).message}`,
+      });
+      throw error;
+    }
+  }
+
   async repairSelectedPaths(
     dataDir: string,
     selectedPaths: string[]
@@ -412,11 +472,18 @@ export class MigrationService extends EventEmitter {
         }
 
         if (typeof v === 'string') {
-          // Try to parse as number (handle whitespace)
           const trimmed = v.trim();
           if (trimmed === '') {
             return null; // Treat whitespace-only as null
           }
+          
+          // Don't parse timestamp strings as numbers - check for ISO date patterns
+          if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{3})?Z?$/.test(trimmed) ||
+              /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}/.test(trimmed)) {
+            return v; // Keep as string
+          }
+          
+          // Try to parse as number
           const parsed = parseFloat(trimmed);
           return !isNaN(parsed) ? parsed : v;
         }

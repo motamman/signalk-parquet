@@ -2788,6 +2788,65 @@ export = function (app: ServerAPI): SignalKPlugin {
       }
     );
 
+    // Start migration restore from backups (Server-Sent Events)
+    router.post(
+      '/api/migration/restore',
+      (req: TypedRequest, res: TypedResponse) => {
+        try {
+          // Set up Server-Sent Events
+          res.setHeader('Content-Type', 'text/event-stream');
+          res.setHeader('Cache-Control', 'no-cache');
+          res.setHeader('Connection', 'keep-alive');
+          res.setHeader('Access-Control-Allow-Origin', '*');
+
+          migrationService = new MigrationService(app);
+
+          // Send progress updates to client
+          migrationService.on('progress', (progress: MigrationProgress) => {
+            res.write(`data: ${JSON.stringify(progress)}\n\n`);
+          });
+
+          // Start the restore
+          const dataDirectory = state.currentConfig?.outputDirectory || 'data';
+          migrationService
+            .restoreFromBackups(dataDirectory)
+            .then(() => {
+              res.write(
+                `data: ${JSON.stringify({
+                  type: 'final',
+                  message: 'Restore complete',
+                })}\n\n`
+              );
+              res.end();
+            })
+            .catch((error: Error) => {
+              res.write(
+                `data: ${JSON.stringify({
+                  type: 'error',
+                  message: `Restore failed: ${error.message}`,
+                })}\n\n`
+              );
+              res.end();
+            });
+
+          // Clean up on client disconnect
+          req.on('close', () => {
+            migrationService?.removeAllListeners();
+            migrationService = null;
+          });
+
+          // SSE connection established, no return needed
+          return;
+        } catch (error) {
+          app.error(`Migration restore error: ${error}`);
+          return res.status(500).json({
+            success: false,
+            error: 'Failed to start migration restore',
+          });
+        }
+      }
+    );
+
     // Health check
     router.get(
       '/api/health',
