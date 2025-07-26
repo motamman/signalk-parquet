@@ -72,6 +72,12 @@ async function migrateSchemas(dataDir = 'data'): Promise<MigrationStats> {
 
       // Backup original and replace
       const backupPath = `${filePath}.backup-utf8`;
+      
+      // If backup already exists, remove it first (from previous migration attempt)
+      if (await fs.pathExists(backupPath)) {
+        await fs.remove(backupPath);
+      }
+      
       await fs.move(filePath, backupPath);
       await fs.move(tempPath, filePath);
       console.log(`💾 Original backed up to: ${backupPath}`);

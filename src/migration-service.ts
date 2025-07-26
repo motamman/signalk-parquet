@@ -266,6 +266,12 @@ export class MigrationService extends EventEmitter {
 
     // Backup original and replace
     const backupPath = `${filePath}.backup-utf8`;
+    
+    // If backup already exists, remove it first (from previous migration attempt)
+    if (await fs.pathExists(backupPath)) {
+      await fs.remove(backupPath);
+    }
+    
     await fs.move(filePath, backupPath);
     await fs.move(tempPath, filePath);
   }
