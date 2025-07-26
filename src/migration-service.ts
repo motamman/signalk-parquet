@@ -253,27 +253,72 @@ export class MigrationService extends EventEmitter {
       throw new Error('ParquetJS not available');
     }
 
-    // Read all records from the file
-    const records = await this.readParquetFile(filePath);
+    try {
+      // Read all records from the file
+      this.emitProgress({
+        type: 'log',
+        message: `📖 Reading ${filePath}...`,
+      });
+      const records = await this.readParquetFile(filePath);
 
-    if (records.length === 0) {
-      return; // Skip empty files
+      if (records.length === 0) {
+        this.emitProgress({
+          type: 'log',
+          message: `⏭️ Skipping empty file ${filePath}`,
+        });
+        return; // Skip empty files
+      }
+
+      // Create new file with intelligent schema first
+      const tempPath = `${filePath}.migrating`;
+      
+      // Remove temp file if it already exists
+      if (await fs.pathExists(tempPath)) {
+        this.emitProgress({
+          type: 'log',
+          message: `🗑️ Removing existing temp file: ${tempPath}`,
+        });
+        await fs.remove(tempPath);
+      }
+      
+      this.emitProgress({
+        type: 'log',
+        message: `🔄 Creating migrated file with ${records.length} records...`,
+      });
+      await this.writeParquetWithIntelligentSchema(tempPath, records);
+
+      // Backup original and replace
+      const backupPath = `${filePath}.backup-utf8`;
+      
+      // If backup already exists, remove it first (from previous migration attempt)
+      if (await fs.pathExists(backupPath)) {
+        this.emitProgress({
+          type: 'log',
+          message: `🗑️ Removing existing backup file: ${backupPath}`,
+        });
+        await fs.remove(backupPath);
+      }
+      
+      this.emitProgress({
+        type: 'log',
+        message: `💾 Creating backup: ${filePath} → ${backupPath}`,
+      });
+      await fs.move(filePath, backupPath);
+      
+      this.emitProgress({
+        type: 'log',
+        message: `🔄 Replacing original: ${tempPath} → ${filePath}`,
+      });
+      await fs.move(tempPath, filePath);
+      
+    } catch (error) {
+      // Clean up temp file if it exists
+      const tempPath = `${filePath}.migrating`;
+      if (await fs.pathExists(tempPath)) {
+        await fs.remove(tempPath);
+      }
+      throw error; // Re-throw to be caught by the calling function
     }
-
-    // Create new file with intelligent schema first
-    const tempPath = `${filePath}.migrating`;
-    await this.writeParquetWithIntelligentSchema(tempPath, records);
-
-    // Backup original and replace
-    const backupPath = `${filePath}.backup-utf8`;
-    
-    // If backup already exists, remove it first (from previous migration attempt)
-    if (await fs.pathExists(backupPath)) {
-      await fs.remove(backupPath);
-    }
-    
-    await fs.move(filePath, backupPath);
-    await fs.move(tempPath, filePath);
   }
 
   private async readParquetFile(filePath: string): Promise<DataRecord[]> {
