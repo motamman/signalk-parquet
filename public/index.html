@@ -427,6 +427,7 @@
             <button class="tab-button" onclick="showTab('commandManager')">🎮 Command Manager</button>
             <button class="tab-button" onclick="showTab('dataPaths')">📁 Available Data Paths</button>
             <button class="tab-button" onclick="showTab('customQuery')">🔍 Custom Query</button>
+            <button class="tab-button" onclick="showTab('schemaMigration')">🔧 Schema Migration</button>
             <button class="tab-button" onclick="showTab('s3Config')">☁️ Cloud Status</button>
         </div>
 
@@ -544,6 +545,48 @@
                 </ul>
                     <p>This allows organizing multiple vessels or data sources in the same S3 bucket.</p>
                 </div>
+                </div>
+            </div>
+
+            <!-- Schema Migration Tab -->
+            <div id="schemaMigration" class="tab-panel">
+                <div class="section">
+                    <h2>🔧 Schema Migration</h2>
+                    <p>Migrate old parquet files from UTF8-only schemas to intelligent data types (DOUBLE, BOOLEAN, INT64):</p>
+                    
+                    <div style="margin: 20px 0;">
+                        <button id="checkFilesBtn" onclick="startMigrationCheck()">📊 Check Files</button>
+                        <button id="repairSelectedBtn" onclick="startMigrationRepair()" disabled style="opacity: 0.5;">🔧 Repair Selected</button>
+                    </div>
+
+                    <!-- Status Output Box -->
+                    <div style="margin: 20px 0;">
+                        <label><strong>Status Output:</strong></label>
+                        <div id="migrationStatus" style="
+                            background: #f8f9fa; 
+                            border: 2px solid #ddd; 
+                            border-radius: 5px; 
+                            padding: 15px; 
+                            height: 300px; 
+                            overflow-y: auto; 
+                            font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace; 
+                            font-size: 13px;
+                            white-space: pre-wrap;
+                        ">Ready to check files...\n</div>
+                    </div>
+
+                    <!-- Files Needing Migration -->
+                    <div id="migrationFilesSection" style="display: none; margin: 20px 0;">
+                        <label><strong>Files needing migration:</strong></label>
+                        <div id="migrationFilesList" style="
+                            background: #f8f9fa; 
+                            border: 2px solid #ddd; 
+                            border-radius: 5px; 
+                            padding: 15px; 
+                            max-height: 400px; 
+                            overflow-y: auto;
+                        "></div>
+                    </div>
                 </div>
             </div>
 
@@ -1359,6 +1402,277 @@
             
             html += '</tbody></table></div>';
             container.innerHTML = html;
+        }
+
+        // === Migration Functions ===
+        let migrationEventSource = null;
+        let migrationScanResult = null;
+        let selectedPaths = new Set();
+
+        function startMigrationCheck() {
+            const statusDiv = document.getElementById('migrationStatus');
+            const checkBtn = document.getElementById('checkFilesBtn');
+            const repairBtn = document.getElementById('repairSelectedBtn');
+            const filesSection = document.getElementById('migrationFilesSection');
+
+            // Reset UI
+            checkBtn.disabled = true;
+            repairBtn.disabled = true;
+            repairBtn.style.opacity = '0.5';
+            filesSection.style.display = 'none';
+            selectedPaths.clear();
+            statusDiv.textContent = '';
+
+            // Close any existing connection
+            if (migrationEventSource) {
+                migrationEventSource.close();
+            }
+
+            // Start Server-Sent Events connection
+            migrationEventSource = new EventSource('/plugins/signalk-parquet/api/migration/check');
+
+            migrationEventSource.onmessage = function(event) {
+                const data = JSON.parse(event.data);
+                const timestamp = new Date().toLocaleTimeString();
+
+                switch (data.type) {
+                    case 'log':
+                        statusDiv.textContent += `[${timestamp}] ${data.message}\n`;
+                        break;
+                    case 'progress':
+                        statusDiv.textContent += `[${timestamp}] ${data.message}\n`;
+                        if (data.progress !== undefined) {
+                            statusDiv.textContent += `Progress: ${data.progress}%\n`;
+                        }
+                        break;
+                    case 'complete':
+                        statusDiv.textContent += `[${timestamp}] ${data.message}\n`;
+                        break;
+                    case 'final':
+                        migrationScanResult = data.data;
+                        displayMigrationResults(data.data);
+                        checkBtn.disabled = false;
+                        if (data.data.summary.filesNeedingMigration > 0) {
+                            repairBtn.disabled = false;
+                            repairBtn.style.opacity = '1';
+                        }
+                        migrationEventSource.close();
+                        break;
+                    case 'error':
+                        statusDiv.textContent += `[${timestamp}] ERROR: ${data.message}\n`;
+                        checkBtn.disabled = false;
+                        migrationEventSource.close();
+                        break;
+                }
+
+                // Auto-scroll to bottom
+                statusDiv.scrollTop = statusDiv.scrollHeight;
+            };
+
+            migrationEventSource.onerror = function(event) {
+                const timestamp = new Date().toLocaleTimeString();
+                statusDiv.textContent += `[${timestamp}] Connection error\n`;
+                checkBtn.disabled = false;
+                migrationEventSource.close();
+            };
+        }
+
+        function displayMigrationResults(scanResult) {
+            const filesSection = document.getElementById('migrationFilesSection');
+            const filesList = document.getElementById('migrationFilesList');
+
+            if (scanResult.problematicPaths.length === 0) {
+                filesList.innerHTML = '<p style="color: #28a745; font-weight: bold;">✅ No files need migration! All schemas are already optimized.</p>';
+                filesSection.style.display = 'block';
+                return;
+            }
+
+            let html = '<div style="margin-bottom: 15px;">';
+            html += `<button onclick="selectAllPaths()" style="margin-right: 10px;">✅ Select All</button>`;
+            html += `<button onclick="selectNonePaths()">❌ Select None</button>`;
+            html += '</div>';
+
+            scanResult.problematicPaths.forEach(pathInfo => {
+                const pathId = `path_${pathInfo.path.replace(/[^a-zA-Z0-9]/g, '_')}`;
+                html += `
+                    <div style="margin: 10px 0; padding: 10px; border: 1px solid #ddd; border-radius: 5px;">
+                        <label style="cursor: pointer; display: flex; align-items: center;">
+                            <input 
+                                type="checkbox" 
+                                id="${pathId}" 
+                                onchange="togglePathSelection('${pathInfo.path}')"
+                                checked
+                                style="margin-right: 10px;"
+                            >
+                            <strong>${pathInfo.path}</strong> 
+                            <span style="margin-left: auto; color: #666;">(${pathInfo.fileCount} files)</span>
+                        </label>
+                    </div>
+                `;
+                selectedPaths.add(pathInfo.path);
+            });
+
+            filesList.innerHTML = html;
+            filesSection.style.display = 'block';
+        }
+
+        function togglePathSelection(path) {
+            if (selectedPaths.has(path)) {
+                selectedPaths.delete(path);
+            } else {
+                selectedPaths.add(path);
+            }
+
+            // Enable/disable repair button based on selection
+            const repairBtn = document.getElementById('repairSelectedBtn');
+            if (selectedPaths.size > 0) {
+                repairBtn.disabled = false;
+                repairBtn.style.opacity = '1';
+            } else {
+                repairBtn.disabled = true;
+                repairBtn.style.opacity = '0.5';
+            }
+        }
+
+        function selectAllPaths() {
+            if (!migrationScanResult) return;
+
+            migrationScanResult.problematicPaths.forEach(pathInfo => {
+                const pathId = `path_${pathInfo.path.replace(/[^a-zA-Z0-9]/g, '_')}`;
+                const checkbox = document.getElementById(pathId);
+                if (checkbox) {
+                    checkbox.checked = true;
+                    selectedPaths.add(pathInfo.path);
+                }
+            });
+
+            const repairBtn = document.getElementById('repairSelectedBtn');
+            repairBtn.disabled = false;
+            repairBtn.style.opacity = '1';
+        }
+
+        function selectNonePaths() {
+            if (!migrationScanResult) return;
+
+            migrationScanResult.problematicPaths.forEach(pathInfo => {
+                const pathId = `path_${pathInfo.path.replace(/[^a-zA-Z0-9]/g, '_')}`;
+                const checkbox = document.getElementById(pathId);
+                if (checkbox) {
+                    checkbox.checked = false;
+                    selectedPaths.delete(pathInfo.path);
+                }
+            });
+
+            const repairBtn = document.getElementById('repairSelectedBtn');
+            repairBtn.disabled = true;
+            repairBtn.style.opacity = '0.5';
+        }
+
+        function startMigrationRepair() {
+            if (selectedPaths.size === 0) {
+                alert('Please select at least one path to repair.');
+                return;
+            }
+
+            const confirmed = confirm(`Are you sure you want to repair ${selectedPaths.size} selected paths?\n\nThis will:\n• Backup original files to .backup-utf8\n• Replace them with new intelligent schemas\n• This operation cannot be undone`);
+            
+            if (!confirmed) return;
+
+            const statusDiv = document.getElementById('migrationStatus');
+            const checkBtn = document.getElementById('checkFilesBtn');
+            const repairBtn = document.getElementById('repairSelectedBtn');
+
+            // Reset UI
+            checkBtn.disabled = true;
+            repairBtn.disabled = true;
+            repairBtn.style.opacity = '0.5';
+            statusDiv.textContent = '';
+
+            // Close any existing connection
+            if (migrationEventSource) {
+                migrationEventSource.close();
+            }
+
+            // Start repair via POST request with SSE
+            fetch('/plugins/signalk-parquet/api/migration/repair', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    paths: Array.from(selectedPaths)
+                })
+            }).then(response => {
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+
+                // Set up SSE reader for repair progress
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+
+                function readStream() {
+                    reader.read().then(({done, value}) => {
+                        if (done) {
+                            checkBtn.disabled = false;
+                            return;
+                        }
+
+                        const chunk = decoder.decode(value);
+                        const lines = chunk.split('\n');
+
+                        lines.forEach(line => {
+                            if (line.startsWith('data: ')) {
+                                try {
+                                    const data = JSON.parse(line.substring(6));
+                                    const timestamp = new Date().toLocaleTimeString();
+
+                                    switch (data.type) {
+                                        case 'log':
+                                            statusDiv.textContent += `[${timestamp}] ${data.message}\n`;
+                                            break;
+                                        case 'progress':
+                                            statusDiv.textContent += `[${timestamp}] ${data.message}\n`;
+                                            if (data.progress !== undefined) {
+                                                statusDiv.textContent += `Progress: ${data.progress}%\n`;
+                                            }
+                                            break;
+                                        case 'complete':
+                                            statusDiv.textContent += `[${timestamp}] ${data.message}\n`;
+                                            break;
+                                        case 'final':
+                                            statusDiv.textContent += `[${timestamp}] ${data.message}\n`;
+                                            checkBtn.disabled = false;
+                                            // Clear the migration results to force re-check
+                                            migrationScanResult = null;
+                                            document.getElementById('migrationFilesSection').style.display = 'none';
+                                            return;
+                                        case 'error':
+                                            statusDiv.textContent += `[${timestamp}] ERROR: ${data.message}\n`;
+                                            checkBtn.disabled = false;
+                                            return;
+                                    }
+
+                                    // Auto-scroll to bottom
+                                    statusDiv.scrollTop = statusDiv.scrollHeight;
+                                } catch (e) {
+                                    // Ignore JSON parse errors for partial chunks
+                                }
+                            }
+                        });
+
+                        readStream();
+                    });
+                }
+
+                readStream();
+            }).catch(error => {
+                const timestamp = new Date().toLocaleTimeString();
+                statusDiv.textContent += `[${timestamp}] ERROR: ${error.message}\n`;
+                checkBtn.disabled = false;
+                repairBtn.disabled = false;
+                repairBtn.style.opacity = '1';
+            });
         }
 
     </script>

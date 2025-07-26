@@ -4,6 +4,11 @@ import express from 'express';
 import { Router } from 'express';
 import { ParquetWriter } from './parquet-writer';
 import {
+  MigrationService,
+  MigrationProgress,
+  MigrationScanResult,
+} from './migration-service';
+import {
   SignalKPlugin,
   PluginConfig,
   PathConfig,
@@ -2644,6 +2649,137 @@ export = function (app: ServerAPI): SignalKPlugin {
           return res.status(500).json({
             success: false,
             error: 'Failed to retrieve command status',
+          });
+        }
+      }
+    );
+
+    // Migration endpoints
+    let migrationService: MigrationService | null = null;
+
+    // Start migration check (Server-Sent Events)
+    router.get(
+      '/api/migration/check',
+      (req: TypedRequest, res: TypedResponse) => {
+        try {
+          // Set up Server-Sent Events
+          res.setHeader('Content-Type', 'text/event-stream');
+          res.setHeader('Cache-Control', 'no-cache');
+          res.setHeader('Connection', 'keep-alive');
+          res.setHeader('Access-Control-Allow-Origin', '*');
+
+          migrationService = new MigrationService(app);
+
+          // Send progress updates to client
+          migrationService.on('progress', (progress: MigrationProgress) => {
+            res.write(`data: ${JSON.stringify(progress)}\n\n`);
+          });
+
+          // Start the scan
+          const dataDirectory = state.currentConfig?.outputDirectory || 'data';
+          migrationService
+            .scanForProblematicFiles(dataDirectory)
+            .then((result: MigrationScanResult) => {
+              res.write(
+                `data: ${JSON.stringify({
+                  type: 'final',
+                  message: 'Scan complete',
+                  data: result,
+                })}\n\n`
+              );
+              res.end();
+            })
+            .catch((error: Error) => {
+              res.write(
+                `data: ${JSON.stringify({
+                  type: 'error',
+                  message: `Scan failed: ${error.message}`,
+                })}\n\n`
+              );
+              res.end();
+            });
+
+          // Clean up on client disconnect
+          req.on('close', () => {
+            migrationService?.removeAllListeners();
+            migrationService = null;
+          });
+
+          // SSE connection established, no return needed
+          return;
+        } catch (error) {
+          app.error(`Migration check error: ${error}`);
+          res.status(500).json({
+            success: false,
+            error: 'Failed to start migration check',
+          });
+        }
+      }
+    );
+
+    // Start migration repair (Server-Sent Events)
+    router.post(
+      '/api/migration/repair',
+      (req: TypedRequest<{ paths: string[] }>, res: TypedResponse) => {
+        try {
+          const { paths } = req.body;
+
+          if (!Array.isArray(paths) || paths.length === 0) {
+            return res.status(400).json({
+              success: false,
+              error: 'Invalid paths array',
+            });
+          }
+
+          // Set up Server-Sent Events
+          res.setHeader('Content-Type', 'text/event-stream');
+          res.setHeader('Cache-Control', 'no-cache');
+          res.setHeader('Connection', 'keep-alive');
+          res.setHeader('Access-Control-Allow-Origin', '*');
+
+          migrationService = new MigrationService(app);
+
+          // Send progress updates to client
+          migrationService.on('progress', (progress: MigrationProgress) => {
+            res.write(`data: ${JSON.stringify(progress)}\n\n`);
+          });
+
+          // Start the repair
+          const dataDirectory = state.currentConfig?.outputDirectory || 'data';
+          migrationService
+            .repairSelectedPaths(dataDirectory, paths)
+            .then(() => {
+              res.write(
+                `data: ${JSON.stringify({
+                  type: 'final',
+                  message: 'Repair complete',
+                })}\n\n`
+              );
+              res.end();
+            })
+            .catch((error: Error) => {
+              res.write(
+                `data: ${JSON.stringify({
+                  type: 'error',
+                  message: `Repair failed: ${error.message}`,
+                })}\n\n`
+              );
+              res.end();
+            });
+
+          // Clean up on client disconnect
+          req.on('close', () => {
+            migrationService?.removeAllListeners();
+            migrationService = null;
+          });
+
+          // SSE connection established, no return needed
+          return;
+        } catch (error) {
+          app.error(`Migration repair error: ${error}`);
+          return res.status(500).json({
+            success: false,
+            error: 'Failed to start migration repair',
           });
         }
       }
