@@ -353,7 +353,9 @@ export class MigrationService extends EventEmitter {
 
       if (hasNumbers && !hasStrings && !hasBooleans) {
         // All numbers - check if integers or floats
-        const allIntegers = parsedValues.every(v => typeof v === 'number' && Number.isInteger(v));
+        const allIntegers = parsedValues.every(
+          v => typeof v === 'number' && Number.isInteger(v)
+        );
         schemaFields[colName] = {
           type: allIntegers ? 'INT64' : 'DOUBLE',
           optional: true,
