@@ -107,9 +107,10 @@ async function checkNeedsMigration(filePath: string): Promise<boolean> {
     const schema = reader.schema;
 
     // Check all value-related columns (value, value_latitude, value_longitude, etc.)
+    // But exclude metadata fields like value_json which should stay as strings
     const schemaFields = schema.schema || {};
     const valueFieldNames = Object.keys(schemaFields).filter(name => 
-      name === 'value' || name.startsWith('value_')
+      name === 'value' || (name.startsWith('value_') && name !== 'value_json')
     );
 
     if (valueFieldNames.length === 0) {

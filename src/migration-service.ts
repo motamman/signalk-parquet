@@ -427,8 +427,8 @@ export class MigrationService extends EventEmitter {
           type: detectedType,
           optional: true,
         };
-        // Debug log for value-related columns
-        if (colName === 'value' || colName.startsWith('value_')) {
+        // Debug log for value-related columns (exclude metadata fields)
+        if (colName === 'value' || (colName.startsWith('value_') && colName !== 'value_json')) {
           this.emitProgress({
             type: 'log',
             message: `🔍 ${colName} detected as ${detectedType} (sample: ${parsedValues.slice(0, 3).join(', ')})`,
@@ -439,8 +439,8 @@ export class MigrationService extends EventEmitter {
       } else {
         // Mixed types or strings - use UTF8
         schemaFields[colName] = { type: 'UTF8', optional: true };
-        // Debug log for value-related columns that stay as string
-        if (colName === 'value' || colName.startsWith('value_')) {
+        // Debug log for value-related columns that stay as string (exclude metadata fields)
+        if (colName === 'value' || (colName.startsWith('value_') && colName !== 'value_json')) {
           this.emitProgress({
             type: 'log',
             message: `⚠️  ${colName} staying as UTF8 - hasNumbers:${hasNumbers}, hasStrings:${hasStrings}, hasBooleans:${hasBooleans} (sample: ${values.slice(0, 3).join(', ')})`,
