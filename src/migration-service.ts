@@ -356,15 +356,30 @@ export class MigrationService extends EventEmitter {
         const allIntegers = parsedValues.every(
           v => typeof v === 'number' && Number.isInteger(v)
         );
+        const detectedType = allIntegers ? 'INT64' : 'DOUBLE';
         schemaFields[colName] = {
-          type: allIntegers ? 'INT64' : 'DOUBLE',
+          type: detectedType,
           optional: true,
         };
+        // Debug log for value column
+        if (colName === 'value') {
+          this.emitProgress({
+            type: 'log',
+            message: `🔍 Value column detected as ${detectedType} (sample: ${parsedValues.slice(0, 3).join(', ')})`,
+          });
+        }
       } else if (hasBooleans && !hasNumbers && !hasStrings) {
         schemaFields[colName] = { type: 'BOOLEAN', optional: true };
       } else {
         // Mixed types or strings - use UTF8
         schemaFields[colName] = { type: 'UTF8', optional: true };
+        // Debug log for value column that stays as string
+        if (colName === 'value') {
+          this.emitProgress({
+            type: 'log',
+            message: `⚠️  Value column staying as UTF8 - hasNumbers:${hasNumbers}, hasStrings:${hasStrings}, hasBooleans:${hasBooleans} (sample: ${values.slice(0, 3).join(', ')})`,
+          });
+        }
       }
     });
 
