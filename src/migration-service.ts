@@ -337,13 +337,23 @@ export class MigrationService extends EventEmitter {
         return;
       }
 
-      const hasNumbers = values.some(v => typeof v === 'number');
-      const hasStrings = values.some(v => typeof v === 'string');
-      const hasBooleans = values.some(v => typeof v === 'boolean');
+      // For migration: attempt to parse string values as numbers
+      const parsedValues = values.map(v => {
+        if (typeof v === 'string') {
+          // Try to parse as number
+          const parsed = parseFloat(v);
+          return !isNaN(parsed) ? parsed : v;
+        }
+        return v;
+      });
+
+      const hasNumbers = parsedValues.some(v => typeof v === 'number');
+      const hasStrings = parsedValues.some(v => typeof v === 'string');
+      const hasBooleans = parsedValues.some(v => typeof v === 'boolean');
 
       if (hasNumbers && !hasStrings && !hasBooleans) {
         // All numbers - check if integers or floats
-        const allIntegers = values.every(v => Number.isInteger(v));
+        const allIntegers = parsedValues.every(v => typeof v === 'number' && Number.isInteger(v));
         schemaFields[colName] = {
           type: allIntegers ? 'INT64' : 'DOUBLE',
           optional: true,
