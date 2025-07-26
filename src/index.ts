@@ -1479,7 +1479,9 @@ export = function (app: ServerAPI): SignalKPlugin {
       today.setUTCHours(0, 0, 0, 0);
 
       const pattern = path.join(outputDir, '**/*.parquet');
-      const files = await glob(pattern);
+      const files = await glob(pattern, {
+        ignore: '**/processed/**',
+      });
 
       // Extract dates from files and find days that need consolidation
       const datesNeedingConsolidation = new Set<string>();
@@ -1600,6 +1602,7 @@ export = function (app: ServerAPI): SignalKPlugin {
         cwd: config.outputDirectory,
         absolute: true,
         nodir: true,
+        ignore: '**/processed/**',
       });
 
       app.debug(
