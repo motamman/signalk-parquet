@@ -193,11 +193,21 @@ export class MigrationService extends EventEmitter {
       const reader = await parquet.ParquetReader.openFile(filePath);
       const schema = reader.schema;
 
-      // Check if value column is UTF8
+      // Check if value column is UTF8/BYTE_ARRAY (string type)
       const valueField = schema.schema?.value;
+      if (!valueField) {
+        await reader.close();
+        return false;
+      }
+
+      // Check for various string type indicators that need migration to intelligent types
       const needsMigration =
-        valueField &&
-        (valueField.primitiveType === 'UTF8' || valueField.type === 'UTF8');
+        valueField.primitiveType === 'UTF8' ||
+        valueField.type === 'UTF8' ||
+        valueField.primitiveType === 'BYTE_ARRAY' ||
+        valueField.type === 'BYTE_ARRAY' ||
+        (valueField.logicalType && valueField.logicalType.type === 'UTF8') ||
+        (valueField.logicalType && valueField.logicalType.type === 'STRING');
 
       await reader.close();
       return needsMigration;
