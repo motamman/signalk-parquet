@@ -106,24 +106,38 @@ async function checkNeedsMigration(filePath: string): Promise<boolean> {
     const reader = await parquet.ParquetReader.openFile(filePath);
     const schema = reader.schema;
 
-    // Check if value column is UTF8/BYTE_ARRAY (string type)
-    const valueField = schema.schema?.value;
-    if (!valueField) {
+    // Check all value-related columns (value, value_latitude, value_longitude, etc.)
+    const schemaFields = schema.schema || {};
+    const valueFieldNames = Object.keys(schemaFields).filter(name => 
+      name === 'value' || name.startsWith('value_')
+    );
+
+    if (valueFieldNames.length === 0) {
       await reader.close();
       return false;
     }
 
-    // Check for various string type indicators that need migration to intelligent types
-    const needsMigration =
-      valueField.primitiveType === 'UTF8' ||
-      valueField.type === 'UTF8' ||
-      valueField.primitiveType === 'BYTE_ARRAY' ||
-      valueField.type === 'BYTE_ARRAY' ||
-      (valueField.logicalType && valueField.logicalType.type === 'UTF8') ||
-      (valueField.logicalType && valueField.logicalType.type === 'STRING');
+    // Check if any value field is UTF8/BYTE_ARRAY (string type)
+    for (const fieldName of valueFieldNames) {
+      const field = schemaFields[fieldName];
+      if (field) {
+        const needsMigration =
+          field.primitiveType === 'UTF8' ||
+          field.type === 'UTF8' ||
+          field.primitiveType === 'BYTE_ARRAY' ||
+          field.type === 'BYTE_ARRAY' ||
+          (field.logicalType && field.logicalType.type === 'UTF8') ||
+          (field.logicalType && field.logicalType.type === 'STRING');
+        
+        if (needsMigration) {
+          await reader.close();
+          return true;
+        }
+      }
+    }
 
     await reader.close();
-    return needsMigration;
+    return false;
   } catch (error) {
     console.warn(`Warning: Could not read schema from ${filePath}`);
     return false;
