@@ -554,9 +554,27 @@
                     <h2>🔧 Schema Migration</h2>
                     <p>Migrate old parquet files from UTF8-only schemas to intelligent data types (DOUBLE, BOOLEAN, INT64):</p>
                     
-                    <div style="margin: 20px 0;">
-                        <button id="checkFilesBtn" onclick="startMigrationCheck()">📊 Check Files</button>
-                        <button id="repairSelectedBtn" onclick="startMigrationRepair()" disabled style="opacity: 0.5;">🔧 Repair Selected</button>
+                    <!-- Action Buttons -->
+                    <div style="margin: 20px 0; display: flex; gap: 15px; align-items: center;">
+                        <button id="checkFilesBtn" onclick="startMigrationCheck()" style="padding: 10px 20px;">📊 Check Files</button>
+                        <button id="repairSelectedBtn" onclick="startMigrationRepair()" disabled style="opacity: 0.5; padding: 10px 20px; background: #28a745; color: white; border: none; border-radius: 5px; font-weight: bold;">🔧 Repair Selected</button>
+                        <div id="migrationProgress" style="display: none; background: #e9ecef; border-radius: 10px; padding: 5px; min-width: 200px;">
+                            <div id="migrationProgressBar" style="background: #007bff; height: 20px; border-radius: 5px; width: 0%; transition: width 0.3s; text-align: center; color: white; font-size: 12px; line-height: 20px;"></div>
+                        </div>
+                    </div>
+
+                    <!-- Files Needing Migration - Moved Above Status -->
+                    <div id="migrationFilesSection" style="display: none; margin: 20px 0;">
+                        <label><strong>Files needing migration (select paths to repair):</strong></label>
+                        <div id="migrationFilesList" style="
+                            background: #fff3cd; 
+                            border: 2px solid #ffeaa7; 
+                            border-radius: 5px; 
+                            padding: 15px; 
+                            max-height: 300px; 
+                            overflow-y: auto;
+                            margin-bottom: 15px;
+                        "></div>
                     </div>
 
                     <!-- Status Output Box -->
@@ -573,19 +591,6 @@
                             font-size: 13px;
                             white-space: pre-wrap;
                         ">Ready to check files...\n</div>
-                    </div>
-
-                    <!-- Files Needing Migration -->
-                    <div id="migrationFilesSection" style="display: none; margin: 20px 0;">
-                        <label><strong>Files needing migration:</strong></label>
-                        <div id="migrationFilesList" style="
-                            background: #f8f9fa; 
-                            border: 2px solid #ddd; 
-                            border-radius: 5px; 
-                            padding: 15px; 
-                            max-height: 400px; 
-                            overflow-y: auto;
-                        "></div>
                     </div>
                 </div>
             </div>
@@ -1422,6 +1427,9 @@
             filesSection.style.display = 'none';
             selectedPaths.clear();
             statusDiv.textContent = '';
+            // Reset progress bar
+            document.getElementById('migrationProgress').style.display = 'none';
+            document.getElementById('migrationProgressBar').style.width = '0%';
 
             // Close any existing connection
             if (migrationEventSource) {
@@ -1438,15 +1446,26 @@
                 switch (data.type) {
                     case 'log':
                         statusDiv.textContent += `[${timestamp}] ${data.message}\n`;
+                        statusDiv.scrollTop = statusDiv.scrollHeight;
                         break;
                     case 'progress':
                         statusDiv.textContent += `[${timestamp}] ${data.message}\n`;
                         if (data.progress !== undefined) {
                             statusDiv.textContent += `Progress: ${data.progress}%\n`;
+                            // Update visual progress bar
+                            const progressDiv = document.getElementById('migrationProgress');
+                            const progressBar = document.getElementById('migrationProgressBar');
+                            if (progressDiv && progressBar) {
+                                progressDiv.style.display = 'block';
+                                progressBar.style.width = `${data.progress}%`;
+                                progressBar.textContent = `${data.progress}%`;
+                            }
                         }
+                        statusDiv.scrollTop = statusDiv.scrollHeight;
                         break;
                     case 'complete':
                         statusDiv.textContent += `[${timestamp}] ${data.message}\n`;
+                        statusDiv.scrollTop = statusDiv.scrollHeight;
                         break;
                     case 'final':
                         migrationScanResult = data.data;
@@ -1456,10 +1475,14 @@
                             repairBtn.disabled = false;
                             repairBtn.style.opacity = '1';
                         }
+                        // Hide progress bar
+                        document.getElementById('migrationProgress').style.display = 'none';
+                        statusDiv.scrollTop = statusDiv.scrollHeight;
                         migrationEventSource.close();
                         break;
                     case 'error':
                         statusDiv.textContent += `[${timestamp}] ERROR: ${data.message}\n`;
+                        statusDiv.scrollTop = statusDiv.scrollHeight;
                         checkBtn.disabled = false;
                         migrationEventSource.close();
                         break;
@@ -1587,6 +1610,9 @@
             repairBtn.disabled = true;
             repairBtn.style.opacity = '0.5';
             statusDiv.textContent = '';
+            // Reset progress bar
+            document.getElementById('migrationProgress').style.display = 'none';
+            document.getElementById('migrationProgressBar').style.width = '0%';
 
             // Close any existing connection
             if (migrationEventSource) {
@@ -1630,25 +1656,40 @@
                                     switch (data.type) {
                                         case 'log':
                                             statusDiv.textContent += `[${timestamp}] ${data.message}\n`;
+                                            statusDiv.scrollTop = statusDiv.scrollHeight;
                                             break;
                                         case 'progress':
                                             statusDiv.textContent += `[${timestamp}] ${data.message}\n`;
                                             if (data.progress !== undefined) {
                                                 statusDiv.textContent += `Progress: ${data.progress}%\n`;
+                                                // Update visual progress bar
+                                                const progressDiv = document.getElementById('migrationProgress');
+                                                const progressBar = document.getElementById('migrationProgressBar');
+                                                if (progressDiv && progressBar) {
+                                                    progressDiv.style.display = 'block';
+                                                    progressBar.style.width = `${data.progress}%`;
+                                                    progressBar.textContent = `${data.progress}%`;
+                                                }
                                             }
+                                            statusDiv.scrollTop = statusDiv.scrollHeight;
                                             break;
                                         case 'complete':
                                             statusDiv.textContent += `[${timestamp}] ${data.message}\n`;
+                                            statusDiv.scrollTop = statusDiv.scrollHeight;
                                             break;
                                         case 'final':
                                             statusDiv.textContent += `[${timestamp}] ${data.message}\n`;
                                             checkBtn.disabled = false;
+                                            // Hide progress bar
+                                            document.getElementById('migrationProgress').style.display = 'none';
                                             // Clear the migration results to force re-check
                                             migrationScanResult = null;
                                             document.getElementById('migrationFilesSection').style.display = 'none';
+                                            statusDiv.scrollTop = statusDiv.scrollHeight;
                                             return;
                                         case 'error':
                                             statusDiv.textContent += `[${timestamp}] ERROR: ${data.message}\n`;
+                                            statusDiv.scrollTop = statusDiv.scrollHeight;
                                             checkBtn.disabled = false;
                                             return;
                                     }
