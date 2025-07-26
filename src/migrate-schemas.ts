@@ -72,12 +72,12 @@ async function migrateSchemas(dataDir = 'data'): Promise<MigrationStats> {
 
       // Backup original and replace
       const backupPath = `${filePath}.backup-utf8`;
-      
+
       // If backup already exists, remove it first (from previous migration attempt)
       if (await fs.pathExists(backupPath)) {
         await fs.remove(backupPath);
       }
-      
+
       await fs.move(filePath, backupPath);
       await fs.move(tempPath, filePath);
       console.log(`💾 Original backed up to: ${backupPath}`);
@@ -109,8 +109,9 @@ async function checkNeedsMigration(filePath: string): Promise<boolean> {
     // Check all value-related columns (value, value_latitude, value_longitude, etc.)
     // But exclude metadata fields like value_json which should stay as strings
     const schemaFields = schema.schema || {};
-    const valueFieldNames = Object.keys(schemaFields).filter(name => 
-      name === 'value' || (name.startsWith('value_') && name !== 'value_json')
+    const valueFieldNames = Object.keys(schemaFields).filter(
+      name =>
+        name === 'value' || (name.startsWith('value_') && name !== 'value_json')
     );
 
     if (valueFieldNames.length === 0) {
@@ -129,7 +130,7 @@ async function checkNeedsMigration(filePath: string): Promise<boolean> {
           field.type === 'BYTE_ARRAY' ||
           (field.logicalType && field.logicalType.type === 'UTF8') ||
           (field.logicalType && field.logicalType.type === 'STRING');
-        
+
         if (needsMigration) {
           await reader.close();
           return true;

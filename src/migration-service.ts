@@ -196,8 +196,10 @@ export class MigrationService extends EventEmitter {
       // Check all value-related columns (value, value_latitude, value_longitude, etc.)
       // But exclude metadata fields like value_json which should stay as strings
       const schemaFields = schema.schema || {};
-      const valueFieldNames = Object.keys(schemaFields).filter(name => 
-        name === 'value' || (name.startsWith('value_') && name !== 'value_json')
+      const valueFieldNames = Object.keys(schemaFields).filter(
+        name =>
+          name === 'value' ||
+          (name.startsWith('value_') && name !== 'value_json')
       );
 
       if (valueFieldNames.length === 0) {
@@ -216,7 +218,7 @@ export class MigrationService extends EventEmitter {
             field.type === 'BYTE_ARRAY' ||
             (field.logicalType && field.logicalType.type === 'UTF8') ||
             (field.logicalType && field.logicalType.type === 'STRING');
-          
+
           if (needsMigration) {
             await reader.close();
             return true;
@@ -286,7 +288,7 @@ export class MigrationService extends EventEmitter {
 
       // Create new file with intelligent schema first
       const tempPath = `${filePath}.migrating`;
-      
+
       // Remove temp file if it already exists
       if (await fs.pathExists(tempPath)) {
         this.emitProgress({
@@ -295,7 +297,7 @@ export class MigrationService extends EventEmitter {
         });
         await fs.remove(tempPath);
       }
-      
+
       this.emitProgress({
         type: 'log',
         message: `🔄 Creating migrated file with ${records.length} records...`,
@@ -304,7 +306,7 @@ export class MigrationService extends EventEmitter {
 
       // Backup original and replace
       const backupPath = `${filePath}.backup-utf8`;
-      
+
       // If backup already exists, remove it first (from previous migration attempt)
       if (await fs.pathExists(backupPath)) {
         this.emitProgress({
@@ -313,19 +315,18 @@ export class MigrationService extends EventEmitter {
         });
         await fs.remove(backupPath);
       }
-      
+
       this.emitProgress({
         type: 'log',
         message: `💾 Creating backup: ${filePath} → ${backupPath}`,
       });
       await fs.move(filePath, backupPath);
-      
+
       this.emitProgress({
         type: 'log',
         message: `🔄 Replacing original: ${tempPath} → ${filePath}`,
       });
       await fs.move(tempPath, filePath);
-      
     } catch (error) {
       // Clean up temp file if it exists
       const tempPath = `${filePath}.migrating`;
@@ -409,7 +410,7 @@ export class MigrationService extends EventEmitter {
         if (v === null || v === undefined || v === '') {
           return v;
         }
-        
+
         if (typeof v === 'string') {
           // Try to parse as number (handle whitespace)
           const trimmed = v.trim();
@@ -423,7 +424,9 @@ export class MigrationService extends EventEmitter {
       });
 
       // Filter out null/undefined/empty values for type analysis
-      const nonNullValues = parsedValues.filter(v => v !== null && v !== undefined && v !== '');
+      const nonNullValues = parsedValues.filter(
+        v => v !== null && v !== undefined && v !== ''
+      );
 
       // Use non-null values for type detection to avoid null skewing results
       const hasNumbers = nonNullValues.some(v => typeof v === 'number');
@@ -448,7 +451,10 @@ export class MigrationService extends EventEmitter {
           optional: true,
         };
         // Debug log for value-related columns (exclude metadata fields)
-        if (colName === 'value' || (colName.startsWith('value_') && colName !== 'value_json')) {
+        if (
+          colName === 'value' ||
+          (colName.startsWith('value_') && colName !== 'value_json')
+        ) {
           this.emitProgress({
             type: 'log',
             message: `🔍 ${colName} detected as ${detectedType} (${nonNullValues.length}/${values.length} non-null, sample: ${nonNullValues.slice(0, 3).join(', ')})`,
@@ -460,7 +466,10 @@ export class MigrationService extends EventEmitter {
         // Mixed types or strings - use UTF8
         schemaFields[colName] = { type: 'UTF8', optional: true };
         // Debug log for value-related columns that stay as string (exclude metadata fields)
-        if (colName === 'value' || (colName.startsWith('value_') && colName !== 'value_json')) {
+        if (
+          colName === 'value' ||
+          (colName.startsWith('value_') && colName !== 'value_json')
+        ) {
           this.emitProgress({
             type: 'log',
             message: `⚠️  ${colName} staying as UTF8 - hasNumbers:${hasNumbers}, hasStrings:${hasStrings}, hasBooleans:${hasBooleans} (${nonNullValues.length}/${values.length} non-null, sample: ${nonNullValues.slice(0, 3).join(', ')})`,
