@@ -150,16 +150,16 @@ export class MigrationService extends EventEmitter {
       for (const backupPath of backupFiles) {
         try {
           const originalPath = backupPath.replace('.backup-utf8', '');
-          
+
           // Check if corrupted file exists
           if (await fs.pathExists(originalPath)) {
             await fs.remove(originalPath);
           }
-          
+
           // Restore from backup
           await fs.move(backupPath, originalPath);
           restored++;
-          
+
           this.emitProgress({
             type: 'log',
             message: `✅ Restored: ${path.relative(dataDir, originalPath)}`,
@@ -476,13 +476,15 @@ export class MigrationService extends EventEmitter {
           if (trimmed === '') {
             return null; // Treat whitespace-only as null
           }
-          
+
           // Don't parse timestamp strings as numbers - check for ISO date patterns
-          if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{3})?Z?$/.test(trimmed) ||
-              /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}/.test(trimmed)) {
+          if (
+            /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{3})?Z?$/.test(trimmed) ||
+            /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}/.test(trimmed)
+          ) {
             return v; // Keep as string
           }
-          
+
           // Try to parse as number
           const parsed = parseFloat(trimmed);
           return !isNaN(parsed) ? parsed : v;
