@@ -11,6 +11,10 @@ temp/
 *.json.backup
 *.ts.backup
 IMPLEMENTATION_SUMMARY.md
+FLEXIBLE_SHCEMA_PLAN.md
+TESTING.md
+HISTORICAL_CHART_WIDGET_IMPLEMENTATION.md
+
 *-backup
 
 # Ignore build artifacts
