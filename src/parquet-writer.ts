@@ -104,7 +104,13 @@ export class ParquetWriter {
       this.app?.debug(
         `Sample record keys: ${Object.keys(records[0]).join(', ')}`
       );
-      this.app?.debug(`Sample record: ${JSON.stringify(records[0], null, 2)}`);
+      this.app?.debug(
+        `Sample record: ${JSON.stringify(
+          records[0],
+          (_, value) => (typeof value === 'bigint' ? value.toString() : value),
+          2
+        )}`
+      );
 
       // Use intelligent schema detection for optimal data types
       const schema = this.createParquetSchema(records);
@@ -215,6 +221,7 @@ export class ParquetWriter {
       const hasNumbers = values.some(v => typeof v === 'number');
       const hasStrings = values.some(v => typeof v === 'string');
       const hasBooleans = values.some(v => typeof v === 'boolean');
+      const hasBigInts = values.some(v => typeof v === 'bigint');
 
       // Only log details for the value column that we care about
       if (colName === 'value') {
@@ -222,11 +229,22 @@ export class ParquetWriter {
           `createParquetSchema: Value column - numbers: ${hasNumbers}, strings: ${hasStrings}, booleans: ${hasBooleans}`
         );
         this.app?.debug(
-          `createParquetSchema: Value column sample: ${JSON.stringify(values.slice(0, 3))}`
+          `createParquetSchema: Value column sample: ${JSON.stringify(
+            values.slice(0, 3),
+            (_, value) => (typeof value === 'bigint' ? value.toString() : value)
+          )}`
         );
       }
 
-      if (hasNumbers && !hasStrings && !hasBooleans) {
+      if (hasBigInts && !hasNumbers && !hasStrings && !hasBooleans) {
+        // All BigInts - use UTF8 to be safe
+        schemaFields[colName] = { type: 'UTF8', optional: true };
+        if (colName === 'value') {
+          this.app?.debug(
+            `createParquetSchema: Value column -> UTF8 (bigints)`
+          );
+        }
+      } else if (hasNumbers && !hasStrings && !hasBooleans && !hasBigInts) {
         // All numbers - check if integers or floats
         const allIntegers = values.every(v => Number.isInteger(v));
         schemaFields[colName] = {
@@ -238,7 +256,7 @@ export class ParquetWriter {
             `createParquetSchema: Value column -> ${allIntegers ? 'INT64' : 'DOUBLE'}`
           );
         }
-      } else if (hasBooleans && !hasNumbers && !hasStrings) {
+      } else if (hasBooleans && !hasNumbers && !hasStrings && !hasBigInts) {
         schemaFields[colName] = { type: 'BOOLEAN', optional: true };
       } else {
         // Mixed types or strings - use UTF8
@@ -273,6 +291,30 @@ export class ParquetWriter {
 
       if (value === null || value === undefined) {
         cleanRecord[fieldName] = null;
+      } else if (typeof value === 'bigint') {
+        // Handle BigInt values by converting to appropriate type
+        switch (fieldType) {
+          case 'DOUBLE':
+          case 'FLOAT':
+            cleanRecord[fieldName] = Number(value);
+            break;
+          case 'INT64':
+          case 'INT32':
+            // Convert BigInt to number if it fits in safe integer range
+            if (
+              value <= Number.MAX_SAFE_INTEGER &&
+              value >= Number.MIN_SAFE_INTEGER
+            ) {
+              cleanRecord[fieldName] = Number(value);
+            } else {
+              cleanRecord[fieldName] = value.toString();
+            }
+            break;
+          case 'UTF8':
+          default:
+            cleanRecord[fieldName] = value.toString();
+            break;
+        }
       } else {
         switch (fieldType) {
           case 'DOUBLE':
