@@ -323,6 +323,7 @@ export = function (app: ServerAPI): SignalKPlugin {
     });
 
     // Initialize S3 client if enabled
+    app.debug(`DEBUG: S3 setup - enabled: ${state.currentConfig.s3Upload.enabled}, S3Client available: ${!!S3Client}`);
     if (state.currentConfig.s3Upload.enabled && S3Client) {
       try {
         const s3Config: {
@@ -341,8 +342,12 @@ export = function (app: ServerAPI): SignalKPlugin {
             accessKeyId: state.currentConfig.s3Upload.accessKeyId,
             secretAccessKey: state.currentConfig.s3Upload.secretAccessKey,
           };
+          app.debug(`DEBUG: S3 credentials provided`);
+        } else {
+          app.debug(`DEBUG: No S3 credentials provided, using default AWS profile`);
         }
 
+        app.debug(`DEBUG: Creating S3 client with region: ${s3Config.region}`);
         state.s3Client = new S3Client(s3Config);
         app.debug(
           `S3 client initialized for bucket: ${state.currentConfig.s3Upload.bucket}`
@@ -351,6 +356,8 @@ export = function (app: ServerAPI): SignalKPlugin {
         app.debug(`Error initializing S3 client: ${error}`);
         state.s3Client = undefined;
       }
+    } else {
+      app.debug(`DEBUG: S3 client not initialized - enabled: ${state.currentConfig.s3Upload.enabled}, S3Client: ${!!S3Client}`);
     }
 
     // Ensure output directory exists
