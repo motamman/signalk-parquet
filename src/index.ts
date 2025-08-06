@@ -290,7 +290,7 @@ export = function (app: ServerAPI): SignalKPlugin {
     commandState: commandState,
   };
 
-  plugin.start = function (options: Partial<PluginConfig>): void {
+  plugin.start = async function (options: Partial<PluginConfig>): Promise<void> {
     app.debug('Starting...');
 
     // Get vessel MMSI from SignalK
@@ -324,6 +324,24 @@ export = function (app: ServerAPI): SignalKPlugin {
 
     // Initialize S3 client if enabled
     app.debug(`DEBUG: S3 setup - enabled: ${state.currentConfig.s3Upload.enabled}, S3Client available: ${!!S3Client}`);
+    if (state.currentConfig.s3Upload.enabled) {
+      // Wait for AWS SDK import to complete
+      try {
+        if (!S3Client) {
+          app.debug(`DEBUG: Waiting for AWS SDK import...`);
+          const awsS3 = await import('@aws-sdk/client-s3');
+          S3Client = awsS3.S3Client;
+          PutObjectCommand = awsS3.PutObjectCommand;
+          ListObjectsV2Command = awsS3.ListObjectsV2Command;
+          HeadObjectCommand = awsS3.HeadObjectCommand;
+          app.debug(`DEBUG: AWS SDK imported successfully`);
+        }
+      } catch (importError) {
+        app.debug(`DEBUG: Failed to import AWS SDK: ${importError}`);
+        S3Client = undefined;
+      }
+    }
+
     if (state.currentConfig.s3Upload.enabled && S3Client) {
       try {
         const s3Config: {
