@@ -1524,17 +1524,23 @@ export = function (app: ServerAPI): SignalKPlugin {
           config.filenamePrefix
         );
 
+        app.debug(`DEBUG: consolidatedCount = ${consolidatedCount} for date ${dateStr}`);
+
         if (consolidatedCount > 0) {
           app.debug(
             `Consolidated ${consolidatedCount} topic directories for ${dateStr}`
           );
 
           // Upload consolidated files to S3 if enabled and timing is consolidation
+          app.debug(`DEBUG: S3 check - enabled: ${config.s3Upload.enabled}, timing: ${config.s3Upload.timing}`);
           if (
             config.s3Upload.enabled &&
             config.s3Upload.timing === 'consolidation'
           ) {
+            app.debug(`DEBUG: Starting S3 upload for ${dateStr}`);
             await uploadConsolidatedFilesToS3(config, date);
+          } else {
+            app.debug(`DEBUG: S3 upload skipped for ${dateStr}`);
           }
         }
       }
@@ -1562,6 +1568,8 @@ export = function (app: ServerAPI): SignalKPlugin {
         yesterday,
         config.filenamePrefix
       );
+
+      app.debug(`DEBUG: Daily consolidatedCount = ${consolidatedCount} for yesterday`);
 
       if (consolidatedCount > 0) {
         app.debug(
