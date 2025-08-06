@@ -48,12 +48,13 @@ import {
 
 // AWS S3 for file upload
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-let S3Client: any, PutObjectCommand: any, ListObjectsV2Command: any;
+let S3Client: any, PutObjectCommand: any, ListObjectsV2Command: any, HeadObjectCommand: any;
 import('@aws-sdk/client-s3')
   .then(s3 => {
     S3Client = s3.S3Client;
     PutObjectCommand = s3.PutObjectCommand;
     ListObjectsV2Command = s3.ListObjectsV2Command;
+    HeadObjectCommand = s3.HeadObjectCommand;
   })
   .catch(() => {
     // eslint-disable-next-line no-console
@@ -407,6 +408,13 @@ export = function (app: ServerAPI): SignalKPlugin {
     setTimeout(() => {
       consolidateMissedDays(state.currentConfig!);
     }, 5000); // Wait 5 seconds after startup to avoid conflicts
+
+    // Upload all existing consolidated files to S3 (for catching up after BigInt fix)
+    if (state.currentConfig.s3Upload.enabled) {
+      setTimeout(() => {
+        uploadAllConsolidatedFilesToS3(state.currentConfig!);
+      }, 10000); // Wait 10 seconds after startup to avoid conflicts
+    }
 
     app.debug('Started');
   };
@@ -1589,6 +1597,35 @@ export = function (app: ServerAPI): SignalKPlugin {
     }
   }
 
+  // Upload all existing consolidated files to S3 (for catching up after BigInt fix)
+  async function uploadAllConsolidatedFilesToS3(
+    config: PluginConfig
+  ): Promise<void> {
+    try {
+      app.debug(`DEBUG: Uploading all existing consolidated files to S3`);
+      
+      // Find all consolidated parquet files
+      const consolidatedPattern = `**/*_consolidated.parquet`;
+      const consolidatedFiles = await glob(consolidatedPattern, {
+        cwd: config.outputDirectory,
+        absolute: true,
+        nodir: true,
+      });
+
+      app.debug(`DEBUG: Found ${consolidatedFiles.length} consolidated files to upload`);
+      
+      let uploadedCount = 0;
+      for (const filePath of consolidatedFiles) {
+        const success = await uploadToS3(filePath, config);
+        if (success) uploadedCount++;
+      }
+      
+      app.debug(`DEBUG: Successfully uploaded ${uploadedCount}/${consolidatedFiles.length} consolidated files`);
+    } catch (error) {
+      app.debug(`Error uploading all consolidated files to S3: ${error}`);
+    }
+  }
+
   // Upload consolidated files to S3
   async function uploadConsolidatedFilesToS3(
     config: PluginConfig,
@@ -1597,6 +1634,9 @@ export = function (app: ServerAPI): SignalKPlugin {
     try {
       const dateStr = date.toISOString().split('T')[0];
       const consolidatedPattern = `**/*_${dateStr}_consolidated.parquet`;
+      
+      app.debug(`DEBUG: S3 upload function called for ${dateStr}`);
+      app.debug(`DEBUG: Looking for pattern: ${consolidatedPattern} in ${config.outputDirectory}`);
 
       // Find all consolidated files for the date
       const consolidatedFiles = await glob(consolidatedPattern, {
@@ -1608,6 +1648,7 @@ export = function (app: ServerAPI): SignalKPlugin {
       app.debug(
         `Found ${consolidatedFiles.length} consolidated files to upload for ${dateStr}`
       );
+      app.debug(`DEBUG: Files found: ${JSON.stringify(consolidatedFiles)}`);
 
       // Upload each consolidated file
       for (const filePath of consolidatedFiles) {
@@ -1718,10 +1759,7 @@ export = function (app: ServerAPI): SignalKPlugin {
     }
 
     try {
-      // Read the file
-      const fileContent = await fs.readFile(filePath);
-
-      // Generate S3 key
+      // Generate S3 key first
       const relativePath = path.relative(config.outputDirectory, filePath);
       let s3Key = relativePath;
       if (config.s3Upload.keyPrefix) {
@@ -1730,6 +1768,47 @@ export = function (app: ServerAPI): SignalKPlugin {
           : `${config.s3Upload.keyPrefix}/`;
         s3Key = `${prefix}${relativePath}`;
       }
+
+      // Check if file exists in S3 and compare timestamps
+      const localStats = await fs.stat(filePath);
+      let shouldUpload = true;
+
+      try {
+        if (HeadObjectCommand) {
+          const headCommand = new HeadObjectCommand({
+            Bucket: config.s3Upload.bucket,
+            Key: s3Key,
+          });
+          const s3Object = await state.s3Client.send(headCommand);
+          
+          if (s3Object.LastModified) {
+            const s3LastModified = new Date(s3Object.LastModified);
+            const localLastModified = new Date(localStats.mtime);
+            
+            if (localLastModified <= s3LastModified) {
+              shouldUpload = false;
+              app.debug(`⏭️ Skipping upload, S3 file is newer: ${s3Key}`);
+            } else {
+              app.debug(`📤 Local file is newer, uploading: ${s3Key}`);
+            }
+          }
+        }
+      } catch (headError: any) {
+        if (headError.name === 'NotFound' || headError.$metadata?.httpStatusCode === 404) {
+          app.debug(`📤 File not found in S3, uploading: ${s3Key}`);
+          shouldUpload = true;
+        } else {
+          app.debug(`⚠️ Error checking S3 file, uploading anyway: ${headError.message}`);
+          shouldUpload = true;
+        }
+      }
+
+      if (!shouldUpload) {
+        return true; // Consider it successful since file is already up to date
+      }
+
+      // Read the file
+      const fileContent = await fs.readFile(filePath);
 
       // Upload to S3
       const command = new PutObjectCommand({
