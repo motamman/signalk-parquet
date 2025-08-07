@@ -589,6 +589,17 @@ For detailed testing procedures, see [TESTING.md](TESTING.md).
 
 ## Changelog
 
+### Version 0.5.0-beta.5
+- **🔧 Fixed BigInt Serialization**: Resolved BigInt serialization errors that prevented Parquet file consolidation from completing
+- **🌩️ Fixed S3 Client Initialization**: Resolved timing issues where AWS SDK imports were not ready during plugin startup
+- **📤 Smart S3 Upload**: Added timestamp-based conflict resolution - only uploads files newer than existing S3 versions
+- **🚀 Automatic S3 Catch-up**: Added startup upload of existing consolidated files to S3 (catch-up mechanism)
+- **🔍 Enhanced Debug Logging**: Added comprehensive debug logging for S3 operations and consolidation processes
+- **🛡️ Improved Error Handling**: Enhanced error handling and logging throughout S3 upload pipeline
+
+### Version 0.5.0-beta.4
+- Previous release with consolidation improvements
+
 ### Version 0.5.0-beta.3
 - **🔥 CRITICAL BUG FIX**: Fixed recursive consolidation bug that created infinite nested `/processed/processed/processed/...` directories
 - **🎯 Smart Data Types**: Implemented intelligent Parquet schema detection that preserves native data types (DOUBLE, BOOLEAN, INT64) instead of forcing everything to UTF8 strings
