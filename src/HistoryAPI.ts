@@ -37,6 +37,21 @@ export function registerHistoryApiRoute(
     // getPaths(influx, from, to, res);
     res.json(['navigation.speedOverGround']);
   });
+  
+  // Also register as plugin-style routes for testing
+  router.get('/api/history/values', (req: Request, res: Response) => {
+    const { from, to, context } = getRequestParams(
+      req as FromToContextRequest,
+      selfId
+    );
+    historyApi.getValues(context, from, to, debug, req, res);
+  });
+  router.get('/api/history/contexts', (req: Request, res: Response) => {
+    res.json([`vessels.${selfId}`] as Context[]);
+  });
+  router.get('/api/history/paths', (req: Request, res: Response) => {
+    res.json(['navigation.speedOverGround']);
+  });
 }
 
 const getRequestParams = ({ query }: FromToContextRequest, selfId: string) => {
@@ -82,6 +97,7 @@ class HistoryAPI {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     res: Response<any, Record<string, any>>
   ) {
+    try {
     const timeResolutionMillis =
       (req.query.resolution
         ? Number.parseFloat(req.query.resolution as string)
@@ -91,35 +107,34 @@ class HistoryAPI {
       .split(',');
     const pathSpecs: PathSpec[] = pathExpressions.map(splitPathExpression);
 
-    const positionPathSpecs = pathSpecs
-      .filter(({ path }) => path === 'navigation.position')
-      .slice(0, 1);
-    // const positionResult = positionPathSpecs.length
-    //   ? getPositions(context, from, to, timeResolutionMillis, debug)
-    //   : Promise.resolve({
-    //       values: [],
-    //       data: [],
-    //     });
-
-    const nonPositionPathSpecs = pathSpecs.filter(
-      ({ path }) => path !== 'navigation.position'
-    );
-    const nonPositionResult = nonPositionPathSpecs.length
+    // Handle position and numeric paths together
+    const allResult = pathSpecs.length
       ? await this.getNumericValues(
           context,
           from,
           to,
           timeResolutionMillis,
-          nonPositionPathSpecs,
+          pathSpecs,
           debug
         )
       : Promise.resolve({
+          context,
+          range: {
+            from: from.toString() as Timestamp,
+            to: to.toString() as Timestamp,
+          },
           values: [],
           data: [],
         });
 
-    //TODO consolidate position & numeric results
-    res.json(nonPositionResult);
+    res.json(allResult);
+    } catch (error) {
+      debug(`Error in getValues: ${error}`);
+      res.status(500).json({
+        error: 'Internal server error',
+        message: error instanceof Error ? error.message : String(error)
+      });
+    }
   }
 
   async getNumericValues(
@@ -130,30 +145,93 @@ class HistoryAPI {
     pathSpecs: PathSpec[],
     debug: (k: string) => void
   ): Promise<DataResult> {
-    const filePaths = pathSpecs.map(async pathSpec => {
-      const filePath = path.join(
-        this.dataDir,
-        this.selfContextPath,
-        pathSpec.path.replace(/\./g, '/'),
-        '*.parquet'
-      );
-      const query = `
-      SELECT
-        *
-      FROM '${filePath}'
-      WHERE
-        strptime(signalk_timestamp, '%Y-%m-%dT%H:%M:%-S.%gZ') >= ${from.toString()}::TIMESTAMP
-        AND 
-        strptime(signalk_timestamp, '%Y-%m-%dT%H:%M:%-S.%gZ') < ${to.toString()}::TIMESTAMP      
-      `;
-      debug(`Executing query: ${query}`);
-      const duckDB = await DuckDBInstance.create();
-      const connection = await duckDB.connect();
-      const result = await connection.run(query);
-      const rows = await result.getRows();
-      console.log(rows);
-    });
-    return Promise.resolve({
+    const allData: { [path: string]: Array<[Timestamp, any]> } = {};
+    
+    // Process each path and collect data
+    await Promise.all(
+      pathSpecs.map(async pathSpec => {
+        try {
+          // Sanitize the path to prevent directory traversal and SQL injection
+          const sanitizedPath = pathSpec.path
+            .replace(/[^a-zA-Z0-9._]/g, '') // Only allow alphanumeric, dots, underscores
+            .replace(/\./g, '/');
+          
+          const filePath = path.join(
+            this.dataDir,
+            this.selfContextPath,
+            sanitizedPath,
+            '*.parquet'
+          );
+          
+          debug(`Constructed file path: ${filePath}`);
+          debug(`Data dir: ${this.dataDir}`);
+          debug(`Self context path: ${this.selfContextPath}`);
+          debug(`Sanitized path: ${sanitizedPath}`);
+          
+          // Convert ZonedDateTime to ISO string format matching parquet schema
+          const fromIso = from.toInstant().toString();
+          const toIso = to.toInstant().toString();
+          
+          debug(`Time range: ${fromIso} to ${toIso}`);
+          
+          // Build query with sanitized inputs (filePath is already sanitized above)
+          const query = `
+          SELECT
+            signalk_timestamp,
+            value,
+            value_json
+          FROM '${filePath}'
+          WHERE
+            signalk_timestamp >= '${fromIso}'
+            AND 
+            signalk_timestamp < '${toIso}'
+          ORDER BY signalk_timestamp      
+          `;
+          
+          debug(`Executing query for path ${pathSpec.path}: ${query}`);
+          const duckDB = await DuckDBInstance.create();
+          const connection = await duckDB.connect();
+          
+          try {
+            const result = await connection.runAndReadAll(query);
+            const rows = result.getRowObjects();
+            
+            debug(`Query returned ${rows.length} rows`);
+            if (rows.length > 0) {
+              debug(`First row sample: ${JSON.stringify(rows[0])}`);
+            }
+            
+            // Convert rows to the expected format
+            const pathData: Array<[Timestamp, any]> = rows.map((row: any) => {
+              const timestamp = row.signalk_timestamp as Timestamp;
+              // Handle both JSON values (like position objects) and simple values
+              let value = row.value_json ? JSON.parse(String(row.value_json)) : row.value;
+              
+              // For position paths, ensure we return the full position object
+              if (pathSpec.path === 'navigation.position' && value && typeof value === 'object') {
+                // Position data is already an object with latitude/longitude
+                value = value;
+              }
+              
+              return [timestamp, value];
+            });
+            
+            allData[pathSpec.path] = pathData;
+            debug(`Retrieved ${pathData.length} data points for ${pathSpec.path}`);
+          } finally {
+            connection.disconnectSync();
+          }
+        } catch (error) {
+          debug(`Error querying path ${pathSpec.path}: ${error}`);
+          allData[pathSpec.path] = [];
+        }
+      })
+    );
+    
+    // Merge all path data into time-ordered rows
+    const mergedData = this.mergePathData(allData, pathSpecs);
+    
+    return {
       context,
       range: {
         from: from.toString() as Timestamp,
@@ -163,8 +241,32 @@ class HistoryAPI {
         path,
         method: aggregateMethod,
       })),
-      data: [],
-    } as DataResult);
+      data: mergedData,
+    } as DataResult;
+  }
+
+  private mergePathData(
+    allData: { [path: string]: Array<[Timestamp, any]> },
+    pathSpecs: PathSpec[]
+  ): Array<[Timestamp, ...any[]]> {
+    // Create a map of all unique timestamps
+    const timestampMap = new Map<string, any[]>();
+    
+    pathSpecs.forEach((pathSpec, index) => {
+      const pathData = allData[pathSpec.path] || [];
+      pathData.forEach(([timestamp, value]) => {
+        const timestampStr = timestamp.toString();
+        if (!timestampMap.has(timestampStr)) {
+          timestampMap.set(timestampStr, new Array(pathSpecs.length).fill(null));
+        }
+        timestampMap.get(timestampStr)![index] = value;
+      });
+    });
+    
+    // Convert to sorted array format
+    return Array.from(timestampMap.entries())
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([timestamp, values]) => [timestamp as Timestamp, ...values]);
   }
 }
 
