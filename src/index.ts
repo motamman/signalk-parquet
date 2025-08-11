@@ -268,7 +268,7 @@ function saveWebAppPaths(paths: PathConfig[]): void {
   saveWebAppConfig(paths, currentCommands);
 }
 
-export = function (app: ServerAPI): SignalKPlugin {
+export default function (app: ServerAPI): SignalKPlugin {
   // Store app instance for global access
   appInstance = app;
   const plugin: SignalKPlugin = {
