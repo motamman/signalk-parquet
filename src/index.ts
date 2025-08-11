@@ -69,7 +69,7 @@ import('@aws-sdk/client-s3')
 
 // DuckDB for webapp queries
 import { DuckDBInstance } from '@duckdb/node-api';
-const duckDBInstance = DuckDBInstance;
+import { registerHistoryApiRoute } from './HistoryAPI';
 
 // Global variables for path and command management
 let currentPaths: PathConfig[] = [];
@@ -455,6 +455,12 @@ export default function (app: ServerAPI): SignalKPlugin {
       }, 10000); // Wait 10 seconds after startup to avoid conflicts
     }
 
+    registerHistoryApiRoute(
+      app as unknown as Router,
+      app.selfId,
+      app.getDataDirPath(),
+      app.debug
+    );
     app.debug('Started');
   };
 
