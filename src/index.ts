@@ -2188,13 +2188,6 @@ export default function (app: ServerAPI): SignalKPlugin {
       '/api/sample/:path(*)',
       async (req: TypedRequest, res: TypedResponse<SampleApiResponse>) => {
         try {
-          if (!duckDBInstance) {
-            return res.status(503).json({
-              success: false,
-              error: 'DuckDB not available',
-            });
-          }
-
           const dataDir = getDataDir();
           const signalkPath = req.params.path;
           const limit = parseInt(req.query.limit as string) || 10;
@@ -2236,7 +2229,7 @@ export default function (app: ServerAPI): SignalKPlugin {
           const sampleFile = files[0];
           const query = `SELECT * FROM '${sampleFile.path}' LIMIT ${limit}`;
 
-          const instance = await duckDBInstance.create();
+          const instance = await DuckDBInstance.create();
           const connection = await instance.connect();
           try {
             const reader = await connection.runAndReadAll(query);
@@ -2280,13 +2273,6 @@ export default function (app: ServerAPI): SignalKPlugin {
         res: TypedResponse<QueryApiResponse>
       ) => {
         try {
-          if (!duckDBInstance) {
-            return res.status(503).json({
-              success: false,
-              error: 'DuckDB not available',
-            });
-          }
-
           const { query } = req.body;
 
           if (!query) {
@@ -2335,7 +2321,7 @@ export default function (app: ServerAPI): SignalKPlugin {
 
           app.debug(`Executing query: ${processedQuery}`);
 
-          const instance = await duckDBInstance.create();
+          const instance = await DuckDBInstance.create();
           const connection = await instance.connect();
           try {
             const reader = await connection.runAndReadAll(processedQuery);
@@ -2801,7 +2787,6 @@ export default function (app: ServerAPI): SignalKPlugin {
           success: true,
           status: 'healthy',
           timestamp: new Date().toISOString(),
-          duckdb: duckDBInstance ? 'available' : 'not available',
         });
       }
     );
