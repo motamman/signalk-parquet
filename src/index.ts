@@ -2294,9 +2294,9 @@ export default function (app: ServerAPI): SignalKPlugin {
               const quotedPath = match.slice(1, -1); // Remove quotes
 
               // If it looks like a SignalK path, convert to file path
-              const selfContextPath = app.selfContext
-                .replace(/\./g, '/')
-                .replace(/:/g, '_');
+              const selfContextPath = toContextFilePath(
+                app.selfContext as Context
+              );
               if (
                 quotedPath.includes(`/${selfContextPath}/`) ||
                 quotedPath.includes('.parquet')
@@ -2308,11 +2308,10 @@ export default function (app: ServerAPI): SignalKPlugin {
                 !quotedPath.includes('/')
               ) {
                 // It's a SignalK path, convert to file path
-                const filePath = path.join(
+                const filePath = toParquetFilePath(
                   dataDir,
                   selfContextPath,
-                  quotedPath.replace(/\./g, '/'),
-                  '*.parquet'
+                  quotedPath
                 );
                 processedQuery = processedQuery.replace(match, `'${filePath}'`);
               }
@@ -2795,4 +2794,21 @@ export default function (app: ServerAPI): SignalKPlugin {
   };
 
   return plugin;
-};
+}
+
+export function toContextFilePath(context: Context) {
+  return context.replace(/\./g, '/').replace(/:/g, '_');
+}
+
+export function toParquetFilePath(
+  dataDir: string,
+  selfContextPath: string,
+  quotedPath: string
+) {
+  return path.join(
+    dataDir,
+    selfContextPath,
+    quotedPath.replace(/\./g, '/'),
+    '*.parquet'
+  );
+}
