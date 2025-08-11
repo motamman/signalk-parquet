@@ -458,7 +458,7 @@ export default function (app: ServerAPI): SignalKPlugin {
     registerHistoryApiRoute(
       app as unknown as Router,
       app.selfId,
-      app.getDataDirPath(),
+      state.currentConfig?.outputDirectory || 'data',
       app.debug
     );
     app.debug('Started');
