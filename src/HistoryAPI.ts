@@ -6,7 +6,7 @@ import {
   PathSpec,
 } from './HistoryAPI-types';
 import { ZonedDateTime } from '@js-joda/core';
-import { Context, Path } from '@signalk/server-api';
+import { Context, Path, Timestamp } from '@signalk/server-api';
 import { ParamsDictionary } from 'express-serve-static-core';
 import { ParsedQs } from 'qs';
 import { DuckDBInstance } from '@duckdb/node-api';
@@ -153,7 +153,18 @@ class HistoryAPI {
       const rows = await result.getRows();
       console.log(rows);
     });
-    return Promise.resolve({ values: [], data: [] } as DataResult);
+    return Promise.resolve({
+      context,
+      range: {
+        from: from.toString() as Timestamp,
+        to: to.toString() as Timestamp,
+      },
+      values: pathSpecs.map(({ path, aggregateMethod }: PathSpec) => ({
+        path,
+        method: aggregateMethod,
+      })),
+      data: [],
+    } as DataResult);
   }
 }
 
