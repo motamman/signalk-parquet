@@ -324,13 +324,19 @@ export default function (app: ServerAPI): SignalKPlugin {
   plugin.registerWithRouter = function (router: Router): void {
     registerApiRoutes(router, state, app);
     
-    // Register History API routes
-    registerHistoryApiRoute(
-      router,
-      app.selfId,
-      state.currentConfig?.outputDirectory || app.getDataDirPath(),
-      app.debug
-    );
+    app.debug('Registering History API routes...');
+    try {
+      // Register History API routes
+      registerHistoryApiRoute(
+        router,
+        app.selfId,
+        state.currentConfig?.outputDirectory || app.getDataDirPath(),
+        app.debug
+      );
+      app.debug('History API routes registered successfully');
+    } catch (error) {
+      app.error(`Failed to register History API routes: ${error}`);
+    }
   };
 
   return plugin;
