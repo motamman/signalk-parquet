@@ -161,6 +161,20 @@ export default function (app: ServerAPI): SignalKPlugin {
       }, 10000); // Wait 10 seconds after startup to avoid conflicts
     }
 
+    // Register History API routes directly with the main app
+    app.debug('Registering History API routes with main server...');
+    try {
+      registerHistoryApiRoute(
+        app as unknown as Router,
+        app.selfId,
+        state.currentConfig.outputDirectory,
+        app.debug
+      );
+      app.debug('History API routes registered with main server successfully');
+    } catch (error) {
+      app.error(`Failed to register History API routes with main server: ${error}`);
+    }
+
     app.debug('Started');
   };
 
@@ -323,20 +337,6 @@ export default function (app: ServerAPI): SignalKPlugin {
   // Webapp static files and API routes
   plugin.registerWithRouter = function (router: Router): void {
     registerApiRoutes(router, state, app);
-    
-    app.debug('Registering History API routes...');
-    try {
-      // Register History API routes
-      registerHistoryApiRoute(
-        router,
-        app.selfId,
-        state.currentConfig?.outputDirectory || app.getDataDirPath(),
-        app.debug
-      );
-      app.debug('History API routes registered successfully');
-    } catch (error) {
-      app.error(`Failed to register History API routes: ${error}`);
-    }
   };
 
   return plugin;
