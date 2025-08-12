@@ -69,7 +69,7 @@ import('@aws-sdk/client-s3')
 
 // DuckDB for webapp queries
 import { DuckDBInstance } from '@duckdb/node-api';
-const duckDBInstance = DuckDBInstance;
+import { registerHistoryApiRoute } from './HistoryAPI';
 
 // Global variables for path and command management
 let currentPaths: PathConfig[] = [];
@@ -268,7 +268,7 @@ function saveWebAppPaths(paths: PathConfig[]): void {
   saveWebAppConfig(paths, currentCommands);
 }
 
-export = function (app: ServerAPI): SignalKPlugin {
+export default function (app: ServerAPI): SignalKPlugin {
   // Store app instance for global access
   appInstance = app;
   const plugin: SignalKPlugin = {
@@ -455,6 +455,12 @@ export = function (app: ServerAPI): SignalKPlugin {
       }, 10000); // Wait 10 seconds after startup to avoid conflicts
     }
 
+    registerHistoryApiRoute(
+      app as unknown as Router,
+      app.selfId,
+      state.currentConfig?.outputDirectory || 'data',
+      app.debug
+    );
     app.debug('Started');
   };
 
@@ -2188,13 +2194,6 @@ export = function (app: ServerAPI): SignalKPlugin {
       '/api/sample/:path(*)',
       async (req: TypedRequest, res: TypedResponse<SampleApiResponse>) => {
         try {
-          if (!duckDBInstance) {
-            return res.status(503).json({
-              success: false,
-              error: 'DuckDB not available',
-            });
-          }
-
           const dataDir = getDataDir();
           const signalkPath = req.params.path;
           const limit = parseInt(req.query.limit as string) || 10;
@@ -2236,7 +2235,7 @@ export = function (app: ServerAPI): SignalKPlugin {
           const sampleFile = files[0];
           const query = `SELECT * FROM '${sampleFile.path}' LIMIT ${limit}`;
 
-          const instance = await duckDBInstance.create();
+          const instance = await DuckDBInstance.create();
           const connection = await instance.connect();
           try {
             const reader = await connection.runAndReadAll(query);
@@ -2280,13 +2279,6 @@ export = function (app: ServerAPI): SignalKPlugin {
         res: TypedResponse<QueryApiResponse>
       ) => {
         try {
-          if (!duckDBInstance) {
-            return res.status(503).json({
-              success: false,
-              error: 'DuckDB not available',
-            });
-          }
-
           const { query } = req.body;
 
           if (!query) {
@@ -2308,9 +2300,9 @@ export = function (app: ServerAPI): SignalKPlugin {
               const quotedPath = match.slice(1, -1); // Remove quotes
 
               // If it looks like a SignalK path, convert to file path
-              const selfContextPath = app.selfContext
-                .replace(/\./g, '/')
-                .replace(/:/g, '_');
+              const selfContextPath = toContextFilePath(
+                app.selfContext as Context
+              );
               if (
                 quotedPath.includes(`/${selfContextPath}/`) ||
                 quotedPath.includes('.parquet')
@@ -2322,11 +2314,10 @@ export = function (app: ServerAPI): SignalKPlugin {
                 !quotedPath.includes('/')
               ) {
                 // It's a SignalK path, convert to file path
-                const filePath = path.join(
+                const filePath = toParquetFilePath(
                   dataDir,
                   selfContextPath,
-                  quotedPath.replace(/\./g, '/'),
-                  '*.parquet'
+                  quotedPath
                 );
                 processedQuery = processedQuery.replace(match, `'${filePath}'`);
               }
@@ -2335,7 +2326,7 @@ export = function (app: ServerAPI): SignalKPlugin {
 
           app.debug(`Executing query: ${processedQuery}`);
 
-          const instance = await duckDBInstance.create();
+          const instance = await DuckDBInstance.create();
           const connection = await instance.connect();
           try {
             const reader = await connection.runAndReadAll(processedQuery);
@@ -2801,7 +2792,6 @@ export = function (app: ServerAPI): SignalKPlugin {
           success: true,
           status: 'healthy',
           timestamp: new Date().toISOString(),
-          duckdb: duckDBInstance ? 'available' : 'not available',
         });
       }
     );
@@ -2810,4 +2800,21 @@ export = function (app: ServerAPI): SignalKPlugin {
   };
 
   return plugin;
-};
+}
+
+export function toContextFilePath(context: Context) {
+  return context.replace(/\./g, '/').replace(/:/g, '_');
+}
+
+export function toParquetFilePath(
+  dataDir: string,
+  selfContextPath: string,
+  quotedPath: string
+) {
+  return path.join(
+    dataDir,
+    selfContextPath,
+    quotedPath.replace(/\./g, '/'),
+    '*.parquet'
+  );
+}

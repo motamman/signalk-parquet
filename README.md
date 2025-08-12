@@ -1,12 +1,11 @@
-# SignalK Parquet Data Store (TypeScript)
+# SignalK Parquet Data Store
 
-**Version 0.5.0-beta.3**
+**Version 0.5.0-beta.6**
 
 A comprehensive TypeScript-based SignalK plugin that saves marine data directly to Parquet files with regimen-based control, web interface for querying, and S3 upload capabilities.
 
 ## Features
 
-- **TypeScript Implementation**: Full TypeScript support with comprehensive type safety
 - **Smart Data Types**: Intelligent Parquet schema detection preserves native data types (DOUBLE, BOOLEAN) instead of forcing everything to strings
 - **Command Management**: Register, execute, and manage SignalK commands with automatic path configuration
 - **Regimen-Based Data Collection**: Control data collection with command-based regimens
@@ -14,6 +13,7 @@ A comprehensive TypeScript-based SignalK plugin that saves marine data directly 
 - **Multiple File Formats**: Support for Parquet, JSON, and CSV output formats (querying in parquet only)
 - **Web Interface**: Responsive web interface for data exploration and configuration
 - **DuckDB Integration**: Query Parquet files directly with SQL
+- **History API Integration**: Full SignalK History API implementation for historical data queries
 - **S3 Integration**: Upload files to Amazon S3 with configurable timing
 - **Daily Consolidation**: Automatic daily file consolidation
 - **Real-time Buffering**: Efficient data buffering with configurable thresholds
@@ -348,6 +348,7 @@ This provides better compression, faster queries, and proper type safety for dat
 - **Command Management**: Streamlined command registration and control
 - **Data Exploration**: Browse available data paths
 - **SQL Queries**: Execute DuckDB queries against Parquet files
+- **History API**: Query historical data using SignalK History API endpoints
 - **S3 Status**: Test S3 connectivity and configuration
 - **Responsive Design**: Works on desktop and mobile
 - **MMSI Filtering**: Exclude specific vessels from wildcard contexts
@@ -363,6 +364,9 @@ This provides better compression, faster queries, and proper type safety for dat
 | `/api/config/paths` | GET/POST/PUT/DELETE | Manage path configurations |
 | `/api/test-s3` | POST | Test S3 connection |
 | `/api/health` | GET | Health check |
+| `/signalk/v1/history/values` | GET | SignalK History API - Get historical values |
+| `/signalk/v1/history/contexts` | GET | SignalK History API - Get available contexts |
+| `/signalk/v1/history/paths` | GET | SignalK History API - Get available paths |
 
 ## DuckDB Integration
 
@@ -389,6 +393,59 @@ SELECT
 FROM '/path/to/data/*.parquet'
 GROUP BY hour
 ORDER BY hour;
+```
+
+## History API Integration
+
+The plugin provides full SignalK History API compatibility, allowing you to query historical data using standard SignalK API endpoints.
+
+### Available Endpoints
+
+| Endpoint | Description | Parameters |
+|----------|-------------|------------|
+| `/signalk/v1/history/values` | Get historical values for specified paths | `context`, `from`, `to`, `paths` |
+| `/signalk/v1/history/contexts` | Get available vessel contexts | `from`, `to` (optional) |
+| `/signalk/v1/history/paths` | Get available SignalK paths | `from`, `to` (optional) |
+
+### Query Examples
+
+**Get historical position data:**
+```bash
+curl "http://localhost:3000/signalk/v1/history/values?context=vessels.self&from=2025-01-01T00:00:00Z&to=2025-01-02T00:00:00Z&paths=navigation.position"
+```
+
+**Get wind data with multiple paths:**
+```bash
+curl "http://localhost:3000/signalk/v1/history/values?context=vessels.self&from=2025-01-01T00:00:00Z&to=2025-01-01T06:00:00Z&paths=environment.wind.angleApparent,environment.wind.speedApparent"
+```
+
+**Get available contexts:**
+```bash
+curl "http://localhost:3000/signalk/v1/history/contexts"
+```
+
+### Response Format
+
+The History API returns data in standard SignalK format:
+
+```json
+{
+  "context": "vessels.self",
+  "data": [
+    {
+      "timestamp": "2025-01-01T12:00:00.000Z",
+      "values": [
+        {
+          "path": "navigation.position",
+          "value": {
+            "latitude": 37.7749,
+            "longitude": -122.4194
+          }
+        }
+      ]
+    }
+  ]
+}
 ```
 
 ## S3 Integration
@@ -449,7 +506,9 @@ signalk-parquet/
 ├── src/
 │   ├── index.ts              # Main plugin logic
 │   ├── types.ts              # TypeScript interfaces
-│   └── parquet-writer.ts     # File writing logic
+│   ├── parquet-writer.ts     # File writing logic
+│   ├── HistoryAPI.ts         # SignalK History API implementation
+│   └── HistoryAPI-types.ts   # History API type definitions
 ├── dist/                     # Compiled JavaScript
 ├── public/
 │   ├── index.html           # Web interface
@@ -566,6 +625,9 @@ curl http://localhost:3000/plugins/signalk-parquet/api/config/paths
 
 # Test data collection
 curl http://localhost:3000/plugins/signalk-parquet/api/paths
+
+# Test History API
+curl "http://localhost:3000/signalk/v1/history/contexts"
 ```
 
 For detailed testing procedures, see [TESTING.md](TESTING.md).
@@ -573,9 +635,9 @@ For detailed testing procedures, see [TESTING.md](TESTING.md).
 ## TODO
 
 - [x] Implement startup consolidation for missed previous days (exclude current day)
+- [x] Add history API integration
 - [ ] Clean up data output of sourcing
 - [ ] Add Grafana integration
-- [ ] Add history API integration
 - [ ] Create SignalK app store listing with screenshots
 
 ## Contributing
@@ -588,6 +650,12 @@ For detailed testing procedures, see [TESTING.md](TESTING.md).
 6. Submit a pull request
 
 ## Changelog
+
+### Version 0.5.0-beta.6
+- **📊 History API Integration**: Implemented full SignalK History API compatibility with endpoints for `/signalk/v1/history/values`, `/signalk/v1/history/contexts`, and `/signalk/v1/history/paths`
+- **🔍 Parquet File Queries**: Added robust querying of historical data from Parquet files using DuckDB integration
+- **🧹 Code Quality**: Fixed linting and prettier formatting errors throughout the codebase
+- **🏗️ Type Safety**: Enhanced type definitions with HistoryAPI-types.ts for better development experience
 
 ### Version 0.5.0-beta.5
 - **🔧 Fixed BigInt Serialization**: Resolved BigInt serialization errors that prevented Parquet file consolidation from completing

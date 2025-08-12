@@ -1,0 +1,299 @@
+import { Router, Request, Response } from 'express';
+import {
+  AggregateMethod,
+  DataResult,
+  FromToContextRequest,
+  PathSpec,
+} from './HistoryAPI-types';
+import { ZonedDateTime } from '@js-joda/core';
+import { Context, Path, Timestamp } from '@signalk/server-api';
+import { ParamsDictionary } from 'express-serve-static-core';
+import { ParsedQs } from 'qs';
+import { DuckDBInstance } from '@duckdb/node-api';
+import { toContextFilePath } from '.';
+import path from 'path';
+
+export function registerHistoryApiRoute(
+  router: Pick<Router, 'get'>,
+  selfId: string,
+  dataDir: string,
+  debug: (k: string) => void
+) {
+  const historyApi = new HistoryAPI(selfId, dataDir);
+  router.get('/signalk/v1/history/values', (req: Request, res: Response) => {
+    const { from, to, context } = getRequestParams(
+      req as FromToContextRequest,
+      selfId
+    );
+    historyApi.getValues(context, from, to, debug, req, res);
+  });
+  router.get('/signalk/v1/history/contexts', (req: Request, res: Response) => {
+    //TODO implement retrieval of contexts for the given period
+    res.json([`vessels.${selfId}`] as Context[]);
+  });
+  router.get('/signalk/v1/history/paths', (req: Request, res: Response) => {
+    //TODO implement retrieval of paths for the given period
+    // const { from, to } = getRequestParams(req as FromToContextRequest, selfId);
+    // getPaths(influx, from, to, res);
+    res.json(['navigation.speedOverGround']);
+  });
+
+  // Also register as plugin-style routes for testing
+  router.get('/api/history/values', (req: Request, res: Response) => {
+    const { from, to, context } = getRequestParams(
+      req as FromToContextRequest,
+      selfId
+    );
+    historyApi.getValues(context, from, to, debug, req, res);
+  });
+  router.get('/api/history/contexts', (req: Request, res: Response) => {
+    res.json([`vessels.${selfId}`] as Context[]);
+  });
+  router.get('/api/history/paths', (req: Request, res: Response) => {
+    res.json(['navigation.speedOverGround']);
+  });
+}
+
+const getRequestParams = ({ query }: FromToContextRequest, selfId: string) => {
+  try {
+    const from = ZonedDateTime.parse(query['from']);
+    const to = ZonedDateTime.parse(query['to']);
+    const context: Context = getContext(query.context, selfId);
+    const bbox = query['bbox'];
+    return { from, to, context, bbox };
+  } catch (e: unknown) {
+    throw new Error(
+      `Error extracting from/to query parameters from ${JSON.stringify(query)}`
+    );
+  }
+};
+
+function getContext(contextFromQuery: string, selfId: string): Context {
+  if (
+    !contextFromQuery ||
+    contextFromQuery === 'vessels.self' ||
+    contextFromQuery === 'self'
+  ) {
+    return `vessels.${selfId}` as Context;
+  }
+  return contextFromQuery.replace(/ /gi, '') as Context;
+}
+
+class HistoryAPI {
+  readonly selfContextPath: string;
+  constructor(
+    private selfId: string,
+    private dataDir: string
+  ) {
+    this.selfContextPath = toContextFilePath(`vessels.${selfId}` as Context);
+  }
+  async getValues(
+    context: Context,
+    from: ZonedDateTime,
+    to: ZonedDateTime,
+    debug: (k: string) => void,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    req: Request<ParamsDictionary, any, any, ParsedQs, Record<string, any>>,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    res: Response<any, Record<string, any>>
+  ) {
+    try {
+      const timeResolutionMillis =
+        (req.query.resolution
+          ? Number.parseFloat(req.query.resolution as string)
+          : (to.toEpochSecond() - from.toEpochSecond()) / 500) * 1000;
+      const pathExpressions = ((req.query.paths as string) || '')
+        .replace(/[^0-9a-z.,:]/gi, '')
+        .split(',');
+      const pathSpecs: PathSpec[] = pathExpressions.map(splitPathExpression);
+
+      // Handle position and numeric paths together
+      const allResult = pathSpecs.length
+        ? await this.getNumericValues(
+            context,
+            from,
+            to,
+            timeResolutionMillis,
+            pathSpecs,
+            debug
+          )
+        : Promise.resolve({
+            context,
+            range: {
+              from: from.toString() as Timestamp,
+              to: to.toString() as Timestamp,
+            },
+            values: [],
+            data: [],
+          });
+
+      res.json(allResult);
+    } catch (error) {
+      debug(`Error in getValues: ${error}`);
+      res.status(500).json({
+        error: 'Internal server error',
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  async getNumericValues(
+    context: Context,
+    from: ZonedDateTime,
+    to: ZonedDateTime,
+    timeResolutionMillis: number,
+    pathSpecs: PathSpec[],
+    debug: (k: string) => void
+  ): Promise<DataResult> {
+    const allData: { [path: string]: Array<[Timestamp, unknown]> } = {};
+
+    // Process each path and collect data
+    await Promise.all(
+      pathSpecs.map(async pathSpec => {
+        try {
+          // Sanitize the path to prevent directory traversal and SQL injection
+          const sanitizedPath = pathSpec.path
+            .replace(/[^a-zA-Z0-9._]/g, '') // Only allow alphanumeric, dots, underscores
+            .replace(/\./g, '/');
+
+          const filePath = path.join(
+            this.dataDir,
+            this.selfContextPath,
+            sanitizedPath,
+            '*.parquet'
+          );
+
+          // Convert ZonedDateTime to ISO string format matching parquet schema
+          const fromIso = from.toInstant().toString();
+          const toIso = to.toInstant().toString();
+
+          // Build query with sanitized inputs (filePath is already sanitized above)
+          const query = `
+          SELECT
+            signalk_timestamp,
+            value,
+            value_json
+          FROM '${filePath}'
+          WHERE
+            signalk_timestamp >= '${fromIso}'
+            AND 
+            signalk_timestamp < '${toIso}'
+          ORDER BY signalk_timestamp      
+          `;
+
+          debug(`Executing query for path ${pathSpec.path}: ${query}`);
+          const duckDB = await DuckDBInstance.create();
+          const connection = await duckDB.connect();
+
+          try {
+            const result = await connection.runAndReadAll(query);
+            const rows = result.getRowObjects();
+
+            // Convert rows to the expected format
+            const pathData: Array<[Timestamp, unknown]> = rows.map(
+              (row: unknown) => {
+                const rowData = row as {
+                  signalk_timestamp: Timestamp;
+                  value: unknown;
+                  value_json?: string;
+                };
+                const timestamp = rowData.signalk_timestamp;
+                // Handle both JSON values (like position objects) and simple values
+                const value = rowData.value_json
+                  ? JSON.parse(String(rowData.value_json))
+                  : rowData.value;
+
+                // For position paths, ensure we return the full position object
+                if (
+                  pathSpec.path === 'navigation.position' &&
+                  value &&
+                  typeof value === 'object'
+                ) {
+                  // Position data is already an object with latitude/longitude
+                  // No reassignment needed, keeping original value
+                }
+
+                return [timestamp, value];
+              }
+            );
+
+            allData[pathSpec.path] = pathData;
+            debug(
+              `Retrieved ${pathData.length} data points for ${pathSpec.path}`
+            );
+          } finally {
+            connection.disconnectSync();
+          }
+        } catch (error) {
+          debug(`Error querying path ${pathSpec.path}: ${error}`);
+          allData[pathSpec.path] = [];
+        }
+      })
+    );
+
+    // Merge all path data into time-ordered rows
+    const mergedData = this.mergePathData(allData, pathSpecs);
+
+    return {
+      context,
+      range: {
+        from: from.toString() as Timestamp,
+        to: to.toString() as Timestamp,
+      },
+      values: pathSpecs.map(({ path, aggregateMethod }: PathSpec) => ({
+        path,
+        method: aggregateMethod,
+      })),
+      data: mergedData,
+    } as DataResult;
+  }
+
+  private mergePathData(
+    allData: { [path: string]: Array<[Timestamp, unknown]> },
+    pathSpecs: PathSpec[]
+  ): Array<[Timestamp, ...unknown[]]> {
+    // Create a map of all unique timestamps
+    const timestampMap = new Map<string, unknown[]>();
+
+    pathSpecs.forEach((pathSpec, index) => {
+      const pathData = allData[pathSpec.path] || [];
+      pathData.forEach(([timestamp, value]) => {
+        const timestampStr = timestamp.toString();
+        if (!timestampMap.has(timestampStr)) {
+          timestampMap.set(
+            timestampStr,
+            new Array(pathSpecs.length).fill(null)
+          );
+        }
+        timestampMap.get(timestampStr)![index] = value;
+      });
+    });
+
+    // Convert to sorted array format
+    return Array.from(timestampMap.entries())
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([timestamp, values]) => [timestamp as Timestamp, ...values]);
+  }
+}
+
+function splitPathExpression(pathExpression: string): PathSpec {
+  const parts = pathExpression.split(':');
+  let aggregateMethod = (parts[1] || 'average') as AggregateMethod;
+  if (parts[0] === 'navigation.position') {
+    aggregateMethod = 'first' as AggregateMethod;
+  }
+  return {
+    path: parts[0] as Path,
+    queryResultName: parts[0].replace(/\./g, '_'),
+    aggregateMethod,
+    aggregateFunction:
+      (functionForAggregate[aggregateMethod] as string) || 'mean()',
+  };
+}
+
+const functionForAggregate: { [key: string]: string } = {
+  average: 'avg',
+  min: 'min',
+  max: 'max',
+  first: 'first',
+} as const;
