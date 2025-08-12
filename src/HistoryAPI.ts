@@ -167,18 +167,23 @@ class HistoryAPI {
           const fromIso = from.toInstant().toString();
           const toIso = to.toInstant().toString();
 
-          // Build query with sanitized inputs (filePath is already sanitized above)
+          // Build query with time bucketing for alignment
+          const bucketSeconds = Math.max(1, Math.floor(timeResolutionMillis / 1000));
           const query = `
           SELECT
-            signalk_timestamp,
-            value,
-            value_json
+            DATE_TRUNC('seconds', 
+              EPOCH_MS(CAST(FLOOR(EPOCH_MS(signalk_timestamp::TIMESTAMP) / ${timeResolutionMillis}) * ${timeResolutionMillis} AS BIGINT))
+            ) as time_bucket,
+            ${getAggregateFunction(pathSpec.aggregateMethod)}(value) as value,
+            FIRST(value_json) as value_json
           FROM '${filePath}'
           WHERE
             signalk_timestamp >= '${fromIso}'
             AND 
             signalk_timestamp < '${toIso}'
-          ORDER BY signalk_timestamp      
+            AND value IS NOT NULL
+          GROUP BY time_bucket
+          ORDER BY time_bucket
           `;
 
           debug(`Executing query for path ${pathSpec.path}: ${query}`);
@@ -189,15 +194,15 @@ class HistoryAPI {
             const result = await connection.runAndReadAll(query);
             const rows = result.getRowObjects();
 
-            // Convert rows to the expected format
+            // Convert rows to the expected format using bucketed timestamps
             const pathData: Array<[Timestamp, unknown]> = rows.map(
               (row: unknown) => {
                 const rowData = row as {
-                  signalk_timestamp: Timestamp;
+                  time_bucket: Timestamp;
                   value: unknown;
                   value_json?: string;
                 };
-                const timestamp = rowData.signalk_timestamp;
+                const timestamp = rowData.time_bucket;
                 // Handle both JSON values (like position objects) and simple values
                 const value = rowData.value_json
                   ? JSON.parse(String(rowData.value_json))
@@ -297,3 +302,18 @@ const functionForAggregate: { [key: string]: string } = {
   max: 'max',
   first: 'first',
 } as const;
+
+function getAggregateFunction(method: AggregateMethod): string {
+  switch (method) {
+    case 'average':
+      return 'AVG';
+    case 'min':
+      return 'MIN';
+    case 'max':
+      return 'MAX';
+    case 'first':
+      return 'FIRST';
+    default:
+      return 'AVG';
+  }
+}
