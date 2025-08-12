@@ -31,9 +31,14 @@ const commandState: CommandRegistrationState = {
 };
 
 // Configuration management functions
-export function loadWebAppConfig(): WebAppPathConfig {
+export function loadWebAppConfig(app?: ServerAPI): WebAppPathConfig {
+  const appToUse = app || appInstance;
+  if (!appToUse) {
+    throw new Error('App instance not provided and not initialized');
+  }
+  
   const webAppConfigPath = path.join(
-    appInstance.getDataDirPath(),
+    appToUse.getDataDirPath(),
     'signalk-parquet',
     'webapp-config.json'
   );
@@ -63,7 +68,7 @@ export function loadWebAppConfig(): WebAppPathConfig {
         commands: migratedCommands,
       };
 
-      appInstance.debug(
+      appToUse.debug(
         `Loaded and migrated ${migratedPaths.length} paths and ${migratedCommands.length} commands from existing config`
       );
 
@@ -73,11 +78,11 @@ export function loadWebAppConfig(): WebAppPathConfig {
           webAppConfigPath,
           JSON.stringify(migratedConfig, null, 2)
         );
-        appInstance.debug(
+        appToUse.debug(
           'Saved migrated configuration with source field compatibility'
         );
       } catch (saveError) {
-        appInstance.debug(
+        appToUse.debug(
           `Warning: Could not save migrated config: ${saveError}`
         );
       }
@@ -85,24 +90,24 @@ export function loadWebAppConfig(): WebAppPathConfig {
       return migratedConfig;
     }
   } catch (error) {
-    appInstance.error(`Failed to load webapp configuration: ${error}`);
+    appToUse.error(`Failed to load webapp configuration: ${error}`);
 
     // BACKUP the broken file instead of destroying it
     try {
       const backupPath = webAppConfigPath + '.backup.' + Date.now();
       if (fs.existsSync(webAppConfigPath)) {
         fs.copyFileSync(webAppConfigPath, backupPath);
-        appInstance.debug(`Backed up broken config to: ${backupPath}`);
+        appToUse.debug(`Backed up broken config to: ${backupPath}`);
       }
     } catch (backupError) {
-      appInstance.debug(`Could not backup broken config: ${backupError}`);
+      appToUse.debug(`Could not backup broken config: ${backupError}`);
     }
   }
 
   // Only create defaults if NO config file exists
   if (!fs.existsSync(webAppConfigPath)) {
     const defaultConfig = getDefaultWebAppConfig();
-    appInstance.debug(
+    appToUse.debug(
       'No existing configuration found, using default installation'
     );
 
@@ -116,9 +121,9 @@ export function loadWebAppConfig(): WebAppPathConfig {
         webAppConfigPath,
         JSON.stringify(defaultConfig, null, 2)
       );
-      appInstance.debug('Saved default installation configuration');
+      appToUse.debug('Saved default installation configuration');
     } catch (error) {
-      appInstance.debug(`Failed to save default configuration: ${error}`);
+      appToUse.debug(`Failed to save default configuration: ${error}`);
     }
 
     return defaultConfig;
@@ -180,10 +185,16 @@ function getDefaultWebAppConfig(): WebAppPathConfig {
 
 export function saveWebAppConfig(
   paths: PathConfig[],
-  commands: CommandConfig[]
+  commands: CommandConfig[],
+  app?: ServerAPI
 ): void {
+  const appToUse = app || appInstance;
+  if (!appToUse) {
+    throw new Error('App instance not provided and not initialized');
+  }
+  
   const webAppConfigPath = path.join(
-    appInstance.getDataDirPath(),
+    appToUse.getDataDirPath(),
     'signalk-parquet',
     'webapp-config.json'
   );
@@ -195,11 +206,11 @@ export function saveWebAppConfig(
 
     const webAppConfig: WebAppPathConfig = { paths, commands };
     fs.writeFileSync(webAppConfigPath, JSON.stringify(webAppConfig, null, 2));
-    appInstance.debug(
+    appToUse.debug(
       `Saved webapp configuration: ${paths.length} paths, ${commands.length} commands`
     );
   } catch (error) {
-    appInstance.error(`Failed to save webapp configuration: ${error}`);
+    appToUse.error(`Failed to save webapp configuration: ${error}`);
   }
 }
 
@@ -254,7 +265,7 @@ export function initializeCommandState(
 
   // Save the updated configuration if we added missing paths
   if (addedMissingPaths) {
-    saveWebAppConfig(currentPaths, currentCommands);
+    saveWebAppConfig(currentPaths, currentCommands, app);
   }
 
   // Reset all commands to false on startup

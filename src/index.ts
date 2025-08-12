@@ -84,7 +84,7 @@ export default function (app: ServerAPI): SignalKPlugin {
     };
 
     // Load webapp configuration including commands
-    const webAppConfig = loadWebAppConfig();
+    const webAppConfig = loadWebAppConfig(app);
     currentPaths = webAppConfig.paths;
     setCurrentCommands(webAppConfig.commands);
 
@@ -160,14 +160,6 @@ export default function (app: ServerAPI): SignalKPlugin {
         uploadAllConsolidatedFilesToS3(state.currentConfig!, state, app);
       }, 10000); // Wait 10 seconds after startup to avoid conflicts
     }
-
-    // Register History API routes
-    registerHistoryApiRoute(
-      app as unknown as Router,
-      app.selfId,
-      state.currentConfig?.outputDirectory || 'data',
-      app.debug
-    );
 
     app.debug('Started');
   };
@@ -331,6 +323,14 @@ export default function (app: ServerAPI): SignalKPlugin {
   // Webapp static files and API routes
   plugin.registerWithRouter = function (router: Router): void {
     registerApiRoutes(router, state, app);
+    
+    // Register History API routes
+    registerHistoryApiRoute(
+      router,
+      app.selfId,
+      state.currentConfig?.outputDirectory || app.getDataDirPath(),
+      app.debug
+    );
   };
 
   return plugin;
