@@ -1,6 +1,6 @@
 # SignalK Parquet Data Store
 
-**Version 0.5.0-beta.6**
+**Version 0.5.0-beta.7**
 
 A comprehensive TypeScript-based SignalK plugin that saves marine data directly to Parquet files with regimen-based control, web interface for querying, and S3 upload capabilities.
 
@@ -37,13 +37,13 @@ npm install motamman/signalk-parquet
 sudo systemctl restart signalk
 ```
 
-## ⚠️ IMPORTANT: Consolidation Bug Fix
+## ⚠️ IMPORTANT IF UPGRADING FROM 0.5.0-beta.3: Consolidation Bug Fix 
 
-**THIS VERSION FIXES A RECURSIVE BUG THAT WAS CREATING NESTED PROCESSED DIRECTORIES AND REPEATEDLY PROCESSING THE SAME FILES. THIS SHOULD FIX THAT PROBLEM BUT ANY `processed` FOLDERS NESTED INSIDE A `processed` FOLDER SHOULD BE MANUALLY DELETED.**
+**THIS FIXES A RECURSIVE BUG THAT WAS CREATING NESTED PROCESSED DIRECTORIES AND REPEATEDLY PROCESSING THE SAME FILES. THIS SHOULD FIX THAT PROBLEM BUT ANY `processed` FOLDERS NESTED INSIDE A `processed` FOLDER SHOULD BE MANUALLY DELETED.**
 
 ### Cleaning Up Nested Processed Directories
 
-If you're upgrading from a previous version, you may have nested processed directories that need cleanup:
+No action is likely needed if upgrading from 0.5.0-beta.4 or better. If you're upgrading from a previous version, you may have nested processed directories that need cleanup:
 
 ```bash
 # Check for nested processed directories
@@ -504,11 +504,16 @@ The plugin automatically consolidates files daily at midnight UTC:
 ```
 signalk-parquet/
 ├── src/
-│   ├── index.ts              # Main plugin logic
-│   ├── types.ts              # TypeScript interfaces
+│   ├── index.ts              # Main plugin entry point and lifecycle (~340 lines)
+│   ├── commands.ts           # Command management system (~400 lines)
+│   ├── data-handler.ts       # Data processing, subscriptions, S3 (~650 lines)
+│   ├── api-routes.ts         # Web API endpoints (~600 lines)
+│   ├── types.ts              # TypeScript interfaces (~360 lines)
 │   ├── parquet-writer.ts     # File writing logic
 │   ├── HistoryAPI.ts         # SignalK History API implementation
-│   └── HistoryAPI-types.ts   # History API type definitions
+│   ├── HistoryAPI-types.ts   # History API type definitions
+│   └── utils/
+│       └── path-helpers.ts   # Path utility functions
 ├── dist/                     # Compiled JavaScript
 ├── public/
 │   ├── index.html           # Web interface
@@ -518,12 +523,24 @@ signalk-parquet/
 └── README.md               # This file
 ```
 
+### Code Architecture
+
+The plugin uses a modular TypeScript architecture for maintainability:
+
+- **`index.ts`**: Plugin lifecycle, configuration, and initialization
+- **`commands.ts`**: SignalK command registration, execution, and management
+- **`data-handler.ts`**: Data subscriptions, buffering, consolidation, and S3 operations
+- **`api-routes.ts`**: REST API endpoints for web interface
+- **`types.ts`**: Comprehensive TypeScript type definitions
+- **`utils/`**: Utility functions and helpers
+
 ### Adding New Features
 
-1. **Update Types**: Add interfaces to `src/types.ts`
-2. **Implement Logic**: Add functionality to appropriate files
-3. **Add Tests**: Create unit tests for new features
-4. **Update Documentation**: Update README and inline comments
+1. **API Endpoints**: Add to `src/api-routes.ts`
+2. **Data Processing**: Extend `src/data-handler.ts`
+3. **Commands**: Modify `src/commands.ts`
+4. **Types**: Add interfaces to `src/types.ts`
+5. **Update Documentation**: Update README and inline comments
 
 ### Type Checking
 
@@ -650,6 +667,13 @@ For detailed testing procedures, see [TESTING.md](TESTING.md).
 6. Submit a pull request
 
 ## Changelog
+
+### Version 0.5.0-beta.7
+- **🏗️ Code Refactoring**: Major refactoring breaking large files into focused modules:
+  - `index.ts` reduced from 2,800+ lines to ~340 lines
+  - New modular architecture with `commands.ts`, `data-handler.ts`, `api-routes.ts`
+  - Improved maintainability and code organization
+  - Better separation of concerns for easier development
 
 ### Version 0.5.0-beta.6
 - **📊 History API Integration**: Implemented full SignalK History API compatibility with endpoints for `/signalk/v1/history/values`, `/signalk/v1/history/contexts`, and `/signalk/v1/history/paths`
