@@ -172,23 +172,18 @@ class HistoryAPI {
           
           debug(`Time range: ${fromIso} to ${toIso}`);
 
-          // Build query with time bucketing for alignment
-          const bucketSeconds = Math.max(1, Math.floor(timeResolutionMillis / 1000));
+          // Build query with original logic (revert time bucketing)
           const query = `
           SELECT
-            DATE_TRUNC('seconds', 
-              EPOCH_MS(CAST(FLOOR(EPOCH_MS(signalk_timestamp::TIMESTAMP) / ${timeResolutionMillis}) * ${timeResolutionMillis} AS BIGINT))
-            ) as time_bucket,
-            ${getAggregateFunction(pathSpec.aggregateMethod)}(value) as value,
-            FIRST(value_json) as value_json
+            signalk_timestamp,
+            value,
+            value_json
           FROM '${filePath}'
           WHERE
             signalk_timestamp >= '${fromIso}'
             AND 
             signalk_timestamp < '${toIso}'
-            AND value IS NOT NULL
-          GROUP BY time_bucket
-          ORDER BY time_bucket
+          ORDER BY signalk_timestamp      
           `;
 
           debug(`Executing query for path ${pathSpec.path}: ${query}`);
@@ -199,15 +194,15 @@ class HistoryAPI {
             const result = await connection.runAndReadAll(query);
             const rows = result.getRowObjects();
 
-            // Convert rows to the expected format using bucketed timestamps
+            // Convert rows to the expected format
             const pathData: Array<[Timestamp, unknown]> = rows.map(
               (row: unknown) => {
                 const rowData = row as {
-                  time_bucket: Timestamp;
+                  signalk_timestamp: Timestamp;
                   value: unknown;
                   value_json?: string;
                 };
-                const timestamp = rowData.time_bucket;
+                const timestamp = rowData.signalk_timestamp;
                 // Handle both JSON values (like position objects) and simple values
                 const value = rowData.value_json
                   ? JSON.parse(String(rowData.value_json))
