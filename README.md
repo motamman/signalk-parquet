@@ -403,9 +403,24 @@ The plugin provides full SignalK History API compatibility, allowing you to quer
 
 | Endpoint | Description | Parameters |
 |----------|-------------|------------|
-| `/signalk/v1/history/values` | Get historical values for specified paths | `context`, `from`, `to`, `paths` |
+| `/signalk/v1/history/values` | Get historical values for specified paths | **Forward**: `context`, `from`, `to`, `paths`<br>**Backward**: `context`, `start`, `duration`, `paths`<br>**Optional**: `resolution`, `refresh` |
 | `/signalk/v1/history/contexts` | Get available vessel contexts | `from`, `to` (optional) |
 | `/signalk/v1/history/paths` | Get available SignalK paths | `from`, `to` (optional) |
+
+### Query Parameters
+
+| Parameter | Description | Format | Examples |
+|-----------|-------------|---------|----------|
+| `context` | Vessel context | `vessels.self` or `vessels.<id>` | `vessels.self` |
+| `paths` | SignalK paths with optional aggregation | `path:method,path:method` | `navigation.position:first,wind.speed:average` |
+| `resolution` | Time bucket size in milliseconds | Number | `60000` (1 minute buckets) |
+| **Forward querying:** | | | |
+| `from` | Start time (ISO 8601) | ISO datetime | `2025-01-01T00:00:00Z` |
+| `to` | End time (ISO 8601) | ISO datetime | `2025-01-01T06:00:00Z` |
+| **Backward querying:** | | | |
+| `start` | Start point to query backwards from | `now` or ISO datetime | `now`, `2025-01-01T12:00:00Z` |
+| `duration` | Time period to go back | `[number][unit]` | `1h`, `30m`, `15s`, `2d` |
+| `refresh` | Enable auto-refresh (only with `start=now`) | `true` or `1` | `refresh=true` |
 
 ### Query Examples
 
@@ -433,6 +448,29 @@ curl "http://localhost:3000/signalk/v1/history/values?context=vessels.self&from=
 ```bash
 curl "http://localhost:3000/signalk/v1/history/values?context=vessels.self&from=2025-01-01T00:00:00Z&to=2025-01-01T06:00:00Z&paths=navigation.position:first,navigation.position:middle_index,navigation.position:last&resolution=60000"
 ```
+
+### Backward Querying (NEW)
+
+**Query backwards from current time:**
+```bash
+curl "http://localhost:3000/signalk/v1/history/values?context=vessels.self&start=now&duration=1h&paths=navigation.position,environment.wind.speedApparent:average&resolution=60000"
+```
+
+**Query backwards from specific datetime:**
+```bash
+curl "http://localhost:3000/signalk/v1/history/values?context=vessels.self&start=2025-01-01T12:00:00Z&duration=30m&paths=navigation.position:last&resolution=60000"
+```
+
+**Real-time refresh from 'now' (auto-refreshing data):**
+```bash
+curl "http://localhost:3000/signalk/v1/history/values?context=vessels.self&start=now&duration=15m&paths=electrical.batteries.512.voltage:min&resolution=30000&refresh=true"
+```
+
+**Duration formats supported:**
+- `30s` - 30 seconds
+- `15m` - 15 minutes  
+- `2h` - 2 hours
+- `1d` - 1 day
 
 **Get available contexts:**
 ```bash
@@ -746,6 +784,12 @@ For detailed testing procedures, see [TESTING.md](TESTING.md).
   - Added underscore support in path sanitization to allow `middle_index` parameter
   - All 7 aggregation methods now work correctly: `average`, `min`, `max`, `first`, `last`, `mid`, `middle_index`
   - Proper method names returned in API responses
+- **⏪ Backward Time Querying**: Added ability to query backwards from a start datetime
+  - Use `start` + `duration` parameters instead of `from` + `to`
+  - Support for `start=now` to query from current time backwards
+  - Duration formats: `30s`, `15m`, `2h`, `1d` (seconds, minutes, hours, days)
+  - Real-time auto-refresh when `start=now` and `refresh=true`
+  - Maintains compatibility with existing forward querying
 
 ### Version 0.5.0-beta.7
 - **🏗️ Code Refactoring**: Major refactoring breaking large files into focused modules:
