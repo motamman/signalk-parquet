@@ -143,9 +143,9 @@ class HistoryAPI {
   ) {
     try {
       const timeResolutionMillis =
-        (req.query.resolution
+        req.query.resolution
           ? Number.parseFloat(req.query.resolution as string)
-          : (to.toEpochSecond() - from.toEpochSecond()) / 500) * 1000;
+          : (to.toEpochSecond() - from.toEpochSecond()) / 500 * 1000;
       const pathExpressions = ((req.query.paths as string) || '')
         .replace(/[^0-9a-z.,:_]/gi, '')
         .split(',');
@@ -174,6 +174,7 @@ class HistoryAPI {
       // Add refresh headers if shouldRefresh is enabled
       if (shouldRefresh) {
         const refreshIntervalSeconds = Math.max(Math.round(timeResolutionMillis / 1000), 1); // At least 1 second
+        debug(`Calculating refresh: timeResolutionMillis=${timeResolutionMillis}, divided by 1000=${timeResolutionMillis / 1000}, rounded=${Math.round(timeResolutionMillis / 1000)}, final=${refreshIntervalSeconds}`);
         res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
         res.setHeader('Pragma', 'no-cache');
         res.setHeader('Expires', '0');
