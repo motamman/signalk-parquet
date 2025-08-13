@@ -103,7 +103,7 @@ class HistoryAPI {
           ? Number.parseFloat(req.query.resolution as string)
           : (to.toEpochSecond() - from.toEpochSecond()) / 500) * 1000;
       const pathExpressions = ((req.query.paths as string) || '')
-        .replace(/[^0-9a-z.,:]/gi, '')
+        .replace(/[^0-9a-z.,:_]/gi, '')
         .split(',');
       const pathSpecs: PathSpec[] = pathExpressions.map(splitPathExpression);
 
@@ -354,9 +354,9 @@ function getAggregateExpression(method: AggregateMethod, pathName: string): stri
   const valueExpr = getValueExpression(pathName);
   
   if (method === 'middle_index') {
-    // For middle_index, use the LIST function to collect values, then access middle index
-    // This gets the middle value by index position (first of two middle values for even counts)
-    return `LIST(${valueExpr} ORDER BY signalk_timestamp)[CAST((ARRAY_LENGTH(LIST(${valueExpr})) + 1) / 2 AS INTEGER)]`;
+    // For middle_index, use FIRST as a simple fallback for now
+    // TODO: Implement proper middle index selection
+    return `FIRST(${valueExpr})`;
   }
   
   return `${getAggregateFunction(method)}(${valueExpr})`;
