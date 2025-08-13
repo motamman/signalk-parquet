@@ -742,6 +742,10 @@ For detailed testing procedures, see [TESTING.md](TESTING.md).
 - **⚡ Improved Time Alignment**: History API now properly aligns data from different sensors
   - Configurable time buckets with automatic type detection
   - Handles mixed data types (numeric wind data + JSON position data)
+- **🔧 Fixed Aggregation Method Parsing**: Fixed `middle_index` aggregation method support
+  - Added underscore support in path sanitization to allow `middle_index` parameter
+  - All 7 aggregation methods now work correctly: `average`, `min`, `max`, `first`, `last`, `mid`, `middle_index`
+  - Proper method names returned in API responses
 
 ### Version 0.5.0-beta.7
 - **🏗️ Code Refactoring**: Major refactoring breaking large files into focused modules:
