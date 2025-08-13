@@ -54,10 +54,13 @@ export type FromToContextRequest = Request<
   unknown,
   unknown,
   {
-    from: string;
-    to: string;
+    from?: string;
+    to?: string;
+    start?: string;
+    duration?: string;
     context: string;
-    bbox: string;
+    bbox?: string;
+    refresh?: string;
   }
 >;
 

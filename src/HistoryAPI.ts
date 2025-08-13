@@ -21,11 +21,11 @@ export function registerHistoryApiRoute(
 ) {
   const historyApi = new HistoryAPI(selfId, dataDir);
   router.get('/signalk/v1/history/values', (req: Request, res: Response) => {
-    const { from, to, context } = getRequestParams(
+    const { from, to, context, shouldRefresh } = getRequestParams(
       req as FromToContextRequest,
       selfId
     );
-    historyApi.getValues(context, from, to, debug, req, res);
+    historyApi.getValues(context, from, to, shouldRefresh, debug, req, res);
   });
   router.get('/signalk/v1/history/contexts', (req: Request, res: Response) => {
     //TODO implement retrieval of contexts for the given period
@@ -40,11 +40,11 @@ export function registerHistoryApiRoute(
 
   // Also register as plugin-style routes for testing
   router.get('/api/history/values', (req: Request, res: Response) => {
-    const { from, to, context } = getRequestParams(
+    const { from, to, context, shouldRefresh } = getRequestParams(
       req as FromToContextRequest,
       selfId
     );
-    historyApi.getValues(context, from, to, debug, req, res);
+    historyApi.getValues(context, from, to, shouldRefresh, debug, req, res);
   });
   router.get('/api/history/contexts', (req: Request, res: Response) => {
     res.json([`vessels.${selfId}`] as Context[]);
@@ -56,17 +56,60 @@ export function registerHistoryApiRoute(
 
 const getRequestParams = ({ query }: FromToContextRequest, selfId: string) => {
   try {
-    const from = ZonedDateTime.parse(query['from']);
-    const to = ZonedDateTime.parse(query['to']);
+    let from: ZonedDateTime;
+    let to: ZonedDateTime;
+    let shouldRefresh = false;
+
+    // Handle new backwards querying with start + duration
+    if (query.start && query.duration) {
+      const durationMs = parseDuration(query.duration);
+      
+      if (query.start === 'now') {
+        // Use current time as start and go backwards
+        to = ZonedDateTime.now();
+        from = to.minusNanos(durationMs * 1000000); // Convert ms to nanoseconds
+        shouldRefresh = query.refresh === 'true' || query.refresh === '1';
+      } else {
+        // Use specified start time and go backwards
+        to = ZonedDateTime.parse(query.start);
+        from = to.minusNanos(durationMs * 1000000);
+      }
+    } else if (query.from && query.to) {
+      // Traditional from/to querying (forward in time)
+      from = ZonedDateTime.parse(query.from);
+      to = ZonedDateTime.parse(query.to);
+    } else {
+      throw new Error('Either (from + to) or (start + duration) parameters are required');
+    }
+
     const context: Context = getContext(query.context, selfId);
-    const bbox = query['bbox'];
-    return { from, to, context, bbox };
+    const bbox = query.bbox;
+    return { from, to, context, bbox, shouldRefresh };
   } catch (e: unknown) {
     throw new Error(
-      `Error extracting from/to query parameters from ${JSON.stringify(query)}`
+      `Error extracting query parameters from ${JSON.stringify(query)}: ${e}`
     );
   }
 };
+
+// Parse duration string (e.g., "1h", "30m", "5s", "2d")
+function parseDuration(duration: string): number {
+  const match = duration.match(/^(\d+)([smhd])$/);
+  if (!match) {
+    throw new Error(`Invalid duration format: ${duration}. Use format like "1h", "30m", "5s", "2d"`);
+  }
+  
+  const value = parseInt(match[1]);
+  const unit = match[2];
+  
+  switch (unit) {
+    case 's': return value * 1000;        // seconds to milliseconds
+    case 'm': return value * 60 * 1000;   // minutes to milliseconds
+    case 'h': return value * 60 * 60 * 1000; // hours to milliseconds
+    case 'd': return value * 24 * 60 * 60 * 1000; // days to milliseconds
+    default: throw new Error(`Unknown duration unit: ${unit}`);
+  }
+}
 
 function getContext(contextFromQuery: string, selfId: string): Context {
   if (
@@ -91,6 +134,7 @@ class HistoryAPI {
     context: Context,
     from: ZonedDateTime,
     to: ZonedDateTime,
+    shouldRefresh: boolean,
     debug: (k: string) => void,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     req: Request<ParamsDictionary, any, any, ParsedQs, Record<string, any>>,
@@ -126,6 +170,22 @@ class HistoryAPI {
             values: [],
             data: [],
           });
+
+      // Add refresh headers if shouldRefresh is enabled
+      if (shouldRefresh) {
+        const refreshIntervalSeconds = Math.max(timeResolutionMillis / 1000, 1); // At least 1 second
+        res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+        res.setHeader('Pragma', 'no-cache');
+        res.setHeader('Expires', '0');
+        res.setHeader('Refresh', refreshIntervalSeconds.toString());
+        
+        // Add refresh info to response
+        (allResult as any).refresh = {
+          enabled: true,
+          intervalSeconds: refreshIntervalSeconds,
+          nextRefresh: new Date(Date.now() + refreshIntervalSeconds * 1000).toISOString()
+        };
+      }
 
       res.json(allResult);
     } catch (error) {
