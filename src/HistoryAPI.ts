@@ -173,7 +173,7 @@ class HistoryAPI {
 
       // Add refresh headers if shouldRefresh is enabled
       if (shouldRefresh) {
-        const refreshIntervalSeconds = Math.max(timeResolutionMillis / 1000, 1); // At least 1 second
+        const refreshIntervalSeconds = Math.max(Math.round(timeResolutionMillis / 1000), 1); // At least 1 second
         res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
         res.setHeader('Pragma', 'no-cache');
         res.setHeader('Expires', '0');
