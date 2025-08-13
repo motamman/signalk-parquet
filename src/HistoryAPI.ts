@@ -89,8 +89,9 @@ const getRequestParams = ({ query }: FromToContextRequest, selfId: string) => {
     const bbox = query.bbox;
     return { from, to, context, bbox, shouldRefresh };
   } catch (e: unknown) {
+    console.error('Full error details:', e);
     throw new Error(
-      `Error extracting query parameters from ${JSON.stringify(query)}: ${e}`
+      `Error extracting query parameters from ${JSON.stringify(query)}: ${e instanceof Error ? e.stack : e}`
     );
   }
 };
