@@ -354,9 +354,9 @@ function getAggregateExpression(method: AggregateMethod, pathName: string): stri
   const valueExpr = getValueExpression(pathName);
   
   if (method === 'middle_index') {
-    // Use ROW_NUMBER to find the middle index
-    // For even counts, this picks the first of the two middle values
-    return `NTH_VALUE(${valueExpr}, (COUNT(*) + 1) / 2) OVER (ORDER BY signalk_timestamp)`;
+    // For middle_index, use the LIST function to collect values, then access middle index
+    // This gets the middle value by index position (first of two middle values for even counts)
+    return `LIST(${valueExpr} ORDER BY signalk_timestamp)[CAST((ARRAY_LENGTH(LIST(${valueExpr})) + 1) / 2 AS INTEGER)]`;
   }
   
   return `${getAggregateFunction(method)}(${valueExpr})`;
