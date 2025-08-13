@@ -115,6 +115,14 @@ function parseDuration(duration: string): number {
   }
 }
 
+// Check if datetime string has timezone information
+function hasTimezoneInfo(dateTimeStr: string): boolean {
+  // Check for 'Z' at the end, or '+'/'-' followed by timezone offset pattern
+  return dateTimeStr.endsWith('Z') || 
+         /[+-]\d{2}:?\d{2}$/.test(dateTimeStr) || 
+         /[+-]\d{4}$/.test(dateTimeStr);
+}
+
 // Parse datetime string and convert to UTC if needed
 function parseDateTime(dateTimeStr: string, useUTC: boolean): ZonedDateTime {
   // Normalize the datetime string to include seconds if missing
@@ -126,7 +134,7 @@ function parseDateTime(dateTimeStr: string, useUTC: boolean): ZonedDateTime {
 
   if (useUTC) {
     // When useUTC=true, treat the datetime as UTC
-    if (normalizedStr.includes('Z') || normalizedStr.includes('+') || normalizedStr.includes('-')) {
+    if (hasTimezoneInfo(normalizedStr)) {
       // Already has timezone info, parse as-is
       return ZonedDateTime.parse(normalizedStr);
     } else {
@@ -135,7 +143,7 @@ function parseDateTime(dateTimeStr: string, useUTC: boolean): ZonedDateTime {
     }
   } else {
     // When useUTC=false, handle timezone conversion
-    if (normalizedStr.includes('Z') || normalizedStr.includes('+') || normalizedStr.includes('-')) {
+    if (hasTimezoneInfo(normalizedStr)) {
       // Already has timezone info, parse as-is (will be in UTC or specified timezone)
       return ZonedDateTime.parse(normalizedStr).withZoneSameInstant(ZoneOffset.UTC);
     } else {
