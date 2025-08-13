@@ -116,27 +116,42 @@ function parseDuration(duration: string): number {
 
 // Parse datetime string and convert to UTC if needed
 function parseDateTime(dateTimeStr: string, useUTC: boolean): ZonedDateTime {
-  if (useUTC || dateTimeStr.includes('Z') || dateTimeStr.includes('+') || dateTimeStr.includes('-')) {
-    // If useUTC is true OR datetime already has timezone info, parse as-is
-    return ZonedDateTime.parse(dateTimeStr);
-  } else {
-    // Treat as local time and convert to UTC
-    // Normalize the datetime string to include seconds if missing
-    let normalizedStr = dateTimeStr;
-    if (dateTimeStr.match(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/)) {
-      // Add seconds if only HH:MM is provided
-      normalizedStr = dateTimeStr + ':00';
+  // Normalize the datetime string to include seconds if missing
+  let normalizedStr = dateTimeStr;
+  if (dateTimeStr.match(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/)) {
+    // Add seconds if only HH:MM is provided
+    normalizedStr = dateTimeStr + ':00';
+  }
+
+  if (useUTC) {
+    // When useUTC=true, treat the datetime as UTC
+    if (normalizedStr.includes('Z') || normalizedStr.includes('+') || normalizedStr.includes('-')) {
+      // Already has timezone info, parse as-is
+      return ZonedDateTime.parse(normalizedStr);
+    } else {
+      // No timezone info, assume UTC by adding 'Z'
+      return ZonedDateTime.parse(normalizedStr + 'Z');
     }
-    
-    try {
-      // Parse as local datetime and convert to UTC
-      const localDateTime = LocalDateTime.parse(normalizedStr);
-      return localDateTime.atZone(ZoneId.systemDefault()).withZoneSameInstant(ZoneOffset.UTC);
-    } catch (e) {
-      // Fallback: try parsing with ZonedDateTime and convert to UTC
+  } else {
+    // When useUTC=false, handle timezone conversion
+    if (normalizedStr.includes('Z') || normalizedStr.includes('+') || normalizedStr.includes('-')) {
+      // Already has timezone info, parse as-is (will be in UTC or specified timezone)
+      return ZonedDateTime.parse(normalizedStr).withZoneSameInstant(ZoneOffset.UTC);
+    } else {
+      // No timezone info, treat as local time and convert to UTC
       try {
-        return ZonedDateTime.parse(normalizedStr).withZoneSameInstant(ZoneOffset.UTC);
-      } catch (e2) {
+        // Use JavaScript Date for local time parsing, then convert to ZonedDateTime
+        const localDate = new Date(normalizedStr);
+        if (isNaN(localDate.getTime())) {
+          throw new Error('Invalid date');
+        }
+        
+        // Convert local time to UTC
+        const utcDate = new Date(localDate.getTime() - (localDate.getTimezoneOffset() * 60000));
+        const utcIsoString = utcDate.toISOString();
+        
+        return ZonedDateTime.parse(utcIsoString);
+      } catch (e) {
         throw new Error(`Unable to parse datetime '${dateTimeStr}': ${e}. Use format like '2025-08-13T08:00:00' or '2025-08-13T08:00:00Z'`);
       }
     }
