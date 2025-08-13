@@ -149,16 +149,14 @@ function parseDateTime(dateTimeStr: string, useUTC: boolean): ZonedDateTime {
     } else {
       // No timezone info, treat as local time and convert to UTC
       try {
-        // Use JavaScript Date for local time parsing, then convert to ZonedDateTime
+        // JavaScript Date constructor treats ISO strings without timezone as local time
         const localDate = new Date(normalizedStr);
         if (isNaN(localDate.getTime())) {
           throw new Error('Invalid date');
         }
         
-        // Convert local time to UTC
-        const utcDate = new Date(localDate.getTime() - (localDate.getTimezoneOffset() * 60000));
-        const utcIsoString = utcDate.toISOString();
-        
+        // Convert to UTC ISO string and parse with ZonedDateTime
+        const utcIsoString = localDate.toISOString();
         return ZonedDateTime.parse(utcIsoString);
       } catch (e) {
         throw new Error(`Unable to parse datetime '${dateTimeStr}': ${e}. Use format like '2025-08-13T08:00:00' or '2025-08-13T08:00:00Z'`);
