@@ -1,6 +1,6 @@
 # SignalK Parquet Data Store
 
-**Version 0.5.0-beta.7**
+**Version 0.5.0-beta.8**
 
 A comprehensive TypeScript-based SignalK plugin that saves marine data directly to Parquet files with regimen-based control, web interface for querying, and S3 upload capabilities.
 
@@ -433,37 +433,50 @@ curl "http://localhost:3000/signalk/v1/history/contexts"
 
 The History API automatically aligns data from different paths using time bucketing to solve the common problem of misaligned timestamps. This enables:
 
-- **Plotting**: Data points align properly on charts
+- **Plotting**: Data points align properly on charts  
 - **Correlation**: Compare values from different sensors at the same time
 - **Export**: Clean, aligned datasets for analysis
 
+**Key Features:**
+- **Smart Type Handling**: Automatically handles numeric values (wind speed) and JSON objects (position)
+- **Robust Aggregation**: Uses proper SQL type casting to prevent type errors
+- **Configurable Resolution**: Time bucket size in milliseconds (default: auto-calculated based on time range)
+- **Multiple Aggregation Methods**: `average` for numeric data, `first` for complex objects
+
 **Parameters:**
 - `resolution` - Time bucket size in milliseconds (default: auto-calculated)
-- Aggregation methods: `average`, `min`, `max`, `first` (per path)
+- Aggregation methods: `average`, `min`, `max`, `first` (automatically selected per path type)
 
 ### Response Format
 
-The History API returns data in standard SignalK format:
+The History API returns time-aligned data in standard SignalK format:
 
 ```json
 {
   "context": "vessels.self",
-  "data": [
+  "range": {
+    "from": "2025-01-01T00:00:00Z",
+    "to": "2025-01-01T06:00:00Z"
+  },
+  "values": [
     {
-      "timestamp": "2025-01-01T12:00:00.000Z",
-      "values": [
-        {
-          "path": "navigation.position",
-          "value": {
-            "latitude": 37.7749,
-            "longitude": -122.4194
-          }
-        }
-      ]
+      "path": "environment.wind.speedApparent",
+      "method": "average"
+    },
+    {
+      "path": "navigation.position",
+      "method": "first"
     }
+  ],
+  "data": [
+    ["2025-01-01T00:00:00Z", 12.5, {"latitude": 37.7749, "longitude": -122.4194}],
+    ["2025-01-01T00:01:00Z", 13.2, {"latitude": 37.7750, "longitude": -122.4195}],
+    ["2025-01-01T00:02:00Z", 11.8, null]
   ]
 }
 ```
+
+**Note**: Each data array contains `[timestamp, value1, value2, ...]` where values correspond to the paths in the same order as the `values` array. `null` indicates no data available for that path in that time bucket.
 
 ## S3 Integration
 
@@ -684,6 +697,18 @@ For detailed testing procedures, see [TESTING.md](TESTING.md).
 6. Submit a pull request
 
 ## Changelog
+
+### Version 0.5.0-beta.8
+- **🔧 Fixed History API Time Bucketing**: Resolved SQL type casting errors in time bucketing queries
+  - Smart type handling for numeric values vs JSON objects
+  - Proper aggregation with `TRY_CAST` for robust data processing
+  - Fixed "avg(VARCHAR)" errors that prevented time alignment
+- **📡 Enhanced History API Registration**: Improved route registration to ensure endpoints are accessible
+  - Routes now registered directly with main SignalK server
+  - Better error handling and debug logging
+- **⚡ Improved Time Alignment**: History API now properly aligns data from different sensors
+  - Configurable time buckets with automatic type detection
+  - Handles mixed data types (numeric wind data + JSON position data)
 
 ### Version 0.5.0-beta.7
 - **🏗️ Code Refactoring**: Major refactoring breaking large files into focused modules:
