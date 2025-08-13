@@ -421,6 +421,8 @@ The plugin provides full SignalK History API compatibility, allowing you to quer
 | `start` | Start point to query backwards from | `now` or ISO datetime | `now`, `2025-01-01T12:00:00Z` |
 | `duration` | Time period to go back | `[number][unit]` | `1h`, `30m`, `15s`, `2d` |
 | `refresh` | Enable auto-refresh (only with `start=now`) | `true` or `1` | `refresh=true` |
+| **Timezone handling:** | | | |
+| `useUTC` | Treat datetime inputs as UTC instead of local time | `true` or `1` | `useUTC=true` |
 
 ### Query Examples
 
@@ -471,6 +473,35 @@ curl "http://localhost:3000/signalk/v1/history/values?context=vessels.self&start
 - `15m` - 15 minutes  
 - `2h` - 2 hours
 - `1d` - 1 day
+
+### Timezone Handling (NEW)
+
+**Local time conversion (default behavior):**
+```bash
+# 8:00 AM local time → automatically converted to UTC
+curl "http://localhost:3000/signalk/v1/history/values?context=vessels.self&start=2025-08-13T08:00:00&duration=1h&paths=navigation.position"
+```
+
+**UTC time mode:**
+```bash
+# 8:00 AM UTC (not converted)
+curl "http://localhost:3000/signalk/v1/history/values?context=vessels.self&start=2025-08-13T08:00:00&duration=1h&paths=navigation.position&useUTC=true"
+```
+
+**Explicit timezone (always respected):**
+```bash
+# Explicit UTC timezone
+curl "http://localhost:3000/signalk/v1/history/values?context=vessels.self&start=2025-08-13T08:00:00Z&duration=1h&paths=navigation.position"
+
+# Explicit timezone offset
+curl "http://localhost:3000/signalk/v1/history/values?context=vessels.self&start=2025-08-13T08:00:00-04:00&duration=1h&paths=navigation.position"
+```
+
+**Timezone behavior:**
+- **Default (`useUTC=false`)**: Datetime strings without timezone info are treated as local time and automatically converted to UTC
+- **UTC mode (`useUTC=true`)**: Datetime strings without timezone info are treated as UTC time
+- **Explicit timezone**: Strings with `Z`, `+HH:MM`, or `-HH:MM` are always parsed as-is regardless of `useUTC` setting
+- **`start=now`**: Always uses current UTC time regardless of `useUTC` setting
 
 **Get available contexts:**
 ```bash
@@ -790,6 +821,11 @@ For detailed testing procedures, see [TESTING.md](TESTING.md).
   - Duration formats: `30s`, `15m`, `2h`, `1d` (seconds, minutes, hours, days)
   - Real-time auto-refresh when `start=now` and `refresh=true`
   - Maintains compatibility with existing forward querying
+- **🌍 Smart Timezone Handling**: Automatic local-to-UTC conversion for better user experience
+  - Default: datetime strings treated as local time and converted to UTC
+  - Optional `useUTC=true` parameter to treat datetime strings as UTC
+  - Explicit timezone indicators (`Z`, `±HH:MM`) always respected
+  - Improved usability - users can work in their local timezone by default
 
 ### Version 0.5.0-beta.7
 - **🏗️ Code Refactoring**: Major refactoring breaking large files into focused modules:
