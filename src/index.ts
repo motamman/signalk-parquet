@@ -84,7 +84,7 @@ export default function (app: ServerAPI): SignalKPlugin {
     };
 
     // Load webapp configuration including commands
-    const webAppConfig = loadWebAppConfig();
+    const webAppConfig = loadWebAppConfig(app);
     currentPaths = webAppConfig.paths;
     setCurrentCommands(webAppConfig.commands);
 
@@ -161,13 +161,19 @@ export default function (app: ServerAPI): SignalKPlugin {
       }, 10000); // Wait 10 seconds after startup to avoid conflicts
     }
 
-    // Register History API routes
-    registerHistoryApiRoute(
-      app as unknown as Router,
-      app.selfId,
-      state.currentConfig?.outputDirectory || 'data',
-      app.debug
-    );
+    // Register History API routes directly with the main app
+    app.debug('Registering History API routes with main server...');
+    try {
+      registerHistoryApiRoute(
+        app as unknown as Router,
+        app.selfId,
+        state.currentConfig.outputDirectory,
+        app.debug
+      );
+      app.debug('History API routes registered with main server successfully');
+    } catch (error) {
+      app.error(`Failed to register History API routes with main server: ${error}`);
+    }
 
     app.debug('Started');
   };

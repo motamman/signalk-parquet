@@ -419,10 +419,27 @@ curl "http://localhost:3000/signalk/v1/history/values?context=vessels.self&from=
 curl "http://localhost:3000/signalk/v1/history/values?context=vessels.self&from=2025-01-01T00:00:00Z&to=2025-01-01T06:00:00Z&paths=environment.wind.angleApparent,environment.wind.speedApparent"
 ```
 
+**Get time-aligned data with custom resolution (60-second buckets):**
+```bash
+curl "http://localhost:3000/signalk/v1/history/values?context=vessels.self&from=2025-01-01T00:00:00Z&to=2025-01-01T06:00:00Z&paths=environment.wind.speedApparent,navigation.position&resolution=60000"
+```
+
 **Get available contexts:**
 ```bash
 curl "http://localhost:3000/signalk/v1/history/contexts"
 ```
+
+### Time Alignment and Bucketing
+
+The History API automatically aligns data from different paths using time bucketing to solve the common problem of misaligned timestamps. This enables:
+
+- **Plotting**: Data points align properly on charts
+- **Correlation**: Compare values from different sensors at the same time
+- **Export**: Clean, aligned datasets for analysis
+
+**Parameters:**
+- `resolution` - Time bucket size in milliseconds (default: auto-calculated)
+- Aggregation methods: `average`, `min`, `max`, `first` (per path)
 
 ### Response Format
 

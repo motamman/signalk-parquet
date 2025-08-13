@@ -463,7 +463,7 @@ export function registerApiRoutes(
     '/api/config/paths',
     (_: TypedRequest, res: TypedResponse<ConfigApiResponse>) => {
       try {
-        const webAppConfig = loadWebAppConfig();
+        const webAppConfig = loadWebAppConfig(app);
         return res.json({
           success: true,
           paths: webAppConfig.paths,
@@ -494,7 +494,7 @@ export function registerApiRoutes(
         }
 
         // Load current configuration
-        const webAppConfig = loadWebAppConfig();
+        const webAppConfig = loadWebAppConfig(app);
         const currentPaths = webAppConfig.paths;
         const currentCommands = webAppConfig.commands;
 
@@ -502,7 +502,7 @@ export function registerApiRoutes(
         currentPaths.push(newPath);
 
         // Save to web app configuration
-        saveWebAppConfig(currentPaths, currentCommands);
+        saveWebAppConfig(currentPaths, currentCommands, app);
 
         // Update subscriptions
         if (state.currentConfig) {
@@ -532,7 +532,7 @@ export function registerApiRoutes(
         const updatedPath = req.body;
 
         // Load current configuration
-        const webAppConfig = loadWebAppConfig();
+        const webAppConfig = loadWebAppConfig(app);
         const currentPaths = webAppConfig.paths;
         const currentCommands = webAppConfig.commands;
 
@@ -557,7 +557,7 @@ export function registerApiRoutes(
         currentPaths[index] = updatedPath;
 
         // Save to web app configuration
-        saveWebAppConfig(currentPaths, currentCommands);
+        saveWebAppConfig(currentPaths, currentCommands, app);
 
         // Update subscriptions
         if (state.currentConfig) {
@@ -586,7 +586,7 @@ export function registerApiRoutes(
         const index = parseInt(req.params.index);
 
         // Load current configuration
-        const webAppConfig = loadWebAppConfig();
+        const webAppConfig = loadWebAppConfig(app);
         const currentPaths = webAppConfig.paths;
         const currentCommands = webAppConfig.commands;
 
@@ -605,7 +605,7 @@ export function registerApiRoutes(
         currentPaths.splice(index, 1);
 
         // Save to web app configuration
-        saveWebAppConfig(currentPaths, currentCommands);
+        saveWebAppConfig(currentPaths, currentCommands, app);
 
         // Update subscriptions
         if (state.currentConfig) {
@@ -675,9 +675,9 @@ export function registerApiRoutes(
 
         if (result.state === 'COMPLETED') {
           // Update webapp config
-          const webAppConfig = loadWebAppConfig();
+          const webAppConfig = loadWebAppConfig(app);
           const currentCommands = getCurrentCommands();
-          saveWebAppConfig(webAppConfig.paths, currentCommands);
+          saveWebAppConfig(webAppConfig.paths, currentCommands, app);
 
           const commandState = getCommandState();
           const commandConfig = commandState.registeredCommands.get(command);
@@ -757,9 +757,9 @@ export function registerApiRoutes(
 
         if (result.state === 'COMPLETED') {
           // Update webapp config
-          const webAppConfig = loadWebAppConfig();
+          const webAppConfig = loadWebAppConfig(app);
           const currentCommands = getCurrentCommands();
-          saveWebAppConfig(webAppConfig.paths, currentCommands);
+          saveWebAppConfig(webAppConfig.paths, currentCommands, app);
 
           return res.json({
             success: true,
