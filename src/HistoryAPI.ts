@@ -163,9 +163,14 @@ class HistoryAPI {
             '*.parquet'
           );
 
+          debug(`Looking for data files at: ${filePath}`);
+          debug(`Context: ${context}, SelfContextPath: ${this.selfContextPath}`);
+
           // Convert ZonedDateTime to ISO string format matching parquet schema
           const fromIso = from.toInstant().toString();
           const toIso = to.toInstant().toString();
+          
+          debug(`Time range: ${fromIso} to ${toIso}`);
 
           // Build query with time bucketing for alignment
           const bucketSeconds = Math.max(1, Math.floor(timeResolutionMillis / 1000));
