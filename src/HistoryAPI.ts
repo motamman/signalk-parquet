@@ -121,14 +121,24 @@ function parseDateTime(dateTimeStr: string, useUTC: boolean): ZonedDateTime {
     return ZonedDateTime.parse(dateTimeStr);
   } else {
     // Treat as local time and convert to UTC
-    // Parse as local datetime first, then convert to UTC
+    // Normalize the datetime string to include seconds if missing
+    let normalizedStr = dateTimeStr;
+    if (dateTimeStr.match(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/)) {
+      // Add seconds if only HH:MM is provided
+      normalizedStr = dateTimeStr + ':00';
+    }
+    
     try {
-      // Try parsing as ISO string first (might be missing timezone info)
-      const localDateTime = LocalDateTime.parse(dateTimeStr.replace('T', 'T'));
+      // Parse as local datetime and convert to UTC
+      const localDateTime = LocalDateTime.parse(normalizedStr);
       return localDateTime.atZone(ZoneId.systemDefault()).withZoneSameInstant(ZoneOffset.UTC);
-    } catch {
-      // Fallback: if it fails, try parsing with ZonedDateTime (might have partial timezone info)
-      return ZonedDateTime.parse(dateTimeStr).withZoneSameInstant(ZoneOffset.UTC);
+    } catch (e) {
+      // Fallback: try parsing with ZonedDateTime and convert to UTC
+      try {
+        return ZonedDateTime.parse(normalizedStr).withZoneSameInstant(ZoneOffset.UTC);
+      } catch (e2) {
+        throw new Error(`Unable to parse datetime '${dateTimeStr}': ${e}. Use format like '2025-08-13T08:00:00' or '2025-08-13T08:00:00Z'`);
+      }
     }
   }
 }
