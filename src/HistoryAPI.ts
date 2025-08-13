@@ -5,7 +5,7 @@ import {
   FromToContextRequest,
   PathSpec,
 } from './HistoryAPI-types';
-import { ZonedDateTime } from '@js-joda/core';
+import { ZonedDateTime, ZoneOffset } from '@js-joda/core';
 import { Context, Path, Timestamp } from '@signalk/server-api';
 import { ParamsDictionary } from 'express-serve-static-core';
 import { ParsedQs } from 'qs';
@@ -65,8 +65,8 @@ const getRequestParams = ({ query }: FromToContextRequest, selfId: string) => {
       const durationMs = parseDuration(query.duration);
       
       if (query.start === 'now') {
-        // Use current time as start and go backwards
-        to = ZonedDateTime.now();
+        // Use current UTC time as start and go backwards
+        to = ZonedDateTime.now(ZoneOffset.UTC);
         from = to.minusNanos(durationMs * 1000000); // Convert ms to nanoseconds
         shouldRefresh = query.refresh === 'true' || query.refresh === '1';
       } else {
