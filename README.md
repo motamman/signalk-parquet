@@ -424,6 +424,16 @@ curl "http://localhost:3000/signalk/v1/history/values?context=vessels.self&from=
 curl "http://localhost:3000/signalk/v1/history/values?context=vessels.self&from=2025-01-01T00:00:00Z&to=2025-01-01T06:00:00Z&paths=environment.wind.speedApparent,navigation.position&resolution=60000"
 ```
 
+**Get multiple aggregations of the same path:**
+```bash
+curl "http://localhost:3000/signalk/v1/history/values?context=vessels.self&from=2025-01-01T00:00:00Z&to=2025-01-01T06:00:00Z&paths=environment.wind.speedApparent:average,environment.wind.speedApparent:min,environment.wind.speedApparent:max&resolution=60000"
+```
+
+**Get different temporal samples of position data:**
+```bash
+curl "http://localhost:3000/signalk/v1/history/values?context=vessels.self&from=2025-01-01T00:00:00Z&to=2025-01-01T06:00:00Z&paths=navigation.position:first,navigation.position:middle_index,navigation.position:last&resolution=60000"
+```
+
 **Get available contexts:**
 ```bash
 curl "http://localhost:3000/signalk/v1/history/contexts"
@@ -445,7 +455,22 @@ The History API automatically aligns data from different paths using time bucket
 
 **Parameters:**
 - `resolution` - Time bucket size in milliseconds (default: auto-calculated)
-- Aggregation methods: `average`, `min`, `max`, `first` (automatically selected per path type)
+- **Aggregation methods**: `average`, `min`, `max`, `first`, `last`, `mid`, `middle_index`
+
+**Aggregation Methods:**
+- **`average`** - Average value in time bucket (default for numeric data)
+- **`min`** - Minimum value in time bucket
+- **`max`** - Maximum value in time bucket  
+- **`first`** - First value in time bucket (default for objects)
+- **`last`** - Last value in time bucket
+- **`mid`** - Median value (average of middle values for even counts)
+- **`middle_index`** - Middle value by index (first of two middle values for even counts)
+
+**When to Use Each Method:**
+- **Numeric data** (wind speed, voltage, etc.): Use `average`, `min`, `max` for statistics
+- **Position data**: Use `first`, `last`, `middle_index` for specific readings
+- **String/object data**: Avoid `mid` (unpredictable), prefer `first`, `last`, `middle_index`
+- **Multiple stats**: Query same path with different methods (e.g., `wind:average,wind:max`)
 
 ### Response Format
 
@@ -464,14 +489,22 @@ The History API returns time-aligned data in standard SignalK format:
       "method": "average"
     },
     {
+      "path": "environment.wind.speedApparent",
+      "method": "max"
+    },
+    {
       "path": "navigation.position",
       "method": "first"
+    },
+    {
+      "path": "navigation.position",
+      "method": "last"
     }
   ],
   "data": [
-    ["2025-01-01T00:00:00Z", 12.5, {"latitude": 37.7749, "longitude": -122.4194}],
-    ["2025-01-01T00:01:00Z", 13.2, {"latitude": 37.7750, "longitude": -122.4195}],
-    ["2025-01-01T00:02:00Z", 11.8, null]
+    ["2025-01-01T00:00:00Z", 12.5, 15.2, {"latitude": 37.7749, "longitude": -122.4194}, {"latitude": 37.7750, "longitude": -122.4195}],
+    ["2025-01-01T00:01:00Z", 13.2, 16.1, {"latitude": 37.7750, "longitude": -122.4195}, {"latitude": 37.7751, "longitude": -122.4196}],
+    ["2025-01-01T00:02:00Z", 11.8, 14.3, null, null]
   ]
 }
 ```
