@@ -178,7 +178,7 @@ class HistoryAPI {
             DATE_TRUNC('seconds', 
               EPOCH_MS(CAST(FLOOR(EPOCH_MS(signalk_timestamp::TIMESTAMP) / ${timeResolutionMillis}) * ${timeResolutionMillis} AS BIGINT))
             ) as time_bucket,
-            ${getAggregateFunction(pathSpec.aggregateMethod)}(${getValueExpression(pathSpec.path)}) as value,
+            ${getAggregateExpression(pathSpec.aggregateMethod, pathSpec.path)} as value,
             FIRST(value_json) as value_json
           FROM '${filePath}'
           WHERE
@@ -288,15 +288,24 @@ class HistoryAPI {
 function splitPathExpression(pathExpression: string): PathSpec {
   const parts = pathExpression.split(':');
   let aggregateMethod = (parts[1] || 'average') as AggregateMethod;
-  if (parts[0] === 'navigation.position') {
+  
+  // Auto-select appropriate default method for complex data types
+  if (parts[0] === 'navigation.position' && !parts[1]) {
     aggregateMethod = 'first' as AggregateMethod;
   }
+  
+  // Validate the aggregation method
+  const validMethods = ['average', 'min', 'max', 'first', 'last', 'mid', 'middle_index'];
+  if (parts[1] && !validMethods.includes(parts[1])) {
+    aggregateMethod = 'average' as AggregateMethod;
+  }
+  
   return {
     path: parts[0] as Path,
     queryResultName: parts[0].replace(/\./g, '_'),
     aggregateMethod,
     aggregateFunction:
-      (functionForAggregate[aggregateMethod] as string) || 'mean()',
+      (functionForAggregate[aggregateMethod] as string) || 'avg',
   };
 }
 
@@ -305,6 +314,9 @@ const functionForAggregate: { [key: string]: string } = {
   min: 'min',
   max: 'max',
   first: 'first',
+  last: 'last',
+  mid: 'median',
+  middle_index: 'nth_value',
 } as const;
 
 function getAggregateFunction(method: AggregateMethod): string {
@@ -317,6 +329,12 @@ function getAggregateFunction(method: AggregateMethod): string {
       return 'MAX';
     case 'first':
       return 'FIRST';
+    case 'last':
+      return 'LAST';
+    case 'mid':
+      return 'MEDIAN';
+    case 'middle_index':
+      return 'NTH_VALUE';
     default:
       return 'AVG';
   }
@@ -330,4 +348,16 @@ function getValueExpression(pathName: string): string {
   
   // For numeric data, try to cast to DOUBLE, fallback to the original value
   return 'TRY_CAST(value AS DOUBLE)';
+}
+
+function getAggregateExpression(method: AggregateMethod, pathName: string): string {
+  const valueExpr = getValueExpression(pathName);
+  
+  if (method === 'middle_index') {
+    // Use ROW_NUMBER to find the middle index
+    // For even counts, this picks the first of the two middle values
+    return `NTH_VALUE(${valueExpr}, (COUNT(*) + 1) / 2) OVER (ORDER BY signalk_timestamp)`;
+  }
+  
+  return `${getAggregateFunction(method)}(${valueExpr})`;
 }
