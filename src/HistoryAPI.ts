@@ -185,6 +185,8 @@ class HistoryAPI {
           intervalSeconds: refreshIntervalSeconds,
           nextRefresh: new Date(Date.now() + refreshIntervalSeconds * 1000).toISOString()
         };
+        
+        debug(`Refresh enabled: resolution=${timeResolutionMillis}ms, interval=${refreshIntervalSeconds}s`);
       }
 
       res.json(allResult);
