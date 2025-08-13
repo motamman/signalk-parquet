@@ -172,18 +172,22 @@ class HistoryAPI {
           
           debug(`Time range: ${fromIso} to ${toIso}`);
 
-          // Build query with original logic (revert time bucketing)
+          // Build query with time bucketing - fix type casting
           const query = `
           SELECT
-            signalk_timestamp,
-            value,
-            value_json
+            DATE_TRUNC('seconds', 
+              EPOCH_MS(CAST(FLOOR(EPOCH_MS(signalk_timestamp::TIMESTAMP) / ${timeResolutionMillis}) * ${timeResolutionMillis} AS BIGINT))
+            ) as time_bucket,
+            ${getAggregateFunction(pathSpec.aggregateMethod)}(${getValueExpression(pathSpec.path)}) as value,
+            FIRST(value_json) as value_json
           FROM '${filePath}'
           WHERE
             signalk_timestamp >= '${fromIso}'
             AND 
             signalk_timestamp < '${toIso}'
-          ORDER BY signalk_timestamp      
+            AND (value IS NOT NULL OR value_json IS NOT NULL)
+          GROUP BY time_bucket
+          ORDER BY time_bucket
           `;
 
           debug(`Executing query for path ${pathSpec.path}: ${query}`);
@@ -194,15 +198,15 @@ class HistoryAPI {
             const result = await connection.runAndReadAll(query);
             const rows = result.getRowObjects();
 
-            // Convert rows to the expected format
+            // Convert rows to the expected format using bucketed timestamps
             const pathData: Array<[Timestamp, unknown]> = rows.map(
               (row: unknown) => {
                 const rowData = row as {
-                  signalk_timestamp: Timestamp;
+                  time_bucket: Timestamp;
                   value: unknown;
                   value_json?: string;
                 };
-                const timestamp = rowData.signalk_timestamp;
+                const timestamp = rowData.time_bucket;
                 // Handle both JSON values (like position objects) and simple values
                 const value = rowData.value_json
                   ? JSON.parse(String(rowData.value_json))
@@ -316,4 +320,14 @@ function getAggregateFunction(method: AggregateMethod): string {
     default:
       return 'AVG';
   }
+}
+
+function getValueExpression(pathName: string): string {
+  // For position data, use value_json since the value is an object
+  if (pathName === 'navigation.position') {
+    return 'value_json';
+  }
+  
+  // For numeric data, try to cast to DOUBLE, fallback to the original value
+  return 'TRY_CAST(value AS DOUBLE)';
 }
