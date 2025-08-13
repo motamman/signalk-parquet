@@ -61,6 +61,7 @@ export type FromToContextRequest = Request<
     context: string;
     bbox?: string;
     refresh?: string;
+    useUTC?: string;
   }
 >;
 

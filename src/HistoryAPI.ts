@@ -5,7 +5,7 @@ import {
   FromToContextRequest,
   PathSpec,
 } from './HistoryAPI-types';
-import { ZonedDateTime, ZoneOffset } from '@js-joda/core';
+import { ZonedDateTime, ZoneOffset, ZoneId, LocalDateTime } from '@js-joda/core';
 import { Context, Path, Timestamp } from '@signalk/server-api';
 import { ParamsDictionary } from 'express-serve-static-core';
 import { ParsedQs } from 'qs';
@@ -59,25 +59,28 @@ const getRequestParams = ({ query }: FromToContextRequest, selfId: string) => {
     let from: ZonedDateTime;
     let to: ZonedDateTime;
     let shouldRefresh = false;
+    
+    // Check if user wants to work in UTC (default: false, use local timezone)
+    const useUTC = query.useUTC === 'true' || query.useUTC === '1';
 
     // Handle new backwards querying with start + duration
     if (query.start && query.duration) {
       const durationMs = parseDuration(query.duration);
       
       if (query.start === 'now') {
-        // Use current UTC time as start and go backwards
+        // Always use current UTC time for 'now' regardless of useUTC setting
         to = ZonedDateTime.now(ZoneOffset.UTC);
         from = to.minusNanos(durationMs * 1000000); // Convert ms to nanoseconds
         shouldRefresh = query.refresh === 'true' || query.refresh === '1';
       } else {
-        // Use specified start time and go backwards
-        to = ZonedDateTime.parse(query.start);
+        // Parse start time with timezone conversion if needed
+        to = parseDateTime(query.start, useUTC);
         from = to.minusNanos(durationMs * 1000000);
       }
     } else if (query.from && query.to) {
-      // Traditional from/to querying (forward in time)
-      from = ZonedDateTime.parse(query.from);
-      to = ZonedDateTime.parse(query.to);
+      // Traditional from/to querying (forward in time) with timezone conversion
+      from = parseDateTime(query.from, useUTC);
+      to = parseDateTime(query.to, useUTC);
     } else {
       throw new Error('Either (from + to) or (start + duration) parameters are required');
     }
@@ -108,6 +111,25 @@ function parseDuration(duration: string): number {
     case 'h': return value * 60 * 60 * 1000; // hours to milliseconds
     case 'd': return value * 24 * 60 * 60 * 1000; // days to milliseconds
     default: throw new Error(`Unknown duration unit: ${unit}`);
+  }
+}
+
+// Parse datetime string and convert to UTC if needed
+function parseDateTime(dateTimeStr: string, useUTC: boolean): ZonedDateTime {
+  if (useUTC || dateTimeStr.includes('Z') || dateTimeStr.includes('+') || dateTimeStr.includes('-')) {
+    // If useUTC is true OR datetime already has timezone info, parse as-is
+    return ZonedDateTime.parse(dateTimeStr);
+  } else {
+    // Treat as local time and convert to UTC
+    // Parse as local datetime first, then convert to UTC
+    try {
+      // Try parsing as ISO string first (might be missing timezone info)
+      const localDateTime = LocalDateTime.parse(dateTimeStr.replace('T', 'T'));
+      return localDateTime.atZone(ZoneId.systemDefault()).withZoneSameInstant(ZoneOffset.UTC);
+    } catch {
+      // Fallback: if it fails, try parsing with ZonedDateTime (might have partial timezone info)
+      return ZonedDateTime.parse(dateTimeStr).withZoneSameInstant(ZoneOffset.UTC);
+    }
   }
 }
 
@@ -174,7 +196,6 @@ class HistoryAPI {
       // Add refresh headers if shouldRefresh is enabled
       if (shouldRefresh) {
         const refreshIntervalSeconds = Math.max(Math.round(timeResolutionMillis / 1000), 1); // At least 1 second
-        debug(`Calculating refresh: timeResolutionMillis=${timeResolutionMillis}, divided by 1000=${timeResolutionMillis / 1000}, rounded=${Math.round(timeResolutionMillis / 1000)}, final=${refreshIntervalSeconds}`);
         res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
         res.setHeader('Pragma', 'no-cache');
         res.setHeader('Expires', '0');
@@ -186,8 +207,6 @@ class HistoryAPI {
           intervalSeconds: refreshIntervalSeconds,
           nextRefresh: new Date(Date.now() + refreshIntervalSeconds * 1000).toISOString()
         };
-        
-        debug(`Refresh enabled: resolution=${timeResolutionMillis}ms, interval=${refreshIntervalSeconds}s`);
       }
 
       res.json(allResult);
