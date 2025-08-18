@@ -289,9 +289,9 @@ class HistoryAPI {
           // Build query with time bucketing - fix type casting
           const query = `
           SELECT
-            DATE_TRUNC('seconds', 
+            strftime(DATE_TRUNC('seconds',
               EPOCH_MS(CAST(FLOOR(EPOCH_MS(signalk_timestamp::TIMESTAMP) / ${timeResolutionMillis}) * ${timeResolutionMillis} AS BIGINT))
-            ) as time_bucket,
+            ), '%Y-%m-%dT%H:%M:%SZ') as timestamp,
             ${getAggregateExpression(pathSpec.aggregateMethod, pathSpec.path)} as value,
             FIRST(value_json) as value_json
           FROM '${filePath}'
@@ -300,8 +300,8 @@ class HistoryAPI {
             AND 
             signalk_timestamp < '${toIso}'
             AND (value IS NOT NULL OR value_json IS NOT NULL)
-          GROUP BY time_bucket
-          ORDER BY time_bucket
+          GROUP BY timestamp
+          ORDER BY timestamp
           `;
 
           debug(`Executing query for path ${pathSpec.path}: ${query}`);
@@ -314,13 +314,13 @@ class HistoryAPI {
 
             // Convert rows to the expected format using bucketed timestamps
             const pathData: Array<[Timestamp, unknown]> = rows.map(
-              (row: unknown) => {
+              (row) => {
                 const rowData = row as {
-                  time_bucket: Timestamp;
+                  timestamp: Timestamp;
                   value: unknown;
                   value_json?: string;
                 };
-                const timestamp = rowData.time_bucket;
+                const { timestamp } = rowData;
                 // Handle both JSON values (like position objects) and simple values
                 const value = rowData.value_json
                   ? JSON.parse(String(rowData.value_json))
@@ -381,14 +381,13 @@ class HistoryAPI {
     pathSpecs.forEach((pathSpec, index) => {
       const pathData = allData[pathSpec.path] || [];
       pathData.forEach(([timestamp, value]) => {
-        const timestampStr = timestamp.toString();
-        if (!timestampMap.has(timestampStr)) {
+        if (!timestampMap.has(timestamp)) {
           timestampMap.set(
-            timestampStr,
+            timestamp,
             new Array(pathSpecs.length).fill(null)
           );
         }
-        timestampMap.get(timestampStr)![index] = value;
+        timestampMap.get(timestamp)![index] = value;
       });
     });
 
