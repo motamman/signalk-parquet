@@ -9,7 +9,7 @@ import { PathInfo } from '../types';
  */
 export function getAvailablePaths(dataDir: string, app: ServerAPI): PathInfo[] {
   const paths: PathInfo[] = [];
-  
+
   // Clean the self context for filesystem usage (replace dots with slashes, colons with underscores)
   const selfContextPath = app.selfContext
     .replace(/\./g, '/')
@@ -17,9 +17,7 @@ export function getAvailablePaths(dataDir: string, app: ServerAPI): PathInfo[] {
   const vesselsDir = path.join(dataDir, selfContextPath);
 
   app.debug(`🔍 Looking for paths in vessel directory: ${vesselsDir}`);
-  app.debug(
-    `📡 Using vessel context: ${app.selfContext} → ${selfContextPath}`
-  );
+  app.debug(`📡 Using vessel context: ${app.selfContext} → ${selfContextPath}`);
 
   if (!fs.existsSync(vesselsDir)) {
     app.debug(`❌ Vessel directory does not exist: ${vesselsDir}`);
@@ -28,19 +26,13 @@ export function getAvailablePaths(dataDir: string, app: ServerAPI): PathInfo[] {
 
   function walkPaths(currentPath: string, relativePath: string = ''): void {
     try {
-      app.debug(
-        `🚶 Walking path: ${currentPath} (relative: ${relativePath})`
-      );
+      app.debug(`🚶 Walking path: ${currentPath} (relative: ${relativePath})`);
       const items = fs.readdirSync(currentPath);
       items.forEach((item: string) => {
         const fullPath = path.join(currentPath, item);
         const stat = fs.statSync(fullPath);
 
-        if (
-          stat.isDirectory() &&
-          item !== 'processed' &&
-          item !== 'failed'
-        ) {
+        if (stat.isDirectory() && item !== 'processed' && item !== 'failed') {
           const newRelativePath = relativePath
             ? `${relativePath}.${item}`
             : item;
@@ -63,9 +55,7 @@ export function getAvailablePaths(dataDir: string, app: ServerAPI): PathInfo[] {
               fileCount: fileCount,
             });
           } else {
-            app.debug(
-              `📁 Directory ${newRelativePath} has no parquet files`
-            );
+            app.debug(`📁 Directory ${newRelativePath} has no parquet files`);
           }
 
           walkPaths(fullPath, newRelativePath);
@@ -92,7 +82,10 @@ export function getAvailablePaths(dataDir: string, app: ServerAPI): PathInfo[] {
  * Get available SignalK paths as simple string array
  * Useful for SignalK history API compliance
  */
-export function getAvailablePathsArray(dataDir: string, app: ServerAPI): string[] {
+export function getAvailablePathsArray(
+  dataDir: string,
+  app: ServerAPI
+): string[] {
   const pathInfos = getAvailablePaths(dataDir, app);
   return pathInfos.map(pathInfo => pathInfo.path);
 }
