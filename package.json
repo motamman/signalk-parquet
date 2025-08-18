@@ -9,8 +9,6 @@
     "watch": "tsc --watch",
     "clean": "rm -rf dist",
     "prepublishOnly": "npm run build",
-    "prepare": "npm run build",
-    "postinstall": "npm run build",
     "dev": "npm run build && npm run watch",
     "test": "echo \"Error: no test specified\" && exit 1",
     "lint": "eslint src/**/*.ts",
