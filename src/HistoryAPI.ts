@@ -35,7 +35,6 @@ export function registerHistoryApiRoute(
   });
   router.get('/signalk/v1/history/paths', (req: Request, res: Response) => {
     try {
-      const dataDir = app.getDataDirPath();
       const paths = getAvailablePathsArray(dataDir, app);
       res.json(paths);
     } catch (error) {
