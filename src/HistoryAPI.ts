@@ -12,12 +12,14 @@ import { ParsedQs } from 'qs';
 import { DuckDBInstance } from '@duckdb/node-api';
 import { toContextFilePath } from '.';
 import path from 'path';
+import { getAvailablePathsArray } from './utils/path-discovery';
 
 export function registerHistoryApiRoute(
   router: Pick<Router, 'get'>,
   selfId: string,
   dataDir: string,
-  debug: (k: string) => void
+  debug: (k: string) => void,
+  app: any
 ) {
   const historyApi = new HistoryAPI(selfId, dataDir);
   router.get('/signalk/v1/history/values', (req: Request, res: Response) => {
@@ -32,10 +34,13 @@ export function registerHistoryApiRoute(
     res.json([`vessels.${selfId}`] as Context[]);
   });
   router.get('/signalk/v1/history/paths', (req: Request, res: Response) => {
-    //TODO implement retrieval of paths for the given period
-    // const { from, to } = getRequestParams(req as FromToContextRequest, selfId);
-    // getPaths(influx, from, to, res);
-    res.json(['navigation.speedOverGround']);
+    try {
+      const paths = getAvailablePathsArray(dataDir, app);
+      res.json(paths);
+    } catch (error) {
+      app.debug(`Error getting history paths: ${error}`);
+      res.status(500).json({ error: (error as Error).message });
+    }
   });
 
   // Also register as plugin-style routes for testing

@@ -1,6 +1,7 @@
 import * as fs from 'fs-extra';
 import * as path from 'path';
 import express, { Router } from 'express';
+import { getAvailablePaths } from './utils/path-discovery';
 import { DuckDBInstance } from '@duckdb/node-api';
 import {
   TypedRequest,
@@ -59,86 +60,6 @@ export function registerApiRoutes(
     return state.currentConfig?.outputDirectory || app.getDataDirPath();
   };
 
-  // Helper function to get available paths from directory structure
-  function getAvailablePaths(dataDir: string): PathInfo[] {
-    const paths: PathInfo[] = [];
-    // Clean the self context for filesystem usage (replace dots with slashes, colons with underscores)
-    const selfContextPath = app.selfContext
-      .replace(/\./g, '/')
-      .replace(/:/g, '_');
-    const vesselsDir = path.join(dataDir, selfContextPath);
-
-    app.debug(`🔍 Looking for paths in vessel directory: ${vesselsDir}`);
-    app.debug(
-      `📡 Using vessel context: ${app.selfContext} → ${selfContextPath}`
-    );
-
-    if (!fs.existsSync(vesselsDir)) {
-      app.debug(`❌ Vessel directory does not exist: ${vesselsDir}`);
-      return paths;
-    }
-
-    function walkPaths(currentPath: string, relativePath: string = ''): void {
-      try {
-        app.debug(
-          `🚶 Walking path: ${currentPath} (relative: ${relativePath})`
-        );
-        const items = fs.readdirSync(currentPath);
-        items.forEach((item: string) => {
-          const fullPath = path.join(currentPath, item);
-          const stat = fs.statSync(fullPath);
-
-          if (
-            stat.isDirectory() &&
-            item !== 'processed' &&
-            item !== 'failed'
-          ) {
-            const newRelativePath = relativePath
-              ? `${relativePath}.${item}`
-              : item;
-
-            // Check if this directory has parquet files
-            const hasParquetFiles = fs
-              .readdirSync(fullPath)
-              .some((file: string) => file.endsWith('.parquet'));
-
-            if (hasParquetFiles) {
-              const fileCount = fs
-                .readdirSync(fullPath)
-                .filter((file: string) => file.endsWith('.parquet')).length;
-              app.debug(
-                `✅ Found SignalK path with data: ${newRelativePath} (${fileCount} files)`
-              );
-              paths.push({
-                path: newRelativePath,
-                directory: fullPath,
-                fileCount: fileCount,
-              });
-            } else {
-              app.debug(
-                `📁 Directory ${newRelativePath} has no parquet files`
-              );
-            }
-
-            walkPaths(fullPath, newRelativePath);
-          }
-        });
-      } catch (error) {
-        app.debug(
-          `❌ Error reading directory ${currentPath}: ${(error as Error).message}`
-        );
-      }
-    }
-
-    if (fs.existsSync(vesselsDir)) {
-      walkPaths(vesselsDir);
-    }
-
-    app.debug(
-      `📊 Path discovery complete: found ${paths.length} paths with data`
-    );
-    return paths;
-  }
 
   // Convert BigInt values to regular numbers for JSON serialization
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -158,7 +79,7 @@ export function registerApiRoutes(
     (_: TypedRequest, res: TypedResponse<PathsApiResponse>) => {
       try {
         const dataDir = getDataDir();
-        const paths = getAvailablePaths(dataDir);
+        const paths = getAvailablePaths(dataDir, app);
 
         return res.json({
           success: true,

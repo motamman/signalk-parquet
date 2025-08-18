@@ -168,7 +168,8 @@ export default function (app: ServerAPI): SignalKPlugin {
         app as unknown as Router,
         app.selfId,
         state.currentConfig.outputDirectory,
-        app.debug
+        app.debug,
+        app
       );
       app.debug('History API routes registered with main server successfully');
     } catch (error) {
