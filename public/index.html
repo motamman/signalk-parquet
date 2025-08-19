@@ -1726,30 +1726,30 @@
 
         async function loadStreamingPaths() {
             try {
-                const response = await fetch(getPluginPath() + '/api/stream/available-paths');
+                const response = await fetch(getPluginPath() + '/api/paths');
                 const data = await response.json();
                 
                 const container = document.getElementById('streamingPaths');
                 if (!container) return;
                 
-                if (data.paths.length === 0) {
+                if (!data || data.length === 0) {
                     container.innerHTML = '<div class="warning">No paths available for streaming. Make sure you have some historical data collected.</div>';
                     return;
                 }
                 
                 let html = '<div class="paths-grid" style="display: grid; gap: 10px; margin-top: 10px;">';
-                data.paths.forEach(pathInfo => {
+                data.forEach(pathInfo => {
                     html += `
                         <div class="path-item" style="background: white; padding: 10px; border-radius: 5px; border-left: 4px solid #28a745; cursor: pointer;" 
                              onclick="selectStreamingPath('${pathInfo.path}')">
                             <strong>${pathInfo.path}</strong>
-                            <br><small>Contexts: ${pathInfo.contexts.join(', ')}</small>
-                            <br><small>Files: ${pathInfo.fileCount} | Last seen: ${new Date(pathInfo.lastSeen).toLocaleString()}</small>
+                            <br><small>Files: ${pathInfo.files ? pathInfo.files.length : 'N/A'}</small>
+                            <br><small>Last modified: ${pathInfo.lastModified ? new Date(pathInfo.lastModified).toLocaleString() : 'N/A'}</small>
                         </div>
                     `;
                 });
                 html += '</div>';
-                html += `<div class="info" style="margin-top: 10px;">Total: ${data.paths.length} paths available | Click a path to select it</div>`;
+                html += `<div class="info" style="margin-top: 10px;">Total: ${data.length} paths available | Click a path to select it</div>`;
                 
                 container.innerHTML = html;
             } catch (error) {

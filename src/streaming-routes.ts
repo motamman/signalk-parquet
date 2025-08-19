@@ -184,40 +184,6 @@ export function registerStreamingRoutes(router: Router, state: PluginState, app:
     }
   });
 
-  /**
-   * GET /api/stream/available-paths
-   * Get list of available paths for streaming
-   */
-  router.get('/api/stream/available-paths', async (req: Request, res: Response) => {
-    try {
-      // Use the path discovery utility
-      const { discoverPaths } = require('./utils/path-discovery');
-      
-      if (!state.currentConfig?.outputDirectory) {
-        return res.status(500).json({ error: 'Output directory not configured' });
-      }
-
-      const paths = await discoverPaths(state.currentConfig.outputDirectory, app.debug);
-      
-      res.json({
-        paths: paths.map((pathInfo: any) => ({
-          path: pathInfo.path,
-          contexts: pathInfo.contexts,
-          lastSeen: pathInfo.lastSeen,
-          fileCount: pathInfo.files.length
-        })),
-        totalPaths: paths.length,
-        timestamp: new Date().toISOString()
-      });
-
-    } catch (error) {
-      app.error('Error getting available paths:', error);
-      res.status(500).json({ 
-        error: 'Failed to get available paths',
-        message: error instanceof Error ? error.message : 'Unknown error'
-      });
-    }
-  });
 
   /**
    * POST /api/stream/broadcast
