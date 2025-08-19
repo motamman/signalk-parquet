@@ -247,34 +247,42 @@ export default function (app: ServerAPI): SignalKPlugin {
       app.error(`Failed to register History API routes with main server: ${error}`);
     }
 
-    // Initialize streaming service if enabled
+    // Initialize streaming service if enabled (with small delay to ensure clean startup)
     if (state.currentConfig.enableStreaming) {
-      try {
-        // We'll create the HistoryAPI instance here for streaming
-        const { HistoryAPI } = require('./HistoryAPI');
-        const historyAPI = new HistoryAPI(
-          app.selfId,
-          state.currentConfig.outputDirectory
-        );
-        
-        // Access the HTTP server from the SignalK app
-        const httpServer = (app as any).httpServer || (app as any).server;
-        if (httpServer) {
-          state.streamingService = new StreamingService(httpServer, {
-            historyAPI: historyAPI,
-            selfId: app.selfId,
-            debug: false
-          });
-          app.debug('Streaming service initialized successfully');
+      setTimeout(async () => {
+        try {
+          // We'll create the HistoryAPI instance here for streaming
+          const { HistoryAPI } = require('./HistoryAPI');
+          const historyAPI = new HistoryAPI(
+            app.selfId,
+            state.currentConfig!.outputDirectory
+          );
           
-          // Auto-restore enabled stream subscriptions
-          await restoreStreamSubscriptions(state, app);
-        } else {
-          app.debug('HTTP server not available, streaming service not initialized');
+          // Access the HTTP server from the SignalK app
+          const httpServer = (app as any).httpServer || (app as any).server;
+          if (httpServer) {
+            state.streamingService = new StreamingService(httpServer, {
+              historyAPI: historyAPI,
+              selfId: app.selfId,
+              debug: false
+            });
+            app.debug('Streaming service initialized successfully');
+            
+            // Auto-restore enabled stream subscriptions
+            try {
+              await restoreStreamSubscriptions(state, app);
+            } catch (restoreError) {
+              app.error(`Failed to restore stream subscriptions: ${restoreError}`);
+            }
+          } else {
+            app.debug('HTTP server not available, streaming service not initialized');
+          }
+        } catch (error) {
+          app.error(`Failed to initialize streaming service: ${error}`);
+          // Don't let streaming failure crash the plugin
+          state.streamingService = undefined;
         }
-      } catch (error) {
-        app.error(`Failed to initialize streaming service: ${error}`);
-      }
+      }, 500); // 500ms delay to ensure clean startup
     } else {
       app.debug('Streaming service disabled in configuration');
     }

@@ -31,18 +31,29 @@ export class StreamingService {
     this.selfId = options.selfId;
     this.debug = options.debug || false;
 
-    // Create Socket.IO server
-    this.io = new SocketIOServer(httpServer, {
-      path: '/signalk-parquet-stream',
-      cors: {
-        origin: "*",
-        methods: ["GET", "POST"]
-      },
-      transports: ['websocket', 'polling']
-    });
+    try {
+      // Create Socket.IO server with unique path to avoid conflicts during restarts
+      const socketPath = '/signalk-parquet-stream';
+      
+      this.io = new SocketIOServer(httpServer, {
+        path: socketPath,
+        cors: {
+          origin: "*",
+          methods: ["GET", "POST"]
+        },
+        transports: ['websocket', 'polling'],
+        // Add options to handle plugin restarts better
+        allowEIO3: true,
+        pingTimeout: 20000,
+        pingInterval: 10000
+      });
 
-    this.setupEventHandlers();
-    this.log('Streaming service initialized');
+      this.setupEventHandlers();
+      this.log('Streaming service initialized successfully');
+    } catch (error) {
+      this.log('Failed to initialize Socket.IO server:', error);
+      throw error;
+    }
   }
 
   private setupEventHandlers(): void {
@@ -250,9 +261,26 @@ export class StreamingService {
     });
     this.clientSubscriptions.clear();
 
-    // Close Socket.IO server
-    this.io.close();
-    this.log('Streaming service shut down');
+    // Close Socket.IO server properly to avoid HTTP server conflicts
+    if (this.io) {
+      try {
+        // Disconnect all clients first
+        this.io.disconnectSockets();
+        
+        // Close the Socket.IO server with callback to ensure clean shutdown
+        this.io.close(() => {
+          this.log('Streaming service shut down completely');
+        });
+      } catch (error) {
+        this.log('Error during Socket.IO shutdown:', error);
+        // Force close if there's an error
+        try {
+          this.io.close();
+        } catch (forceError) {
+          this.log('Force close also failed:', forceError);
+        }
+      }
+    }
   }
 
   private log(...args: any[]): void {
