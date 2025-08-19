@@ -181,7 +181,7 @@ function getContext(contextFromQuery: string, selfId: string): Context {
   return contextFromQuery.replace(/ /gi, '') as Context;
 }
 
-class HistoryAPI {
+export class HistoryAPI {
   readonly selfContextPath: string;
   constructor(
     private selfId: string,
@@ -400,6 +400,60 @@ class HistoryAPI {
     return Array.from(timestampMap.entries())
       .sort(([a], [b]) => a.localeCompare(b))
       .map(([timestamp, values]) => [timestamp as Timestamp, ...values]);
+  }
+
+  // Simple query method for streaming (without Express req/res)
+  async queryForStreaming(
+    path: string, 
+    fromIso: string, 
+    toIso: string, 
+    context?: string
+  ): Promise<Array<{ path: string; values: Array<{ timestamp: string; value: any }> }>> {
+    try {
+      const contextToUse = context || `vessels.${this.selfId}`;
+      const from = parseDateTime(fromIso, true);
+      const to = parseDateTime(toIso, true);
+      
+      // Create a mock request object with the path
+      const mockReq = {
+        query: {
+          paths: path,
+          resolution: '1000' // 1 second resolution
+        }
+      } as any;
+
+      let capturedResult: any = null;
+      const mockRes = {
+        json: (data: any) => { capturedResult = data; },
+        status: () => mockRes
+      } as any;
+
+      await this.getValues(
+        contextToUse as Context,
+        from,
+        to,
+        false,
+        () => {}, // debug function
+        mockReq,
+        mockRes
+      );
+
+      // Transform the result to a simpler format
+      if (capturedResult && capturedResult.data) {
+        return [{
+          path,
+          values: capturedResult.data.map(([timestamp, value]: [any, any]) => ({
+            timestamp: timestamp as string,
+            value
+          }))
+        }];
+      }
+
+      return [{ path, values: [] }];
+    } catch (error) {
+      console.error(`Error querying path ${path}:`, error);
+      return [{ path, values: [] }];
+    }
   }
 }
 

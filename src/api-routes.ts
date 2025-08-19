@@ -2,6 +2,7 @@ import * as fs from 'fs-extra';
 import * as path from 'path';
 import express, { Router } from 'express';
 import { getAvailablePaths } from './utils/path-discovery';
+import { registerStreamingRoutes } from './streaming-routes';
 import { DuckDBInstance } from '@duckdb/node-api';
 import {
   TypedRequest,
@@ -771,6 +772,9 @@ export function registerApiRoutes(
       });
     }
   );
+
+  // Register streaming routes
+  registerStreamingRoutes(router, state, app);
 
   app.debug('Webapp API routes registered');
 }

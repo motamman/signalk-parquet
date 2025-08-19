@@ -71,3 +71,10 @@ export interface PathSpec {
   aggregateMethod: AggregateMethod;
   aggregateFunction: string;
 }
+
+export interface HistoryAPIValue {
+  timestamp: string;
+  value: any;
+}
+
+export { Context } from '@signalk/server-api';
