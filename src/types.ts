@@ -33,7 +33,6 @@ export interface PluginConfig {
   vesselMMSI: string;
   s3Upload: S3UploadConfig;
   enableStreaming: boolean;
-  streamingSubscriptions: StreamingSubscriptionConfig[];
 }
 
 export interface PathConfig {
@@ -88,6 +87,7 @@ export interface CommandRegistrationRequest {
 export interface WebAppPathConfig {
   paths: PathConfig[];
   commands: CommandConfig[];
+  streamingSubscriptions?: StreamingSubscriptionConfig[];
 }
 
 export interface S3UploadConfig {

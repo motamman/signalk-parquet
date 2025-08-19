@@ -3,6 +3,7 @@ import { PluginState, StreamingSubscriptionConfig } from './types';
 import { UniversalDataSource, DataSourceConfig } from './universal-datasource';
 import { HistoryAPI } from './HistoryAPI';
 import { ServerAPI } from '@signalk/server-api';
+import { loadWebAppConfig, saveWebAppConfig } from './commands';
 
 export function registerStreamingRoutes(router: Router, state: PluginState, app: ServerAPI): void {
   // Create a HistoryAPI instance for streaming routes
@@ -226,7 +227,8 @@ export function registerStreamingRoutes(router: Router, state: PluginState, app:
    */
   router.get('/api/stream/subscriptions', (req: Request, res: Response) => {
     try {
-      const subscriptions = state.currentConfig?.streamingSubscriptions || [];
+      const webAppConfig = loadWebAppConfig(app);
+      const subscriptions = webAppConfig.streamingSubscriptions || [];
       res.json({
         success: true,
         subscriptions,
@@ -274,21 +276,13 @@ export function registerStreamingRoutes(router: Router, state: PluginState, app:
         createdAt: new Date().toISOString()
       };
 
-      // Add to plugin config
-      if (!state.currentConfig) {
-        return res.status(500).json({ 
-          success: false,
-          error: 'Plugin configuration not available' 
-        });
-      }
+      // Load current webapp config and add new subscription
+      const webAppConfig = loadWebAppConfig(app);
+      const streamingSubscriptions = webAppConfig.streamingSubscriptions || [];
+      streamingSubscriptions.push(newSubscription);
 
-      if (!state.currentConfig.streamingSubscriptions) {
-        state.currentConfig.streamingSubscriptions = [];
-      }
-
-      state.currentConfig.streamingSubscriptions.push(newSubscription);
-
-      // TODO: Save the configuration persistently (would need SignalK plugin config API)
+      // Save updated config
+      saveWebAppConfig(webAppConfig.paths, webAppConfig.commands, app, streamingSubscriptions);
       app.debug(`Saved stream subscription: ${newSubscription.name} (${newSubscription.path})`);
 
       res.json({
@@ -316,14 +310,10 @@ export function registerStreamingRoutes(router: Router, state: PluginState, app:
       const { id } = req.params;
       const updates = req.body;
 
-      if (!state.currentConfig?.streamingSubscriptions) {
-        return res.status(404).json({ 
-          success: false,
-          error: 'No stream subscriptions found' 
-        });
-      }
+      const webAppConfig = loadWebAppConfig(app);
+      const streamingSubscriptions = webAppConfig.streamingSubscriptions || [];
 
-      const subscriptionIndex = state.currentConfig.streamingSubscriptions.findIndex(sub => sub.id === id);
+      const subscriptionIndex = streamingSubscriptions.findIndex(sub => sub.id === id);
       if (subscriptionIndex === -1) {
         return res.status(404).json({ 
           success: false,
@@ -332,14 +322,15 @@ export function registerStreamingRoutes(router: Router, state: PluginState, app:
       }
 
       // Update the subscription
-      state.currentConfig.streamingSubscriptions[subscriptionIndex] = {
-        ...state.currentConfig.streamingSubscriptions[subscriptionIndex],
+      streamingSubscriptions[subscriptionIndex] = {
+        ...streamingSubscriptions[subscriptionIndex],
         ...updates
       };
 
-      const updatedSubscription = state.currentConfig.streamingSubscriptions[subscriptionIndex];
+      const updatedSubscription = streamingSubscriptions[subscriptionIndex];
 
-      // TODO: Save the configuration persistently
+      // Save updated config
+      saveWebAppConfig(webAppConfig.paths, webAppConfig.commands, app, streamingSubscriptions);
       app.debug(`Updated stream subscription: ${updatedSubscription.name}`);
 
       res.json({
@@ -366,14 +357,10 @@ export function registerStreamingRoutes(router: Router, state: PluginState, app:
     try {
       const { id } = req.params;
 
-      if (!state.currentConfig?.streamingSubscriptions) {
-        return res.status(404).json({ 
-          success: false,
-          error: 'No stream subscriptions found' 
-        });
-      }
+      const webAppConfig = loadWebAppConfig(app);
+      const streamingSubscriptions = webAppConfig.streamingSubscriptions || [];
 
-      const subscriptionIndex = state.currentConfig.streamingSubscriptions.findIndex(sub => sub.id === id);
+      const subscriptionIndex = streamingSubscriptions.findIndex(sub => sub.id === id);
       if (subscriptionIndex === -1) {
         return res.status(404).json({ 
           success: false,
@@ -381,10 +368,11 @@ export function registerStreamingRoutes(router: Router, state: PluginState, app:
         });
       }
 
-      const deletedSubscription = state.currentConfig.streamingSubscriptions[subscriptionIndex];
-      state.currentConfig.streamingSubscriptions.splice(subscriptionIndex, 1);
+      const deletedSubscription = streamingSubscriptions[subscriptionIndex];
+      streamingSubscriptions.splice(subscriptionIndex, 1);
 
-      // TODO: Save the configuration persistently
+      // Save updated config
+      saveWebAppConfig(webAppConfig.paths, webAppConfig.commands, app, streamingSubscriptions);
       app.debug(`Deleted stream subscription: ${deletedSubscription.name}`);
 
       res.json({

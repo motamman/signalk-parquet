@@ -35,11 +35,15 @@ import { ServerAPI } from '@signalk/server-api';
  * Restore saved stream subscriptions on plugin startup
  */
 async function restoreStreamSubscriptions(state: PluginState, app: ServerAPI): Promise<void> {
-  if (!state.streamingService || !state.currentConfig?.streamingSubscriptions) {
+  if (!state.streamingService) {
     return;
   }
 
-  const enabledStreams = state.currentConfig.streamingSubscriptions.filter(stream => stream.enabled);
+  // Load streaming subscriptions from webapp config
+  const webAppConfig = loadWebAppConfig(app);
+  const streamingSubscriptions = webAppConfig.streamingSubscriptions || [];
+  const enabledStreams = streamingSubscriptions.filter(stream => stream.enabled);
+  
   if (enabledStreams.length === 0) {
     app.debug('No enabled stream subscriptions to restore');
     return;
@@ -148,7 +152,6 @@ export default function (app: ServerAPI): SignalKPlugin {
       vesselMMSI: vesselMMSI,
       s3Upload: options?.s3Upload || { enabled: false },
       enableStreaming: options?.enableStreaming ?? true,
-      streamingSubscriptions: options?.streamingSubscriptions || [],
     };
 
     // Load webapp configuration including commands
@@ -459,59 +462,8 @@ export default function (app: ServerAPI): SignalKPlugin {
       enableStreaming: {
         type: 'boolean',
         title: 'Enable Streaming Service',
-        description: 'Enable real-time data streaming via WebSockets for live data monitoring',
+        description: 'Enable real-time data streaming via WebSockets for live data monitoring (stream configurations are managed in the webapp)',
         default: true,
-      },
-      streamingSubscriptions: {
-        type: 'array',
-        title: 'Saved Stream Subscriptions',
-        description: 'Persistent stream configurations that auto-restore on plugin restart',
-        items: {
-          type: 'object',
-          properties: {
-            id: {
-              type: 'string',
-              title: 'ID'
-            },
-            name: {
-              type: 'string',
-              title: 'Stream Name'
-            },
-            enabled: {
-              type: 'boolean',
-              title: 'Enabled',
-              default: true
-            },
-            path: {
-              type: 'string',
-              title: 'SignalK Path'
-            },
-            timeWindow: {
-              type: 'string',
-              title: 'Time Window',
-              default: '5m'
-            },
-            aggregates: {
-              type: 'array',
-              title: 'Aggregates',
-              items: {
-                type: 'string',
-                enum: ['current', 'min', 'max', 'average', 'first', 'last', 'median']
-              },
-              default: ['current']
-            },
-            refreshInterval: {
-              type: 'number',
-              title: 'Refresh Interval (ms)',
-              default: 1000,
-              minimum: 100
-            },
-            createdAt: {
-              type: 'string',
-              title: 'Created'
-            }
-          }
-        }
       },
     },
   };

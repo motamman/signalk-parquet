@@ -7,6 +7,7 @@ import {
   PathConfig,
   WebAppPathConfig,
   PluginConfig,
+  StreamingSubscriptionConfig,
 } from './types';
 import {
   Context,
@@ -62,14 +63,16 @@ export function loadWebAppConfig(app?: ServerAPI): WebAppPathConfig {
       );
 
       const migratedCommands = rawConfig.commands || [];
+      const streamingSubscriptions = rawConfig.streamingSubscriptions || [];
 
       const migratedConfig = {
         paths: migratedPaths,
         commands: migratedCommands,
+        streamingSubscriptions: streamingSubscriptions,
       };
 
       appToUse.debug(
-        `Loaded and migrated ${migratedPaths.length} paths and ${migratedCommands.length} commands from existing config`
+        `Loaded and migrated ${migratedPaths.length} paths, ${migratedCommands.length} commands, and ${streamingSubscriptions.length} streaming subscriptions from existing config`
       );
 
       // Save the migrated config back to preserve the new format
@@ -180,13 +183,15 @@ function getDefaultWebAppConfig(): WebAppPathConfig {
   return {
     commands: defaultCommands,
     paths: defaultPaths,
+    streamingSubscriptions: [],
   };
 }
 
 export function saveWebAppConfig(
   paths: PathConfig[],
   commands: CommandConfig[],
-  app?: ServerAPI
+  app?: ServerAPI,
+  streamingSubscriptions?: StreamingSubscriptionConfig[]
 ): void {
   const appToUse = app || appInstance;
   if (!appToUse) {
@@ -204,10 +209,25 @@ export function saveWebAppConfig(
       fs.mkdirSync(configDir, { recursive: true });
     }
 
-    const webAppConfig: WebAppPathConfig = { paths, commands };
+    // Load existing config to preserve streaming subscriptions if not provided
+    let existingStreamingSubscriptions: StreamingSubscriptionConfig[] = [];
+    if (!streamingSubscriptions && fs.existsSync(webAppConfigPath)) {
+      try {
+        const existingConfig = JSON.parse(fs.readFileSync(webAppConfigPath, 'utf8'));
+        existingStreamingSubscriptions = existingConfig.streamingSubscriptions || [];
+      } catch (error) {
+        // If we can't read existing config, continue with empty array
+      }
+    }
+
+    const webAppConfig: WebAppPathConfig = { 
+      paths, 
+      commands, 
+      streamingSubscriptions: streamingSubscriptions || existingStreamingSubscriptions 
+    };
     fs.writeFileSync(webAppConfigPath, JSON.stringify(webAppConfig, null, 2));
     appToUse.debug(
-      `Saved webapp configuration: ${paths.length} paths, ${commands.length} commands`
+      `Saved webapp configuration: ${paths.length} paths, ${commands.length} commands, ${webAppConfig.streamingSubscriptions?.length || 0} streaming subscriptions`
     );
   } catch (error) {
     appToUse.error(`Failed to save webapp configuration: ${error}`);
