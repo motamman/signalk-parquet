@@ -59,10 +59,15 @@ export class UniversalDataSource {
     const refreshTimer = timer(0, this.config.refreshInterval!);
     
     return refreshTimer.pipe(
-      switchMap(() => this.fetchData()),
-      distinctUntilChanged((prev: StreamResponse, curr: StreamResponse) => 
-        JSON.stringify(prev) === JSON.stringify(curr)
-      ),
+      switchMap(() => {
+        console.log(`[UniversalDataSource] Fetching data for ${this.config.path}`);
+        return this.fetchData();
+      }),
+      distinctUntilChanged((prev: StreamResponse, curr: StreamResponse) => {
+        const isDifferent = JSON.stringify(prev) !== JSON.stringify(curr);
+        console.log(`[UniversalDataSource] Data changed for ${this.config.path}:`, isDifferent);
+        return !isDifferent;
+      }),
       shareReplay(1)
     );
   }
