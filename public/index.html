@@ -1805,27 +1805,42 @@
 
         async function loadSavedStreams() {
             try {
-                const response = await fetch(getPluginPath() + '/api/stream/subscriptions');
-                const result = await response.json();
+                // Fetch both saved streams and active stream status
+                const [subscriptionsResponse, statusResponse] = await Promise.all([
+                    fetch(getPluginPath() + '/api/stream/subscriptions'),
+                    fetch(getPluginPath() + '/api/stream/status')
+                ]);
+                
+                const subscriptionsResult = await subscriptionsResponse.json();
+                const statusResult = await statusResponse.json();
+                const activeStreams = statusResult.success ? statusResult.activeStreams : [];
                 
                 const container = document.getElementById('savedStreams');
                 if (!container) return;
                 
-                if (!result.success || !result.subscriptions || result.subscriptions.length === 0) {
+                if (!subscriptionsResult.success || !subscriptionsResult.subscriptions || subscriptionsResult.subscriptions.length === 0) {
                     container.innerHTML = '<div class="info">No saved streams yet. Save your current stream configuration to get started!</div>';
                     return;
                 }
                 
                 let html = '<div class="saved-streams-grid" style="display: grid; gap: 10px; margin-top: 10px;">';
                 
-                result.subscriptions.forEach(stream => {
+                subscriptionsResult.subscriptions.forEach(stream => {
+                    const isActive = activeStreams.includes(stream.id);
                     const enabledClass = stream.enabled ? 'enabled' : 'disabled';
                     const enabledIcon = stream.enabled ? '✅' : '❌';
+                    const activeIcon = isActive ? '🟢' : '⚪';
+                    const activeText = isActive ? 'ACTIVE' : (stream.enabled ? 'STOPPED' : 'DISABLED');
                     
                     html += `
                         <div class="saved-stream-item ${enabledClass}" style="background: white; padding: 15px; border-radius: 5px; border-left: 4px solid ${stream.enabled ? '#28a745' : '#6c757d'};">
                             <div style="display: flex; justify-content: between; align-items: center; margin-bottom: 10px;">
-                                <strong>${stream.name}</strong>
+                                <div>
+                                    <strong>${stream.name}</strong>
+                                    <span style="margin-left: 10px; font-size: 11px; background: ${isActive ? '#d4edda' : '#f8d7da'}; color: ${isActive ? '#155724' : '#721c24'}; padding: 2px 6px; border-radius: 3px;">
+                                        ${activeIcon} ${activeText}
+                                    </span>
+                                </div>
                                 <div style="margin-left: auto;">
                                     <button onclick="toggleSavedStream('${stream.id}', ${!stream.enabled})" style="margin-right: 5px;">${enabledIcon}</button>
                                     <button onclick="loadSavedStreamToForm('${stream.id}')" style="margin-right: 5px;">📝</button>
@@ -1843,7 +1858,7 @@
                 });
                 
                 html += '</div>';
-                html += `<div class="info" style="margin-top: 10px;">Total: ${result.subscriptions.length} saved streams</div>`;
+                html += `<div class="info" style="margin-top: 10px;">Total: ${subscriptionsResult.subscriptions.length} saved streams | Active: ${activeStreams.length}</div>`;
                 
                 container.innerHTML = html;
                 

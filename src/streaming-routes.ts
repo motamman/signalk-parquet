@@ -222,6 +222,33 @@ export function registerStreamingRoutes(router: Router, state: PluginState, app:
   });
 
   /**
+   * GET /api/stream/status
+   * Get status of active streams
+   */
+  router.get('/api/stream/status', (req: Request, res: Response) => {
+    try {
+      const activeStreams: string[] = [];
+      if (state.restoredSubscriptions) {
+        activeStreams.push(...Array.from(state.restoredSubscriptions.keys()));
+      }
+
+      res.json({
+        success: true,
+        activeStreams,
+        totalActive: activeStreams.length,
+        streamingServiceEnabled: !!state.streamingService
+      });
+    } catch (error) {
+      app.error(`Error getting stream status: ${error}`);
+      res.status(500).json({ 
+        success: false,
+        error: 'Failed to get stream status',
+        message: error instanceof Error ? error.message : 'Unknown error'
+      });
+    }
+  });
+
+  /**
    * GET /api/stream/subscriptions
    * Get saved stream subscriptions
    */
@@ -285,6 +312,11 @@ export function registerStreamingRoutes(router: Router, state: PluginState, app:
       saveWebAppConfig(webAppConfig.paths, webAppConfig.commands, app, streamingSubscriptions);
       app.debug(`Saved stream subscription: ${newSubscription.name} (${newSubscription.path})`);
 
+      // Start the stream immediately since it's enabled by default
+      if (state.streamingService && newSubscription.enabled) {
+        startStreamSubscription(newSubscription, state, app);
+      }
+
       res.json({
         success: true,
         subscription: newSubscription,
@@ -333,6 +365,17 @@ export function registerStreamingRoutes(router: Router, state: PluginState, app:
       saveWebAppConfig(webAppConfig.paths, webAppConfig.commands, app, streamingSubscriptions);
       app.debug(`Updated stream subscription: ${updatedSubscription.name}`);
 
+      // If this is an enable/disable update and streaming service is available
+      if ('enabled' in updates && state.streamingService) {
+        if (updatedSubscription.enabled) {
+          // Start the stream immediately
+          startStreamSubscription(updatedSubscription, state, app);
+        } else {
+          // Stop the stream immediately
+          stopStreamSubscription(updatedSubscription.id, state, app);
+        }
+      }
+
       res.json({
         success: true,
         subscription: updatedSubscription,
@@ -371,6 +414,11 @@ export function registerStreamingRoutes(router: Router, state: PluginState, app:
       const deletedSubscription = streamingSubscriptions[subscriptionIndex];
       streamingSubscriptions.splice(subscriptionIndex, 1);
 
+      // Stop the stream if it's running
+      if (state.streamingService) {
+        stopStreamSubscription(deletedSubscription.id, state, app);
+      }
+
       // Save updated config
       saveWebAppConfig(webAppConfig.paths, webAppConfig.commands, app, streamingSubscriptions);
       app.debug(`Deleted stream subscription: ${deletedSubscription.name}`);
@@ -391,4 +439,70 @@ export function registerStreamingRoutes(router: Router, state: PluginState, app:
   });
 
   app.debug('Streaming API routes registered');
+}
+
+/**
+ * Start a stream subscription immediately
+ */
+function startStreamSubscription(streamConfig: StreamingSubscriptionConfig, state: PluginState, app: ServerAPI): void {
+  try {
+    // Import the UniversalDataSource and HistoryAPI here to avoid circular imports
+    const { UniversalDataSource } = require('./universal-datasource');
+    const { HistoryAPI } = require('./HistoryAPI');
+    
+    const historyAPI = new HistoryAPI(app.selfId, state.currentConfig!.outputDirectory);
+    
+    const dataSourceConfig = {
+      path: streamConfig.path,
+      timeWindow: streamConfig.timeWindow,
+      aggregates: streamConfig.aggregates,
+      refreshInterval: streamConfig.refreshInterval
+    };
+
+    // Create data source and subscribe to stream
+    const dataSource = new UniversalDataSource(dataSourceConfig, historyAPI);
+    const subscription = dataSource.stream().subscribe({
+      next: (data: any) => {
+        // Broadcast to all connected WebSocket clients
+        state.streamingService.broadcast('data', {
+          subscriptionId: streamConfig.id,
+          data,
+          timestamp: new Date().toISOString()
+        });
+      },
+      error: (error: any) => {
+        app.error(`Stream error for ${streamConfig.name} (${streamConfig.path}): ${error}`);
+      }
+    });
+
+    // Store the subscription for cleanup
+    if (!state.restoredSubscriptions) {
+      state.restoredSubscriptions = new Map();
+    }
+    state.restoredSubscriptions.set(streamConfig.id, {
+      subscription,
+      dataSource,
+      config: streamConfig
+    });
+
+    app.debug(`Started stream: ${streamConfig.name} (${streamConfig.path})`);
+  } catch (error) {
+    app.error(`Failed to start stream ${streamConfig.name}: ${error}`);
+  }
+}
+
+/**
+ * Stop a stream subscription immediately
+ */
+function stopStreamSubscription(subscriptionId: string, state: PluginState, app: ServerAPI): void {
+  try {
+    if (state.restoredSubscriptions?.has(subscriptionId)) {
+      const sub = state.restoredSubscriptions.get(subscriptionId);
+      sub.subscription.unsubscribe();
+      state.restoredSubscriptions.delete(subscriptionId);
+      app.debug(`Stopped stream: ${subscriptionId}`);
+    }
+  } catch (error) {
+    app.error(`Failed to stop stream ${subscriptionId}: ${error}`);
+  }
 }
