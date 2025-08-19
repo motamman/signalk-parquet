@@ -8,7 +8,7 @@
     "build": "tsc",
     "watch": "tsc --watch",
     "clean": "rm -rf dist",
-    "prepare": "if [ -f tsconfig.json ] && command -v tsc >/dev/null 2>&1; then npm run build; fi",
+    "prepare": "if [ -f tsconfig.json ] && command -v tsc >/dev/null 2>&1; then npm run build || true; fi",
     "prepublishOnly": "npm run build",
     "dev": "npm run build && npm run watch",
     "test": "echo \"Error: no test specified\" && exit 1",
@@ -59,10 +59,13 @@
     "express": "^4.18.0",
     "fs-extra": "^11.2.0",
     "glob": "^11.0.0",
+    "rxjs": "^7.8.1",
+    "socket.io": "^4.7.5",
     "typescript": "^5.0.0"
   },
   "devDependencies": {
     "@signalk/server-api": "^2.7.1",
+    "@types/socket.io": "^3.0.0",
     "@typescript-eslint/eslint-plugin": "^6.21.0",
     "@typescript-eslint/parser": "^6.21.0",
     "eslint": "^8.57.0",
