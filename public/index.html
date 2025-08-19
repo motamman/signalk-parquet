@@ -1644,27 +1644,38 @@
             
             const timestamp = new Date(streamData.timestamp).toLocaleString();
             const isOneTime = streamData.oneTime;
+            const path = streamData.data.path.split('.').pop(); // Show just the last part of path
             
-            let display = `[${timestamp}] ${isOneTime ? '(One-time query) ' : ''}`;
-            display += `Path: ${streamData.data.path}\n`;
-            display += `Values: ${streamData.data.values.length}\n`;
+            let display = '';
             
             if (streamData.data.values.length > 0) {
                 const latest = streamData.data.values[streamData.data.values.length - 1];
-                display += `Latest: ${JSON.stringify(latest, null, 2)}\n`;
+                const dataTimestamp = new Date(latest.timestamp).toLocaleTimeString();
+                
+                // Clean tabular format
+                display += `${timestamp} | ${path} | ${latest.value} | ${dataTimestamp}`;
+                if (streamData.data.meta?.timeWindow) {
+                    display += ` | ${streamData.data.meta.timeWindow}`;
+                }
+                display += '\n';
             }
-            
-            display += `Meta: ${JSON.stringify(streamData.data.meta, null, 2)}\n`;
-            display += '---\n\n';
             
             // For streaming data, prepend new data
             if (!isOneTime) {
-                dataEl.textContent = display + dataEl.textContent;
+                // Add header if this is the first entry
+                if (!dataEl.textContent || dataEl.textContent === 'No streaming data yet...') {
+                    dataEl.textContent = 'Received        | Signal         | Value  | Data Time | Window\n';
+                    dataEl.textContent += '--------------- | -------------- | ------ | --------- | ------\n';
+                }
                 
-                // Keep only the last 50 entries
-                const lines = dataEl.textContent.split('---\n');
-                if (lines.length > 50) {
-                    dataEl.textContent = lines.slice(0, 50).join('---\n');
+                dataEl.textContent += display;
+                
+                // Keep only the last 50 data lines (plus header)
+                const lines = dataEl.textContent.split('\n');
+                if (lines.length > 52) { // 2 header lines + 50 data lines
+                    const header = lines.slice(0, 2);
+                    const dataLines = lines.slice(2, 52);
+                    dataEl.textContent = header.concat(dataLines).join('\n');
                 }
                 
                 // Update data count for subscription
