@@ -1727,29 +1727,37 @@
         async function loadStreamingPaths() {
             try {
                 const response = await fetch(getPluginPath() + '/api/paths');
-                const data = await response.json();
+                const rawData = await response.json();
+                
+                console.log('Paths API response:', rawData);
                 
                 const container = document.getElementById('streamingPaths');
                 if (!container) return;
                 
-                if (!data || data.length === 0) {
+                // Handle API response structure: {success: boolean, paths: PathInfo[]}
+                if (!rawData.success || !rawData.paths || !Array.isArray(rawData.paths)) {
+                    container.innerHTML = '<div class="warning">No paths available for streaming. Make sure you have some historical data collected.</div>';
+                    return;
+                }
+                
+                const paths = rawData.paths;
+                if (paths.length === 0) {
                     container.innerHTML = '<div class="warning">No paths available for streaming. Make sure you have some historical data collected.</div>';
                     return;
                 }
                 
                 let html = '<div class="paths-grid" style="display: grid; gap: 10px; margin-top: 10px;">';
-                data.forEach(pathInfo => {
+                paths.forEach(pathInfo => {
                     html += `
                         <div class="path-item" style="background: white; padding: 10px; border-radius: 5px; border-left: 4px solid #28a745; cursor: pointer;" 
                              onclick="selectStreamingPath('${pathInfo.path}')">
                             <strong>${pathInfo.path}</strong>
-                            <br><small>Files: ${pathInfo.files ? pathInfo.files.length : 'N/A'}</small>
-                            <br><small>Last modified: ${pathInfo.lastModified ? new Date(pathInfo.lastModified).toLocaleString() : 'N/A'}</small>
+                            <br><small>Files: ${pathInfo.fileCount || 0}</small>
                         </div>
                     `;
                 });
                 html += '</div>';
-                html += `<div class="info" style="margin-top: 10px;">Total: ${data.length} paths available | Click a path to select it</div>`;
+                html += `<div class="info" style="margin-top: 10px;">Total: ${paths.length} paths available | Click a path to select it</div>`;
                 
                 container.innerHTML = html;
             } catch (error) {
