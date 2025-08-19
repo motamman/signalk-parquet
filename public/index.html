@@ -1588,6 +1588,7 @@
             try {
                 const subscriptionId = streamingClient.subscribe(config, (data, meta) => {
                     console.log('Stream data received:', data, meta);
+                    displayStreamingData({ data, timestamp: meta.timestamp });
                 });
 
                 activeStreamSubscriptions.set(subscriptionId, {
