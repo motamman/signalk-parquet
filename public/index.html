@@ -427,6 +427,7 @@
             <button class="tab-button" onclick="showTab('commandManager')">🎮 Command Manager</button>
             <button class="tab-button" onclick="showTab('dataPaths')">📁 Available Data Paths</button>
             <button class="tab-button" onclick="showTab('customQuery')">🔍 Custom Query</button>
+            <button class="tab-button" onclick="showTab('streaming')">📡 Live Streaming</button>
             <button class="tab-button" onclick="showTab('s3Config')">☁️ Cloud Status</button>
         </div>
 
@@ -597,8 +598,103 @@
                     </div>
                 </div>
             </div>
+
+            <!-- Streaming Tab -->
+            <div id="streaming" class="tab-panel">
+                <div class="section">
+                    <h2>📡 Live Streaming</h2>
+                    <p>Monitor real-time data streams and test the streaming API:</p>
+                    
+                    <!-- Connection Status -->
+                    <div class="form-group">
+                        <h3>🔗 Connection Status</h3>
+                        <div id="streamingStatus" style="margin-bottom: 15px;">
+                            <div class="loading">Initializing...</div>
+                        </div>
+                        <button onclick="toggleStreaming()">Connect</button>
+                        <button onclick="refreshStreamingStats()">🔄 Refresh Stats</button>
+                    </div>
+
+                    <!-- Stream Configuration -->
+                    <div class="form-group">
+                        <h3>📊 Create Data Stream</h3>
+                        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-bottom: 15px;">
+                            <div>
+                                <label for="streamPath">Data Path:</label>
+                                <input type="text" id="streamPath" placeholder="navigation.position">
+                            </div>
+                            <div>
+                                <label for="streamTimeWindow">Time Window:</label>
+                                <select id="streamTimeWindow">
+                                    <option value="30s">30 seconds</option>
+                                    <option value="1m">1 minute</option>
+                                    <option value="5m" selected>5 minutes</option>
+                                    <option value="30m">30 minutes</option>
+                                    <option value="1h">1 hour</option>
+                                </select>
+                            </div>
+                            <div>
+                                <label for="streamAggregates">Aggregates:</label>
+                                <select id="streamAggregates" multiple>
+                                    <option value="current" selected>Current</option>
+                                    <option value="min">Min</option>
+                                    <option value="max">Max</option>
+                                    <option value="average">Average</option>
+                                </select>
+                            </div>
+                            <div>
+                                <label for="streamRefresh">Refresh (ms):</label>
+                                <input type="number" id="streamRefresh" value="1000" min="100" max="10000">
+                            </div>
+                        </div>
+                        <button onclick="createStream()">📊 Start Stream</button>
+                        <button onclick="queryOnce()">🔍 Query Once</button>
+                    </div>
+
+                    <!-- Active Streams -->
+                    <div class="form-group">
+                        <h3>🎯 Active Streams</h3>
+                        <div id="activeStreams" style="margin-bottom: 15px;">
+                            <div class="info">No active streams</div>
+                        </div>
+                        <button onclick="clearAllStreams()">❌ Clear All Streams</button>
+                    </div>
+
+                    <!-- Real-time Data Display -->
+                    <div class="form-group">
+                        <h3>📈 Live Data</h3>
+                        <div id="streamingData" style="background: #f8f9fa; padding: 15px; border-radius: 5px; font-family: monospace; white-space: pre-wrap; max-height: 400px; overflow-y: auto;">
+                            No streaming data yet...
+                        </div>
+                    </div>
+
+                    <!-- Available Paths -->
+                    <div class="form-group">
+                        <h3>📂 Available Streaming Paths</h3>
+                        <button onclick="loadStreamingPaths()">🔄 Load Available Paths</button>
+                        <div id="streamingPaths" style="margin-top: 10px;">
+                            <div class="info">Click "Load Available Paths" to see what data is available for streaming</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- S3 Configuration Tab -->
+            <div id="s3Config" class="tab-panel">
+                <div class="section">
+                    <h2>☁️ Cloud Status</h2>
+                    <p>Test your S3 connection and understand the Key Prefix functionality:</p>
+                    <button onclick="testS3Connection()">🔗 Test S3 Connection</button>
+                    <div id="s3TestResult" style="margin-top: 10px;"></div>
+                </div>
+            </div>
         </div>
     </div>
+
+    <!-- Include Socket.IO client library -->
+    <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+    <!-- Include our streaming client -->
+    <script src="streaming-client.js"></script>
 
     <script>
         let availablePaths = [];
@@ -1359,6 +1455,313 @@
             
             html += '</tbody></table></div>';
             container.innerHTML = html;
+        }
+
+        // ===== STREAMING FUNCTIONS =====
+        let streamingClient = null;
+        let activeStreamSubscriptions = new Map();
+
+        // Initialize streaming client when page loads
+        window.addEventListener('load', function() {
+            // Delay streaming initialization to ensure DOM is ready
+            setTimeout(initializeStreaming, 1000);
+        });
+
+        function initializeStreaming() {
+            try {
+                streamingClient = new SignalKStreamingClient({
+                    baseUrl: window.location.origin,
+                    debug: true,
+                    autoConnect: false
+                });
+
+                // Set up event listeners
+                streamingClient.on('connected', () => {
+                    updateStreamingStatus('connected', 'Connected to streaming service');
+                    refreshStreamingStats();
+                });
+
+                streamingClient.on('disconnected', (data) => {
+                    updateStreamingStatus('disconnected', `Disconnected: ${data.reason}`);
+                });
+
+                streamingClient.on('error', (error) => {
+                    updateStreamingStatus('error', `Error: ${error.message || error}`);
+                });
+
+                streamingClient.on('data', (data) => {
+                    displayStreamingData(data);
+                });
+
+                updateStreamingStatus('ready', 'Ready to connect');
+            } catch (error) {
+                updateStreamingStatus('error', `Initialization failed: ${error.message}`);
+            }
+        }
+
+        function updateStreamingStatus(state, message) {
+            const statusEl = document.getElementById('streamingStatus');
+            if (!statusEl) return;
+            
+            const statusClasses = {
+                'ready': 'info',
+                'connected': 'success', 
+                'disconnected': 'warning',
+                'error': 'error'
+            };
+
+            statusEl.innerHTML = `<div class="${statusClasses[state] || 'info'}">${message}</div>`;
+            
+            // Update connect button text
+            const button = document.querySelector('[onclick="toggleStreaming()"]');
+            if (button) {
+                button.textContent = state === 'connected' ? 'Disconnect' : 'Connect';
+            }
+        }
+
+        function toggleStreaming() {
+            if (!streamingClient) return;
+
+            const connectionState = streamingClient.getConnectionState();
+            if (connectionState.connected) {
+                streamingClient.disconnect();
+                clearAllStreams();
+            } else {
+                streamingClient.connect();
+            }
+        }
+
+        async function refreshStreamingStats() {
+            try {
+                const response = await fetch(getPluginPath() + '/api/stream/stats');
+                const stats = await response.json();
+                
+                let statsHtml = '<div class="info">';
+                statsHtml += `Connected Clients: ${stats.connectedClients}<br>`;
+                statsHtml += `Active Subscriptions: ${stats.activeSubscriptions}<br>`;
+                statsHtml += `Server Time: ${new Date(stats.serverTime).toLocaleString()}<br>`;
+                
+                if (Object.keys(stats.subscriptionsByPath).length > 0) {
+                    statsHtml += '<br><strong>Subscriptions by Path:</strong><br>';
+                    Object.entries(stats.subscriptionsByPath).forEach(([path, count]) => {
+                        statsHtml += `${path}: ${count}<br>`;
+                    });
+                }
+                
+                statsHtml += '</div>';
+                
+                // Update the status area with stats
+                const statusEl = document.getElementById('streamingStatus');
+                if (statusEl && streamingClient && streamingClient.getConnectionState().connected) {
+                    statusEl.innerHTML = '<div class="success">Connected</div>' + statsHtml;
+                }
+            } catch (error) {
+                console.error('Failed to refresh streaming stats:', error);
+            }
+        }
+
+        function createStream() {
+            if (!streamingClient || !streamingClient.getConnectionState().connected) {
+                alert('Please connect to the streaming service first');
+                return;
+            }
+
+            const path = document.getElementById('streamPath').value.trim();
+            if (!path) {
+                alert('Please enter a data path');
+                return;
+            }
+
+            const timeWindow = document.getElementById('streamTimeWindow').value;
+            const aggregatesSelect = document.getElementById('streamAggregates');
+            const aggregates = Array.from(aggregatesSelect.selectedOptions).map(option => option.value);
+            const refreshInterval = parseInt(document.getElementById('streamRefresh').value);
+
+            const config = {
+                path,
+                timeWindow,
+                aggregates,
+                refreshInterval
+            };
+
+            try {
+                const subscriptionId = streamingClient.subscribe(config, (data, meta) => {
+                    console.log('Stream data received:', data, meta);
+                });
+
+                activeStreamSubscriptions.set(subscriptionId, {
+                    config,
+                    startTime: new Date().toISOString(),
+                    dataCount: 0
+                });
+
+                updateActiveStreams();
+                document.getElementById('streamPath').value = '';
+            } catch (error) {
+                alert(`Failed to create stream: ${error.message}`);
+            }
+        }
+
+        async function queryOnce() {
+            if (!streamingClient) {
+                alert('Streaming client not initialized');
+                return;
+            }
+
+            const path = document.getElementById('streamPath').value.trim();
+            if (!path) {
+                alert('Please enter a data path');
+                return;
+            }
+
+            const timeWindow = document.getElementById('streamTimeWindow').value;
+            const aggregatesSelect = document.getElementById('streamAggregates');
+            const aggregates = Array.from(aggregatesSelect.selectedOptions).map(option => option.value);
+
+            const config = {
+                path,
+                timeWindow,
+                aggregates
+            };
+
+            try {
+                const dataEl = document.getElementById('streamingData');
+                if (dataEl) dataEl.textContent = 'Querying...';
+
+                const result = await streamingClient.query(config);
+                displayStreamingData({ data: result.data, timestamp: result.timestamp, oneTime: true });
+            } catch (error) {
+                const dataEl = document.getElementById('streamingData');
+                if (dataEl) dataEl.textContent = `Query error: ${error.message}`;
+            }
+        }
+
+        function displayStreamingData(streamData) {
+            const dataEl = document.getElementById('streamingData');
+            if (!dataEl) return;
+            
+            const timestamp = new Date(streamData.timestamp).toLocaleString();
+            const isOneTime = streamData.oneTime;
+            
+            let display = `[${timestamp}] ${isOneTime ? '(One-time query) ' : ''}`;
+            display += `Path: ${streamData.data.path}\n`;
+            display += `Values: ${streamData.data.values.length}\n`;
+            
+            if (streamData.data.values.length > 0) {
+                const latest = streamData.data.values[streamData.data.values.length - 1];
+                display += `Latest: ${JSON.stringify(latest, null, 2)}\n`;
+            }
+            
+            display += `Meta: ${JSON.stringify(streamData.data.meta, null, 2)}\n`;
+            display += '---\n\n';
+            
+            // For streaming data, prepend new data
+            if (!isOneTime) {
+                dataEl.textContent = display + dataEl.textContent;
+                
+                // Keep only the last 50 entries
+                const lines = dataEl.textContent.split('---\n');
+                if (lines.length > 50) {
+                    dataEl.textContent = lines.slice(0, 50).join('---\n');
+                }
+                
+                // Update data count for subscription
+                if (streamData.subscriptionId) {
+                    const sub = activeStreamSubscriptions.get(streamData.subscriptionId);
+                    if (sub) {
+                        sub.dataCount++;
+                        updateActiveStreams();
+                    }
+                }
+            } else {
+                dataEl.textContent = display;
+            }
+        }
+
+        function updateActiveStreams() {
+            const container = document.getElementById('activeStreams');
+            if (!container) return;
+            
+            if (activeStreamSubscriptions.size === 0) {
+                container.innerHTML = '<div class="info">No active streams</div>';
+                return;
+            }
+
+            let html = '<div class="streams-list">';
+            activeStreamSubscriptions.forEach((sub, id) => {
+                html += `
+                    <div class="stream-item" style="background: #f8f9fa; padding: 10px; margin: 5px 0; border-radius: 5px; border-left: 4px solid #667eea;">
+                        <strong>${sub.config.path}</strong> 
+                        (${sub.config.timeWindow}, ${sub.config.aggregates.join(', ')})
+                        <br><small>Started: ${new Date(sub.startTime).toLocaleString()} | Data points: ${sub.dataCount}</small>
+                        <button onclick="stopStream('${id}')" style="float: right; font-size: 12px; padding: 5px 8px;">Stop</button>
+                    </div>
+                `;
+            });
+            html += '</div>';
+            
+            container.innerHTML = html;
+        }
+
+        function stopStream(subscriptionId) {
+            if (streamingClient) {
+                streamingClient.unsubscribe(subscriptionId);
+            }
+            activeStreamSubscriptions.delete(subscriptionId);
+            updateActiveStreams();
+        }
+
+        function clearAllStreams() {
+            if (streamingClient) {
+                activeStreamSubscriptions.forEach((sub, id) => {
+                    streamingClient.unsubscribe(id);
+                });
+            }
+            activeStreamSubscriptions.clear();
+            updateActiveStreams();
+            const dataEl = document.getElementById('streamingData');
+            if (dataEl) dataEl.textContent = 'No streaming data yet...';
+        }
+
+        async function loadStreamingPaths() {
+            try {
+                const response = await fetch(getPluginPath() + '/api/stream/available-paths');
+                const data = await response.json();
+                
+                const container = document.getElementById('streamingPaths');
+                if (!container) return;
+                
+                if (data.paths.length === 0) {
+                    container.innerHTML = '<div class="warning">No paths available for streaming. Make sure you have some historical data collected.</div>';
+                    return;
+                }
+                
+                let html = '<div class="paths-grid" style="display: grid; gap: 10px; margin-top: 10px;">';
+                data.paths.forEach(pathInfo => {
+                    html += `
+                        <div class="path-item" style="background: white; padding: 10px; border-radius: 5px; border-left: 4px solid #28a745; cursor: pointer;" 
+                             onclick="selectStreamingPath('${pathInfo.path}')">
+                            <strong>${pathInfo.path}</strong>
+                            <br><small>Contexts: ${pathInfo.contexts.join(', ')}</small>
+                            <br><small>Files: ${pathInfo.fileCount} | Last seen: ${new Date(pathInfo.lastSeen).toLocaleString()}</small>
+                        </div>
+                    `;
+                });
+                html += '</div>';
+                html += `<div class="info" style="margin-top: 10px;">Total: ${data.paths.length} paths available | Click a path to select it</div>`;
+                
+                container.innerHTML = html;
+            } catch (error) {
+                const container = document.getElementById('streamingPaths');
+                if (container) {
+                    container.innerHTML = `<div class="error">Failed to load streaming paths: ${error.message}</div>`;
+                }
+            }
+        }
+
+        function selectStreamingPath(path) {
+            const pathEl = document.getElementById('streamPath');
+            if (pathEl) pathEl.value = path;
         }
 
     </script>
