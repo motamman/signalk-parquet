@@ -4,6 +4,7 @@ import { Router } from 'express';
 import { ParquetWriter } from './parquet-writer';
 import { registerHistoryApiRoute } from './HistoryAPI';
 import { registerApiRoutes } from './api-routes';
+import { StreamingService } from './streaming-service';
 import {
   SignalKPlugin,
   PluginConfig,
@@ -176,6 +177,31 @@ export default function (app: ServerAPI): SignalKPlugin {
       app.error(`Failed to register History API routes with main server: ${error}`);
     }
 
+    // Initialize streaming service
+    try {
+      // We'll create the HistoryAPI instance here for streaming
+      const { HistoryAPI } = require('./HistoryAPI');
+      const historyAPI = new HistoryAPI(
+        app.selfId,
+        state.currentConfig.outputDirectory
+      );
+      
+      // Access the HTTP server from the SignalK app
+      const httpServer = (app as any).httpServer || (app as any).server;
+      if (httpServer) {
+        state.streamingService = new StreamingService(httpServer, {
+          historyAPI: historyAPI,
+          selfId: app.selfId,
+          debug: true
+        });
+        app.debug('Streaming service initialized successfully');
+      } else {
+        app.debug('HTTP server not available, streaming service not initialized');
+      }
+    } catch (error) {
+      app.error(`Failed to initialize streaming service: ${error}`);
+    }
+
     app.debug('Started');
   };
 
@@ -202,6 +228,17 @@ export default function (app: ServerAPI): SignalKPlugin {
       }
     });
     state.unsubscribes = [];
+
+    // Shutdown streaming service
+    if (state.streamingService) {
+      try {
+        state.streamingService.shutdown();
+        app.debug('Streaming service shut down successfully');
+      } catch (error) {
+        app.error(`Error shutting down streaming service: ${error}`);
+      }
+      state.streamingService = undefined;
+    }
 
     // Clean up stream subscriptions (new streambundle approach)
     if (state.streamSubscriptions) {

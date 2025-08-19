@@ -230,6 +230,8 @@ export interface PluginState {
   s3Client?: any;
   currentConfig?: PluginConfig;
   commandState: CommandRegistrationState;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  streamingService?: any; // StreamingService instance
 }
 
 // Parquet Writer Class Interface
