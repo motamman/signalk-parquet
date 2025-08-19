@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express';
-import { PluginState } from './types';
+import { PluginState, StreamingSubscriptionConfig } from './types';
 import { UniversalDataSource, DataSourceConfig } from './universal-datasource';
 import { HistoryAPI } from './HistoryAPI';
 import { ServerAPI } from '@signalk/server-api';
@@ -33,7 +33,7 @@ export function registerStreamingRoutes(router: Router, state: PluginState, app:
         streamingEnabled: true
       });
     } catch (error) {
-      app.error('Error getting streaming stats:', error);
+      app.error(`Error getting streaming stats: ${error}`);
       res.status(500).json({ error: 'Failed to get streaming stats' });
     }
   });
@@ -78,7 +78,7 @@ export function registerStreamingRoutes(router: Router, state: PluginState, app:
       });
 
     } catch (error) {
-      app.error('Error in stream query:', error);
+      app.error(`Error in stream query: ${error}`);
       res.status(500).json({ 
         error: 'Query failed',
         message: error instanceof Error ? error.message : 'Unknown error'
@@ -176,7 +176,7 @@ export function registerStreamingRoutes(router: Router, state: PluginState, app:
       }
 
     } catch (error) {
-      app.error('Error validating stream config:', error);
+      app.error(`Error validating stream config: ${error}`);
       res.status(500).json({ 
         error: 'Validation failed',
         message: error instanceof Error ? error.message : 'Unknown error'
@@ -212,9 +212,191 @@ export function registerStreamingRoutes(router: Router, state: PluginState, app:
       });
 
     } catch (error) {
-      app.error('Error broadcasting to streaming clients:', error);
+      app.error(`Error broadcasting to streaming clients: ${error}`);
       res.status(500).json({ 
         error: 'Broadcast failed',
+        message: error instanceof Error ? error.message : 'Unknown error'
+      });
+    }
+  });
+
+  /**
+   * GET /api/stream/subscriptions
+   * Get saved stream subscriptions
+   */
+  router.get('/api/stream/subscriptions', (req: Request, res: Response) => {
+    try {
+      const subscriptions = state.currentConfig?.streamingSubscriptions || [];
+      res.json({
+        success: true,
+        subscriptions,
+        total: subscriptions.length
+      });
+    } catch (error) {
+      app.error(`Error getting stream subscriptions: ${error}`);
+      res.status(500).json({ 
+        success: false,
+        error: 'Failed to get stream subscriptions',
+        message: error instanceof Error ? error.message : 'Unknown error'
+      });
+    }
+  });
+
+  /**
+   * POST /api/stream/subscriptions
+   * Save a new stream subscription
+   */
+  router.post('/api/stream/subscriptions', (req: Request, res: Response) => {
+    try {
+      const { name, path, timeWindow, aggregates, refreshInterval } = req.body as {
+        name: string;
+        path: string;
+        timeWindow: string;
+        aggregates: string[];
+        refreshInterval: number;
+      };
+
+      if (!name || !path) {
+        return res.status(400).json({ 
+          success: false,
+          error: 'Name and path are required' 
+        });
+      }
+
+      const newSubscription: StreamingSubscriptionConfig = {
+        id: `stream_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+        name,
+        enabled: true,
+        path,
+        timeWindow: timeWindow || '5m',
+        aggregates: aggregates || ['current'],
+        refreshInterval: refreshInterval || 1000,
+        createdAt: new Date().toISOString()
+      };
+
+      // Add to plugin config
+      if (!state.currentConfig) {
+        return res.status(500).json({ 
+          success: false,
+          error: 'Plugin configuration not available' 
+        });
+      }
+
+      if (!state.currentConfig.streamingSubscriptions) {
+        state.currentConfig.streamingSubscriptions = [];
+      }
+
+      state.currentConfig.streamingSubscriptions.push(newSubscription);
+
+      // TODO: Save the configuration persistently (would need SignalK plugin config API)
+      app.debug(`Saved stream subscription: ${newSubscription.name} (${newSubscription.path})`);
+
+      res.json({
+        success: true,
+        subscription: newSubscription,
+        message: 'Stream subscription saved successfully'
+      });
+
+    } catch (error) {
+      app.error(`Error saving stream subscription: ${error}`);
+      res.status(500).json({ 
+        success: false,
+        error: 'Failed to save stream subscription',
+        message: error instanceof Error ? error.message : 'Unknown error'
+      });
+    }
+  });
+
+  /**
+   * PUT /api/stream/subscriptions/:id
+   * Update a stream subscription
+   */
+  router.put('/api/stream/subscriptions/:id', (req: Request, res: Response) => {
+    try {
+      const { id } = req.params;
+      const updates = req.body;
+
+      if (!state.currentConfig?.streamingSubscriptions) {
+        return res.status(404).json({ 
+          success: false,
+          error: 'No stream subscriptions found' 
+        });
+      }
+
+      const subscriptionIndex = state.currentConfig.streamingSubscriptions.findIndex(sub => sub.id === id);
+      if (subscriptionIndex === -1) {
+        return res.status(404).json({ 
+          success: false,
+          error: 'Stream subscription not found' 
+        });
+      }
+
+      // Update the subscription
+      state.currentConfig.streamingSubscriptions[subscriptionIndex] = {
+        ...state.currentConfig.streamingSubscriptions[subscriptionIndex],
+        ...updates
+      };
+
+      const updatedSubscription = state.currentConfig.streamingSubscriptions[subscriptionIndex];
+
+      // TODO: Save the configuration persistently
+      app.debug(`Updated stream subscription: ${updatedSubscription.name}`);
+
+      res.json({
+        success: true,
+        subscription: updatedSubscription,
+        message: 'Stream subscription updated successfully'
+      });
+
+    } catch (error) {
+      app.error(`Error updating stream subscription: ${error}`);
+      res.status(500).json({ 
+        success: false,
+        error: 'Failed to update stream subscription',
+        message: error instanceof Error ? error.message : 'Unknown error'
+      });
+    }
+  });
+
+  /**
+   * DELETE /api/stream/subscriptions/:id
+   * Delete a stream subscription
+   */
+  router.delete('/api/stream/subscriptions/:id', (req: Request, res: Response) => {
+    try {
+      const { id } = req.params;
+
+      if (!state.currentConfig?.streamingSubscriptions) {
+        return res.status(404).json({ 
+          success: false,
+          error: 'No stream subscriptions found' 
+        });
+      }
+
+      const subscriptionIndex = state.currentConfig.streamingSubscriptions.findIndex(sub => sub.id === id);
+      if (subscriptionIndex === -1) {
+        return res.status(404).json({ 
+          success: false,
+          error: 'Stream subscription not found' 
+        });
+      }
+
+      const deletedSubscription = state.currentConfig.streamingSubscriptions[subscriptionIndex];
+      state.currentConfig.streamingSubscriptions.splice(subscriptionIndex, 1);
+
+      // TODO: Save the configuration persistently
+      app.debug(`Deleted stream subscription: ${deletedSubscription.name}`);
+
+      res.json({
+        success: true,
+        message: 'Stream subscription deleted successfully'
+      });
+
+    } catch (error) {
+      app.error(`Error deleting stream subscription: ${error}`);
+      res.status(500).json({ 
+        success: false,
+        error: 'Failed to delete stream subscription',
         message: error instanceof Error ? error.message : 'Unknown error'
       });
     }

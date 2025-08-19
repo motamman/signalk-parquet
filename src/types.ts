@@ -32,6 +32,8 @@ export interface PluginConfig {
   fileFormat: 'json' | 'csv' | 'parquet';
   vesselMMSI: string;
   s3Upload: S3UploadConfig;
+  enableStreaming: boolean;
+  streamingSubscriptions: StreamingSubscriptionConfig[];
 }
 
 export interface PathConfig {
@@ -42,6 +44,18 @@ export interface PathConfig {
   source?: string;
   context?: Context;
   excludeMMSI?: string[]; // Array of MMSI numbers to exclude when using vessels.*
+}
+
+// Streaming Subscription Configuration
+export interface StreamingSubscriptionConfig {
+  id: string;
+  name: string;
+  enabled: boolean;
+  path: string;
+  timeWindow: string;
+  aggregates: string[];
+  refreshInterval: number;
+  createdAt: string;
 }
 
 // Command Registration Types
@@ -232,6 +246,8 @@ export interface PluginState {
   commandState: CommandRegistrationState;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   streamingService?: any; // StreamingService instance
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  restoredSubscriptions?: Map<string, any>; // Restored stream subscriptions for cleanup
 }
 
 // Parquet Writer Class Interface

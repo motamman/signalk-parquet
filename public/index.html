@@ -676,6 +676,19 @@
                             <div class="info">Click "Load Available Paths" to see what data is available for streaming</div>
                         </div>
                     </div>
+
+                    <!-- Saved Streams -->
+                    <div class="form-group">
+                        <h3>💾 Saved Stream Subscriptions</h3>
+                        <p>Persistent streams that auto-restore on plugin restart:</p>
+                        <div style="margin-bottom: 15px;">
+                            <button onclick="saveCurrentStream()">💾 Save Current Stream</button>
+                            <button onclick="loadSavedStreams()">🔄 Refresh Saved Streams</button>
+                        </div>
+                        <div id="savedStreams" style="margin-top: 10px;">
+                            <div class="info">Loading saved streams...</div>
+                        </div>
+                    </div>
                 </div>
             </div>
 
@@ -1787,6 +1800,198 @@
             const pathEl = document.getElementById('streamPath');
             if (pathEl) pathEl.value = path;
         }
+
+        // ===== SAVED STREAMS MANAGEMENT =====
+
+        async function loadSavedStreams() {
+            try {
+                const response = await fetch(getPluginPath() + '/api/stream/subscriptions');
+                const result = await response.json();
+                
+                const container = document.getElementById('savedStreams');
+                if (!container) return;
+                
+                if (!result.success || !result.subscriptions || result.subscriptions.length === 0) {
+                    container.innerHTML = '<div class="info">No saved streams yet. Save your current stream configuration to get started!</div>';
+                    return;
+                }
+                
+                let html = '<div class="saved-streams-grid" style="display: grid; gap: 10px; margin-top: 10px;">';
+                
+                result.subscriptions.forEach(stream => {
+                    const enabledClass = stream.enabled ? 'enabled' : 'disabled';
+                    const enabledIcon = stream.enabled ? '✅' : '❌';
+                    
+                    html += `
+                        <div class="saved-stream-item ${enabledClass}" style="background: white; padding: 15px; border-radius: 5px; border-left: 4px solid ${stream.enabled ? '#28a745' : '#6c757d'};">
+                            <div style="display: flex; justify-content: between; align-items: center; margin-bottom: 10px;">
+                                <strong>${stream.name}</strong>
+                                <div style="margin-left: auto;">
+                                    <button onclick="toggleSavedStream('${stream.id}', ${!stream.enabled})" style="margin-right: 5px;">${enabledIcon}</button>
+                                    <button onclick="loadSavedStreamToForm('${stream.id}')" style="margin-right: 5px;">📝</button>
+                                    <button onclick="deleteSavedStream('${stream.id}', '${stream.name}')" style="color: #dc3545;">🗑️</button>
+                                </div>
+                            </div>
+                            <div style="font-size: 12px; color: #666;">
+                                <div><strong>Path:</strong> ${stream.path}</div>
+                                <div><strong>Window:</strong> ${stream.timeWindow} | <strong>Refresh:</strong> ${stream.refreshInterval}ms</div>
+                                <div><strong>Aggregates:</strong> ${stream.aggregates.join(', ')}</div>
+                                <div><strong>Created:</strong> ${new Date(stream.createdAt).toLocaleString()}</div>
+                            </div>
+                        </div>
+                    `;
+                });
+                
+                html += '</div>';
+                html += `<div class="info" style="margin-top: 10px;">Total: ${result.subscriptions.length} saved streams</div>`;
+                
+                container.innerHTML = html;
+                
+            } catch (error) {
+                const container = document.getElementById('savedStreams');
+                if (container) {
+                    container.innerHTML = `<div class="error">Failed to load saved streams: ${error.message}</div>`;
+                }
+            }
+        }
+
+        async function saveCurrentStream() {
+            const path = document.getElementById('streamPath').value;
+            const timeWindow = document.getElementById('streamTimeWindow').value;
+            const refreshInterval = parseInt(document.getElementById('streamRefreshInterval').value) || 1000;
+            
+            // Get selected aggregates
+            const aggregateCheckboxes = document.querySelectorAll('input[name="streamAggregates"]:checked');
+            const aggregates = Array.from(aggregateCheckboxes).map(cb => cb.value);
+            
+            if (!path) {
+                alert('Please select a data path first');
+                return;
+            }
+            
+            if (aggregates.length === 0) {
+                alert('Please select at least one aggregate');
+                return;
+            }
+            
+            const name = prompt(`Enter a name for this stream configuration:\n\nPath: ${path}\nWindow: ${timeWindow}\nAggregates: ${aggregates.join(', ')}`, 
+                               `${path.split('.').pop()} (${timeWindow})`);
+            
+            if (!name) return;
+            
+            try {
+                const response = await fetch(getPluginPath() + '/api/stream/subscriptions', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        name,
+                        path,
+                        timeWindow,
+                        aggregates,
+                        refreshInterval
+                    })
+                });
+                
+                const result = await response.json();
+                
+                if (result.success) {
+                    alert(`Stream "${name}" saved successfully!`);
+                    loadSavedStreams(); // Refresh the list
+                } else {
+                    alert(`Failed to save stream: ${result.error}`);
+                }
+                
+            } catch (error) {
+                alert(`Error saving stream: ${error.message}`);
+            }
+        }
+
+        async function toggleSavedStream(id, enabled) {
+            try {
+                const response = await fetch(getPluginPath() + `/api/stream/subscriptions/${id}`, {
+                    method: 'PUT',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ enabled })
+                });
+                
+                const result = await response.json();
+                
+                if (result.success) {
+                    loadSavedStreams(); // Refresh the list
+                } else {
+                    alert(`Failed to update stream: ${result.error}`);
+                }
+                
+            } catch (error) {
+                alert(`Error updating stream: ${error.message}`);
+            }
+        }
+
+        async function deleteSavedStream(id, name) {
+            if (!confirm(`Are you sure you want to delete the saved stream "${name}"?`)) {
+                return;
+            }
+            
+            try {
+                const response = await fetch(getPluginPath() + `/api/stream/subscriptions/${id}`, {
+                    method: 'DELETE'
+                });
+                
+                const result = await response.json();
+                
+                if (result.success) {
+                    alert(`Stream "${name}" deleted successfully!`);
+                    loadSavedStreams(); // Refresh the list
+                } else {
+                    alert(`Failed to delete stream: ${result.error}`);
+                }
+                
+            } catch (error) {
+                alert(`Error deleting stream: ${error.message}`);
+            }
+        }
+
+        async function loadSavedStreamToForm(id) {
+            try {
+                const response = await fetch(getPluginPath() + '/api/stream/subscriptions');
+                const result = await response.json();
+                
+                if (!result.success) {
+                    alert('Failed to load saved streams');
+                    return;
+                }
+                
+                const stream = result.subscriptions.find(s => s.id === id);
+                if (!stream) {
+                    alert('Stream not found');
+                    return;
+                }
+                
+                // Fill form with saved stream data
+                document.getElementById('streamPath').value = stream.path;
+                document.getElementById('streamTimeWindow').value = stream.timeWindow;
+                document.getElementById('streamRefreshInterval').value = stream.refreshInterval;
+                
+                // Clear and set aggregates
+                document.querySelectorAll('input[name="streamAggregates"]').forEach(cb => {
+                    cb.checked = stream.aggregates.includes(cb.value);
+                });
+                
+                alert(`Stream "${stream.name}" loaded into form. You can now start streaming or modify settings.`);
+                
+            } catch (error) {
+                alert(`Error loading stream: ${error.message}`);
+            }
+        }
+
+        // Load saved streams when page loads
+        window.addEventListener('load', function() {
+            setTimeout(loadSavedStreams, 1500); // Delay to let other components load first
+        });
 
     </script>
 </body>

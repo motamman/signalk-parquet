@@ -10,6 +10,7 @@ import {
   PluginConfig,
   PluginState,
   PathConfig,
+  StreamingSubscriptionConfig,
 } from './types';
 import {
   loadWebAppConfig,
@@ -29,6 +30,70 @@ import {
   uploadAllConsolidatedFilesToS3,
 } from './data-handler';
 import { ServerAPI } from '@signalk/server-api';
+
+/**
+ * Restore saved stream subscriptions on plugin startup
+ */
+async function restoreStreamSubscriptions(state: PluginState, app: ServerAPI): Promise<void> {
+  if (!state.streamingService || !state.currentConfig?.streamingSubscriptions) {
+    return;
+  }
+
+  const enabledStreams = state.currentConfig.streamingSubscriptions.filter(stream => stream.enabled);
+  if (enabledStreams.length === 0) {
+    app.debug('No enabled stream subscriptions to restore');
+    return;
+  }
+
+  app.debug(`Restoring ${enabledStreams.length} enabled stream subscriptions`);
+
+  for (const streamConfig of enabledStreams) {
+    try {
+      // Import the UniversalDataSource and HistoryAPI here to avoid circular imports
+      const { UniversalDataSource } = require('./universal-datasource');
+      const { HistoryAPI } = require('./HistoryAPI');
+      
+      const historyAPI = new HistoryAPI(app.selfId, state.currentConfig!.outputDirectory);
+      
+      const dataSourceConfig = {
+        path: streamConfig.path,
+        timeWindow: streamConfig.timeWindow,
+        aggregates: streamConfig.aggregates,
+        refreshInterval: streamConfig.refreshInterval
+      };
+
+      // Create data source and subscribe to stream
+      const dataSource = new UniversalDataSource(dataSourceConfig, historyAPI);
+      const subscription = dataSource.stream().subscribe({
+        next: (data: any) => {
+          // Broadcast to all connected WebSocket clients
+          state.streamingService.broadcast('data', {
+            subscriptionId: streamConfig.id,
+            data,
+            timestamp: new Date().toISOString()
+          });
+        },
+        error: (error: any) => {
+          app.error(`Stream error for ${streamConfig.name} (${streamConfig.path}): ${error}`);
+        }
+      });
+
+      // Store the subscription for cleanup on shutdown
+      if (!state.restoredSubscriptions) {
+        state.restoredSubscriptions = new Map();
+      }
+      state.restoredSubscriptions.set(streamConfig.id, {
+        subscription,
+        dataSource,
+        config: streamConfig
+      });
+
+      app.debug(`Restored stream: ${streamConfig.name} (${streamConfig.path})`);
+    } catch (error) {
+      app.error(`Failed to restore stream ${streamConfig.name}: ${error}`);
+    }
+  }
+}
 
 export default function (app: ServerAPI): SignalKPlugin {
   const plugin: SignalKPlugin = {
@@ -82,6 +147,8 @@ export default function (app: ServerAPI): SignalKPlugin {
       fileFormat: options?.fileFormat || 'parquet',
       vesselMMSI: vesselMMSI,
       s3Upload: options?.s3Upload || { enabled: false },
+      enableStreaming: options?.enableStreaming ?? true,
+      streamingSubscriptions: options?.streamingSubscriptions || [],
     };
 
     // Load webapp configuration including commands
@@ -177,29 +244,36 @@ export default function (app: ServerAPI): SignalKPlugin {
       app.error(`Failed to register History API routes with main server: ${error}`);
     }
 
-    // Initialize streaming service
-    try {
-      // We'll create the HistoryAPI instance here for streaming
-      const { HistoryAPI } = require('./HistoryAPI');
-      const historyAPI = new HistoryAPI(
-        app.selfId,
-        state.currentConfig.outputDirectory
-      );
-      
-      // Access the HTTP server from the SignalK app
-      const httpServer = (app as any).httpServer || (app as any).server;
-      if (httpServer) {
-        state.streamingService = new StreamingService(httpServer, {
-          historyAPI: historyAPI,
-          selfId: app.selfId,
-          debug: true
-        });
-        app.debug('Streaming service initialized successfully');
-      } else {
-        app.debug('HTTP server not available, streaming service not initialized');
+    // Initialize streaming service if enabled
+    if (state.currentConfig.enableStreaming) {
+      try {
+        // We'll create the HistoryAPI instance here for streaming
+        const { HistoryAPI } = require('./HistoryAPI');
+        const historyAPI = new HistoryAPI(
+          app.selfId,
+          state.currentConfig.outputDirectory
+        );
+        
+        // Access the HTTP server from the SignalK app
+        const httpServer = (app as any).httpServer || (app as any).server;
+        if (httpServer) {
+          state.streamingService = new StreamingService(httpServer, {
+            historyAPI: historyAPI,
+            selfId: app.selfId,
+            debug: false
+          });
+          app.debug('Streaming service initialized successfully');
+          
+          // Auto-restore enabled stream subscriptions
+          await restoreStreamSubscriptions(state, app);
+        } else {
+          app.debug('HTTP server not available, streaming service not initialized');
+        }
+      } catch (error) {
+        app.error(`Failed to initialize streaming service: ${error}`);
       }
-    } catch (error) {
-      app.error(`Failed to initialize streaming service: ${error}`);
+    } else {
+      app.debug('Streaming service disabled in configuration');
     }
 
     app.debug('Started');
@@ -228,6 +302,19 @@ export default function (app: ServerAPI): SignalKPlugin {
       }
     });
     state.unsubscribes = [];
+
+    // Clean up restored stream subscriptions
+    if (state.restoredSubscriptions) {
+      state.restoredSubscriptions.forEach((sub, id) => {
+        try {
+          sub.subscription.unsubscribe();
+          app.debug(`Unsubscribed restored stream: ${id}`);
+        } catch (error) {
+          app.error(`Error unsubscribing restored stream ${id}: ${error}`);
+        }
+      });
+      state.restoredSubscriptions = undefined;
+    }
 
     // Shutdown streaming service
     if (state.streamingService) {
@@ -368,6 +455,63 @@ export default function (app: ServerAPI): SignalKPlugin {
             default: false,
           },
         },
+      },
+      enableStreaming: {
+        type: 'boolean',
+        title: 'Enable Streaming Service',
+        description: 'Enable real-time data streaming via WebSockets for live data monitoring',
+        default: true,
+      },
+      streamingSubscriptions: {
+        type: 'array',
+        title: 'Saved Stream Subscriptions',
+        description: 'Persistent stream configurations that auto-restore on plugin restart',
+        items: {
+          type: 'object',
+          properties: {
+            id: {
+              type: 'string',
+              title: 'ID'
+            },
+            name: {
+              type: 'string',
+              title: 'Stream Name'
+            },
+            enabled: {
+              type: 'boolean',
+              title: 'Enabled',
+              default: true
+            },
+            path: {
+              type: 'string',
+              title: 'SignalK Path'
+            },
+            timeWindow: {
+              type: 'string',
+              title: 'Time Window',
+              default: '5m'
+            },
+            aggregates: {
+              type: 'array',
+              title: 'Aggregates',
+              items: {
+                type: 'string',
+                enum: ['current', 'min', 'max', 'average', 'first', 'last', 'median']
+              },
+              default: ['current']
+            },
+            refreshInterval: {
+              type: 'number',
+              title: 'Refresh Interval (ms)',
+              default: 1000,
+              minimum: 100
+            },
+            createdAt: {
+              type: 'string',
+              title: 'Created'
+            }
+          }
+        }
       },
     },
   };
