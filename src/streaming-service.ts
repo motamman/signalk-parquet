@@ -32,28 +32,34 @@ export class StreamingService {
     this.debug = options.debug || false;
 
     try {
-      // Create Socket.IO server with unique path and safer options to avoid conflicts
-      const socketPath = '/signalk-parquet-stream';
-      
+      // Create Socket.IO server with namespace approach to avoid HTTP conflicts
       this.io = new SocketIOServer(httpServer, {
-        path: socketPath,
+        // Remove custom path - use default Socket.IO path
         cors: {
           origin: "*",
           methods: ["GET", "POST"]
         },
         transports: ['websocket', 'polling'],
-        // Safer options to prevent HTTP server conflicts
+        // More restrictive options to prevent HTTP server takeover
         allowEIO3: true,
-        pingTimeout: 60000,  // Increased timeout
-        pingInterval: 25000, // Increased interval
+        pingTimeout: 60000,
+        pingInterval: 25000,
         upgradeTimeout: 10000,
         maxHttpBufferSize: 1e6,
-        // Prevent Socket.IO from interfering with existing routes
-        serveClient: false
+        serveClient: false,
+        // Additional options to prevent interference
+        allowRequest: (req, callback) => {
+          // Only allow Socket.IO specific requests
+          const isSocketIO = req.url?.startsWith('/socket.io/') || 
+                           req.headers.upgrade === 'websocket';
+          callback(null, isSocketIO);
+        }
       });
 
+      // Use a namespace instead of custom path to isolate from main server
+      const namespace = this.io.of('/parquet-stream');
       this.setupEventHandlers();
-      this.log('Streaming service initialized successfully');
+      this.log('Streaming service initialized successfully with namespace /parquet-stream');
     } catch (error) {
       this.log('Failed to initialize Socket.IO server:', error);
       // Don't throw error - let plugin continue without streaming
