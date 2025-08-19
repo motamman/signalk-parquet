@@ -32,7 +32,7 @@ export class StreamingService {
     this.debug = options.debug || false;
 
     try {
-      // Create Socket.IO server with unique path to avoid conflicts during restarts
+      // Create Socket.IO server with unique path and safer options to avoid conflicts
       const socketPath = '/signalk-parquet-stream';
       
       this.io = new SocketIOServer(httpServer, {
@@ -42,21 +42,31 @@ export class StreamingService {
           methods: ["GET", "POST"]
         },
         transports: ['websocket', 'polling'],
-        // Add options to handle plugin restarts better
+        // Safer options to prevent HTTP server conflicts
         allowEIO3: true,
-        pingTimeout: 20000,
-        pingInterval: 10000
+        pingTimeout: 60000,  // Increased timeout
+        pingInterval: 25000, // Increased interval
+        upgradeTimeout: 10000,
+        maxHttpBufferSize: 1e6,
+        // Prevent Socket.IO from interfering with existing routes
+        serveClient: false
       });
 
       this.setupEventHandlers();
       this.log('Streaming service initialized successfully');
     } catch (error) {
       this.log('Failed to initialize Socket.IO server:', error);
-      throw error;
+      // Don't throw error - let plugin continue without streaming
+      this.io = null as any;
     }
   }
 
   private setupEventHandlers(): void {
+    if (!this.io) {
+      this.log('Cannot setup event handlers - Socket.IO server not initialized');
+      return;
+    }
+    
     this.io.on('connection', (socket: Socket) => {
       this.log(`Client connected: ${socket.id}`);
 
@@ -238,7 +248,7 @@ export class StreamingService {
     });
 
     return {
-      connectedClients: this.io.sockets.sockets.size,
+      connectedClients: this.io ? this.io.sockets.sockets.size : 0,
       activeSubscriptions: this.clientSubscriptions.size,
       subscriptionsByPath
     };
@@ -248,7 +258,11 @@ export class StreamingService {
    * Broadcast a message to all connected clients
    */
   broadcast(event: string, data: any): void {
-    this.io.emit(event, data);
+    if (this.io) {
+      this.io.emit(event, data);
+    } else {
+      this.log('Cannot broadcast - Socket.IO server not initialized');
+    }
   }
 
   /**
