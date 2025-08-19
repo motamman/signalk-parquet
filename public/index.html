@@ -1469,7 +1469,7 @@
 
         function initializeStreaming() {
             try {
-                streamingClient = window.streamingClient = new SignalKStreamingClient({
+                streamingClient = window.streamingClient = window.streamingService = new SignalKStreamingClient({
                     baseUrl: window.location.origin,
                     debug: true,
                     autoConnect: false
