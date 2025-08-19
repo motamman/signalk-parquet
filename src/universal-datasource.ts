@@ -64,9 +64,20 @@ export class UniversalDataSource {
         return this.fetchData();
       }),
       distinctUntilChanged((prev: StreamResponse, curr: StreamResponse) => {
-        const isDifferent = JSON.stringify(prev) !== JSON.stringify(curr);
-        console.log(`[UniversalDataSource] Data changed for ${this.config.path}:`, isDifferent);
-        return !isDifferent;
+        // For streaming, we want to emit regularly even if data is the same
+        // Only filter out if the values array is empty (no data available)
+        const prevEmpty = !prev.values || prev.values.length === 0;
+        const currEmpty = !curr.values || curr.values.length === 0;
+        
+        // If both are empty, they're the same (filter out)
+        if (prevEmpty && currEmpty) {
+          console.log(`[UniversalDataSource] Both empty for ${this.config.path} - filtering out`);
+          return true;
+        }
+        
+        // Always emit if we have data (even if same values)
+        console.log(`[UniversalDataSource] Emitting data for ${this.config.path}, values: ${curr.values.length}`);
+        return false;
       }),
       shareReplay(1)
     );
