@@ -125,9 +125,16 @@ class SignalKStreamingClient {
   handleDataMessage(message) {
     const { subscriptionId, data, timestamp } = message;
     
-    if (this.subscriptions.has(subscriptionId)) {
-      const subscription = this.subscriptions.get(subscriptionId);
-      
+    // Try to find the subscription by ID first
+    let subscription = this.subscriptions.get(subscriptionId);
+    
+    // If not found, use the first subscription (for ID mismatch between server and client)
+    if (!subscription && this.subscriptions.size > 0) {
+      subscription = Array.from(this.subscriptions.values())[0];
+      this.log('Using first subscription due to ID mismatch between server and client');
+    }
+    
+    if (subscription) {
       // Call the subscription callback
       if (subscription.callback) {
         try {
@@ -139,6 +146,8 @@ class SignalKStreamingClient {
       
       // Emit generic data event
       this.emit('data', { subscriptionId, data, timestamp });
+    } else {
+      this.log('No matching subscription found for:', subscriptionId);
     }
   }
 
