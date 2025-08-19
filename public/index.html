@@ -1471,7 +1471,7 @@
             try {
                 streamingClient = window.streamingClient = window.streamingService = new SignalKStreamingClient({
                     baseUrl: window.location.origin,
-                    debug: true,
+                    debug: false,
                     autoConnect: false
                 });
 
@@ -1490,7 +1490,6 @@
                 });
 
                 streamingClient.on('data', (data) => {
-                    console.log('📡 Received data event:', data);
                     displayStreamingData(data);
                 });
 
@@ -1587,7 +1586,6 @@
 
             try {
                 const subscriptionId = streamingClient.subscribe(config, (data, meta) => {
-                    console.log('Stream data received:', data, meta);
                     displayStreamingData({ data, timestamp: meta.timestamp });
                 });
 

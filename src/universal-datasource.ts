@@ -60,7 +60,6 @@ export class UniversalDataSource {
     
     return refreshTimer.pipe(
       switchMap(() => {
-        console.log(`[UniversalDataSource] Fetching data for ${this.config.path}`);
         return this.fetchData();
       }),
       distinctUntilChanged((prev: StreamResponse, curr: StreamResponse) => {
@@ -71,12 +70,10 @@ export class UniversalDataSource {
         
         // If both are empty, they're the same (filter out)
         if (prevEmpty && currEmpty) {
-          console.log(`[UniversalDataSource] Both empty for ${this.config.path} - filtering out`);
           return true;
         }
         
         // Always emit if we have data (even if same values)
-        console.log(`[UniversalDataSource] Emitting data for ${this.config.path}, values: ${curr.values.length}`);
         return false;
       }),
       shareReplay(1)
