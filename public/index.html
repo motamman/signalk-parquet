@@ -1469,7 +1469,7 @@
 
         function initializeStreaming() {
             try {
-                streamingClient = new SignalKStreamingClient({
+                streamingClient = window.streamingClient = new SignalKStreamingClient({
                     baseUrl: window.location.origin,
                     debug: true,
                     autoConnect: false
@@ -1490,6 +1490,7 @@
                 });
 
                 streamingClient.on('data', (data) => {
+                    console.log('📡 Received data event:', data);
                     displayStreamingData(data);
                 });
 
