@@ -1660,8 +1660,8 @@
             
             // For streaming data, prepend new data (newest at top)
             if (!isOneTime) {
-                // Add header if this is the first entry
-                if (!dataEl.textContent || dataEl.textContent === 'No streaming data yet...') {
+                // Initialize with header when first data arrives
+                if (!dataEl.textContent || dataEl.textContent === 'No streaming data yet...' || !dataEl.textContent.includes('Received')) {
                     dataEl.textContent = 'Received        | Signal         | Value  | Data Time | Window\n';
                     dataEl.textContent += '--------------- | -------------- | ------ | --------- | ------\n';
                 }
