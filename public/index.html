@@ -1658,7 +1658,7 @@
                 display += '\n';
             }
             
-            // For streaming data, prepend new data
+            // For streaming data, prepend new data (newest at top)
             if (!isOneTime) {
                 // Add header if this is the first entry
                 if (!dataEl.textContent || dataEl.textContent === 'No streaming data yet...') {
@@ -1666,14 +1666,19 @@
                     dataEl.textContent += '--------------- | -------------- | ------ | --------- | ------\n';
                 }
                 
-                dataEl.textContent += display;
-                
-                // Keep only the last 50 data lines (plus header)
+                // Insert new data after header (newest at top)
                 const lines = dataEl.textContent.split('\n');
-                if (lines.length > 52) { // 2 header lines + 50 data lines
-                    const header = lines.slice(0, 2);
-                    const dataLines = lines.slice(2, 52);
-                    dataEl.textContent = header.concat(dataLines).join('\n');
+                const header = lines.slice(0, 2);
+                const existingData = lines.slice(2);
+                
+                // Add new data right after header
+                const newLines = header.concat([display.trim()], existingData);
+                
+                // Keep only the last 100 data lines (plus header)
+                if (newLines.length > 102) { // 2 header lines + 100 data lines
+                    dataEl.textContent = newLines.slice(0, 102).join('\n');
+                } else {
+                    dataEl.textContent = newLines.join('\n');
                 }
                 
                 // Update data count for subscription
