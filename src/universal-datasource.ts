@@ -91,10 +91,11 @@ export class UniversalDataSource {
           values: newValues,
           meta: {
             ...response.meta,
+            timeWindow: response.meta?.timeWindow || this.config.timeWindow || '1h',
             isIncremental: true,
             newDataPoints: newValues.length
           }
-        };
+        } as StreamResponse;
       }),
       distinctUntilChanged((prev: StreamResponse, curr: StreamResponse) => {
         // For streaming, only filter out if no new data
