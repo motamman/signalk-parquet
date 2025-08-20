@@ -414,15 +414,18 @@ export class HistoryAPI {
       const from = parseDateTime(fromIso, true);
       const to = parseDateTime(toIso, true);
       
-      // Create a mock request object with the path
+      // Calculate reasonable resolution for streaming based on time window
+      const timeWindowSeconds = to.toEpochSecond() - from.toEpochSecond();
+      const targetDataPoints = 120; // Target ~120 data points for good granularity
+      const resolutionMs = Math.max(1000, (timeWindowSeconds * 1000) / targetDataPoints);
+      
+      // Create a mock request object with the path and dynamic resolution
       const mockReq = {
         query: {
           paths: path,
-          resolution: '1000' // 1 second resolution
+          resolution: resolutionMs
         }
       } as any;
-
-      console.log('DEBUG: queryForStreaming dates:', { fromIso, toIso, from: from.toString(), to: to.toString() });
 
       let capturedResult: any = null;
       const mockRes = {
