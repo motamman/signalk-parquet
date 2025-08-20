@@ -6,14 +6,16 @@ A comprehensive TypeScript-based SignalK plugin that saves marine data directly 
 
 ## Features
 
+- **Real-Time Streaming**: Native WebSocket streaming service with live data aggregation
 - **Smart Data Types**: Intelligent Parquet schema detection preserves native data types (DOUBLE, BOOLEAN) instead of forcing everything to strings
+- **History API Integration**: Full SignalK History API implementation with time alignment and backward querying
 - **Command Management**: Register, execute, and manage SignalK commands with automatic path configuration
 - **Regimen-Based Data Collection**: Control data collection with command-based regimens
 - **Multi-Vessel Support**: Wildcard vessel contexts (`vessels.*`) with MMSI-based exclusion filtering
 - **Multiple File Formats**: Support for Parquet, JSON, and CSV output formats (querying in parquet only)
-- **Web Interface**: Responsive web interface for data exploration and configuration
+- **Enhanced Web Interface**: Responsive card-based interface with real-time streaming dashboard
 - **DuckDB Integration**: Query Parquet files directly with SQL
-- **History API Integration**: Full SignalK History API implementation for historical data queries
+- **Live Aggregations**: Real-time min, max, average, median calculations over configurable time windows
 - **S3 Integration**: Upload files to Amazon S3 with configurable timing
 - **Daily Consolidation**: Automatic daily file consolidation
 - **Real-time Buffering**: Efficient data buffering with configurable thresholds
@@ -355,6 +357,7 @@ This provides better compression, faster queries, and proper type safety for dat
 
 ### API Endpoints
 
+#### Core Plugin APIs
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/api/paths` | GET | List available data paths |
@@ -364,9 +367,28 @@ This provides better compression, faster queries, and proper type safety for dat
 | `/api/config/paths` | GET/POST/PUT/DELETE | Manage path configurations |
 | `/api/test-s3` | POST | Test S3 connection |
 | `/api/health` | GET | Health check |
-| `/signalk/v1/history/values` | GET | SignalK History API - Get historical values |
-| `/signalk/v1/history/contexts` | GET | SignalK History API - Get available contexts |
-| `/signalk/v1/history/paths` | GET | SignalK History API - Get available paths |
+
+#### History API (SignalK Standard)
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/signalk/v1/history/values` | GET | Get historical values with time alignment |
+| `/signalk/v1/history/contexts` | GET | Get available vessel contexts |
+| `/signalk/v1/history/paths` | GET | Get available SignalK paths |
+
+#### Real-Time Streaming API
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/stream/stats` | GET | Get streaming service statistics |
+| `/api/stream/query` | POST | One-time data query without WebSocket |
+| `/api/stream/validate` | POST | Validate streaming configuration |
+| `/api/stream/broadcast` | POST | Broadcast message to all connected clients |
+| `/api/stream/status` | GET | Get status of active streams |
+| `/api/stream/subscriptions` | GET/POST/PUT/DELETE | Manage saved stream subscriptions |
+
+#### WebSocket Streaming
+| Endpoint | Protocol | Description |
+|----------|----------|-------------|
+| `/signalk-parquet-stream` | WebSocket | Real-time data streaming with native WebSocket |
 
 ## DuckDB Integration
 
@@ -579,6 +601,401 @@ The History API returns time-aligned data in standard SignalK format:
 ```
 
 **Note**: Each data array contains `[timestamp, value1, value2, ...]` where values correspond to the paths in the same order as the `values` array. `null` indicates no data available for that path in that time bucket.
+
+## Real-Time Streaming Service
+
+The plugin provides a powerful real-time streaming service built on native WebSocket for live data monitoring and analysis. This system enables real-time data visualization, monitoring dashboards, and live analytics with minimal latency.
+
+### Features
+
+- **Native WebSocket**: High-performance real-time communication without Socket.IO overhead
+- **Multiple Aggregations**: Current, min, max, average, first, last, median calculations
+- **Time Windows**: Configurable time windows (30s, 1m, 5m, 30m, 1h, custom)
+- **Auto-Reconnection**: Robust connection management with exponential backoff
+- **Subscription Management**: Save, load, and manage streaming configurations
+- **Live Aggregation**: Real-time statistical calculations over time windows
+- **Multiple Clients**: Support for multiple concurrent WebSocket connections
+- **Broadcast Messaging**: Admin broadcast capabilities to all connected clients
+
+### WebSocket Connection
+
+**Endpoint**: `ws://localhost:3000/signalk-parquet-stream`
+
+**Connection example**:
+```javascript
+const ws = new WebSocket('ws://localhost:3000/signalk-parquet-stream');
+
+ws.onopen = () => {
+  console.log('Connected to streaming service');
+};
+
+ws.onmessage = (event) => {
+  const message = JSON.parse(event.data);
+  console.log('Received:', message);
+};
+```
+
+### WebSocket Message Protocol
+
+#### Client → Server Messages
+
+**Subscribe to data stream**:
+```json
+{
+  "type": "subscribe",
+  "data": {
+    "path": "navigation.speedOverGround",
+    "timeWindow": "5m",
+    "aggregates": ["current", "min", "max", "average"],
+    "refreshInterval": 1000
+  }
+}
+```
+
+**Unsubscribe from stream**:
+```json
+{
+  "type": "unsubscribe",
+  "data": {
+    "subscriptionId": "sub_1"
+  }
+}
+```
+
+**One-time query**:
+```json
+{
+  "type": "query",
+  "data": {
+    "config": {
+      "path": "environment.wind.speedApparent",
+      "timeWindow": "1h",
+      "aggregates": ["average", "max"]
+    },
+    "from": "2025-01-01T00:00:00Z",
+    "to": "2025-01-01T06:00:00Z"
+  }
+}
+```
+
+**Update stream configuration**:
+```json
+{
+  "type": "updateConfig",
+  "data": {
+    "subscriptionId": "sub_1",
+    "config": {
+      "refreshInterval": 2000,
+      "aggregates": ["current", "average"]
+    }
+  }
+}
+```
+
+#### Server → Client Messages
+
+**Connection confirmation**:
+```json
+{
+  "type": "connected",
+  "data": {
+    "selfId": "urn:mrn:imo:mmsi:368396230",
+    "timestamp": "2025-01-01T12:00:00Z"
+  }
+}
+```
+
+**Subscription confirmation**:
+```json
+{
+  "type": "subscribed",
+  "data": {
+    "subscriptionId": "sub_1",
+    "config": {
+      "path": "navigation.speedOverGround",
+      "timeWindow": "5m",
+      "aggregates": ["current", "min", "max", "average"],
+      "refreshInterval": 1000
+    },
+    "timestamp": "2025-01-01T12:00:00Z"
+  }
+}
+```
+
+**Real-time data**:
+```json
+{
+  "type": "data",
+  "data": {
+    "subscriptionId": "sub_1",
+    "data": {
+      "path": "navigation.speedOverGround",
+      "values": [
+        {
+          "path": "navigation.speedOverGround",
+          "timestamp": "2025-01-01T12:00:00Z",
+          "value": 5.2
+        },
+        {
+          "path": "navigation.speedOverGround",
+          "timestamp": "2025-01-01T12:00:00Z",
+          "value": 3.1
+        },
+        {
+          "path": "navigation.speedOverGround",
+          "timestamp": "2025-01-01T12:00:00Z",
+          "value": 7.8
+        },
+        {
+          "path": "navigation.speedOverGround",
+          "timestamp": "2025-01-01T12:00:00Z",
+          "value": 5.37
+        }
+      ],
+      "meta": {
+        "timeWindow": "5m",
+        "count": 4
+      }
+    },
+    "timestamp": "2025-01-01T12:00:00Z"
+  }
+}
+```
+
+**Error message**:
+```json
+{
+  "type": "error",
+  "data": {
+    "subscriptionId": "sub_1",
+    "message": "Path not found"
+  }
+}
+```
+
+### Streaming Configuration
+
+#### Time Windows
+- **Duration format**: `30s`, `1m`, `5m`, `30m`, `1h`, `2d`
+- **Absolute range**: `["2025-01-01T00:00:00Z", "2025-01-01T06:00:00Z"]`
+
+#### Aggregation Types
+- **`current`**: Latest/most recent value (default)
+- **`min`**: Minimum value in time window
+- **`max`**: Maximum value in time window
+- **`average`**: Mathematical average (rounded to 2 decimal places)
+- **`first`**: First value in time window
+- **`last`**: Last value in time window  
+- **`median`**: Median value (rounded to 2 decimal places)
+
+#### Refresh Intervals
+- **Minimum**: 100ms
+- **Default**: 1000ms (1 second)
+- **Maximum**: No limit (but consider performance)
+
+### REST API for Streaming
+
+#### Get Streaming Statistics
+```bash
+curl http://localhost:3000/plugins/signalk-parquet/api/stream/stats
+```
+
+**Response**:
+```json
+{
+  "connectedClients": 3,
+  "activeSubscriptions": 5,
+  "subscriptionsByPath": {
+    "navigation.speedOverGround": 2,
+    "environment.wind.speedApparent": 2,
+    "navigation.position": 1
+  },
+  "serverTime": "2025-01-01T12:00:00Z",
+  "streamingEnabled": true
+}
+```
+
+#### One-Time Stream Query (No WebSocket)
+```bash
+curl -X POST http://localhost:3000/plugins/signalk-parquet/api/stream/query \
+  -H "Content-Type: application/json" \
+  -d '{
+    "config": {
+      "path": "navigation.speedOverGround",
+      "timeWindow": "1h", 
+      "aggregates": ["current", "average", "max"]
+    }
+  }'
+```
+
+#### Validate Stream Configuration
+```bash
+curl -X POST http://localhost:3000/plugins/signalk-parquet/api/stream/validate \
+  -H "Content-Type: application/json" \
+  -d '{
+    "config": {
+      "path": "navigation.speedOverGround",
+      "timeWindow": "5m",
+      "aggregates": ["current", "min", "max", "average"],
+      "refreshInterval": 1000
+    }
+  }'
+```
+
+**Response**:
+```json
+{
+  "valid": true,
+  "config": { ... },
+  "pathExists": true,
+  "message": "Configuration is valid and path has data"
+}
+```
+
+#### Broadcast to All Clients (Admin)
+```bash
+curl -X POST http://localhost:3000/plugins/signalk-parquet/api/stream/broadcast \
+  -H "Content-Type: application/json" \
+  -d '{
+    "event": "announcement",
+    "data": {
+      "message": "System maintenance in 5 minutes"
+    }
+  }'
+```
+
+### Saved Stream Subscriptions
+
+The streaming service supports saving and managing persistent stream configurations through the web interface and REST API.
+
+#### Save Stream Subscription
+```bash
+curl -X POST http://localhost:3000/plugins/signalk-parquet/api/stream/subscriptions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Wind Monitoring",
+    "path": "environment.wind.speedApparent",
+    "timeWindow": "5m",
+    "aggregates": ["current", "average", "max"],
+    "refreshInterval": 2000
+  }'
+```
+
+#### List Saved Subscriptions
+```bash
+curl http://localhost:3000/plugins/signalk-parquet/api/stream/subscriptions
+```
+
+#### Update Subscription
+```bash
+curl -X PUT http://localhost:3000/plugins/signalk-parquet/api/stream/subscriptions/stream_12345 \
+  -H "Content-Type: application/json" \
+  -d '{
+    "enabled": false,
+    "refreshInterval": 5000
+  }'
+```
+
+#### Delete Subscription
+```bash
+curl -X DELETE http://localhost:3000/plugins/signalk-parquet/api/stream/subscriptions/stream_12345
+```
+
+### JavaScript Client Library
+
+The plugin includes a JavaScript client library (`streaming-client.js`) for easy WebSocket integration:
+
+```javascript
+// Initialize client
+const client = new SignalKStreamingClient({
+  debug: true,
+  autoConnect: false
+});
+
+// Event handlers
+client.on('connected', () => {
+  console.log('Connected to streaming service');
+});
+
+client.on('data', (data) => {
+  console.log('Received streaming data:', data);
+  // Update your dashboard/charts here
+});
+
+client.on('error', (error) => {
+  console.error('Streaming error:', error);
+});
+
+// Connect
+client.connect();
+
+// Subscribe to data
+const subscriptionId = client.subscribe({
+  path: 'navigation.speedOverGround',
+  timeWindow: '5m',
+  aggregates: ['current', 'min', 'max', 'average'],
+  refreshInterval: 1000
+});
+
+// Query historical data
+client.query({
+  path: 'environment.wind.speedApparent',
+  timeWindow: '1h',
+  aggregates: ['average']
+}).then(result => {
+  console.log('Historical data:', result);
+});
+
+// Unsubscribe
+client.unsubscribe(subscriptionId);
+
+// Disconnect
+client.disconnect();
+```
+
+### Performance Considerations
+
+- **Memory Usage**: Each subscription maintains data buffers - limit active subscriptions for memory-constrained systems
+- **Network Bandwidth**: Higher refresh rates and multiple aggregations increase data transmission
+- **CPU Usage**: Complex aggregations (median) are more CPU-intensive than simple ones (current, min, max)
+- **Concurrent Connections**: Tested with up to 50 concurrent WebSocket connections
+- **Data Size Limits**: Automatically limits processing to 10,000 records per query to prevent memory issues
+
+### Use Cases
+
+#### Real-Time Dashboard
+Monitor multiple vessel parameters simultaneously:
+```javascript
+// Subscribe to multiple critical parameters
+const subscriptions = [
+  { path: 'navigation.speedOverGround', aggregates: ['current', 'average'] },
+  { path: 'environment.wind.speedApparent', aggregates: ['current', 'max'] },
+  { path: 'electrical.batteries.512.voltage', aggregates: ['current', 'min'] },
+  { path: 'propulsion.engine.revolutions', aggregates: ['current', 'average'] }
+].map(config => client.subscribe(config));
+```
+
+#### Alarm System
+Monitor for threshold violations:
+```javascript
+client.on('data', (data) => {
+  const values = data.data.values;
+  values.forEach(value => {
+    if (value.path === 'electrical.batteries.512.voltage' && value.value < 12.0) {
+      triggerAlarm('Low battery voltage', value.value);
+    }
+  });
+});
+```
+
+#### Data Logging
+Archive high-frequency streaming data:
+```javascript
+client.on('data', (data) => {
+  // Log to local database/file
+  localStorage.setItem(`stream_${Date.now()}`, JSON.stringify(data));
+});
+```
 
 ## S3 Integration
 
@@ -826,6 +1243,28 @@ For detailed testing procedures, see [TESTING.md](TESTING.md).
   - Optional `useUTC=true` parameter to treat datetime strings as UTC
   - Explicit timezone indicators (`Z`, `±HH:MM`) always respected
   - Improved usability - users can work in their local timezone by default
+- **🎯 Real-Time Streaming Service**: Added comprehensive WebSocket-based streaming service
+  - Native WebSocket implementation for high-performance real-time data streaming
+  - Multiple aggregation types: current, min, max, average, first, last, median
+  - Configurable time windows and refresh intervals
+  - Auto-reconnection with exponential backoff
+  - Support for multiple concurrent WebSocket connections
+  - Subscription management with save/load functionality
+  - REST API endpoints for streaming configuration and management
+  - JavaScript client library for easy integration
+  - Admin broadcast capabilities for system announcements
+- **🔧 Fixed Streaming Aggregation Calculations**: Resolved issue where min/max/avg returned identical values
+  - Complete rewrite of aggregation logic to return separate values for each requested type
+  - Added safety checks and memory limits (10,000 records max) to prevent crashes
+  - Proper decimal rounding for averages and medians
+  - Individual data points for each aggregate type instead of metadata attachment
+- **🎨 Enhanced Web Interface**: Major redesign of streaming tab with improved UX
+  - Two-column card-based layout with clear visual hierarchy
+  - Smart dropdown for data path selection populated with available paths
+  - Collapsible sections for better organization
+  - Mobile-responsive design with proper touch interactions
+  - Enhanced status indicators with color-coded connection states
+  - Progressive disclosure pattern for advanced features
 
 ### Version 0.5.0-beta.7
 - **🏗️ Code Refactoring**: Major refactoring breaking large files into focused modules:
