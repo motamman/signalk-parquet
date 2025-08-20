@@ -211,9 +211,8 @@ export class UniversalDataSource {
     const maxValues = 10000;
     const processedValues = values.length > maxValues ? values.slice(-maxValues) : values;
 
-    // For first emit or when aggregates include time-series data, return complete dataset like History API
-    if (this.isFirstEmit || aggregates.includes('current') || aggregates.includes('first') || aggregates.includes('last')) {
-      // Return time-bucketed data points (similar to History API format)
+    // ALWAYS return complete time-bucketed dataset on first emit (like History API)
+    if (this.isFirstEmit) {
       const result: StreamValue[] = processedValues.map(v => ({
         path: this.config.path,
         timestamp: v.timestamp,
@@ -223,13 +222,49 @@ export class UniversalDataSource {
       return result;
     }
     
-    // For subsequent emits with aggregate functions, return computed values
+    // For subsequent emits, return data based on aggregate type requested
     const result: StreamValue[] = [];
     const currentTime = new Date().toISOString();
 
     // Handle each requested aggregate type
     for (const aggregate of aggregates) {
       switch (aggregate) {
+        case 'current': {
+          const latest = processedValues[processedValues.length - 1];
+          if (latest) {
+            result.push({
+              path: this.config.path,
+              timestamp: latest.timestamp,
+              value: latest.value
+            });
+          }
+          break;
+        }
+        
+        case 'first': {
+          const first = processedValues[0];
+          if (first) {
+            result.push({
+              path: this.config.path,
+              timestamp: first.timestamp,
+              value: first.value
+            });
+          }
+          break;
+        }
+        
+        case 'last': {
+          const last = processedValues[processedValues.length - 1];
+          if (last) {
+            result.push({
+              path: this.config.path,
+              timestamp: last.timestamp,
+              value: last.value
+            });
+          }
+          break;
+        }
+        
         case 'min': {
           const numericValues = processedValues
             .map(v => typeof v.value === 'number' ? v.value : null)
