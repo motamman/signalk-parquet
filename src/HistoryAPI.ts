@@ -419,11 +419,13 @@ export class HistoryAPI {
       const targetDataPoints = 120; // Target ~120 data points for good granularity
       const resolutionMs = Math.max(1000, (timeWindowSeconds * 1000) / targetDataPoints);
       
+      console.log('DEBUG: Streaming resolution calc:', { timeWindowSeconds, targetDataPoints, resolutionMs });
+      
       // Create a mock request object with the path and dynamic resolution
       const mockReq = {
         query: {
           paths: path,
-          resolution: resolutionMs
+          resolution: resolutionMs.toString() // Convert to string like Express would do
         }
       } as any;
 
