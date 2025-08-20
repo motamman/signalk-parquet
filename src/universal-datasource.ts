@@ -40,6 +40,9 @@ export class UniversalDataSource {
   private config: DataSourceConfig;
   private historyAPI: HistoryAPI;
   private refreshSubject: BehaviorSubject<number>;
+  private isFirstEmit: boolean = true;
+  private lastDataTimestamp: string | null = null;
+  private previousDataset: StreamValue[] = [];
   
   constructor(config: DataSourceConfig, historyAPI: HistoryAPI) {
     this.config = {
@@ -62,19 +65,40 @@ export class UniversalDataSource {
       switchMap(() => {
         return this.fetchData();
       }),
-      distinctUntilChanged((prev: StreamResponse, curr: StreamResponse) => {
-        // For streaming, we want to emit regularly even if data is the same
-        // Only filter out if the values array is empty (no data available)
-        const prevEmpty = !prev.values || prev.values.length === 0;
-        const currEmpty = !curr.values || curr.values.length === 0;
-        
-        // If both are empty, they're the same (filter out)
-        if (prevEmpty && currEmpty) {
-          return true;
+      map((response: StreamResponse) => {
+        // On first emit, return complete dataset like History API
+        if (this.isFirstEmit) {
+          this.isFirstEmit = false;
+          this.previousDataset = [...response.values];
+          if (response.values.length > 0) {
+            this.lastDataTimestamp = response.values[response.values.length - 1].timestamp;
+          }
+          return response; // Return complete dataset
         }
         
-        // Always emit if we have data (even if same values)
-        return false;
+        // On subsequent emits, return only new/changed data points
+        const newValues = response.values.filter(value => 
+          !this.lastDataTimestamp || value.timestamp > this.lastDataTimestamp
+        );
+        
+        if (newValues.length > 0) {
+          this.lastDataTimestamp = newValues[newValues.length - 1].timestamp;
+          this.previousDataset = [...response.values]; // Update stored dataset
+        }
+        
+        return {
+          ...response,
+          values: newValues,
+          meta: {
+            ...response.meta,
+            isIncremental: true,
+            newDataPoints: newValues.length
+          }
+        };
+      }),
+      distinctUntilChanged((prev: StreamResponse, curr: StreamResponse) => {
+        // For streaming, only filter out if no new data
+        return curr.values.length === 0;
       }),
       shareReplay(1)
     );
@@ -99,6 +123,10 @@ export class UniversalDataSource {
    */
   updateConfig(newConfig: Partial<DataSourceConfig>): void {
     this.config = { ...this.config, ...newConfig };
+    // Reset first emit flag to send complete dataset again
+    this.isFirstEmit = true;
+    this.lastDataTimestamp = null;
+    this.previousDataset = [];
     this.refresh();
   }
 
@@ -183,24 +211,25 @@ export class UniversalDataSource {
     const maxValues = 10000;
     const processedValues = values.length > maxValues ? values.slice(-maxValues) : values;
 
+    // For first emit or when aggregates include time-series data, return complete dataset like History API
+    if (this.isFirstEmit || aggregates.includes('current') || aggregates.includes('first') || aggregates.includes('last')) {
+      // Return time-bucketed data points (similar to History API format)
+      const result: StreamValue[] = processedValues.map(v => ({
+        path: this.config.path,
+        timestamp: v.timestamp,
+        value: v.value
+      }));
+      
+      return result;
+    }
+    
+    // For subsequent emits with aggregate functions, return computed values
     const result: StreamValue[] = [];
     const currentTime = new Date().toISOString();
 
     // Handle each requested aggregate type
     for (const aggregate of aggregates) {
       switch (aggregate) {
-        case 'current': {
-          const latest = processedValues[processedValues.length - 1];
-          if (latest) {
-            result.push({
-              path: this.config.path,
-              timestamp: latest.timestamp,
-              value: latest.value
-            });
-          }
-          break;
-        }
-        
         case 'min': {
           const numericValues = processedValues
             .map(v => typeof v.value === 'number' ? v.value : null)
@@ -244,30 +273,6 @@ export class UniversalDataSource {
               path: this.config.path,
               timestamp: currentTime,
               value: Math.round(avgValue * 100) / 100 // Round to 2 decimal places
-            });
-          }
-          break;
-        }
-        
-        case 'first': {
-          const first = processedValues[0];
-          if (first) {
-            result.push({
-              path: this.config.path,
-              timestamp: first.timestamp,
-              value: first.value
-            });
-          }
-          break;
-        }
-        
-        case 'last': {
-          const last = processedValues[processedValues.length - 1];
-          if (last) {
-            result.push({
-              path: this.config.path,
-              timestamp: last.timestamp,
-              value: last.value
             });
           }
           break;
