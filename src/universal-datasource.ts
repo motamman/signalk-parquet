@@ -175,58 +175,122 @@ export class UniversalDataSource {
   private async transformValues(values: HistoryAPIValue[], from: string, to: string): Promise<StreamValue[]> {
     const aggregates = this.config.aggregates || ['current'];
     
-    // If we only want current value, just return the latest
-    if (aggregates.length === 1 && aggregates[0] === 'current') {
-      const latest = values[values.length - 1];
-      if (!latest) return [];
-      
-      return [{
-        path: this.config.path,
-        timestamp: latest.timestamp,
-        value: latest.value
-      }];
-    }
-
-    // For aggregated data, we need to calculate aggregates over the time window
     if (values.length === 0) return [];
 
-    const numericValues = values
-      .map(v => typeof v.value === 'number' ? v.value : null)
-      .filter(v => v !== null) as number[];
+    const result: StreamValue[] = [];
+    const currentTime = new Date().toISOString();
 
-    const aggregateResults: any = {};
+    // Handle each requested aggregate type
+    for (const aggregate of aggregates) {
+      switch (aggregate) {
+        case 'current': {
+          const latest = values[values.length - 1];
+          if (latest) {
+            result.push({
+              path: this.config.path,
+              timestamp: latest.timestamp,
+              value: latest.value
+            });
+          }
+          break;
+        }
+        
+        case 'min': {
+          const numericValues = values
+            .map(v => typeof v.value === 'number' ? v.value : null)
+            .filter(v => v !== null) as number[];
+          
+          if (numericValues.length > 0) {
+            const minValue = Math.min(...numericValues);
+            result.push({
+              path: this.config.path,
+              timestamp: currentTime,
+              value: minValue
+            });
+          }
+          break;
+        }
+        
+        case 'max': {
+          const numericValues = values
+            .map(v => typeof v.value === 'number' ? v.value : null)
+            .filter(v => v !== null) as number[];
+          
+          if (numericValues.length > 0) {
+            const maxValue = Math.max(...numericValues);
+            result.push({
+              path: this.config.path,
+              timestamp: currentTime,
+              value: maxValue
+            });
+          }
+          break;
+        }
+        
+        case 'average': {
+          const numericValues = values
+            .map(v => typeof v.value === 'number' ? v.value : null)
+            .filter(v => v !== null) as number[];
+          
+          if (numericValues.length > 0) {
+            const avgValue = numericValues.reduce((a, b) => a + b, 0) / numericValues.length;
+            result.push({
+              path: this.config.path,
+              timestamp: currentTime,
+              value: Math.round(avgValue * 100) / 100 // Round to 2 decimal places
+            });
+          }
+          break;
+        }
+        
+        case 'first': {
+          const first = values[0];
+          if (first) {
+            result.push({
+              path: this.config.path,
+              timestamp: first.timestamp,
+              value: first.value
+            });
+          }
+          break;
+        }
+        
+        case 'last': {
+          const last = values[values.length - 1];
+          if (last) {
+            result.push({
+              path: this.config.path,
+              timestamp: last.timestamp,
+              value: last.value
+            });
+          }
+          break;
+        }
+        
+        case 'median': {
+          const numericValues = values
+            .map(v => typeof v.value === 'number' ? v.value : null)
+            .filter(v => v !== null) as number[];
+          
+          if (numericValues.length > 0) {
+            const sorted = [...numericValues].sort((a, b) => a - b);
+            const mid = Math.floor(sorted.length / 2);
+            const medianValue = sorted.length % 2 === 0 
+              ? (sorted[mid - 1] + sorted[mid]) / 2 
+              : sorted[mid];
+            
+            result.push({
+              path: this.config.path,
+              timestamp: currentTime,
+              value: Math.round(medianValue * 100) / 100 // Round to 2 decimal places
+            });
+          }
+          break;
+        }
+      }
+    }
 
-    if (aggregates.includes('min') && numericValues.length > 0) {
-      aggregateResults.min = Math.min(...numericValues);
-    }
-    if (aggregates.includes('max') && numericValues.length > 0) {
-      aggregateResults.max = Math.max(...numericValues);
-    }
-    if (aggregates.includes('average') && numericValues.length > 0) {
-      aggregateResults.average = numericValues.reduce((a, b) => a + b, 0) / numericValues.length;
-    }
-    if (aggregates.includes('first') && values.length > 0) {
-      aggregateResults.first = values[0].value;
-    }
-    if (aggregates.includes('last') && values.length > 0) {
-      aggregateResults.last = values[values.length - 1].value;
-    }
-    if (aggregates.includes('median') && numericValues.length > 0) {
-      const sorted = [...numericValues].sort((a, b) => a - b);
-      const mid = Math.floor(sorted.length / 2);
-      aggregateResults.median = sorted.length % 2 === 0 
-        ? (sorted[mid - 1] + sorted[mid]) / 2 
-        : sorted[mid];
-    }
-
-    // Return latest value with aggregates
-    const latest = values[values.length - 1];
-    return [{
-      path: this.config.path,
-      timestamp: latest.timestamp,
-      value: latest.value,
-      aggregates: Object.keys(aggregateResults).length > 0 ? aggregateResults : undefined
-    }];
+    return result;
   }
 
   private calculateFromTime(duration: string): string {
