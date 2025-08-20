@@ -1869,29 +1869,49 @@
         }
 
         async function saveCurrentStream() {
-            const path = document.getElementById('streamPath').value;
-            const timeWindow = document.getElementById('streamTimeWindow').value;
-            const refreshInterval = parseInt(document.getElementById('streamRefresh').value) || 1000;
-            
-            // Get selected aggregates from the select element
-            const aggregatesSelect = document.getElementById('streamAggregates');
-            const aggregates = Array.from(aggregatesSelect.selectedOptions).map(option => option.value);
-            
-            if (!path) {
-                alert('Please select a data path first');
-                return;
+            // Check if there are any active streams to save
+            if (activeStreamSubscriptions.size === 0) {
+                // If no active streams, try to use form values
+                const path = document.getElementById('streamPath').value.trim();
+                const timeWindow = document.getElementById('streamTimeWindow').value;
+                const refreshInterval = parseInt(document.getElementById('streamRefresh').value) || 1000;
+                
+                // Get selected aggregates from the select element
+                const aggregatesSelect = document.getElementById('streamAggregates');
+                const aggregates = Array.from(aggregatesSelect.selectedOptions).map(option => option.value);
+                
+                if (!path) {
+                    alert('Please either:\n1. Start a stream first, then save it\n2. Or configure a stream in the form above and save it as a template');
+                    return;
+                }
+                
+                if (aggregates.length === 0) {
+                    alert('Please select at least one aggregate');
+                    return;
+                }
+                
+                const name = prompt(`Enter a name for this stream configuration:\n\nPath: ${path}\nWindow: ${timeWindow}\nAggregates: ${aggregates.join(', ')}`, 
+                                   `${path.split('.').pop()} (${timeWindow})`);
+                
+                if (!name) return;
+                
+                await saveStreamConfig(name, path, timeWindow, aggregates, refreshInterval);
+            } else {
+                // Save the first active stream
+                const firstStreamId = Array.from(activeStreamSubscriptions.keys())[0];
+                const streamData = activeStreamSubscriptions.get(firstStreamId);
+                const config = streamData.config;
+                
+                const name = prompt(`Enter a name for this active stream:\n\nPath: ${config.path}\nWindow: ${config.timeWindow}\nAggregates: ${config.aggregates.join(', ')}`, 
+                                   `${config.path.split('.').pop()} (${config.timeWindow})`);
+                
+                if (!name) return;
+                
+                await saveStreamConfig(name, config.path, config.timeWindow, config.aggregates, config.refreshInterval);
             }
-            
-            if (aggregates.length === 0) {
-                alert('Please select at least one aggregate');
-                return;
-            }
-            
-            const name = prompt(`Enter a name for this stream configuration:\n\nPath: ${path}\nWindow: ${timeWindow}\nAggregates: ${aggregates.join(', ')}`, 
-                               `${path.split('.').pop()} (${timeWindow})`);
-            
-            if (!name) return;
-            
+        }
+
+        async function saveStreamConfig(name, path, timeWindow, aggregates, refreshInterval) {
             try {
                 const response = await fetch(getPluginPath() + '/api/stream/subscriptions', {
                     method: 'POST',
