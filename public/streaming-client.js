@@ -27,7 +27,7 @@ class SignalKStreamingClient {
    * Connect to the streaming service
    */
   connect() {
-    if (this.socket && this.socket.connected) {
+    if (this.socket && this.socket.readyState === WebSocket.OPEN) {
       this.log('Already connected');
       return;
     }
@@ -35,22 +35,13 @@ class SignalKStreamingClient {
     this.connectionState = 'connecting';
     this.log('Connecting to streaming service...');
 
-    // Load Socket.IO client library if not already loaded
-    if (typeof io === 'undefined') {
-      console.error('Socket.IO client library not loaded. Please include socket.io client script.');
-      this.connectionState = 'error';
-      this.emit('error', { message: 'Socket.IO client library not loaded' });
-      return;
-    }
-
     try {
-      this.socket = io(this.baseUrl, {
-        path: '/signalk-parquet-stream',
-        transports: ['websocket', 'polling'],
-        upgrade: true,
-        timeout: 20000,
-      });
-
+      // Use native WebSocket instead of Socket.IO
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const host = window.location.host;
+      const wsUrl = `${protocol}//${host}/signalk-parquet-stream`;
+      
+      this.socket = new WebSocket(wsUrl);
       this.setupEventHandlers();
     } catch (error) {
       this.log('Connection error:', error);
@@ -60,63 +51,81 @@ class SignalKStreamingClient {
   }
 
   /**
-   * Set up Socket.IO event handlers
+   * Set up native WebSocket event handlers
    */
   setupEventHandlers() {
-    this.socket.on('connect', () => {
+    this.socket.onopen = () => {
       this.log('Connected to streaming service');
       this.connectionState = 'connected';
       this.reconnectAttempts = 0;
       this.reconnectDelay = 1000;
       this.emit('connected');
-    });
+    };
 
-    this.socket.on('disconnect', (reason) => {
-      this.log('Disconnected:', reason);
+    this.socket.onclose = (event) => {
+      this.log('Disconnected:', event.code, event.reason);
       this.connectionState = 'disconnected';
-      this.emit('disconnected', { reason });
+      this.emit('disconnected', { code: event.code, reason: event.reason });
       
-      // Attempt reconnection for client-side disconnects
-      if (reason === 'io client disconnect') {
+      // Attempt reconnection for unexpected disconnects
+      if (!event.wasClean) {
         this.scheduleReconnect();
       }
-    });
+    };
 
-    this.socket.on('connect_error', (error) => {
-      this.log('Connection error:', error);
+    this.socket.onerror = (error) => {
+      this.log('WebSocket error:', error);
       this.connectionState = 'error';
       this.emit('error', error);
       this.scheduleReconnect();
-    });
+    };
 
-    this.socket.on('data', (message) => {
-      this.handleDataMessage(message);
-    });
+    this.socket.onmessage = (event) => {
+      try {
+        const message = JSON.parse(event.data);
+        this.handleMessage(message);
+      } catch (error) {
+        this.log('Error parsing message:', error);
+      }
+    };
+  }
 
-    this.socket.on('subscribed', (message) => {
-      this.log('Subscription confirmed:', message);
-      this.emit('subscribed', message);
-    });
+  /**
+   * Handle incoming WebSocket messages
+   */
+  handleMessage(message) {
+    const { type, data } = message;
 
-    this.socket.on('unsubscribed', (message) => {
-      this.log('Unsubscription confirmed:', message);
-      this.subscriptions.delete(message.subscriptionId);
-      this.emit('unsubscribed', message);
-    });
-
-    this.socket.on('error', (message) => {
-      this.log('Server error:', message);
-      this.emit('error', message);
-    });
-
-    this.socket.on('queryResult', (message) => {
-      this.emit('queryResult', message);
-    });
-
-    this.socket.on('queryError', (message) => {
-      this.log('Query error:', message);
-      this.emit('queryError', message);
-    });
+    switch (type) {
+      case 'connected':
+        this.log('Server connection confirmed:', data);
+        break;
+      case 'data':
+        this.handleDataMessage(data);
+        break;
+      case 'subscribed':
+        this.log('Subscription confirmed:', data);
+        this.emit('subscribed', data);
+        break;
+      case 'unsubscribed':
+        this.log('Unsubscription confirmed:', data);
+        this.subscriptions.delete(data.subscriptionId);
+        this.emit('unsubscribed', data);
+        break;
+      case 'error':
+        this.log('Server error:', data);
+        this.emit('error', data);
+        break;
+      case 'queryResult':
+        this.emit('queryResult', data);
+        break;
+      case 'queryError':
+        this.log('Query error:', data);
+        this.emit('queryError', data);
+        break;
+      default:
+        this.log('Unknown message type:', type, data);
+    }
   }
 
   /**
@@ -174,6 +183,17 @@ class SignalKStreamingClient {
   }
 
   /**
+   * Send a message via WebSocket
+   */
+  sendMessage(type, data) {
+    if (this.socket && this.socket.readyState === WebSocket.OPEN) {
+      this.socket.send(JSON.stringify({ type, data }));
+    } else {
+      throw new Error('WebSocket not connected');
+    }
+  }
+
+  /**
    * Subscribe to a data stream
    * 
    * @param {Object} config - Data source configuration
@@ -181,7 +201,7 @@ class SignalKStreamingClient {
    * @returns {string} Subscription ID
    */
   subscribe(config, callback) {
-    if (!this.socket || !this.socket.connected) {
+    if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
       throw new Error('Not connected to streaming service');
     }
 
@@ -193,7 +213,7 @@ class SignalKStreamingClient {
       createdAt: new Date().toISOString()
     });
 
-    this.socket.emit('subscribe', config);
+    this.sendMessage('subscribe', config);
     this.log('Subscribing to:', config);
 
     return subscriptionId;
@@ -205,12 +225,12 @@ class SignalKStreamingClient {
    * @param {string} subscriptionId - Subscription ID to unsubscribe
    */
   unsubscribe(subscriptionId) {
-    if (!this.socket || !this.socket.connected) {
+    if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
       throw new Error('Not connected to streaming service');
     }
 
     if (this.subscriptions.has(subscriptionId)) {
-      this.socket.emit('unsubscribe', subscriptionId);
+      this.sendMessage('unsubscribe', { subscriptionId });
       this.subscriptions.delete(subscriptionId);
       this.log('Unsubscribing from:', subscriptionId);
     }
@@ -223,7 +243,7 @@ class SignalKStreamingClient {
    * @param {Object} newConfig - New configuration
    */
   updateSubscription(subscriptionId, newConfig) {
-    if (!this.socket || !this.socket.connected) {
+    if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
       throw new Error('Not connected to streaming service');
     }
 
@@ -231,7 +251,7 @@ class SignalKStreamingClient {
       const subscription = this.subscriptions.get(subscriptionId);
       subscription.config = { ...subscription.config, ...newConfig };
       
-      this.socket.emit('updateConfig', { subscriptionId, config: newConfig });
+      this.sendMessage('updateConfig', { subscriptionId, config: newConfig });
       this.log('Updating subscription:', subscriptionId, newConfig);
     }
   }
@@ -246,7 +266,7 @@ class SignalKStreamingClient {
    */
   query(config, from, to) {
     return new Promise((resolve, reject) => {
-      if (!this.socket || !this.socket.connected) {
+      if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
         reject(new Error('Not connected to streaming service'));
         return;
       }
@@ -256,21 +276,21 @@ class SignalKStreamingClient {
       // Set up one-time listeners
       const resultHandler = (message) => {
         resolve(message);
-        this.socket.off('queryResult', resultHandler);
-        this.socket.off('queryError', errorHandler);
+        this.off('queryResult', resultHandler);
+        this.off('queryError', errorHandler);
       };
       
       const errorHandler = (message) => {
         reject(new Error(message.message || 'Query failed'));
-        this.socket.off('queryResult', resultHandler);
-        this.socket.off('queryError', errorHandler);
+        this.off('queryResult', resultHandler);
+        this.off('queryError', errorHandler);
       };
 
-      this.socket.on('queryResult', resultHandler);
-      this.socket.on('queryError', errorHandler);
+      this.on('queryResult', resultHandler);
+      this.on('queryError', errorHandler);
 
       // Send query
-      this.socket.emit('query', { config, from, to, queryId });
+      this.sendMessage('query', { config, from, to, queryId });
       this.log('Querying:', config, { from, to });
     });
   }
@@ -291,7 +311,7 @@ class SignalKStreamingClient {
   getConnectionState() {
     return {
       state: this.connectionState,
-      connected: this.socket?.connected || false,
+      connected: this.socket?.readyState === WebSocket.OPEN || false,
       subscriptionCount: this.subscriptions.size,
       reconnectAttempts: this.reconnectAttempts
     };
@@ -340,7 +360,7 @@ class SignalKStreamingClient {
    */
   disconnect() {
     if (this.socket) {
-      this.socket.disconnect();
+      this.socket.close();
       this.subscriptions.clear();
       this.connectionState = 'disconnected';
       this.log('Disconnected from streaming service');

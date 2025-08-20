@@ -35,7 +35,7 @@ export class StreamingService {
       // Create native WebSocket server - much cleaner than Socket.IO
       this.wss = new WebSocketServer({ 
         server: httpServer,
-        path: '/parquet-stream'
+        path: '/signalk-parquet-stream'
       });
 
       this.setupEventHandlers();
