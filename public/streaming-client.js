@@ -105,6 +105,7 @@ class SignalKStreamingClient {
         break;
       case 'subscribed':
         this.log('Subscription confirmed:', data);
+        this.handleSubscriptionConfirmed(data);
         this.emit('subscribed', data);
         break;
       case 'unsubscribed':
@@ -129,19 +130,41 @@ class SignalKStreamingClient {
   }
 
   /**
+   * Handle subscription confirmation from server
+   */
+  handleSubscriptionConfirmed(data) {
+    const { subscriptionId, config } = data;
+    
+    // Find the temporary subscription that matches this config
+    let tempId = null;
+    for (const [id, sub] of this.subscriptions.entries()) {
+      if (sub.isTemporary && sub.config.path === config.path) {
+        tempId = id;
+        break;
+      }
+    }
+    
+    if (tempId) {
+      // Move the subscription from temp ID to server ID
+      const subscription = this.subscriptions.get(tempId);
+      this.subscriptions.delete(tempId);
+      
+      // Remove the temporary flag and store with server ID
+      delete subscription.isTemporary;
+      this.subscriptions.set(subscriptionId, subscription);
+      
+      this.log(`Mapped temporary subscription ${tempId} to server ID ${subscriptionId}`);
+    }
+  }
+
+  /**
    * Handle incoming data messages
    */
   handleDataMessage(message) {
     const { subscriptionId, data, timestamp } = message;
     
-    // Try to find the subscription by ID first
+    // Try to find the subscription by ID
     let subscription = this.subscriptions.get(subscriptionId);
-    
-    // If not found, use the first subscription (for ID mismatch between server and client)
-    if (!subscription && this.subscriptions.size > 0) {
-      subscription = Array.from(this.subscriptions.values())[0];
-      this.log('Using first subscription due to ID mismatch between server and client');
-    }
     
     if (subscription) {
       // Call the subscription callback
@@ -205,18 +228,20 @@ class SignalKStreamingClient {
       throw new Error('Not connected to streaming service');
     }
 
-    const subscriptionId = `client_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    // Create a temporary ID until server confirms with real ID
+    const tempId = `temp_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
     
-    this.subscriptions.set(subscriptionId, {
+    this.subscriptions.set(tempId, {
       config,
       callback,
-      createdAt: new Date().toISOString()
+      createdAt: new Date().toISOString(),
+      isTemporary: true
     });
 
     this.sendMessage('subscribe', config);
     this.log('Subscribing to:', config);
 
-    return subscriptionId;
+    return tempId;
   }
 
   /**

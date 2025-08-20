@@ -1871,11 +1871,11 @@
         async function saveCurrentStream() {
             const path = document.getElementById('streamPath').value;
             const timeWindow = document.getElementById('streamTimeWindow').value;
-            const refreshInterval = parseInt(document.getElementById('streamRefreshInterval').value) || 1000;
+            const refreshInterval = parseInt(document.getElementById('streamRefresh').value) || 1000;
             
-            // Get selected aggregates
-            const aggregateCheckboxes = document.querySelectorAll('input[name="streamAggregates"]:checked');
-            const aggregates = Array.from(aggregateCheckboxes).map(cb => cb.value);
+            // Get selected aggregates from the select element
+            const aggregatesSelect = document.getElementById('streamAggregates');
+            const aggregates = Array.from(aggregatesSelect.selectedOptions).map(option => option.value);
             
             if (!path) {
                 alert('Please select a data path first');
@@ -1987,11 +1987,12 @@
                 // Fill form with saved stream data
                 document.getElementById('streamPath').value = stream.path;
                 document.getElementById('streamTimeWindow').value = stream.timeWindow;
-                document.getElementById('streamRefreshInterval').value = stream.refreshInterval;
+                document.getElementById('streamRefresh').value = stream.refreshInterval;
                 
-                // Clear and set aggregates
-                document.querySelectorAll('input[name="streamAggregates"]').forEach(cb => {
-                    cb.checked = stream.aggregates.includes(cb.value);
+                // Clear and set aggregates in the select element
+                const aggregatesSelect = document.getElementById('streamAggregates');
+                Array.from(aggregatesSelect.options).forEach(option => {
+                    option.selected = stream.aggregates.includes(option.value);
                 });
                 
                 alert(`Stream "${stream.name}" loaded into form. You can now start streaming or modify settings.`);
