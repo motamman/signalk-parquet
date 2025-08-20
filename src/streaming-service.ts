@@ -1,5 +1,5 @@
 import { Server as HttpServer } from 'http';
-import { WebSocketServer, WebSocket } from 'ws';
+import * as WebSocket from 'ws';
 import { Observable, Subscription } from 'rxjs';
 import { UniversalDataSource, DataSourceConfig, StreamResponse } from './universal-datasource';
 import { HistoryAPI } from './HistoryAPI';
@@ -12,14 +12,14 @@ export interface StreamingServiceOptions {
 
 export interface ClientSubscription {
   id: string;
-  ws: WebSocket;
+  ws: WebSocket.WebSocket;
   dataSource: UniversalDataSource;
   subscription: Subscription;
   config: DataSourceConfig;
 }
 
 export class StreamingService {
-  private wss: WebSocketServer;
+  private wss: WebSocket.WebSocketServer;
   private historyAPI: HistoryAPI;
   private selfId: string;
   private debug: boolean;
@@ -33,7 +33,7 @@ export class StreamingService {
 
     try {
       // Create native WebSocket server - much cleaner than Socket.IO
-      this.wss = new WebSocketServer({ 
+      this.wss = new WebSocket.WebSocketServer({ 
         server: httpServer,
         path: '/signalk-parquet-stream'
       });

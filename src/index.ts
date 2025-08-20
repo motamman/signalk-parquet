@@ -262,36 +262,48 @@ export default function (app: ServerAPI): SignalKPlugin {
           
           // Access the HTTP server from the SignalK app
           // SignalK exposes the HTTP server via the router's parent app
+          app.debug('Attempting to find HTTP server...');
+          app.debug(`app.router exists: ${!!(app as any).router}`);
+          app.debug(`app.router.parent exists: ${!!(app as any).router?.parent}`);
+          app.debug(`app.router.parent.server exists: ${!!(app as any).router?.parent?.server}`);
+          
           const httpServer = (app as any).router?.parent?.server || 
                            (app as any).httpServer || 
                            (app as any).server;
           
           if (httpServer) {
-            app.debug('HTTP server found, creating streaming service...');
+            app.debug(`HTTP server found: ${httpServer.constructor.name}`);
+            app.debug(`HTTP server listening: ${httpServer.listening}`);
+            app.debug(`HTTP server address: ${JSON.stringify(httpServer.address())}`);
             
             // Create streaming service with error isolation
-            state.streamingService = new StreamingService(httpServer, {
-              historyAPI: historyAPI,
-              selfId: app.selfId,
-              debug: typeof app.debug === 'function' ? true : false  // Enable debug if app debug is enabled
-            });
-            
-            // Only log success if streaming service was actually created
-            if (state.streamingService) {
-              app.debug('Streaming service initialized successfully');
+            try {
+              state.streamingService = new StreamingService(httpServer, {
+                historyAPI: historyAPI,
+                selfId: app.selfId,
+                debug: true  // Always enable debug for troubleshooting
+              });
               
-              // Auto-restore enabled stream subscriptions with additional error handling
-              try {
-                await restoreStreamSubscriptions(state, app);
-              } catch (restoreError) {
-                app.error(`Failed to restore stream subscriptions: ${restoreError}`);
-                // Continue - don't let restore failure break streaming
+              // Only log success if streaming service was actually created
+              if (state.streamingService) {
+                app.debug('Streaming service initialized successfully');
+                
+                // Auto-restore enabled stream subscriptions with additional error handling
+                try {
+                  await restoreStreamSubscriptions(state, app);
+                } catch (restoreError) {
+                  app.error(`Failed to restore stream subscriptions: ${restoreError}`);
+                  // Continue - don't let restore failure break streaming
+                }
+              } else {
+                app.error('Streaming service creation returned null/undefined');
               }
-            } else {
-              app.debug('Streaming service creation returned null/undefined');
+            } catch (streamingError) {
+              app.error(`Error creating streaming service: ${streamingError}`);
+              app.error(`Streaming service error stack: ${(streamingError as Error).stack}`);
             }
           } else {
-            app.debug('HTTP server not available, streaming service not initialized');
+            app.error('HTTP server not available, streaming service not initialized');
             app.debug(`Available app properties: ${Object.keys(app).filter(k => !k.startsWith('_')).join(', ')}`);
           }
         } catch (error) {
