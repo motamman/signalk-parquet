@@ -318,6 +318,7 @@ export class HistoryAPI {
           `;
 
           debug(`Executing query for path ${pathSpec.path}: ${query}`);
+          console.log(`DEBUG: SQL query with timeResolutionMillis=${timeResolutionMillis}:`, query);
           const duckDB = await DuckDBInstance.create();
           const connection = await duckDB.connect();
 
