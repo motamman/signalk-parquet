@@ -1695,12 +1695,22 @@
                 'error': 'error'
             };
 
-            statusEl.innerHTML = `<div class="${statusClasses[state] || 'info'}">${message}</div>`;
+            // Add status indicator
+            const statusIcons = {
+                'ready': '⚪',
+                'connected': '🟢',
+                'disconnected': '🟡',
+                'error': '🔴'
+            };
+
+            const icon = statusIcons[state] || '⚪';
+            statusEl.innerHTML = `<div class="${statusClasses[state] || 'info'}">${icon} ${message}</div>`;
             
-            // Update connect button text
+            // Update connect button text and class
             const button = document.querySelector('[onclick="toggleStreaming()"]');
             if (button) {
                 button.textContent = state === 'connected' ? 'Disconnect' : 'Connect';
+                button.className = state === 'connected' ? 'btn-danger' : 'btn-primary';
             }
         }
 
@@ -2046,12 +2056,21 @@
             // Check if there are any active streams to save
             if (activeStreamSubscriptions.size === 0) {
                 // If no active streams, try to use form values
-                const path = document.getElementById('streamPath').value.trim();
-                const timeWindow = document.getElementById('streamTimeWindow').value;
-                const refreshInterval = parseInt(document.getElementById('streamRefresh').value) || 1000;
+                const pathElement = document.getElementById('streamPath');
+                const timeWindowElement = document.getElementById('streamTimeWindow');
+                const refreshElement = document.getElementById('streamRefresh');
+                const aggregatesSelect = document.getElementById('streamAggregates');
+                
+                if (!pathElement || !timeWindowElement || !refreshElement || !aggregatesSelect) {
+                    alert('Form elements not found. Please try again.');
+                    return;
+                }
+                
+                const path = pathElement.value.trim();
+                const timeWindow = timeWindowElement.value;
+                const refreshInterval = parseInt(refreshElement.value) || 1000;
                 
                 // Get selected aggregates from the select element
-                const aggregatesSelect = document.getElementById('streamAggregates');
                 const aggregates = Array.from(aggregatesSelect.selectedOptions).map(option => option.value);
                 
                 if (!path) {
@@ -2204,16 +2223,19 @@
         // ===== CARD COLLAPSIBLE FUNCTIONALITY =====
         function toggleCard(cardId) {
             const content = document.getElementById(cardId);
-            const icon = content.previousElementSibling.querySelector('.collapse-icon');
+            if (!content) return;
+            
+            const header = content.previousElementSibling;
+            const icon = header ? header.querySelector('.collapse-icon') : null;
             
             if (content.classList.contains('collapsed')) {
                 content.classList.remove('collapsed');
                 content.classList.add('expanded');
-                icon.classList.remove('collapsed');
+                if (icon) icon.classList.remove('collapsed');
             } else {
                 content.classList.remove('expanded');
                 content.classList.add('collapsed');
-                icon.classList.add('collapsed');
+                if (icon) icon.classList.add('collapsed');
             }
         }
 
