@@ -380,6 +380,119 @@
             border-radius: 0 0 10px 10px;
         }
 
+        /* Streaming Layout Styles */
+        .streaming-layout {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            margin-top: 20px;
+        }
+
+        .streaming-controls,
+        .streaming-data {
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+        }
+
+        .stream-card {
+            background: white;
+            border-radius: 8px;
+            border: 1px solid #e1e5e9;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+            overflow: hidden;
+        }
+
+        .stream-card-header {
+            background: #f8f9fa;
+            padding: 15px 20px;
+            border-bottom: 1px solid #e1e5e9;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .stream-card-header.collapsible {
+            cursor: pointer;
+            transition: background-color 0.2s;
+        }
+
+        .stream-card-header.collapsible:hover {
+            background: #e9ecef;
+        }
+
+        .stream-card-header h3 {
+            margin: 0;
+            font-size: 1rem;
+            color: #495057;
+        }
+
+        .stream-card-actions {
+            display: flex;
+            gap: 8px;
+        }
+
+        .stream-card-content {
+            padding: 20px;
+        }
+
+        .stream-form-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+
+        .stream-actions {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+
+        .data-card {
+            min-height: 300px;
+        }
+
+        .data-display {
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 5px;
+            font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+            white-space: pre-wrap;
+            max-height: 400px;
+            overflow-y: auto;
+            font-size: 12px;
+            line-height: 1.4;
+        }
+
+        .collapse-icon {
+            font-size: 0.8rem;
+            transition: transform 0.3s;
+            color: #667eea;
+        }
+
+        .collapse-icon.collapsed {
+            transform: rotate(-90deg);
+        }
+
+        .btn-primary {
+            background: #667eea;
+            color: white;
+        }
+
+        .btn-primary:hover {
+            background: #5a6fd8;
+        }
+
+        .btn-danger {
+            background: #dc3545;
+            color: white;
+        }
+
+        .btn-danger:hover {
+            background: #c82333;
+        }
+
         @media (max-width: 768px) {
             .container {
                 padding: 10px;
@@ -408,6 +521,25 @@
             .tab-button:first-child,
             .tab-button:last-child {
                 border-radius: 0;
+            }
+
+            /* Streaming Layout Mobile */
+            .streaming-layout {
+                grid-template-columns: 1fr;
+                gap: 15px;
+            }
+
+            .stream-form-grid {
+                grid-template-columns: 1fr;
+                gap: 10px;
+            }
+
+            .stream-card-header {
+                padding: 12px 15px;
+            }
+
+            .stream-card-content {
+                padding: 15px;
             }
         }
     </style>
@@ -603,90 +735,132 @@
             <div id="streaming" class="tab-panel">
                 <div class="section">
                     <h2>📡 Live Streaming</h2>
-                    <p>Monitor real-time data streams and test the streaming API:</p>
+                    <p>Monitor real-time data streams and test the streaming API</p>
                     
-                    <!-- Connection Status -->
-                    <div class="form-group">
-                        <h3>🔗 Connection Status</h3>
-                        <div id="streamingStatus" style="margin-bottom: 15px;">
-                            <div class="loading">Initializing...</div>
-                        </div>
-                        <button onclick="toggleStreaming()">Connect</button>
-                        <button onclick="refreshStreamingStats()">🔄 Refresh Stats</button>
-                    </div>
-
-                    <!-- Stream Configuration -->
-                    <div class="form-group">
-                        <h3>📊 Create Data Stream</h3>
-                        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-bottom: 15px;">
-                            <div>
-                                <label for="streamPath">Data Path:</label>
-                                <input type="text" id="streamPath" placeholder="navigation.position">
+                    <!-- Two-Column Layout -->
+                    <div class="streaming-layout">
+                        <!-- Left Column: Controls -->
+                        <div class="streaming-controls">
+                            <!-- Connection Card -->
+                            <div class="stream-card">
+                                <div class="stream-card-header">
+                                    <h3>🔗 Connection</h3>
+                                    <div class="stream-card-actions">
+                                        <button onclick="toggleStreaming()" class="btn-primary">Connect</button>
+                                    </div>
+                                </div>
+                                <div class="stream-card-content">
+                                    <div id="streamingStatus">
+                                        <div class="loading">Initializing...</div>
+                                    </div>
+                                    <button onclick="refreshStreamingStats()" class="btn-secondary">🔄 Refresh Stats</button>
+                                </div>
                             </div>
-                            <div>
-                                <label for="streamTimeWindow">Time Window:</label>
-                                <select id="streamTimeWindow">
-                                    <option value="30s">30 seconds</option>
-                                    <option value="1m">1 minute</option>
-                                    <option value="5m" selected>5 minutes</option>
-                                    <option value="30m">30 minutes</option>
-                                    <option value="1h">1 hour</option>
-                                </select>
+
+                            <!-- Stream Configuration Card -->
+                            <div class="stream-card">
+                                <div class="stream-card-header collapsible" onclick="toggleCard('streamConfig')">
+                                    <h3>📊 Create Stream</h3>
+                                    <span class="collapse-icon">▼</span>
+                                </div>
+                                <div id="streamConfig" class="stream-card-content collapsible-content expanded">
+                                    <div class="stream-form-grid">
+                                        <div class="form-group">
+                                            <label for="streamPath">Data Path:</label>
+                                            <input type="text" id="streamPath" placeholder="navigation.position">
+                                        </div>
+                                        <div class="form-group">
+                                            <label for="streamTimeWindow">Time Window:</label>
+                                            <select id="streamTimeWindow">
+                                                <option value="30s">30 seconds</option>
+                                                <option value="1m">1 minute</option>
+                                                <option value="5m" selected>5 minutes</option>
+                                                <option value="30m">30 minutes</option>
+                                                <option value="1h">1 hour</option>
+                                            </select>
+                                        </div>
+                                        <div class="form-group">
+                                            <label for="streamAggregates">Aggregates:</label>
+                                            <select id="streamAggregates" multiple>
+                                                <option value="current" selected>Current</option>
+                                                <option value="min">Min</option>
+                                                <option value="max">Max</option>
+                                                <option value="average">Average</option>
+                                            </select>
+                                        </div>
+                                        <div class="form-group">
+                                            <label for="streamRefresh">Refresh (ms):</label>
+                                            <input type="number" id="streamRefresh" value="1000" min="100" max="10000">
+                                        </div>
+                                    </div>
+                                    <div class="stream-actions">
+                                        <button onclick="createStream()" class="btn-primary">📊 Start Stream</button>
+                                        <button onclick="queryOnce()" class="btn-secondary">🔍 Query Once</button>
+                                    </div>
+                                </div>
                             </div>
-                            <div>
-                                <label for="streamAggregates">Aggregates:</label>
-                                <select id="streamAggregates" multiple>
-                                    <option value="current" selected>Current</option>
-                                    <option value="min">Min</option>
-                                    <option value="max">Max</option>
-                                    <option value="average">Average</option>
-                                </select>
+
+                            <!-- Available Paths Card -->
+                            <div class="stream-card">
+                                <div class="stream-card-header collapsible" onclick="toggleCard('availablePaths')">
+                                    <h3>📂 Available Paths</h3>
+                                    <span class="collapse-icon collapsed">▼</span>
+                                </div>
+                                <div id="availablePaths" class="stream-card-content collapsible-content collapsed">
+                                    <button onclick="loadStreamingPaths()" class="btn-secondary">🔄 Load Available Paths</button>
+                                    <div id="streamingPaths" style="margin-top: 10px;">
+                                        <div class="info">Click "Load Available Paths" to see what data is available for streaming</div>
+                                    </div>
+                                </div>
                             </div>
-                            <div>
-                                <label for="streamRefresh">Refresh (ms):</label>
-                                <input type="number" id="streamRefresh" value="1000" min="100" max="10000">
+
+                            <!-- Saved Streams Card -->
+                            <div class="stream-card">
+                                <div class="stream-card-header collapsible" onclick="toggleCard('savedStreams')">
+                                    <h3>💾 Saved Streams</h3>
+                                    <span class="collapse-icon collapsed">▼</span>
+                                </div>
+                                <div id="savedStreamsCard" class="stream-card-content collapsible-content collapsed">
+                                    <p>Persistent streams that auto-restore on plugin restart</p>
+                                    <div class="stream-actions">
+                                        <button onclick="saveCurrentStream()" class="btn-secondary">💾 Save Current</button>
+                                        <button onclick="loadSavedStreams()" class="btn-secondary">🔄 Refresh</button>
+                                    </div>
+                                    <div id="savedStreams" style="margin-top: 15px;">
+                                        <div class="info">Loading saved streams...</div>
+                                    </div>
+                                </div>
                             </div>
                         </div>
-                        <button onclick="createStream()">📊 Start Stream</button>
-                        <button onclick="queryOnce()">🔍 Query Once</button>
-                    </div>
 
-                    <!-- Active Streams -->
-                    <div class="form-group">
-                        <h3>🎯 Active Streams</h3>
-                        <div id="activeStreams" style="margin-bottom: 15px;">
-                            <div class="info">No active streams</div>
-                        </div>
-                        <button onclick="clearAllStreams()">❌ Clear All Streams</button>
-                    </div>
+                        <!-- Right Column: Data & Monitoring -->
+                        <div class="streaming-data">
+                            <!-- Active Streams Card -->
+                            <div class="stream-card">
+                                <div class="stream-card-header">
+                                    <h3>🎯 Active Streams</h3>
+                                    <div class="stream-card-actions">
+                                        <button onclick="clearAllStreams()" class="btn-danger">❌ Clear All</button>
+                                    </div>
+                                </div>
+                                <div class="stream-card-content">
+                                    <div id="activeStreams">
+                                        <div class="info">No active streams</div>
+                                    </div>
+                                </div>
+                            </div>
 
-                    <!-- Real-time Data Display -->
-                    <div class="form-group">
-                        <h3>📈 Live Data</h3>
-                        <div id="streamingData" style="background: #f8f9fa; padding: 15px; border-radius: 5px; font-family: monospace; white-space: pre-wrap; max-height: 400px; overflow-y: auto;">
-                            No streaming data yet...
-                        </div>
-                    </div>
-
-                    <!-- Available Paths -->
-                    <div class="form-group">
-                        <h3>📂 Available Streaming Paths</h3>
-                        <button onclick="loadStreamingPaths()">🔄 Load Available Paths</button>
-                        <div id="streamingPaths" style="margin-top: 10px;">
-                            <div class="info">Click "Load Available Paths" to see what data is available for streaming</div>
-                        </div>
-                    </div>
-
-                    <!-- Saved Streams -->
-                    <div class="form-group">
-                        <h3>💾 Saved Stream Subscriptions</h3>
-                        <p>Persistent streams that auto-restore on plugin restart:</p>
-                        <div style="margin-bottom: 15px;">
-                            <button onclick="saveCurrentStream()">💾 Save Current Stream</button>
-                            <button onclick="loadSavedStreams()">🔄 Refresh Saved Streams</button>
-                        </div>
-                        <div id="savedStreams" style="margin-top: 10px;">
-                            <div class="info">Loading saved streams...</div>
+                            <!-- Live Data Card -->
+                            <div class="stream-card data-card">
+                                <div class="stream-card-header">
+                                    <h3>📈 Live Data</h3>
+                                </div>
+                                <div class="stream-card-content">
+                                    <div id="streamingData" class="data-display">
+                                        No streaming data yet...
+                                    </div>
+                                </div>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -2026,6 +2200,22 @@
         window.addEventListener('load', function() {
             setTimeout(loadSavedStreams, 1500); // Delay to let other components load first
         });
+
+        // ===== CARD COLLAPSIBLE FUNCTIONALITY =====
+        function toggleCard(cardId) {
+            const content = document.getElementById(cardId);
+            const icon = content.previousElementSibling.querySelector('.collapse-icon');
+            
+            if (content.classList.contains('collapsed')) {
+                content.classList.remove('collapsed');
+                content.classList.add('expanded');
+                icon.classList.remove('collapsed');
+            } else {
+                content.classList.remove('expanded');
+                content.classList.add('collapsed');
+                icon.classList.add('collapsed');
+            }
+        }
 
     </script>
 </body>
