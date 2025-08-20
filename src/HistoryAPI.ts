@@ -422,6 +422,8 @@ export class HistoryAPI {
         }
       } as any;
 
+      console.log('DEBUG: queryForStreaming dates:', { fromIso, toIso, from: from.toString(), to: to.toString() });
+
       let capturedResult: any = null;
       const mockRes = {
         json: (data: any) => { capturedResult = data; },
