@@ -2,7 +2,7 @@
  * SignalK Parquet Streaming Client
  * 
  * Provides a simple API for connecting to the streaming service and subscribing to data streams.
- * Uses Socket.IO for WebSocket communication with fallback to polling.
+ * Uses native WebSocket for real-time communication.
  */
 
 class SignalKStreamingClient {
@@ -17,8 +17,8 @@ class SignalKStreamingClient {
     this.reconnectDelay = 1000; // Start with 1 second
     this.eventHandlers = new Map();
     
-    // Auto-connect if requested
-    if (options.autoConnect !== false) {
+    // Only auto-connect if explicitly requested
+    if (options.autoConnect === true) {
       this.connect();
     }
   }

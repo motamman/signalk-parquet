@@ -260,11 +260,11 @@ export default function (app: ServerAPI): SignalKPlugin {
             state.currentConfig!.outputDirectory
           );
           
-          // Access the HTTP server from the SignalK app with multiple fallbacks
-          const httpServer = (app as any).httpServer || 
-                           (app as any).server || 
-                           (app as any).http ||
-                           ((app as any).router && (app as any).router.server);
+          // Access the HTTP server from the SignalK app
+          // SignalK exposes the HTTP server via the router's parent app
+          const httpServer = (app as any).router?.parent?.server || 
+                           (app as any).httpServer || 
+                           (app as any).server;
           
           if (httpServer) {
             app.debug('HTTP server found, creating streaming service...');
