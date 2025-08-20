@@ -175,7 +175,13 @@ export class UniversalDataSource {
   private async transformValues(values: HistoryAPIValue[], from: string, to: string): Promise<StreamValue[]> {
     const aggregates = this.config.aggregates || ['current'];
     
-    if (values.length === 0) return [];
+    // Safety checks
+    if (!values || !Array.isArray(values) || values.length === 0) return [];
+    if (!aggregates || !Array.isArray(aggregates) || aggregates.length === 0) return [];
+    
+    // Limit processing to reasonable data size to prevent memory issues
+    const maxValues = 10000;
+    const processedValues = values.length > maxValues ? values.slice(-maxValues) : values;
 
     const result: StreamValue[] = [];
     const currentTime = new Date().toISOString();
@@ -184,7 +190,7 @@ export class UniversalDataSource {
     for (const aggregate of aggregates) {
       switch (aggregate) {
         case 'current': {
-          const latest = values[values.length - 1];
+          const latest = processedValues[processedValues.length - 1];
           if (latest) {
             result.push({
               path: this.config.path,
@@ -196,7 +202,7 @@ export class UniversalDataSource {
         }
         
         case 'min': {
-          const numericValues = values
+          const numericValues = processedValues
             .map(v => typeof v.value === 'number' ? v.value : null)
             .filter(v => v !== null) as number[];
           
@@ -212,7 +218,7 @@ export class UniversalDataSource {
         }
         
         case 'max': {
-          const numericValues = values
+          const numericValues = processedValues
             .map(v => typeof v.value === 'number' ? v.value : null)
             .filter(v => v !== null) as number[];
           
@@ -228,7 +234,7 @@ export class UniversalDataSource {
         }
         
         case 'average': {
-          const numericValues = values
+          const numericValues = processedValues
             .map(v => typeof v.value === 'number' ? v.value : null)
             .filter(v => v !== null) as number[];
           
@@ -244,7 +250,7 @@ export class UniversalDataSource {
         }
         
         case 'first': {
-          const first = values[0];
+          const first = processedValues[0];
           if (first) {
             result.push({
               path: this.config.path,
@@ -256,7 +262,7 @@ export class UniversalDataSource {
         }
         
         case 'last': {
-          const last = values[values.length - 1];
+          const last = processedValues[processedValues.length - 1];
           if (last) {
             result.push({
               path: this.config.path,
@@ -268,7 +274,7 @@ export class UniversalDataSource {
         }
         
         case 'median': {
-          const numericValues = values
+          const numericValues = processedValues
             .map(v => typeof v.value === 'number' ? v.value : null)
             .filter(v => v !== null) as number[];
           
