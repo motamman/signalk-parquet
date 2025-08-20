@@ -205,6 +205,14 @@ export class HistoryAPI {
         req.query.resolution
           ? Number.parseFloat(req.query.resolution as string)
           : (to.toEpochSecond() - from.toEpochSecond()) / 500 * 1000;
+          
+      console.log('DEBUG: getValues resolution calc:', { 
+        reqResolution: req.query.resolution, 
+        parsed: req.query.resolution ? Number.parseFloat(req.query.resolution as string) : 'no resolution',
+        timeResolutionMillis,
+        fromEpoch: from.toEpochSecond(),
+        toEpoch: to.toEpochSecond()
+      });
       const pathExpressions = ((req.query.paths as string) || '')
         .replace(/[^0-9a-z.,:_]/gi, '')
         .split(',');
