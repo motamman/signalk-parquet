@@ -782,7 +782,9 @@
                                     <div class="stream-form-grid">
                                         <div class="form-group">
                                             <label for="streamPath">Data Path:</label>
-                                            <input type="text" id="streamPath" placeholder="navigation.position">
+                                            <select id="streamPath">
+                                                <option value="">Select a data path...</option>
+                                            </select>
                                         </div>
                                         <div class="form-group">
                                             <label for="streamTimeWindow">Time Window:</label>
@@ -815,19 +817,6 @@
                                 </div>
                             </div>
 
-                            <!-- Available Paths Card -->
-                            <div class="stream-card">
-                                <div class="stream-card-header collapsible" onclick="toggleCard('availablePaths')">
-                                    <h3>📂 Available Paths</h3>
-                                    <span class="collapse-icon collapsed">▼</span>
-                                </div>
-                                <div id="availablePaths" class="stream-card-content collapsible-content collapsed">
-                                    <button onclick="loadStreamingPaths()" class="btn-secondary">🔄 Load Available Paths</button>
-                                    <div id="streamingPaths" style="margin-top: 10px;">
-                                        <div class="info">Click "Load Available Paths" to see what data is available for streaming</div>
-                                    </div>
-                                </div>
-                            </div>
 
                             <!-- Saved Streams Card -->
                             <div class="stream-card">
@@ -1949,54 +1938,6 @@
             if (dataEl) dataEl.textContent = 'No streaming data yet...';
         }
 
-        async function loadStreamingPaths() {
-            try {
-                const response = await fetch(getPluginPath() + '/api/paths');
-                const rawData = await response.json();
-                
-                console.log('Paths API response:', rawData);
-                
-                const container = document.getElementById('streamingPaths');
-                if (!container) return;
-                
-                // Handle API response structure: {success: boolean, paths: PathInfo[]}
-                if (!rawData.success || !rawData.paths || !Array.isArray(rawData.paths)) {
-                    container.innerHTML = '<div class="warning">No paths available for streaming. Make sure you have some historical data collected.</div>';
-                    return;
-                }
-                
-                const paths = rawData.paths;
-                if (paths.length === 0) {
-                    container.innerHTML = '<div class="warning">No paths available for streaming. Make sure you have some historical data collected.</div>';
-                    return;
-                }
-                
-                let html = '<div class="paths-grid" style="display: grid; gap: 10px; margin-top: 10px;">';
-                paths.forEach(pathInfo => {
-                    html += `
-                        <div class="path-item" style="background: white; padding: 10px; border-radius: 5px; border-left: 4px solid #28a745; cursor: pointer;" 
-                             onclick="selectStreamingPath('${pathInfo.path}')">
-                            <strong>${pathInfo.path}</strong>
-                            <br><small>Files: ${pathInfo.fileCount || 0}</small>
-                        </div>
-                    `;
-                });
-                html += '</div>';
-                html += `<div class="info" style="margin-top: 10px;">Total: ${paths.length} paths available | Click a path to select it</div>`;
-                
-                container.innerHTML = html;
-            } catch (error) {
-                const container = document.getElementById('streamingPaths');
-                if (container) {
-                    container.innerHTML = `<div class="error">Failed to load streaming paths: ${error.message}</div>`;
-                }
-            }
-        }
-
-        function selectStreamingPath(path) {
-            const pathEl = document.getElementById('streamPath');
-            if (pathEl) pathEl.value = path;
-        }
 
         // ===== SAVED STREAMS MANAGEMENT =====
 
@@ -2081,7 +2022,7 @@
                     return;
                 }
                 
-                const path = pathElement.value.trim();
+                const path = pathElement.value;
                 const timeWindow = timeWindowElement.value;
                 const refreshInterval = parseInt(refreshElement.value) || 1000;
                 
@@ -2212,8 +2153,28 @@
                     return;
                 }
                 
+                // Ensure dropdown is populated first
+                await populateStreamPathDropdown();
+                
                 // Fill form with saved stream data
-                document.getElementById('streamPath').value = stream.path;
+                const pathDropdown = document.getElementById('streamPath');
+                if (pathDropdown) {
+                    // Check if the saved path exists in the dropdown
+                    const optionExists = Array.from(pathDropdown.options).some(option => option.value === stream.path);
+                    if (optionExists) {
+                        pathDropdown.value = stream.path;
+                    } else {
+                        // Path no longer available, add it as a disabled option and select it
+                        const option = document.createElement('option');
+                        option.value = stream.path;
+                        option.textContent = `${stream.path} (no longer available)`;
+                        option.disabled = true;
+                        option.style.color = '#999';
+                        pathDropdown.appendChild(option);
+                        pathDropdown.value = stream.path;
+                    }
+                }
+                
                 document.getElementById('streamTimeWindow').value = stream.timeWindow;
                 document.getElementById('streamRefresh').value = stream.refreshInterval;
                 
@@ -2233,7 +2194,34 @@
         // Load saved streams when page loads
         window.addEventListener('load', function() {
             setTimeout(loadSavedStreams, 1500); // Delay to let other components load first
+            setTimeout(populateStreamPathDropdown, 1000); // Populate dropdown with available paths
         });
+
+        // Populate the stream path dropdown with available data paths
+        async function populateStreamPathDropdown() {
+            try {
+                const response = await fetch(getPluginPath() + '/api/paths');
+                const result = await response.json();
+                
+                const dropdown = document.getElementById('streamPath');
+                if (!dropdown || !result.success || !result.paths) return;
+                
+                // Clear existing options except the first placeholder
+                dropdown.innerHTML = '<option value="">Select a data path...</option>';
+                
+                // Add available paths
+                result.paths.forEach(pathInfo => {
+                    const option = document.createElement('option');
+                    option.value = pathInfo.path;
+                    option.textContent = `${pathInfo.path} (${pathInfo.fileCount} files)`;
+                    dropdown.appendChild(option);
+                });
+                
+                console.log(`Populated dropdown with ${result.paths.length} available paths`);
+            } catch (error) {
+                console.error('Failed to populate stream path dropdown:', error);
+            }
+        }
 
         // ===== CARD COLLAPSIBLE FUNCTIONALITY =====
         function toggleCard(cardId) {
