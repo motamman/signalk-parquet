@@ -1,5 +1,5 @@
 import { Server as HttpServer } from 'http';
-import { Server as SocketIOServer, Socket } from 'socket.io';
+import { WebSocketServer, WebSocket } from 'ws';
 import { Observable, Subscription } from 'rxjs';
 import { UniversalDataSource, DataSourceConfig, StreamResponse } from './universal-datasource';
 import { HistoryAPI } from './HistoryAPI';
@@ -12,14 +12,14 @@ export interface StreamingServiceOptions {
 
 export interface ClientSubscription {
   id: string;
-  socket: Socket;
+  ws: WebSocket;
   dataSource: UniversalDataSource;
   subscription: Subscription;
   config: DataSourceConfig;
 }
 
 export class StreamingService {
-  private io: SocketIOServer;
+  private wss: WebSocketServer;
   private historyAPI: HistoryAPI;
   private selfId: string;
   private debug: boolean;
@@ -32,91 +32,88 @@ export class StreamingService {
     this.debug = options.debug || false;
 
     try {
-      // Create Socket.IO server with namespace approach to avoid HTTP conflicts
-      this.io = new SocketIOServer(httpServer, {
-        // Remove custom path - use default Socket.IO path
-        cors: {
-          origin: "*",
-          methods: ["GET", "POST"]
-        },
-        transports: ['websocket', 'polling'],
-        // More restrictive options to prevent HTTP server takeover
-        allowEIO3: true,
-        pingTimeout: 60000,
-        pingInterval: 25000,
-        upgradeTimeout: 10000,
-        maxHttpBufferSize: 1e6,
-        serveClient: false,
-        // Additional options to prevent interference
-        allowRequest: (req, callback) => {
-          // Only allow Socket.IO specific requests
-          const isSocketIO = req.url?.startsWith('/socket.io/') || 
-                           req.headers.upgrade === 'websocket';
-          callback(null, isSocketIO);
-        }
+      // Create native WebSocket server - much cleaner than Socket.IO
+      this.wss = new WebSocketServer({ 
+        server: httpServer,
+        path: '/parquet-stream'
       });
 
-      // Use a namespace instead of custom path to isolate from main server
-      const namespace = this.io.of('/parquet-stream');
       this.setupEventHandlers();
-      this.log('Streaming service initialized successfully with namespace /parquet-stream');
+      this.log('Streaming service initialized successfully with native WebSocket');
     } catch (error) {
-      this.log('Failed to initialize Socket.IO server:', error);
+      this.log('Failed to initialize WebSocket server:', error);
       // Don't throw error - let plugin continue without streaming
-      this.io = null as any;
+      this.wss = null as any;
     }
   }
 
   private setupEventHandlers(): void {
-    if (!this.io) {
-      this.log('Cannot setup event handlers - Socket.IO server not initialized');
+    if (!this.wss) {
+      this.log('Cannot setup event handlers - WebSocket server not initialized');
       return;
     }
     
-    this.io.on('connection', (socket: Socket) => {
-      this.log(`Client connected: ${socket.id}`);
+    this.wss.on('connection', (ws: WebSocket) => {
+      const clientId = `client_${Date.now()}_${Math.random()}`;
+      this.log(`Client connected: ${clientId}`);
 
-      // Handle data source subscription
-      socket.on('subscribe', (config: DataSourceConfig) => {
-        this.handleSubscribe(socket, config);
+      // Send initial connection info
+      this.sendMessage(ws, 'connected', {
+        selfId: this.selfId,
+        timestamp: new Date().toISOString()
       });
 
-      // Handle unsubscribe
-      socket.on('unsubscribe', (subscriptionId: string) => {
-        this.handleUnsubscribe(subscriptionId);
-      });
-
-      // Handle configuration updates
-      socket.on('updateConfig', (data: { subscriptionId: string; config: Partial<DataSourceConfig> }) => {
-        this.handleUpdateConfig(data.subscriptionId, data.config);
-      });
-
-      // Handle one-time queries
-      socket.on('query', async (data: { config: DataSourceConfig; from?: string; to?: string }) => {
-        await this.handleQuery(socket, data);
+      // Handle incoming messages
+      ws.on('message', (data: Buffer) => {
+        try {
+          const message = JSON.parse(data.toString());
+          this.handleMessage(ws, message, clientId);
+        } catch (error) {
+          this.log('Error parsing message:', error);
+          this.sendMessage(ws, 'error', { message: 'Invalid JSON' });
+        }
       });
 
       // Handle disconnect
-      socket.on('disconnect', () => {
-        this.handleDisconnect(socket);
-        this.log(`Client disconnected: ${socket.id}`);
+      ws.on('close', () => {
+        this.handleDisconnect(ws, clientId);
+        this.log(`Client disconnected: ${clientId}`);
       });
 
-      // Send initial connection info
-      socket.emit('connected', {
-        selfId: this.selfId,
-        timestamp: new Date().toISOString()
+      ws.on('error', (error) => {
+        this.log(`WebSocket error for ${clientId}:`, error);
       });
     });
   }
 
-  private handleSubscribe(socket: Socket, config: DataSourceConfig): void {
+  private handleMessage(ws: WebSocket, message: any, clientId: string): void {
+    const { type, data } = message;
+
+    switch (type) {
+      case 'subscribe':
+        this.handleSubscribe(ws, data, clientId);
+        break;
+      case 'unsubscribe':
+        this.handleUnsubscribe(data.subscriptionId);
+        break;
+      case 'updateConfig':
+        this.handleUpdateConfig(data.subscriptionId, data.config);
+        break;
+      case 'query':
+        this.handleQuery(ws, data);
+        break;
+      default:
+        this.sendMessage(ws, 'error', { message: `Unknown message type: ${type}` });
+    }
+  }
+
+  private handleSubscribe(ws: WebSocket, config: DataSourceConfig, clientId: string): void {
     try {
       const subscriptionId = `sub_${++this.subscriptionCounter}`;
       
       // Validate config
       if (!config.path) {
-        socket.emit('error', { message: 'Path is required for subscription' });
+        this.sendMessage(ws, 'error', { message: 'Path is required for subscription' });
         return;
       }
 
@@ -126,7 +123,7 @@ export class StreamingService {
       // Subscribe to the stream
       const subscription = dataSource.stream().subscribe({
         next: (data: StreamResponse) => {
-          socket.emit('data', {
+          this.sendMessage(ws, 'data', {
             subscriptionId,
             data,
             timestamp: new Date().toISOString()
@@ -134,7 +131,7 @@ export class StreamingService {
         },
         error: (error: any) => {
           this.log(`Stream error for ${subscriptionId}:`, error);
-          socket.emit('error', {
+          this.sendMessage(ws, 'error', {
             subscriptionId,
             message: error.message || 'Stream error'
           });
@@ -144,14 +141,14 @@ export class StreamingService {
       // Store subscription
       this.clientSubscriptions.set(subscriptionId, {
         id: subscriptionId,
-        socket,
+        ws,
         dataSource,
         subscription,
         config
       });
 
       // Confirm subscription
-      socket.emit('subscribed', {
+      this.sendMessage(ws, 'subscribed', {
         subscriptionId,
         config,
         timestamp: new Date().toISOString()
@@ -161,7 +158,7 @@ export class StreamingService {
 
     } catch (error) {
       this.log('Subscribe error:', error);
-      socket.emit('error', { message: 'Failed to create subscription' });
+      this.sendMessage(ws, 'error', { message: 'Failed to create subscription' });
     }
   }
 
@@ -171,7 +168,7 @@ export class StreamingService {
       clientSub.subscription.unsubscribe();
       this.clientSubscriptions.delete(subscriptionId);
       
-      clientSub.socket.emit('unsubscribed', {
+      this.sendMessage(clientSub.ws, 'unsubscribed', {
         subscriptionId,
         timestamp: new Date().toISOString()
       });
@@ -186,7 +183,7 @@ export class StreamingService {
       clientSub.dataSource.updateConfig(newConfig);
       clientSub.config = { ...clientSub.config, ...newConfig };
       
-      clientSub.socket.emit('configUpdated', {
+      this.sendMessage(clientSub.ws, 'configUpdated', {
         subscriptionId,
         config: clientSub.config,
         timestamp: new Date().toISOString()
@@ -196,19 +193,19 @@ export class StreamingService {
     }
   }
 
-  private async handleQuery(socket: Socket, data: { config: DataSourceConfig; from?: string; to?: string }): Promise<void> {
+  private async handleQuery(ws: WebSocket, data: { config: DataSourceConfig; from?: string; to?: string }): Promise<void> {
     try {
       const { config, from, to } = data;
       
       if (!config.path) {
-        socket.emit('queryError', { message: 'Path is required for query' });
+        this.sendMessage(ws, 'queryError', { message: 'Path is required for query' });
         return;
       }
 
       const dataSource = new UniversalDataSource(config, this.historyAPI);
       const result = await dataSource.query(from, to);
       
-      socket.emit('queryResult', {
+      this.sendMessage(ws, 'queryResult', {
         config,
         data: result,
         timestamp: new Date().toISOString()
@@ -216,16 +213,16 @@ export class StreamingService {
 
     } catch (error) {
       this.log('Query error:', error);
-      socket.emit('queryError', { message: 'Query failed' });
+      this.sendMessage(ws, 'queryError', { message: 'Query failed' });
     }
   }
 
-  private handleDisconnect(socket: Socket): void {
-    // Clean up all subscriptions for this socket
+  private handleDisconnect(ws: WebSocket, clientId: string): void {
+    // Clean up all subscriptions for this WebSocket
     const toDelete: string[] = [];
     
     this.clientSubscriptions.forEach((clientSub, subscriptionId) => {
-      if (clientSub.socket.id === socket.id) {
+      if (clientSub.ws === ws) {
         clientSub.subscription.unsubscribe();
         toDelete.push(subscriptionId);
       }
@@ -235,6 +232,12 @@ export class StreamingService {
     
     if (toDelete.length > 0) {
       this.log(`Cleaned up ${toDelete.length} subscriptions for disconnected client`);
+    }
+  }
+
+  private sendMessage(ws: WebSocket, type: string, data: any): void {
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type, data }));
     }
   }
 
@@ -254,7 +257,7 @@ export class StreamingService {
     });
 
     return {
-      connectedClients: this.io ? this.io.sockets.sockets.size : 0,
+      connectedClients: this.wss ? this.wss.clients.size : 0,
       activeSubscriptions: this.clientSubscriptions.size,
       subscriptionsByPath
     };
@@ -264,10 +267,12 @@ export class StreamingService {
    * Broadcast a message to all connected clients
    */
   broadcast(event: string, data: any): void {
-    if (this.io) {
-      this.io.emit(event, data);
+    if (this.wss) {
+      this.wss.clients.forEach(ws => {
+        this.sendMessage(ws, event, data);
+      });
     } else {
-      this.log('Cannot broadcast - Socket.IO server not initialized');
+      this.log('Cannot broadcast - WebSocket server not initialized');
     }
   }
 
@@ -281,31 +286,27 @@ export class StreamingService {
     });
     this.clientSubscriptions.clear();
 
-    // Close Socket.IO server properly to avoid HTTP server conflicts
-    if (this.io) {
+    // Close WebSocket server properly
+    if (this.wss) {
       try {
-        // Disconnect all clients first
-        this.io.disconnectSockets();
+        // Close all client connections
+        this.wss.clients.forEach(ws => {
+          ws.close();
+        });
         
-        // Close the Socket.IO server with callback to ensure clean shutdown
-        this.io.close(() => {
-          this.log('Streaming service shut down completely');
+        // Close the WebSocket server
+        this.wss.close(() => {
+          this.log('WebSocket streaming service shut down completely');
         });
       } catch (error) {
-        this.log('Error during Socket.IO shutdown:', error);
-        // Force close if there's an error
-        try {
-          this.io.close();
-        } catch (forceError) {
-          this.log('Force close also failed:', forceError);
-        }
+        this.log('Error during WebSocket shutdown:', error);
       }
     }
   }
 
   private log(...args: any[]): void {
     if (this.debug) {
-      console.log('[StreamingService]', ...args);
+      console.log('[StreamingService-WebSocket]', ...args);
     }
   }
 }
