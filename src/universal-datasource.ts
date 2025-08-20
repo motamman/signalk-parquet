@@ -175,16 +175,48 @@ export class UniversalDataSource {
         };
       }
 
-      // Transform data to our format with aggregates
-      const values = await this.transformValues(pathData.values, fromTime, toTime);
+      // Convert History API format to StreamValue format
+      const allValues: StreamValue[] = pathData.values.map((item: any) => ({
+        path: this.config.path,
+        timestamp: item.timestamp,
+        value: item.value
+      }));
+
+      // First emit: return complete dataset
+      if (this.isFirstEmit) {
+        this.isFirstEmit = false;
+        this.previousDataset = [...allValues];
+        if (allValues.length > 0) {
+          this.lastDataTimestamp = allValues[allValues.length - 1].timestamp;
+        }
+        return {
+          path: this.config.path,
+          values: allValues,
+          meta: {
+            timeWindow: this.config.timeWindow || [fromTime, toTime],
+            resolution: this.config.resolution,
+            count: allValues.length
+          }
+        };
+      }
+
+      // Subsequent emits: return only new data points
+      const newValues = allValues.filter(value => 
+        !this.lastDataTimestamp || value.timestamp > this.lastDataTimestamp
+      );
+      
+      if (newValues.length > 0) {
+        this.lastDataTimestamp = newValues[newValues.length - 1].timestamp;
+        this.previousDataset = [...allValues];
+      }
 
       return {
         path: this.config.path,
-        values,
+        values: newValues,
         meta: {
           timeWindow: this.config.timeWindow || [fromTime, toTime],
           resolution: this.config.resolution,
-          count: values.length
+          count: newValues.length
         }
       };
 
