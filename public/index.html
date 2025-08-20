@@ -475,6 +475,21 @@
             transform: rotate(-90deg);
         }
 
+        .collapsible-content {
+            overflow: hidden;
+            transition: max-height 0.3s ease-out;
+        }
+
+        .collapsible-content.collapsed {
+            max-height: 0;
+            padding: 0 20px;
+        }
+
+        .collapsible-content.expanded {
+            max-height: 1000px;
+            padding: 20px;
+        }
+
         .btn-primary {
             background: #667eea;
             color: white;
@@ -816,7 +831,7 @@
 
                             <!-- Saved Streams Card -->
                             <div class="stream-card">
-                                <div class="stream-card-header collapsible" onclick="toggleCard('savedStreams')">
+                                <div class="stream-card-header collapsible" onclick="toggleCard('savedStreamsCard')">
                                     <h3>💾 Saved Streams</h3>
                                     <span class="collapse-icon collapsed">▼</span>
                                 </div>
