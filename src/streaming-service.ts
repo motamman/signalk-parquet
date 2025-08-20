@@ -12,14 +12,14 @@ export interface StreamingServiceOptions {
 
 export interface ClientSubscription {
   id: string;
-  ws: WebSocket.WebSocket;
+  ws: WebSocket;
   dataSource: UniversalDataSource;
   subscription: Subscription;
   config: DataSourceConfig;
 }
 
 export class StreamingService {
-  private wss: WebSocket.WebSocketServer;
+  private wss: WebSocket.Server;
   private historyAPI: HistoryAPI;
   private selfId: string;
   private debug: boolean;
@@ -33,7 +33,7 @@ export class StreamingService {
 
     try {
       // Create native WebSocket server - much cleaner than Socket.IO
-      this.wss = new WebSocket.WebSocketServer({ 
+      this.wss = new WebSocket.Server({ 
         server: httpServer,
         path: '/signalk-parquet-stream'
       });
