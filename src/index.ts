@@ -180,8 +180,8 @@ export default function (app: ServerAPI): SignalKPlugin {
       app.error(`Failed to register History API routes with main server: ${error}`);
     }
 
-    // Initialize streaming service (with delay to ensure clean startup)
-    if (true) { // Always enable streaming
+    // Initialize streaming service (disabled for now to stop UI resets)
+    if (false) { // Temporarily disabled
       setTimeout(async () => {
         try {
           app.debug('Initializing streaming service...');
