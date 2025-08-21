@@ -84,7 +84,7 @@ export default function (app: ServerAPI): SignalKPlugin {
       fileFormat: options?.fileFormat || 'parquet',
       vesselMMSI: vesselMMSI,
       s3Upload: options?.s3Upload || { enabled: false },
-      enableStreaming: options?.enableStreaming ?? true,
+      enableStreaming: true, // Always enabled
     };
 
     // Load webapp configuration including commands
@@ -180,8 +180,8 @@ export default function (app: ServerAPI): SignalKPlugin {
       app.error(`Failed to register History API routes with main server: ${error}`);
     }
 
-    // Initialize streaming service if enabled (with delay to ensure clean startup)
-    if (state.currentConfig.enableStreaming) {
+    // Initialize streaming service (with delay to ensure clean startup)
+    if (true) { // Always enable streaming
       setTimeout(async () => {
         try {
           app.debug('Initializing streaming service...');
@@ -413,12 +413,6 @@ export default function (app: ServerAPI): SignalKPlugin {
             default: false,
           },
         },
-      },
-      enableStreaming: {
-        type: 'boolean',
-        title: 'Enable Streaming Service',
-        description: 'Enable real-time data streaming via WebSockets for live data monitoring (stream configurations are managed in the webapp)',
-        default: true,
       },
     },
   };
