@@ -146,10 +146,12 @@ export class UniversalDataSource {
         // Convert duration to time range
         toTime = new Date().toISOString();
         fromTime = this.calculateFromTime(this.config.timeWindow);
+        console.log(`DEBUG: UniversalDataSource time calc for ${this.config.timeWindow}: fromTime=${fromTime}, toTime=${toTime}`);
       } else {
         // Default to last hour
         toTime = new Date().toISOString();
         fromTime = this.calculateFromTime('1h');
+        console.log(`DEBUG: UniversalDataSource time calc default 1h: fromTime=${fromTime}, toTime=${toTime}`);
       }
 
       // Query history API using the streaming-friendly method

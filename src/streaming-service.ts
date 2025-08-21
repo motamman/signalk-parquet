@@ -1,8 +1,7 @@
 import { Server as HttpServer } from 'http';
 import * as WebSocket from 'ws';
-import { Observable, Subscription } from 'rxjs';
-import { UniversalDataSource, DataSourceConfig, StreamResponse } from './universal-datasource';
 import { HistoryAPI } from './HistoryAPI';
+import { ZonedDateTime } from '@js-joda/core';
 
 export interface StreamingServiceOptions {
   historyAPI: HistoryAPI;
@@ -10,12 +9,13 @@ export interface StreamingServiceOptions {
   debug?: boolean;
 }
 
-export interface ClientSubscription {
+export interface StreamSubscription {
   id: string;
-  ws: WebSocket;
-  dataSource: UniversalDataSource;
-  subscription: Subscription;
-  config: DataSourceConfig;
+  path: string;
+  timeWindow: string;
+  aggregates: string[];
+  refreshInterval: number;
+  timer?: NodeJS.Timeout;
 }
 
 export class StreamingService {
@@ -23,8 +23,8 @@ export class StreamingService {
   private historyAPI: HistoryAPI;
   private selfId: string;
   private debug: boolean;
-  private clientSubscriptions: Map<string, ClientSubscription> = new Map();
-  private subscriptionCounter = 0;
+  private activeSubscriptions: Map<string, StreamSubscription> = new Map();
+  private connectedClients: Set<WebSocket> = new Set();
 
   constructor(httpServer: HttpServer, options: StreamingServiceOptions) {
     this.historyAPI = options.historyAPI;
@@ -32,289 +32,280 @@ export class StreamingService {
     this.debug = options.debug || false;
 
     try {
-      // Create native WebSocket server - much cleaner than Socket.IO
+      // Create WebSocket server
       this.wss = new WebSocket.Server({ 
         server: httpServer,
         path: '/signalk-parquet-stream'
       });
 
       this.setupEventHandlers();
-      this.log('Streaming service initialized successfully with native WebSocket');
+      this.log('Streaming service initialized with direct HistoryAPI calls');
     } catch (error) {
       this.log('Failed to initialize WebSocket server:', error);
-      // Don't throw error - let plugin continue without streaming
-      this.wss = null as any;
+      throw error;
     }
   }
 
   private setupEventHandlers(): void {
-    if (!this.wss) {
-      this.log('Cannot setup event handlers - WebSocket server not initialized');
-      return;
-    }
-    
     this.wss.on('connection', (ws: WebSocket) => {
-      const clientId = `client_${Date.now()}_${Math.random()}`;
-      this.log(`Client connected: ${clientId}`);
+      this.log('Client connected');
+      this.connectedClients.add(ws);
 
-      // Send initial connection info
-      this.sendMessage(ws, 'connected', {
-        selfId: this.selfId,
-        timestamp: new Date().toISOString()
-      });
-
-      // Handle incoming messages
-      ws.on('message', (data: Buffer) => {
+      ws.on('message', (data: WebSocket.RawData) => {
         try {
           const message = JSON.parse(data.toString());
-          this.handleMessage(ws, message, clientId);
+          this.handleMessage(ws, message);
         } catch (error) {
           this.log('Error parsing message:', error);
-          this.sendMessage(ws, 'error', { message: 'Invalid JSON' });
+          ws.send(JSON.stringify({ error: 'Invalid JSON' }));
         }
       });
 
-      // Handle disconnect
       ws.on('close', () => {
-        this.handleDisconnect(ws, clientId);
-        this.log(`Client disconnected: ${clientId}`);
+        this.log('Client disconnected');
+        this.connectedClients.delete(ws);
       });
 
       ws.on('error', (error) => {
-        this.log(`WebSocket error for ${clientId}:`, error);
+        this.log('WebSocket error:', error);
+        this.connectedClients.delete(ws);
       });
+
+      // Send welcome message
+      ws.send(JSON.stringify({ 
+        type: 'welcome', 
+        message: 'Connected to SignalK Parquet Streaming Service'
+      }));
     });
   }
 
-  private handleMessage(ws: WebSocket, message: any, clientId: string): void {
-    const { type, data } = message;
-
-    switch (type) {
+  private handleMessage(ws: WebSocket, message: any): void {
+    switch (message.type) {
       case 'subscribe':
-        this.handleSubscribe(ws, data, clientId);
+        this.handleSubscribe(ws, message);
         break;
       case 'unsubscribe':
-        this.handleUnsubscribe(data.subscriptionId);
-        break;
-      case 'updateConfig':
-        this.handleUpdateConfig(data.subscriptionId, data.config);
-        break;
-      case 'query':
-        this.handleQuery(ws, data);
+        this.handleUnsubscribe(ws, message);
         break;
       default:
-        this.sendMessage(ws, 'error', { message: `Unknown message type: ${type}` });
+        ws.send(JSON.stringify({ error: `Unknown message type: ${message.type}` }));
     }
   }
 
-  private handleSubscribe(ws: WebSocket, config: DataSourceConfig, clientId: string): void {
-    try {
-      const subscriptionId = `sub_${++this.subscriptionCounter}`;
-      
-      // Validate config
-      if (!config.path) {
-        this.sendMessage(ws, 'error', { message: 'Path is required for subscription' });
-        return;
-      }
+  private handleSubscribe(ws: WebSocket, message: any): void {
+    const { subscriptionId, path, timeWindow, aggregates, refreshInterval } = message;
+    
+    if (!subscriptionId || !path || !timeWindow) {
+      ws.send(JSON.stringify({ 
+        error: 'Missing required fields: subscriptionId, path, timeWindow' 
+      }));
+      return;
+    }
 
-      // Create data source
-      const dataSource = new UniversalDataSource(config, this.historyAPI);
+    // Create subscription
+    const subscription: StreamSubscription = {
+      id: subscriptionId,
+      path,
+      timeWindow,
+      aggregates: aggregates || ['current'],
+      refreshInterval: refreshInterval || 1000
+    };
+
+    // Start streaming data
+    this.startStreaming(subscription);
+    this.activeSubscriptions.set(subscriptionId, subscription);
+
+    ws.send(JSON.stringify({
+      type: 'subscribed',
+      subscriptionId,
+      message: `Subscribed to ${path} with ${timeWindow} window`
+    }));
+
+    this.log(`Created subscription: ${subscriptionId} for path ${path}`);
+  }
+
+  private handleUnsubscribe(ws: WebSocket, message: any): void {
+    const { subscriptionId } = message;
+    
+    if (this.activeSubscriptions.has(subscriptionId)) {
+      this.stopStreaming(subscriptionId);
+      this.activeSubscriptions.delete(subscriptionId);
       
-      // Subscribe to the stream
-      const subscription = dataSource.stream().subscribe({
-        next: (data: StreamResponse) => {
-          this.sendMessage(ws, 'data', {
-            subscriptionId,
-            data,
-            timestamp: new Date().toISOString()
-          });
-        },
-        error: (error: any) => {
-          this.log(`Stream error for ${subscriptionId}:`, error);
-          this.sendMessage(ws, 'error', {
-            subscriptionId,
-            message: error.message || 'Stream error'
-          });
+      ws.send(JSON.stringify({
+        type: 'unsubscribed',
+        subscriptionId
+      }));
+
+      this.log(`Removed subscription: ${subscriptionId}`);
+    } else {
+      ws.send(JSON.stringify({ 
+        error: `Subscription not found: ${subscriptionId}` 
+      }));
+    }
+  }
+
+  private startStreaming(subscription: StreamSubscription): void {
+    const fetchData = async () => {
+      try {
+        // Calculate time window
+        const { fromTime, toTime } = this.calculateTimeWindow(subscription.timeWindow);
+        
+        this.log(`Fetching data for ${subscription.path} from ${fromTime} to ${toTime}`);
+
+        // Parse times to ZonedDateTime (same as HistoryAPI does)
+        const from = ZonedDateTime.parse(fromTime + (fromTime.endsWith('Z') ? '' : 'Z'));
+        const to = ZonedDateTime.parse(toTime + (toTime.endsWith('Z') ? '' : 'Z'));
+        const context = `vessels.${this.selfId}`;
+
+        // Create mock request/response to call getValues directly
+        const mockReq = {
+          query: {
+            paths: subscription.path,
+            // Let HistoryAPI calculate resolution automatically
+          }
+        } as any;
+
+        let capturedResult: any = null;
+        const mockRes = {
+          json: (data: any) => { capturedResult = data; },
+          status: () => mockRes
+        } as any;
+
+        // Call HistoryAPI.getValues directly (same as REST API)
+        await this.historyAPI.getValues(
+          context as any,
+          from,
+          to,
+          false, // shouldRefresh
+          (msg: string) => this.log(msg), // debug function
+          mockReq,
+          mockRes
+        );
+
+        if (capturedResult && capturedResult.data) {
+          // Transform to streaming format
+          const streamData = {
+            type: 'data',
+            subscriptionId: subscription.id,
+            path: subscription.path,
+            timeWindow: subscription.timeWindow,
+            timestamp: new Date().toISOString(),
+            data: capturedResult.data, // Full dataset with buckets
+            meta: {
+              range: capturedResult.range,
+              dataPoints: capturedResult.data.length
+            }
+          };
+
+          // Broadcast to all connected clients
+          this.broadcast(streamData);
+        } else {
+          this.log(`No data returned for subscription ${subscription.id}`);
         }
-      });
 
-      // Store subscription
-      this.clientSubscriptions.set(subscriptionId, {
-        id: subscriptionId,
-        ws,
-        dataSource,
-        subscription,
-        config
-      });
-
-      // Confirm subscription
-      this.sendMessage(ws, 'subscribed', {
-        subscriptionId,
-        config,
-        timestamp: new Date().toISOString()
-      });
-
-      this.log(`Created subscription ${subscriptionId} for path: ${config.path}`);
-
-    } catch (error) {
-      this.log('Subscribe error:', error);
-      this.sendMessage(ws, 'error', { message: 'Failed to create subscription' });
-    }
-  }
-
-  private handleUnsubscribe(subscriptionId: string): void {
-    const clientSub = this.clientSubscriptions.get(subscriptionId);
-    if (clientSub) {
-      clientSub.subscription.unsubscribe();
-      this.clientSubscriptions.delete(subscriptionId);
-      
-      this.sendMessage(clientSub.ws, 'unsubscribed', {
-        subscriptionId,
-        timestamp: new Date().toISOString()
-      });
-
-      this.log(`Unsubscribed: ${subscriptionId}`);
-    }
-  }
-
-  private handleUpdateConfig(subscriptionId: string, newConfig: Partial<DataSourceConfig>): void {
-    const clientSub = this.clientSubscriptions.get(subscriptionId);
-    if (clientSub) {
-      clientSub.dataSource.updateConfig(newConfig);
-      clientSub.config = { ...clientSub.config, ...newConfig };
-      
-      this.sendMessage(clientSub.ws, 'configUpdated', {
-        subscriptionId,
-        config: clientSub.config,
-        timestamp: new Date().toISOString()
-      });
-
-      this.log(`Updated config for ${subscriptionId}`);
-    }
-  }
-
-  private async handleQuery(ws: WebSocket, data: { config: DataSourceConfig; from?: string; to?: string }): Promise<void> {
-    try {
-      const { config, from, to } = data;
-      
-      if (!config.path) {
-        this.sendMessage(ws, 'queryError', { message: 'Path is required for query' });
-        return;
+      } catch (error) {
+        this.log(`Error fetching data for subscription ${subscription.id}:`, error);
+        
+        // Send error to clients
+        this.broadcast({
+          type: 'error',
+          subscriptionId: subscription.id,
+          error: error instanceof Error ? error.message : 'Unknown error'
+        });
       }
+    };
 
-      const dataSource = new UniversalDataSource(config, this.historyAPI);
-      const result = await dataSource.query(from, to);
-      
-      this.sendMessage(ws, 'queryResult', {
-        config,
-        data: result,
-        timestamp: new Date().toISOString()
-      });
+    // Fetch initial data immediately
+    fetchData();
 
-    } catch (error) {
-      this.log('Query error:', error);
-      this.sendMessage(ws, 'queryError', { message: 'Query failed' });
+    // Set up periodic refresh
+    subscription.timer = setInterval(fetchData, subscription.refreshInterval);
+  }
+
+  private stopStreaming(subscriptionId: string): void {
+    const subscription = this.activeSubscriptions.get(subscriptionId);
+    if (subscription && subscription.timer) {
+      clearInterval(subscription.timer);
+      subscription.timer = undefined;
     }
   }
 
-  private handleDisconnect(ws: WebSocket, clientId: string): void {
-    // Clean up all subscriptions for this WebSocket
-    const toDelete: string[] = [];
-    
-    this.clientSubscriptions.forEach((clientSub, subscriptionId) => {
-      if (clientSub.ws === ws) {
-        clientSub.subscription.unsubscribe();
-        toDelete.push(subscriptionId);
+  private calculateTimeWindow(timeWindow: string): { fromTime: string, toTime: string } {
+    const now = new Date();
+    const toTime = now.toISOString();
+
+    // Parse duration like "5m", "1h", "30s"
+    const match = timeWindow.match(/^(\d+)([smhd])$/);
+    if (!match) {
+      throw new Error(`Invalid time window format: ${timeWindow}`);
+    }
+
+    const amount = parseInt(match[1]);
+    const unit = match[2];
+    const fromDate = new Date(now);
+
+    switch (unit) {
+      case 's':
+        fromDate.setSeconds(fromDate.getSeconds() - amount);
+        break;
+      case 'm':
+        fromDate.setMinutes(fromDate.getMinutes() - amount);
+        break;
+      case 'h':
+        fromDate.setHours(fromDate.getHours() - amount);
+        break;
+      case 'd':
+        fromDate.setDate(fromDate.getDate() - amount);
+        break;
+      default:
+        throw new Error(`Unsupported time unit: ${unit}`);
+    }
+
+    const fromTime = fromDate.toISOString();
+
+    return { fromTime, toTime };
+  }
+
+  broadcast(data: any): void {
+    const message = JSON.stringify(data);
+    this.connectedClients.forEach(client => {
+      if (client.readyState === WebSocket.OPEN) {
+        client.send(message);
       }
     });
-
-    toDelete.forEach(id => this.clientSubscriptions.delete(id));
-    
-    if (toDelete.length > 0) {
-      this.log(`Cleaned up ${toDelete.length} subscriptions for disconnected client`);
-    }
   }
 
-  private sendMessage(ws: WebSocket, type: string, data: any): void {
-    if (ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type, data }));
-    }
-  }
-
-  /**
-   * Get statistics about active connections and subscriptions
-   */
-  getStats(): {
-    connectedClients: number;
-    activeSubscriptions: number;
-    subscriptionsByPath: Record<string, number>;
-  } {
-    const subscriptionsByPath: Record<string, number> = {};
-    
-    this.clientSubscriptions.forEach(sub => {
-      const path = sub.config.path;
-      subscriptionsByPath[path] = (subscriptionsByPath[path] || 0) + 1;
-    });
-
+  getStats(): { connectedClients: number; activeSubscriptions: number } {
     return {
-      connectedClients: this.wss ? this.wss.clients.size : 0,
-      activeSubscriptions: this.clientSubscriptions.size,
-      subscriptionsByPath
+      connectedClients: this.connectedClients.size,
+      activeSubscriptions: this.activeSubscriptions.size
     };
   }
 
-  /**
-   * Broadcast a message to all connected clients
-   */
-  broadcast(event: string, data: any): void {
-    if (this.wss) {
-      this.wss.clients.forEach(ws => {
-        this.sendMessage(ws, event, data);
-      });
-    } else {
-      this.log('Cannot broadcast - WebSocket server not initialized');
-    }
-  }
-
-  /**
-   * Shutdown the streaming service
-   */
   shutdown(): void {
-    // Unsubscribe all active subscriptions
-    this.clientSubscriptions.forEach(sub => {
-      sub.subscription.unsubscribe();
+    this.log('Shutting down streaming service');
+    
+    // Stop all subscriptions
+    this.activeSubscriptions.forEach((subscription) => {
+      this.stopStreaming(subscription.id);
     });
-    this.clientSubscriptions.clear();
+    this.activeSubscriptions.clear();
 
-    // Close WebSocket server properly
+    // Close all WebSocket connections
+    this.connectedClients.forEach(client => {
+      client.close();
+    });
+    this.connectedClients.clear();
+
+    // Close WebSocket server
     if (this.wss) {
-      try {
-        // Close all client connections
-        this.wss.clients.forEach(ws => {
-          ws.close();
-        });
-        
-        // Close the WebSocket server
-        this.wss.close(() => {
-          this.log('WebSocket streaming service shut down completely');
-        });
-      } catch (error) {
-        this.log('Error during WebSocket shutdown:', error);
-      }
+      this.wss.close();
     }
   }
 
-  private log(...args: any[]): void {
+  private log(message: string, ...args: any[]): void {
     if (this.debug) {
-      console.log('[StreamingService-WebSocket]', ...args);
+      console.log(`[StreamingService] ${message}`, ...args);
     }
   }
-}
-
-// Client-side helper types and interfaces for TypeScript consumers
-export interface StreamingClient {
-  subscribe(config: DataSourceConfig): string;
-  unsubscribe(subscriptionId: string): void;
-  query(config: DataSourceConfig, from?: string, to?: string): Promise<StreamResponse>;
-  on(event: 'data' | 'error' | 'subscribed' | 'unsubscribed', callback: Function): void;
 }
