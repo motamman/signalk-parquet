@@ -2,7 +2,6 @@ import * as fs from 'fs-extra';
 import * as path from 'path';
 import express, { Router } from 'express';
 import { getAvailablePaths } from './utils/path-discovery';
-import { registerStreamingRoutes } from './streaming-routes';
 import { DuckDBInstance } from '@duckdb/node-api';
 import {
   TypedRequest,
@@ -37,7 +36,6 @@ import {
 } from './commands';
 import { updateDataSubscriptions } from './data-handler';
 import { toContextFilePath, toParquetFilePath } from './utils/path-helpers';
-import { initializeStreamingService, shutdownStreamingService } from './streaming-lifecycle';
 import { ServerAPI, Context } from '@signalk/server-api';
 
 // AWS S3 for testing connection
@@ -782,23 +780,11 @@ export function registerApiRoutes(
         });
       }
 
-      // Initialize streaming service
-      const result = await initializeStreamingService(state, app);
-      
-      if (result.success) {
-        state.streamingEnabled = true;
-        res.json({
-          success: true,
-          message: 'Streaming service enabled successfully',
-          enabled: true
-        });
-      } else {
-        res.status(500).json({
-          success: false,
-          error: result.error,
-          enabled: false
-        });
-      }
+      res.status(501).json({
+        success: false,
+        error: 'Runtime streaming enable/disable not implemented yet - use new WebSocket streaming',
+        enabled: false
+      });
     } catch (error) {
       app.error(`Error enabling streaming: ${error}`);
       res.status(500).json({
@@ -820,12 +806,9 @@ export function registerApiRoutes(
         });
       }
 
-      // Shutdown streaming service
-      shutdownStreamingService(state, app);
-      
-      res.json({
-        success: true,
-        message: 'Streaming service disabled successfully',
+      res.status(501).json({
+        success: false,
+        error: 'Runtime streaming enable/disable not implemented yet - use new WebSocket streaming',
         enabled: false
       });
     } catch (error) {
@@ -865,8 +848,7 @@ export function registerApiRoutes(
     }
   );
 
-  // Register streaming routes
-  registerStreamingRoutes(router, state, app);
+  // Old streaming routes removed - new streaming uses WebSocket directly
 
   app.debug('Webapp API routes registered');
 }

@@ -31,73 +31,6 @@ import {
 } from './data-handler';
 import { ServerAPI } from '@signalk/server-api';
 
-/**
- * Restore saved stream subscriptions on plugin startup
- */
-async function restoreStreamSubscriptions(state: PluginState, app: ServerAPI): Promise<void> {
-  if (!state.streamingService) {
-    return;
-  }
-
-  // Load streaming subscriptions from webapp config
-  const webAppConfig = loadWebAppConfig(app);
-  const streamingSubscriptions = webAppConfig.streamingSubscriptions || [];
-  const enabledStreams = streamingSubscriptions.filter(stream => stream.enabled);
-  
-  if (enabledStreams.length === 0) {
-    app.debug('No enabled stream subscriptions to restore');
-    return;
-  }
-
-  app.debug(`Restoring ${enabledStreams.length} enabled stream subscriptions`);
-
-  for (const streamConfig of enabledStreams) {
-    try {
-      // Import the UniversalDataSource and HistoryAPI here to avoid circular imports
-      const { UniversalDataSource } = require('./universal-datasource');
-      const { HistoryAPI } = require('./HistoryAPI');
-      
-      const historyAPI = new HistoryAPI(app.selfId, state.currentConfig!.outputDirectory);
-      
-      const dataSourceConfig = {
-        path: streamConfig.path,
-        timeWindow: streamConfig.timeWindow,
-        aggregates: streamConfig.aggregates,
-        refreshInterval: streamConfig.refreshInterval
-      };
-
-      // Create data source and subscribe to stream
-      const dataSource = new UniversalDataSource(dataSourceConfig, historyAPI);
-      const subscription = dataSource.stream().subscribe({
-        next: (data: any) => {
-          // Broadcast to all connected WebSocket clients
-          state.streamingService.broadcast('data', {
-            subscriptionId: streamConfig.id,
-            data,
-            timestamp: new Date().toISOString()
-          });
-        },
-        error: (error: any) => {
-          app.error(`Stream error for ${streamConfig.name} (${streamConfig.path}): ${error}`);
-        }
-      });
-
-      // Store the subscription for cleanup on shutdown
-      if (!state.restoredSubscriptions) {
-        state.restoredSubscriptions = new Map();
-      }
-      state.restoredSubscriptions.set(streamConfig.id, {
-        subscription,
-        dataSource,
-        config: streamConfig
-      });
-
-      app.debug(`Restored stream: ${streamConfig.name} (${streamConfig.path})`);
-    } catch (error) {
-      app.error(`Failed to restore stream ${streamConfig.name}: ${error}`);
-    }
-  }
-}
 
 export default function (app: ServerAPI): SignalKPlugin {
   const plugin: SignalKPlugin = {
@@ -288,13 +221,8 @@ export default function (app: ServerAPI): SignalKPlugin {
               if (state.streamingService) {
                 app.debug('Streaming service initialized successfully');
                 
-                // Auto-restore enabled stream subscriptions with additional error handling
-                try {
-                  await restoreStreamSubscriptions(state, app);
-                } catch (restoreError) {
-                  app.error(`Failed to restore stream subscriptions: ${restoreError}`);
-                  // Continue - don't let restore failure break streaming
-                }
+                // New streaming service doesn't need auto-restore
+                app.debug('New streaming service ready for subscriptions');
               } else {
                 app.error('Streaming service creation returned null/undefined');
               }
@@ -344,18 +272,7 @@ export default function (app: ServerAPI): SignalKPlugin {
     });
     state.unsubscribes = [];
 
-    // Clean up restored stream subscriptions
-    if (state.restoredSubscriptions) {
-      state.restoredSubscriptions.forEach((sub, id) => {
-        try {
-          sub.subscription.unsubscribe();
-          app.debug(`Unsubscribed restored stream: ${id}`);
-        } catch (error) {
-          app.error(`Error unsubscribing restored stream ${id}: ${error}`);
-        }
-      });
-      state.restoredSubscriptions = undefined;
-    }
+    // No more restored subscriptions to clean up
 
     // Shutdown streaming service
     if (state.streamingService) {
