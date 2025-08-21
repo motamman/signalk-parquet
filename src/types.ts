@@ -246,8 +246,9 @@ export interface PluginState {
   commandState: CommandRegistrationState;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   streamingService?: any; // StreamingService instance
+  streamingEnabled?: boolean; // Runtime control separate from config
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  restoredSubscriptions?: Map<string, any>; // Restored stream subscriptions for cleanup
+  restoredSubscriptions?: Map<string, any>; // Track active subscriptions
 }
 
 // Parquet Writer Class Interface

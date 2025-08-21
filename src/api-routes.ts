@@ -37,6 +37,7 @@ import {
 } from './commands';
 import { updateDataSubscriptions } from './data-handler';
 import { toContextFilePath, toParquetFilePath } from './utils/path-helpers';
+import { initializeStreamingService, shutdownStreamingService } from './streaming-lifecycle';
 import { ServerAPI, Context } from '@signalk/server-api';
 
 // AWS S3 for testing connection
@@ -760,6 +761,97 @@ export function registerApiRoutes(
       }
     }
   );
+
+  // Enable streaming at runtime
+  router.post('/api/streaming/enable', async (req, res) => {
+    try {
+      if (state.streamingService) {
+        return res.json({
+          success: true,
+          message: 'Streaming service is already running',
+          enabled: true
+        });
+      }
+
+      // Check if streaming is enabled in config
+      if (!state.currentConfig?.enableStreaming) {
+        return res.status(400).json({
+          success: false,
+          error: 'Streaming is disabled in plugin configuration. Enable it in SignalK Admin and restart the plugin.',
+          enabled: false
+        });
+      }
+
+      // Initialize streaming service
+      const result = await initializeStreamingService(state, app);
+      
+      if (result.success) {
+        state.streamingEnabled = true;
+        res.json({
+          success: true,
+          message: 'Streaming service enabled successfully',
+          enabled: true
+        });
+      } else {
+        res.status(500).json({
+          success: false,
+          error: result.error,
+          enabled: false
+        });
+      }
+    } catch (error) {
+      app.error(`Error enabling streaming: ${error}`);
+      res.status(500).json({
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error',
+        enabled: false
+      });
+    }
+  });
+
+  // Disable streaming at runtime
+  router.post('/api/streaming/disable', (req, res) => {
+    try {
+      if (!state.streamingService) {
+        return res.json({
+          success: true,
+          message: 'Streaming service is already stopped',
+          enabled: false
+        });
+      }
+
+      // Shutdown streaming service
+      shutdownStreamingService(state, app);
+      
+      res.json({
+        success: true,
+        message: 'Streaming service disabled successfully',
+        enabled: false
+      });
+    } catch (error) {
+      app.error(`Error disabling streaming: ${error}`);
+      res.status(500).json({
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error',
+        enabled: state.streamingService ? true : false
+      });
+    }
+  });
+
+  // Get current streaming status
+  router.get('/api/streaming/status', (req, res) => {
+    const isEnabled = !!state.streamingService;
+    const configEnabled = state.currentConfig?.enableStreaming ?? false;
+    
+    res.json({
+      enabled: isEnabled,
+      configEnabled: configEnabled,
+      connectedClients: state.streamingService?.getStats?.()?.connectedClients || 0,
+      activeSubscriptions: state.streamingService?.getStats?.()?.activeSubscriptions || 0,
+      canEnable: configEnabled && !isEnabled,
+      canDisable: isEnabled
+    });
+  });
 
   // Health check
   router.get(
