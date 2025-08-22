@@ -1,1 +1,0 @@
-/Users/mauricetamman/Documents/zennora/signalk/howtos/HISTORICAL_CHART_WIDGET_IMPLEMENTATION.md
