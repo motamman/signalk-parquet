@@ -1,23 +1,44 @@
 # SignalK Parquet Data Store
 
-**Version 0.5.0-beta.8**
+**Version 0.5.1-beta.1**
 
-A comprehensive TypeScript-based SignalK plugin that saves marine data directly to Parquet files with regimen-based control, web interface for querying, and S3 upload capabilities.
+A comprehensive TypeScript-based SignalK plugin that saves marine data directly to Parquet files with regimen-based control, real-time streaming capabilities, and advanced querying features.
 
 ## Features
 
+### Core Data Management
 - **Smart Data Types**: Intelligent Parquet schema detection preserves native data types (DOUBLE, BOOLEAN) instead of forcing everything to strings
+- **Multiple File Formats**: Support for Parquet, JSON, and CSV output formats (querying in parquet only)
+- **Daily Consolidation**: Automatic daily file consolidation with S3 upload capabilities
+- **Real-time Buffering**: Efficient data buffering with configurable thresholds
+
+### Real-time Streaming & Analytics
+- **Historical Data Streaming**: Create real-time statistical streams from historical Parquet data
+- **Multiple Aggregation Methods**: Support for average, min, max, first, last, mid, middle_index statistical processing
+- **Time Bucketing**: Configurable time resolution for data alignment and correlation analysis
+- **SignalK Integration**: Automatic publishing of stream data as standard SignalK delta messages
+- **WebSocket Support**: Real-time streaming via WebSocket subscriptions for live data feeds
+- **REST API Access**: Direct HTTP access to history data values via standard SignalK REST endpoints
+- **Stream Persistence**: Automatic saving and restoration of stream configurations across restarts
+
+### Advanced Querying
+- **SignalK History API**: Full compatibility with SignalK History API specification
+- **Backward Querying**: Query backwards from current time or specific datetime with duration-based windows
+- **Time Alignment**: Automatic alignment of data from different sensors using time bucketing
+- **Timezone Intelligence**: Smart local-to-UTC conversion with configurable timezone handling
+- **DuckDB Integration**: Direct SQL querying of Parquet files with type-safe operations
+
+### Management & Control
 - **Command Management**: Register, execute, and manage SignalK commands with automatic path configuration
 - **Regimen-Based Data Collection**: Control data collection with command-based regimens
 - **Multi-Vessel Support**: Wildcard vessel contexts (`vessels.*`) with MMSI-based exclusion filtering
-- **Multiple File Formats**: Support for Parquet, JSON, and CSV output formats (querying in parquet only)
-- **Web Interface**: Responsive web interface for data exploration and configuration
-- **DuckDB Integration**: Query Parquet files directly with SQL
-- **History API Integration**: Full SignalK History API implementation for historical data queries
-- **S3 Integration**: Upload files to Amazon S3 with configurable timing
-- **Daily Consolidation**: Automatic daily file consolidation
-- **Real-time Buffering**: Efficient data buffering with configurable thresholds
 - **Source Filtering**: Filter data by SignalK source labels (bypasses server arbitration for raw data access)
+- **Comprehensive REST API**: Full programmatic control of streams, queries, and configuration
+
+### User Interface & Integration
+- **Responsive Web Interface**: Complete web-based management with real-time stream monitoring
+- **Stream URL Display**: Direct access to WebSocket and REST endpoints for each stream
+- **S3 Integration**: Upload files to Amazon S3 with configurable timing and conflict resolution
 - **Context Support**: Support for multiple vessel contexts with exclusion controls
 
 ## Installation
