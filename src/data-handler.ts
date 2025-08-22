@@ -79,7 +79,6 @@ export function createS3Client(config: PluginConfig, app: ServerAPI): any {
     const s3Client = new S3Client(s3Config);
     return s3Client;
   } catch (error) {
-    app.debug(`Error initializing S3 client: ${error}`);
     return undefined;
   }
 }
@@ -115,7 +114,6 @@ export function subscribeToCommandPaths(
     commandSubscription,
     state.unsubscribes,
     (subscriptionError: unknown) => {
-      app.debug(`Command subscription error: ${subscriptionError}`);
     },
     (delta: Delta) => {
       // Process each update in the delta
@@ -198,7 +196,6 @@ function handleCommandMessage(
       );
     }
   } catch (error) {
-    app.debug(`Error handling command message: ${error}`);
   }
 }
 
@@ -242,7 +239,6 @@ function shouldExcludeVessel(
       // For now, we'll skip MMSI filtering for other vessels
     }
   } catch (error) {
-    app.debug(`Error checking MMSI for vessel ${vesselContext}: ${error}`);
   }
 
   return false; // Don't exclude if we can't determine MMSI
@@ -264,7 +260,6 @@ export function updateDataSubscriptions(
   state.unsubscribes = [];
   state.subscribedPaths.clear();
 
-  app.debug('Cleared all existing subscriptions');
 
   // Re-subscribe to command paths
   subscribeToCommandPaths(currentPaths, state, config, app);
@@ -287,7 +282,6 @@ export function updateDataSubscriptions(
   );
 
   if (processedPaths.length === 0) {
-    app.debug('No data paths need subscription currently');
     return;
   }
 
@@ -486,7 +480,6 @@ function handleStreamData(
     const bufferKey = `${normalizedDelta.context}:${pathConfig.path}`;
     bufferData(bufferKey, record, config, state, app);
   } catch (error) {
-    app.debug(`Error handling stream data: ${error}`);
   }
 }
 
@@ -654,7 +647,6 @@ export function initializeRegimenStates(
 // Startup consolidation for missed previous days (excludes current day)
 export async function consolidateMissedDays(config: PluginConfig, state: PluginState, app: ServerAPI): Promise<void> {
   try {
-    app.debug('Checking for missed consolidations at startup...');
 
     // Get list of all date directories that exist
     const outputDir = config.outputDirectory;
@@ -709,7 +701,6 @@ export async function consolidateMissedDays(config: PluginConfig, state: PluginS
         parseInt(dayStr)
       );
 
-      app.debug(`Consolidating missed day: ${dateStr}`);
 
       const consolidatedCount = await state.parquetWriter!.consolidateDaily(
         config.outputDirectory,
@@ -733,10 +724,8 @@ export async function consolidateMissedDays(config: PluginConfig, state: PluginS
 
     if (datesNeedingConsolidation.size > 0) {
     } else {
-      app.debug('No missed consolidations found at startup');
     }
   } catch (error) {
-    app.debug(`Error during startup consolidation: ${error}`);
   }
 }
 
@@ -764,7 +753,6 @@ export async function consolidateYesterday(config: PluginConfig, state: PluginSt
       }
     }
   } catch (error) {
-    app.debug(`Error during daily consolidation: ${error}`);
   }
 }
 
@@ -792,7 +780,6 @@ export async function uploadAllConsolidatedFilesToS3(
     }
 
   } catch (error) {
-    app.debug(`Error uploading all consolidated files to S3: ${error}`);
   }
 }
 
@@ -821,7 +808,6 @@ async function uploadConsolidatedFilesToS3(
       await uploadToS3(filePath, config, state, app);
     }
   } catch (error) {
-    app.debug(`Error uploading consolidated files to S3: ${error}`);
   }
 }
 

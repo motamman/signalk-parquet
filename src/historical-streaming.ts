@@ -22,7 +22,6 @@ export class HistoricalStreamingService {
     this.app = app;
     // Initialize HistoryAPI - use provided data directory or default
     const actualDataDir = dataDir || `${app.getDataDirPath()}/signalk-parquet`;
-    this.app.debug(`Historical streaming using data directory: ${actualDataDir}`);
     this.historyAPI = new HistoryAPI(app.selfId, actualDataDir);
     this.streamsConfigPath = path.join(actualDataDir, 'streams-config.json');
     this.loadPersistedStreams();
@@ -30,12 +29,10 @@ export class HistoricalStreamingService {
   }
 
   private setupSubscriptionInterceptor() {
-    this.app.debug('Setting up historical data subscription interceptor');
 
     // Try to hook into WebSocket data stream
     const wsInterface = (this.app as any).interfaces?.ws;
     if (wsInterface && wsInterface.data) {
-      this.app.debug('Found WebSocket interface with data stream, attempting to hook in');
       
       try {
         // Hook into the data stream to catch subscription messages
@@ -43,12 +40,10 @@ export class HistoricalStreamingService {
         wsInterface.data.emit = (event: string, ...args: any[]) => {
           // Look for subscription-related events
           if (event === 'message' || event === 'subscription') {
-            this.app.debug(`WebSocket event: ${event}, args: ${JSON.stringify(args)}`);
             
             // Check if any of the args contain subscription data
             args.forEach(arg => {
               if (this.isSubscriptionMessage(arg)) {
-                this.app.debug(`Found subscription in WebSocket event: ${JSON.stringify(arg)}`);
                 this.handleSubscriptionRequest(arg);
               }
             });
@@ -58,22 +53,18 @@ export class HistoricalStreamingService {
           return originalDataEmit.apply(wsInterface.data, [event, ...args]);
         };
         
-        this.app.debug('Successfully hooked into WebSocket data stream');
       } catch (error) {
-        this.app.debug(`Error hooking into WebSocket data stream: ${error}`);
       }
     }
 
     // Also register delta handler as fallback
     this.app.registerDeltaInputHandler((delta, next) => {
       if (this.isSubscriptionMessage(delta)) {
-        this.app.debug(`Delta handler caught subscription: ${JSON.stringify(delta)}`);
         this.handleSubscriptionRequest(delta);
       }
       next(delta);
     });
 
-    this.app.debug('Historical streaming service ready');
   }
   
 
@@ -84,7 +75,6 @@ export class HistoricalStreamingService {
   }
 
   private handleSubscriptionRequest(subscriptionMessage: any) {
-    this.app.debug(`Processing potential subscription request: ${JSON.stringify(subscriptionMessage)}`);
 
     if (subscriptionMessage.subscribe) {
       this.handleSubscribe(subscriptionMessage);
@@ -102,7 +92,6 @@ export class HistoricalStreamingService {
         
         // Check if this is a request for historical data
         if (this.isHistoricalDataPath(path)) {
-          this.app.debug(`Historical data subscription requested for path: ${path}`);
           this.startHistoricalStream(context, path, subscription);
         }
       });
@@ -111,7 +100,6 @@ export class HistoricalStreamingService {
 
   private handleUnsubscribe(subscriptionMessage: any) {
     // Handle unsubscription logic
-    this.app.debug(`Unsubscribe request: ${JSON.stringify(subscriptionMessage)}`);
   }
 
   private isHistoricalDataPath(path: string): boolean {
@@ -137,7 +125,6 @@ export class HistoricalStreamingService {
         startedAt: new Date()
       });
 
-      this.app.debug(`Starting historical stream for ${path}`);
 
       // Stream real historical data from Parquet files
       this.streamHistoricalData(subscriptionId, path);
@@ -148,7 +135,6 @@ export class HistoricalStreamingService {
   }
 
   private async streamHistoricalData(_subscriptionId: string, path: string) {
-    this.app.debug(`🚀 Streaming real historical data for ${path}`);
 
     try {
       // Get historical data for the last hour with 30 second resolution
@@ -191,16 +177,13 @@ export class HistoricalStreamingService {
       this.app.error(`❌ Error streaming historical data for ${path}: ${error}`);
       
       // Fallback to sample data if real data fails
-      this.app.debug(`🔄 Falling back to sample data for ${path}`);
       this.streamSampleDataFallback(path);
     }
   }
 
   private processHistoricalDataResponse(historyResponse: any, path: string) {
-    this.app.debug(`📥 Received historical data response for ${path}`);
 
     if (!historyResponse.data || historyResponse.data.length === 0) {
-      this.app.debug(`⚠️ No historical data found for ${path}, using sample data`);
       this.streamSampleDataFallback(path);
       return;
     }
@@ -235,11 +218,9 @@ export class HistoricalStreamingService {
       }
     });
 
-    this.app.debug(`✅ Completed streaming ${historyResponse.data.length} historical data points for ${path}`);
   }
 
   private streamSampleDataFallback(path: string) {
-    this.app.debug(`🔄 Using sample data fallback for ${path}`);
     
     const sampleData = [
       { timestamp: new Date(Date.now() - 3600000), value: Math.random() * 100 },
@@ -271,13 +252,11 @@ export class HistoricalStreamingService {
   }
 
   public shutdown() {
-    this.app.debug('Shutting down historical streaming service');
     this.activeSubscriptions.clear();
     
     // Clear all stream intervals
     this.streamIntervals.forEach((interval, streamId) => {
       clearInterval(interval);
-      this.app.debug(`Cleared streaming interval for stream: ${streamId}`);
     });
     this.streamIntervals.clear();
     
@@ -310,10 +289,8 @@ export class HistoricalStreamingService {
 
   // Manual trigger for testing historical data streaming
   public triggerHistoricalStream(path: string) {
-    this.app.debug(`Manually triggering historical stream for: ${path}`);
     try {
       this.startHistoricalStream(this.app.selfContext, path, { path, period: 1000 });
-      this.app.debug(`Successfully called startHistoricalStream for: ${path}`);
     } catch (error) {
       this.app.error(`Error in triggerHistoricalStream: ${error}`);
     }
@@ -327,7 +304,6 @@ export class HistoricalStreamingService {
     // Parse time range strings like '1h', '30m', '2d' into milliseconds
     const match = timeRange.match(/^(\d+)([smhd])$/);
     if (!match) {
-      this.app.debug(`Invalid time range format: ${timeRange}, defaulting to 1h`);
       return 60 * 60 * 1000; // 1 hour default
     }
     
@@ -346,7 +322,6 @@ export class HistoricalStreamingService {
   // Stream persistence methods
   private loadPersistedStreams() {
     if (this.streamsAlreadyLoaded) {
-      this.app.debug('Streams already loaded, skipping duplicate load');
       return;
     }
     this.streamsAlreadyLoaded = true;
@@ -357,7 +332,6 @@ export class HistoricalStreamingService {
         const persistedStreams = JSON.parse(data);
         
         if (Array.isArray(persistedStreams)) {
-          this.app.debug(`Loading ${persistedStreams.length} persisted streams from config`);
           persistedStreams.forEach((streamConfig, index) => {
             // Restore stream but keep status as stopped initially
             const stream = {
@@ -376,7 +350,6 @@ export class HistoricalStreamingService {
             
             // Debug: Verify timestamp was cleared
             const timestampAfterClear = this.streamLastTimestamps.get(stream.id);
-            this.app.debug(`Restored stream ${index + 1}/${persistedStreams.length}: ${stream.id} - ${stream.name} (timestamp cleared: ${timestampAfterClear === undefined})`);
             
             // Auto-start streams that were running when server stopped
             if (streamConfig.autoRestart === true) {
@@ -384,19 +357,15 @@ export class HistoricalStreamingService {
                 const currentStream = this.streams.get(stream.id);
                 if (currentStream && currentStream.status !== 'running') {
                   this.startStream(stream.id);
-                  this.app.debug(`[RESTORATION] Auto-started restored stream: ${stream.id}`);
                 } else {
-                  this.app.debug(`Skipped auto-start for stream: ${stream.id} (already running or not found)`);
                 }
               }, 2000); // Wait 2 seconds after startup
             }
           });
           
-          this.app.debug(`Loaded ${persistedStreams.length} persisted streams`);
         }
       }
     } catch (error) {
-      this.app.debug(`Error loading persisted streams: ${error}`);
     }
   }
 
@@ -415,9 +384,7 @@ export class HistoricalStreamingService {
       }));
       
       fs.writeFileSync(this.streamsConfigPath, JSON.stringify(streamsToSave, null, 2), 'utf8');
-      this.app.debug(`Saved ${streamsToSave.length} streams configuration`);
     } catch (error) {
-      this.app.debug(`Error saving streams configuration: ${error}`);
     }
   }
 
@@ -441,7 +408,6 @@ export class HistoricalStreamingService {
     this.streams.set(streamId, stream);
     this.streamBuffers.set(streamId, []);
     this.saveStreamsConfig();
-    this.app.debug(`Created stream: ${streamId} for path: ${streamConfig.path} with aggregation: ${stream.aggregateMethod}`);
     return stream;
   }
 
@@ -457,7 +423,6 @@ export class HistoricalStreamingService {
     
     // Prevent duplicate starts
     if (stream.status === 'running') {
-      this.app.debug(`Skipped starting stream ${streamId} - already running`);
       return { success: true, message: 'Stream already running' };
     }
     
@@ -486,7 +451,6 @@ export class HistoricalStreamingService {
     try {
       this.startContinuousStreaming(streamId);
       this.streams.set(streamId, stream);
-      this.app.debug(`[START] Started continuous stream: ${streamId} for path: ${stream.path} (${stream.startTime} - ${stream.endTime})`);
       return { success: true };
     } catch (error) {
       stream.status = 'error';
@@ -544,13 +508,11 @@ export class HistoricalStreamingService {
             this.streams.set(streamId, stream);
           }
           
-          this.app.debug(`Stream ${streamId}: ${mode} data (${dataPointCount} points)`);
         } else {
           // No new data available - this is normal for incremental streaming
           const lastTimestamp = this.streamLastTimestamps.get(streamId);
           if (lastTimestamp) {
           } else {
-            this.app.debug(`⚠️ No data retrieved for stream ${streamId}`);
           }
         }
       } catch (error) {
@@ -559,7 +521,6 @@ export class HistoricalStreamingService {
     }, stream.rate);
 
     this.streamIntervals.set(streamId, interval);
-    this.app.debug(`Started continuous streaming interval for stream: ${streamId}`);
   }
 
   private broadcastToClients(streamId: string, data: any) {
@@ -654,7 +615,6 @@ export class HistoricalStreamingService {
         try {
           this.app.handleMessage(`signalk-parquet-stream-${streamId}`, delta);
         } catch (error) {
-          this.app.debug(`❌ Error emitting SignalK delta for stream ${streamId}: ${error}`);
         }
       }, index * 10); // 10ms delay between points to avoid overwhelming
     });
@@ -686,7 +646,6 @@ export class HistoricalStreamingService {
     try {
       this.app.handleMessage(`signalk-parquet-stream-${streamId}`, statusDelta);
     } catch (error) {
-      this.app.debug(`❌ Error emitting SignalK stream status: ${error}`);
     }
   }
 
@@ -711,18 +670,15 @@ export class HistoricalStreamingService {
         // Use sliding window: get new data since last timestamp
         from = ZonedDateTime.parse(lastTimestamp).plusSeconds(1); // Start 1 second after last data
         isIncremental = true;
-        this.app.debug(`Stream ${streamId}: getting incremental data${wasRestored ? ' (UNEXPECTED - should be initial after restore!)' : ''}`);
       } else {
         // Initial load: get full time window
         const timeRangeDuration = this.parseTimeRange(timeRange);
         from = to.minusNanos(timeRangeDuration * 1000000); // Convert ms to nanoseconds
-        this.app.debug(`Stream ${streamId}: getting initial data window for ${path}`);
       }
 
       // Skip if time window is too small (less than resolution)
       const timeDiffMs = to.toInstant().toEpochMilli() - from.toInstant().toEpochMilli();
       if (timeDiffMs < resolution) {
-        this.app.debug(`⏭️ Skipping query - time window (${timeDiffMs}ms) smaller than resolution (${resolution}ms)`);
         return null;
       }
       
@@ -738,7 +694,6 @@ export class HistoricalStreamingService {
         const mockRes = {
           json: (data: any) => {
             if (data.data && data.data.length > 0) {
-              this.app.debug(`Stream ${streamId}: received ${data.data.length} ${isIncremental ? 'incremental' : 'initial'} data points`);
               
               // Process all time-bucketed data points
               const processedData = data.data.map((dataPoint: any, index: number) => {
@@ -772,7 +727,6 @@ export class HistoricalStreamingService {
               
             } else if (!isIncremental) {
               // Generate sample time series only for initial load if no historical data available
-              this.app.debug(`⚠️ No historical data found for ${path}, generating sample time series`);
               const sampleData = this.generateSampleTimeSeries(path, from, to, resolution);
               
               // Set last timestamp for sample data
@@ -815,7 +769,6 @@ export class HistoricalStreamingService {
         );
       });
     } catch (error) {
-      this.app.debug(`Error getting historical data window for ${path}: ${error}`);
       return null;
     }
   }
@@ -890,7 +843,6 @@ export class HistoricalStreamingService {
     stream.lastToggled = new Date().toISOString();
     this.streams.set(streamId, stream);
     
-    this.app.debug(`${wasPaused ? 'Resumed' : 'Paused'} stream: ${streamId}`);
     return { success: true, paused: !wasPaused };
   }
 
@@ -921,7 +873,6 @@ export class HistoricalStreamingService {
     
     this.streams.set(streamId, stream);
     
-    this.app.debug(`Stopped stream: ${streamId}`);
     return { success: true };
   }
 
@@ -941,7 +892,6 @@ export class HistoricalStreamingService {
     this.streamTimeSeriesData.delete(streamId);
     this.saveStreamsConfig();
     
-    this.app.debug(`Deleted stream: ${streamId}`);
     return { success: true };
   }
 
@@ -977,7 +927,6 @@ export class HistoricalStreamingService {
 
     this.streams.set(streamId, updatedStream);
     this.saveStreamsConfig();
-    this.app.debug(`Updated stream configuration: ${streamId}`);
 
     // Restart the stream if it was running before the update
     if (wasRunning && streamConfig.autoRestart !== false) {

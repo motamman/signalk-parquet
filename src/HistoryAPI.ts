@@ -38,7 +38,6 @@ export function registerHistoryApiRoute(
       const paths = getAvailablePathsArray(dataDir, app);
       res.json(paths);
     } catch (error) {
-      app.debug(`Error getting history paths: ${error}`);
       res.status(500).json({ error: (error as Error).message });
     }
   });

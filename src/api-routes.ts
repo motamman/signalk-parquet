@@ -52,7 +52,6 @@ export function registerApiRoutes(
   const publicPath = path.join(__dirname, '../public');
   if (fs.existsSync(publicPath)) {
     router.use(express.static(publicPath));
-    app.debug(`Static files served from: ${publicPath}`);
   }
 
   // Get the current configuration for data directory
@@ -368,7 +367,6 @@ export function registerApiRoutes(
           keyPrefix: state.currentConfig.s3Upload.keyPrefix || 'none',
         });
       } catch (error) {
-        app.debug(`S3 test connection error: ${error}`);
         return res.status(500).json({
           success: false,
           error: (error as Error).message || 'S3 connection failed',
@@ -1268,5 +1266,4 @@ export function registerApiRoutes(
     }
   });
 
-  app.debug('Webapp API routes registered');
 }

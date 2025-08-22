@@ -232,7 +232,6 @@ export function initializeCommandState(
       commandConfig.description
     );
     if (result.state === 'COMPLETED') {
-      app.debug(`✅ Restored command: ${commandConfig.command}`);
     } else {
       app.error(
         `❌ Failed to restore command: ${commandConfig.command} - ${result.message}`

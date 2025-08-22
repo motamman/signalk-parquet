@@ -64,7 +64,6 @@ export default function (app: ServerAPI): SignalKPlugin {
   plugin.start = async function (
     options: Partial<PluginConfig>
   ): Promise<void> {
-    app.debug('Starting...');
 
     // Get vessel MMSI from SignalK
     const vesselMMSI =
@@ -192,11 +191,9 @@ export default function (app: ServerAPI): SignalKPlugin {
       }
     }
 
-    app.debug('Started');
   };
 
   plugin.stop = function (): void {
-    app.debug('Stopping...');
 
     // Clear intervals
     if (state.saveInterval) {

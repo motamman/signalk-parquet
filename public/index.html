@@ -1754,7 +1754,6 @@
                         pathSelect.appendChild(option);
                     });
                     
-                    console.log(`Loaded ${result.paths.length} SignalK paths`);
                 } else {
                     // No paths found - provide manual entry option
                     pathSelect.innerHTML = '<option value="">No historical paths found</option>';
@@ -2271,7 +2270,6 @@
 
         function connectWebSocket() {
             // For now, use polling mode since we need a dedicated WebSocket server
-            console.log('🔄 WebSocket not yet implemented, using enhanced polling mode');
             startLiveDataPolling();
         }
 
@@ -2301,7 +2299,6 @@
         function handleTimeSeriesData(message) {
             const { streamId, metadata, data } = message;
             
-            console.log(`📊 Received ${metadata.totalPoints} ${metadata.isIncremental ? 'incremental' : 'initial'} data points for stream ${streamId}`);
             
             // Add each time-bucketed data point to the live display
             data.forEach((point, index) => {
@@ -2324,7 +2321,6 @@
 
         // Enhanced polling function that shows real time-bucketed streaming data points
         function startLiveDataPolling() {
-            console.log('🔄 Starting time-series data polling...');
             
             let pollCount = 0;
             
@@ -2332,7 +2328,6 @@
                 if (liveDataPaused) return;
 
                 pollCount++;
-                console.log(`📊 Poll #${pollCount}: Fetching time-series data...`);
 
                 // Get running streams first
                 try {
@@ -2343,16 +2338,11 @@
                         const runningStreams = streamsData.streams.filter(s => s.status === 'running');
                         
                         if (runningStreams.length === 0) {
-                            console.log('📊 No running streams found');
                             return;
                         }
 
                         // Fetch actual time-series data for each running stream
                         for (const stream of runningStreams) {
-                            console.log(`📊 Stream: ${stream.name} (${stream.path})`);
-                            console.log(`   - Data Points Streamed: ${stream.dataPointsStreamed || 0}`);
-                            console.log(`   - Total Buckets: ${stream.totalBuckets || 0}`);
-                            console.log(`   - Mode: ${stream.isIncremental ? 'Incremental' : 'Initial'}`);
                             
                             try {
                                 // Fetch the actual time-series data points
@@ -2360,7 +2350,6 @@
                                 const timeSeriesData = await dataResponse.json();
                                 
                                 if (timeSeriesData.success && timeSeriesData.data && timeSeriesData.data.length > 0) {
-                                    console.log(`   📈 Retrieved ${timeSeriesData.data.length} time-series data points`);
                                     
                                     // Add each individual time-bucketed data point to the display
                                     timeSeriesData.data.slice(0, 10).forEach((dataPoint, index) => {
@@ -2385,7 +2374,6 @@
                                         );
                                     });
                                 } else {
-                                    console.log(`   ⚠️ No time-series data available for stream ${stream.id}`);
                                 }
                             } catch (error) {
                                 console.error(`   ❌ Error fetching time-series data for stream ${stream.id}:`, error);
@@ -2395,10 +2383,8 @@
                         // Show summary in console
                         const totalPoints = runningStreams.reduce((sum, s) => sum + (s.dataPointsStreamed || 0), 0);
                         const totalBuckets = runningStreams.reduce((sum, s) => sum + (s.totalBuckets || 0), 0);
-                        console.log(`📊 Streaming Summary: ${runningStreams.length} streams, ${totalPoints} points, ${totalBuckets} buckets`);
                         
                     } else {
-                        console.log('📊 No streams available');
                     }
                 } catch (error) {
                     console.error('📊 Polling error:', error);
@@ -2408,7 +2394,6 @@
 
         // Initialize WebSocket connection when page loads  
         setTimeout(() => {
-            console.log('🚀 Initializing live data streaming...');
             connectWebSocket();
         }, 1000);
 
