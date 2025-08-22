@@ -283,4 +283,99 @@ export class HistoricalStreamingService {
       this.app.error(`Error in triggerHistoricalStream: ${error}`);
     }
   }
+
+  // Stream management methods for webapp interface
+  private streams = new Map<string, any>();
+
+  public createStream(streamConfig: any) {
+    const streamId = `stream_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+    const stream = {
+      id: streamId,
+      name: streamConfig.name,
+      path: streamConfig.path,
+      status: 'created',
+      createdAt: new Date().toISOString(),
+      ...streamConfig
+    };
+    this.streams.set(streamId, stream);
+    this.app.debug(`Created stream: ${streamId} for path: ${streamConfig.path}`);
+    return stream;
+  }
+
+  public getAllStreams() {
+    return Array.from(this.streams.values());
+  }
+
+  public startStream(streamId: string) {
+    const stream = this.streams.get(streamId);
+    if (!stream) {
+      return { success: false, error: 'Stream not found' };
+    }
+    
+    stream.status = 'running';
+    stream.startedAt = new Date().toISOString();
+    this.streams.set(streamId, stream);
+    
+    // Start actual streaming for this path
+    try {
+      this.triggerHistoricalStream(stream.path);
+      this.app.debug(`Started stream: ${streamId}`);
+      return { success: true };
+    } catch (error) {
+      stream.status = 'error';
+      stream.error = (error as Error).message;
+      return { success: false, error: (error as Error).message };
+    }
+  }
+
+  public pauseStream(streamId: string) {
+    const stream = this.streams.get(streamId);
+    if (!stream) {
+      return { success: false, error: 'Stream not found' };
+    }
+    
+    const wasPaused = stream.status === 'paused';
+    stream.status = wasPaused ? 'running' : 'paused';
+    stream.lastToggled = new Date().toISOString();
+    this.streams.set(streamId, stream);
+    
+    this.app.debug(`${wasPaused ? 'Resumed' : 'Paused'} stream: ${streamId}`);
+    return { success: true, paused: !wasPaused };
+  }
+
+  public stopStream(streamId: string) {
+    const stream = this.streams.get(streamId);
+    if (!stream) {
+      return { success: false, error: 'Stream not found' };
+    }
+    
+    stream.status = 'stopped';
+    stream.stoppedAt = new Date().toISOString();
+    this.streams.set(streamId, stream);
+    
+    this.app.debug(`Stopped stream: ${streamId}`);
+    return { success: true };
+  }
+
+  public deleteStream(streamId: string) {
+    const stream = this.streams.get(streamId);
+    if (!stream) {
+      return { success: false, error: 'Stream not found' };
+    }
+    
+    this.streams.delete(streamId);
+    this.app.debug(`Deleted stream: ${streamId}`);
+    return { success: true };
+  }
+
+  public getStreamStats() {
+    const streams = Array.from(this.streams.values());
+    return {
+      totalStreams: streams.length,
+      runningStreams: streams.filter(s => s.status === 'running').length,
+      pausedStreams: streams.filter(s => s.status === 'paused').length,
+      stoppedStreams: streams.filter(s => s.status === 'stopped').length,
+      streams: streams
+    };
+  }
 }
