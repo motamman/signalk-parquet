@@ -1592,10 +1592,9 @@
                 const status = isRunning ? '🟢 Running' : isPaused ? '⏸️ Paused' : '🔴 Stopped';
                 const progress = stream.dataPointsStreamed ? `${stream.dataPointsStreamed} points` : '-';
                 const timeRange = `${stream.timeRange || '1h'} (${stream.startTime || 'N/A'} - ${stream.endTime || 'N/A'})`;
-                const statistics = `${stream.aggregateMethod || 'average'} method`;
-                const bucketInfo = stream.totalBuckets ? `<br/>${stream.totalBuckets} time buckets` : '';
-                const streamMode = stream.isIncremental ? '📈 Incremental' : '📊 Initial';
-                const lastTimestamp = stream.lastTimestamp ? `<br/><small>Last: ${new Date(stream.lastTimestamp).toLocaleTimeString()}</small>` : '';
+                const statistics = stream.aggregateMethod || 'average';
+                const streamMode = stream.isIncremental ? '📈' : '📊';
+                const lastTimestamp = stream.lastTimestamp ? new Date(stream.lastTimestamp).toLocaleTimeString() : 'Never';
                 
                 html += `<tr>
                     <td><strong>${stream.name}</strong></td>
@@ -1604,7 +1603,7 @@
                     <td>${timeRange}</td>
                     <td>${stream.resolution || 30000}ms</td>
                     <td>${stream.rate || 5000}ms</td>
-                    <td><small>${statistics}${bucketInfo}<br/>${streamMode}${lastTimestamp}</small></td>
+                    <td><small>${statistics} ${streamMode}<br/>Last: ${lastTimestamp}</small></td>
                     <td>${progress}</td>
                     <td>
                         ${isStopped ? 
@@ -1620,6 +1619,26 @@
 
             html += '</tbody></table></div>';
             container.innerHTML = html;
+            
+            // Update live connection icon based on active streams
+            updateLiveConnectionIcon(streams);
+        }
+
+        function updateLiveConnectionIcon(streams) {
+            const hasActiveStreams = streams && streams.some(stream => stream.status === 'running');
+            const icon = hasActiveStreams ? '🟢' : '🔴';
+            
+            // Update tab button
+            const tabButton = document.querySelector('.tab-button[onclick="showTab(\'liveConnections\')"]');
+            if (tabButton) {
+                tabButton.innerHTML = `${icon} Live Connections`;
+            }
+            
+            // Update section header
+            const sectionHeader = document.querySelector('#liveConnections h2');
+            if (sectionHeader) {
+                sectionHeader.innerHTML = `${icon} Live Connections`;
+            }
         }
 
         async function loadStreamStats() {
@@ -1647,11 +1666,11 @@
                         <div class="stat-label">Total Streams</div>
                     </div>
                     <div class="stat-item">
-                        <div class="stat-value">${stats.activeStreams || 0}</div>
+                        <div class="stat-value">${stats.runningStreams || 0}</div>
                         <div class="stat-label">Active</div>
                     </div>
                     <div class="stat-item">
-                        <div class="stat-value">${stats.totalDataPoints || 0}</div>
+                        <div class="stat-value">${stats.totalDataPointsStreamed || 0}</div>
                         <div class="stat-label">Data Points Streamed</div>
                     </div>
                     <div class="stat-item">
@@ -1764,6 +1783,11 @@
         document.addEventListener('DOMContentLoaded', async function() {
             // Load SignalK paths for the dropdown
             await loadSignalKPaths();
+            
+            // Set up auto-refresh for streams and stats
+            setInterval(() => {
+                loadStreams();
+            }, 5000); // Refresh every 5 seconds
             
             // Add event listener for path selection to handle manual entry
             const pathSelect = document.getElementById('streamPath');
@@ -2031,6 +2055,12 @@
         function addLiveDataEntry(streamId, streamName, path, value, timestamp) {
             if (liveDataPaused) return;
 
+            // Check for duplicates using streamId (which now includes timestamp)
+            const existingEntry = liveDataEntries.find(entry => entry.streamId === streamId);
+            if (existingEntry) {
+                return; // Skip duplicate entry
+            }
+
             const entry = {
                 timestamp: timestamp || new Date().toISOString(),
                 streamId: streamId,
@@ -2039,8 +2069,11 @@
                 value: value
             };
 
-            // Add to beginning of array (newest first)
-            liveDataEntries.unshift(entry);
+            // Add entry to array
+            liveDataEntries.push(entry);
+            
+            // Sort by timestamp (newest first)
+            liveDataEntries.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
 
             // Keep only max entries
             if (liveDataEntries.length > MAX_LIVE_ENTRIES) {
@@ -2069,9 +2102,31 @@
 
             let html = '';
             liveDataEntries.forEach((entry, index) => {
-                const timeStr = new Date(entry.timestamp).toLocaleTimeString();
+                // Create date object and handle UTC timestamps properly
+                const date = new Date(entry.timestamp);
+                const now = new Date();
+                
+                // Check if timestamp is from today
+                const isToday = date.toDateString() === now.toDateString();
+                
+                let timeStr;
+                if (isToday) {
+                    // Today: just show time
+                    timeStr = date.toLocaleTimeString();
+                } else {
+                    // Not today: show "Aug 21, 6:25 PM" format
+                    const options = { 
+                        month: 'short', 
+                        day: 'numeric', 
+                        hour: 'numeric', 
+                        minute: '2-digit',
+                        hour12: true 
+                    };
+                    timeStr = date.toLocaleString(undefined, options);
+                }
                 const valueStr = formatValue(entry.value);
                 const rowClass = index % 2 === 0 ? 'background: #f9f9f9;' : '';
+                
 
                 html += `
                     <tr style="${rowClass}">
@@ -2317,9 +2372,12 @@
                                         const bucketInfo = `bucket #${dataPoint.bucketIndex}`;
                                         const displayName = `${streamMode}: ${dataPoint.aggregateMethod?.toUpperCase()} - ${dataPoint.path} (${bucketInfo})`;
                                         
+                                        // Create unique ID to prevent duplicates across polls
+                                        const uniqueId = `${stream.id}_${dataPoint.bucketIndex}_${dataPoint.timestamp}`;
+                                        
                                         // Add the individual data point
                                         addLiveDataEntry(
-                                            `${stream.id}_${dataPoint.bucketIndex}`, 
+                                            uniqueId, 
                                             displayName,
                                             dataPoint.path, 
                                             displayValue,

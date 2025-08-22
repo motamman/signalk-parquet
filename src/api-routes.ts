@@ -1254,18 +1254,12 @@ export function registerApiRoutes(
       
       const timeSeriesData = await (state.historicalStreamingService as any).getStreamTimeSeriesData(streamId, limit);
       
-      if (timeSeriesData) {
-        res.json({
-          success: true,
-          streamId: streamId,
-          data: timeSeriesData
-        });
-      } else {
-        res.status(404).json({
-          success: false,
-          error: 'Stream not found or no data available'
-        });
-      }
+      // Always return success, even if no data (return empty array)
+      res.json({
+        success: true,
+        streamId: streamId,
+        data: timeSeriesData || []
+      });
     } catch (error) {
       res.status(500).json({
         success: false,

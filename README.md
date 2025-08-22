@@ -580,6 +580,88 @@ The History API returns time-aligned data in standard SignalK format:
 
 **Note**: Each data array contains `[timestamp, value1, value2, ...]` where values correspond to the paths in the same order as the `values` array. `null` indicates no data available for that path in that time bucket.
 
+## Real-time Streaming Integration
+
+The plugin provides real-time statistical streaming that automatically publishes to the SignalK data stream, making it accessible to other SignalK applications.
+
+### How Other SignalK Apps Can Access Streams
+
+All stream data is automatically emitted as standard SignalK delta messages, allowing any SignalK-compatible application to subscribe and receive real-time statistical data.
+
+#### Stream Data Paths
+Each active stream creates SignalK paths following this pattern:
+```
+streaming.{stream_name}.{aggregation_method}  // Data points
+streaming.{stream_name}.status               // Stream status
+```
+
+**Examples:**
+- `streaming.navigation_history.average` - Average values from "Navigation History" stream
+- `streaming.wind_data.max` - Maximum values from "Wind Data" stream  
+- `streaming.engine_monitoring.status` - Status of "Engine Monitoring" stream
+
+#### Data Structure
+**Stream Data Points:**
+```json
+{
+  "sourcePath": "navigation.speedOverGround",
+  "statisticalValue": 7.832,
+  "method": "average", 
+  "bucketIndex": 145,
+  "resolution": 30000,
+  "streamId": "stream_1692...",
+  "streamName": "Navigation History",
+  "isIncremental": true,
+  "windowFrom": "2025-08-22T10:00:00Z",
+  "windowTo": "2025-08-22T11:00:00Z"
+}
+```
+
+#### WebSocket Subscription Example
+```javascript
+const ws = new WebSocket('ws://localhost:3000/signalk/v1/stream');
+
+ws.onopen = () => {
+  ws.send(JSON.stringify({
+    context: 'vessels.self',
+    subscribe: [{
+      path: 'streaming.*',        // Subscribe to all streams
+      period: 1000,
+      format: 'delta'
+    }]
+  }));
+};
+
+ws.onmessage = (event) => {
+  const data = JSON.parse(event.data);
+  if (data.updates) {
+    data.updates.forEach(update => {
+      update.values.forEach(value => {
+        if (value.path.startsWith('streaming.')) {
+          console.log('Stream data:', value.path, value.value.statisticalValue);
+        }
+      });
+    });
+  }
+};
+```
+
+#### REST API Access
+```bash
+# Get current value of a stream
+curl "http://localhost:3000/signalk/v1/api/vessels/self/streaming/navigation_history/average"
+
+# Get all streaming data
+curl "http://localhost:3000/signalk/v1/api/vessels/self/streaming/"
+```
+
+#### Integration Benefits
+- ✅ **Standard SignalK Protocol** - Works with existing SignalK tools
+- ✅ **Real-time Updates** - Data arrives as it's processed
+- ✅ **Rich Metadata** - Complete statistical context included  
+- ✅ **Multi-app Support** - Multiple subscribers supported
+- ✅ **Selective Subscription** - Subscribe to specific streams only
+
 ## S3 Integration
 
 ### Upload Timing

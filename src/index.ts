@@ -395,8 +395,8 @@ export async function initializeStreamingService(state: PluginState, app: Server
       return { success: false, error: 'Streaming is disabled in plugin configuration. Enable it in settings first.' };
     }
 
-    // Initialize streaming service (reusing historical streaming service)
-    state.streamingService = new HistoricalStreamingService(app, state.currentConfig.outputDirectory);
+    // Reuse the existing historical streaming service instead of creating a new one
+    state.streamingService = state.historicalStreamingService;
     state.streamingEnabled = true;
     
     // Restore any previous subscriptions if available
