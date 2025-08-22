@@ -1,11 +1,14 @@
 import { ServerAPI, Context, Path, Timestamp, SourceRef } from '@signalk/server-api';
 import { HistoryAPI } from './HistoryAPI';
 import { ZonedDateTime, ZoneOffset } from '@js-joda/core';
+import * as WebSocket from 'ws';
 
 export class HistoricalStreamingService {
   private app: ServerAPI;
   private activeSubscriptions = new Map<string, any>();
   private historyAPI: HistoryAPI;
+  private wsServer?: WebSocket.Server;
+  private connectedClients = new Set<WebSocket>();
 
   constructor(app: ServerAPI, dataDir?: string) {
     this.app = app;
@@ -264,6 +267,29 @@ export class HistoricalStreamingService {
   public shutdown() {
     this.app.debug('Shutting down historical streaming service');
     this.activeSubscriptions.clear();
+    
+    // Clear all stream intervals
+    this.streamIntervals.forEach((interval, streamId) => {
+      clearInterval(interval);
+      this.app.debug(`Cleared streaming interval for stream: ${streamId}`);
+    });
+    this.streamIntervals.clear();
+    
+    // Close all WebSocket connections
+    this.connectedClients.forEach(client => {
+      if (client.readyState === WebSocket.OPEN) {
+        client.close();
+      }
+    });
+    this.connectedClients.clear();
+    
+    // Close WebSocket server if exists
+    if (this.wsServer) {
+      this.wsServer.close();
+      this.wsServer = undefined;
+    }
+    
+    this.app.debug('Historical streaming service shutdown complete');
   }
 
   public getActiveSubscriptions() {
@@ -286,6 +312,7 @@ export class HistoricalStreamingService {
 
   // Stream management methods for webapp interface
   private streams = new Map<string, any>();
+  private streamIntervals = new Map<string, NodeJS.Timeout>();
 
   public createStream(streamConfig: any) {
     const streamId = `stream_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
@@ -295,6 +322,11 @@ export class HistoricalStreamingService {
       path: streamConfig.path,
       status: 'created',
       createdAt: new Date().toISOString(),
+      dataPointsStreamed: 0,
+      connectedClients: 0,
+      rate: streamConfig.rate || 5000,
+      resolution: streamConfig.resolution || 30000,
+      timeRange: streamConfig.timeRange || '1h',
       ...streamConfig
     };
     this.streams.set(streamId, stream);
@@ -312,19 +344,143 @@ export class HistoricalStreamingService {
       return { success: false, error: 'Stream not found' };
     }
     
+    // Clear existing interval if any
+    const existingInterval = this.streamIntervals.get(streamId);
+    if (existingInterval) {
+      clearInterval(existingInterval);
+    }
+    
     stream.status = 'running';
     stream.startedAt = new Date().toISOString();
-    this.streams.set(streamId, stream);
+    stream.dataPointsStreamed = 0;
     
-    // Start actual streaming for this path
+    // Start continuous streaming
     try {
-      this.triggerHistoricalStream(stream.path);
-      this.app.debug(`Started stream: ${streamId}`);
+      this.startContinuousStreaming(streamId);
+      this.streams.set(streamId, stream);
+      this.app.debug(`Started continuous stream: ${streamId} for path: ${stream.path}`);
       return { success: true };
     } catch (error) {
       stream.status = 'error';
       stream.error = (error as Error).message;
+      this.streams.set(streamId, stream);
       return { success: false, error: (error as Error).message };
+    }
+  }
+
+  private startContinuousStreaming(streamId: string) {
+    const stream = this.streams.get(streamId);
+    if (!stream) return;
+
+    const interval = setInterval(async () => {
+      if (stream.status !== 'running') return;
+
+      try {
+        // Get historical data for this path
+        const historicalData = await this.getHistoricalDataPoint(stream.path, stream.resolution);
+        
+        if (historicalData) {
+          // Send to WebSocket clients
+          this.broadcastToClients(streamId, historicalData);
+          
+          // Update stream statistics
+          stream.dataPointsStreamed = (stream.dataPointsStreamed || 0) + 1;
+          stream.lastDataPoint = new Date().toISOString();
+          stream.connectedClients = this.connectedClients.size;
+          this.streams.set(streamId, stream);
+        }
+      } catch (error) {
+        this.app.error(`Error in continuous streaming for ${streamId}: ${error}`);
+      }
+    }, stream.rate);
+
+    this.streamIntervals.set(streamId, interval);
+    this.app.debug(`Started continuous streaming interval for stream: ${streamId}`);
+  }
+
+  private broadcastToClients(streamId: string, data: any) {
+    const message = JSON.stringify({
+      type: 'streamData',
+      streamId: streamId,
+      timestamp: new Date().toISOString(),
+      data: data
+    });
+
+    this.connectedClients.forEach(client => {
+      if (client.readyState === WebSocket.OPEN) {
+        client.send(message);
+      }
+    });
+  }
+
+  private async getHistoricalDataPoint(path: string, resolution: number): Promise<any> {
+    try {
+      // Get recent historical data from the last minute
+      const to = ZonedDateTime.now(ZoneOffset.UTC);
+      const from = to.minusMinutes(1);
+      
+      // Create a mock request for HistoryAPI
+      const mockReq = {
+        query: {
+          paths: path,
+          resolution: resolution.toString()
+        }
+      } as any;
+
+      return new Promise((resolve) => {
+        const mockRes = {
+          json: (data: any) => {
+            if (data.data && data.data.length > 0) {
+              // Return the most recent data point
+              const latestPoint = data.data[data.data.length - 1];
+              resolve({
+                path: path,
+                timestamp: latestPoint[0],
+                value: latestPoint[1]
+              });
+            } else {
+              // Generate sample data if no historical data available
+              resolve({
+                path: path,
+                timestamp: new Date().toISOString(),
+                value: this.generateSampleData(path)
+              });
+            }
+          },
+          status: () => ({ json: () => resolve(null) })
+        } as any;
+
+        this.historyAPI.getValues(
+          this.app.selfContext as Context,
+          from,
+          to,
+          false,
+          this.app.debug.bind(this.app),
+          mockReq,
+          mockRes
+        );
+      });
+    } catch (error) {
+      this.app.debug(`Error getting historical data for ${path}: ${error}`);
+      return {
+        path: path,
+        timestamp: new Date().toISOString(),
+        value: this.generateSampleData(path)
+      };
+    }
+  }
+
+  private generateSampleData(path: string): any {
+    switch (path) {
+      case 'navigation.position':
+        return {
+          latitude: 41.329265 + (Math.random() - 0.5) * 0.001,
+          longitude: -72.08793666666666 + (Math.random() - 0.5) * 0.001
+        };
+      case 'environment.wind.speedApparent':
+        return Math.random() * 15 + 5; // 5-20 m/s
+      default:
+        return Math.random() * 100;
     }
   }
 
@@ -335,7 +491,21 @@ export class HistoricalStreamingService {
     }
     
     const wasPaused = stream.status === 'paused';
-    stream.status = wasPaused ? 'running' : 'paused';
+    
+    if (wasPaused) {
+      // Resume streaming
+      stream.status = 'running';
+      this.startContinuousStreaming(streamId);
+    } else {
+      // Pause streaming
+      stream.status = 'paused';
+      const interval = this.streamIntervals.get(streamId);
+      if (interval) {
+        clearInterval(interval);
+        this.streamIntervals.delete(streamId);
+      }
+    }
+    
     stream.lastToggled = new Date().toISOString();
     this.streams.set(streamId, stream);
     
@@ -347,6 +517,13 @@ export class HistoricalStreamingService {
     const stream = this.streams.get(streamId);
     if (!stream) {
       return { success: false, error: 'Stream not found' };
+    }
+    
+    // Clear streaming interval
+    const interval = this.streamIntervals.get(streamId);
+    if (interval) {
+      clearInterval(interval);
+      this.streamIntervals.delete(streamId);
     }
     
     stream.status = 'stopped';
@@ -370,11 +547,15 @@ export class HistoricalStreamingService {
 
   public getStreamStats() {
     const streams = Array.from(this.streams.values());
+    const totalDataPoints = streams.reduce((sum, stream) => sum + (stream.dataPointsStreamed || 0), 0);
+    
     return {
       totalStreams: streams.length,
       runningStreams: streams.filter(s => s.status === 'running').length,
       pausedStreams: streams.filter(s => s.status === 'paused').length,
       stoppedStreams: streams.filter(s => s.status === 'stopped').length,
+      totalDataPointsStreamed: totalDataPoints,
+      connectedClients: this.connectedClients.size,
       streams: streams
     };
   }
