@@ -128,7 +128,7 @@ export class HistoricalStreamingService {
   }
 
   private streamSampleHistoricalData(_subscriptionId: string, path: string) {
-    this.app.debug(`Streaming sample historical data for ${path}`);
+    this.app.debug(`🚀 Streaming sample historical data for ${path}`);
 
     // Generate sample historical data
     const sampleData = [
@@ -136,6 +136,8 @@ export class HistoricalStreamingService {
       { timestamp: new Date(Date.now() - 1800000), value: Math.random() * 100 },
       { timestamp: new Date(Date.now() - 900000), value: Math.random() * 100 },
     ];
+
+    this.app.debug(`📊 Generated ${sampleData.length} sample data points for ${path}`);
 
     // Send sample data as delta messages
     sampleData.forEach((data, index) => {
@@ -153,7 +155,13 @@ export class HistoricalStreamingService {
 
       // Inject the historical data into SignalK's stream
       setTimeout(() => {
-        this.app.handleMessage('signalk-parquet-historical', delta);
+        this.app.debug(`📤 Injecting historical data point ${index + 1} for ${path}: ${data.value}`);
+        try {
+          this.app.handleMessage('signalk-parquet-historical', delta);
+          this.app.debug(`✅ Successfully injected historical data point ${index + 1} for ${path}`);
+        } catch (error) {
+          this.app.error(`❌ Error injecting historical data: ${error}`);
+        }
       }, index * 1000); // 1 second between each data point
     });
   }
