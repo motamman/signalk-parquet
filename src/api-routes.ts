@@ -1009,11 +1009,72 @@ export function registerApiRoutes(
       }
 
       const stream = state.historicalStreamingService.createStream(streamConfig);
+      
+      // Handle auto-start if requested
+      if (streamConfig.autoStart) {
+        const startResult = state.historicalStreamingService.startStream(stream.id);
+        if (startResult.success) {
+          stream.status = 'running';
+        }
+      }
+      
       res.json({
         success: true,
         stream,
-        message: `Stream '${streamConfig.name}' created successfully`
+        message: `Stream '${streamConfig.name}' created successfully${streamConfig.autoStart ? ' and started' : ''}`
       });
+    } catch (error) {
+      res.status(500).json({
+        success: false,
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
+  });
+
+  // Update stream configuration
+  router.put('/api/streams/:id', (req: express.Request, res: express.Response) => {
+    try {
+      if (!state.historicalStreamingService) {
+        res.status(500).json({
+          success: false,
+          error: 'Historical streaming service not initialized'
+        });
+        return;
+      }
+
+      const streamId = req.params.id;
+      const streamConfig = req.body;
+
+      // Validate required fields
+      if (!streamConfig.name || !streamConfig.path) {
+        res.status(400).json({
+          success: false,
+          error: 'Stream name and path are required'
+        });
+        return;
+      }
+
+      // Validate window size if provided
+      if (streamConfig.windowSize && (typeof streamConfig.windowSize !== 'number' || streamConfig.windowSize < 1 || streamConfig.windowSize > 1000)) {
+        res.status(400).json({
+          success: false,
+          error: 'Window size must be a number between 1 and 1000'
+        });
+        return;
+      }
+
+      const success = state.historicalStreamingService.updateStream(streamId, streamConfig);
+      if (success) {
+        res.json({
+          success: true,
+          message: `Stream '${streamConfig.name}' updated successfully`
+        });
+      } else {
+        res.status(404).json({
+          success: false,
+          error: 'Stream not found'
+        });
+      }
     } catch (error) {
       res.status(500).json({
         success: false,
@@ -1167,6 +1228,42 @@ export function registerApiRoutes(
         res.status(500).json({
           success: false,
           error: 'Historical streaming service not initialized'
+        });
+      }
+    } catch (error) {
+      res.status(500).json({
+        success: false,
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
+  });
+
+  // Get recent time-series data for a specific stream
+  router.get('/api/streams/:id/data', async (req: express.Request, res: express.Response) => {
+    try {
+      if (!state.historicalStreamingService) {
+        res.status(500).json({
+          success: false,
+          error: 'Historical streaming service not initialized'
+        });
+        return;
+      }
+
+      const streamId = req.params.id;
+      const limit = parseInt(req.query.limit as string) || 50;
+      
+      const timeSeriesData = await (state.historicalStreamingService as any).getStreamTimeSeriesData(streamId, limit);
+      
+      if (timeSeriesData) {
+        res.json({
+          success: true,
+          streamId: streamId,
+          data: timeSeriesData
+        });
+      } else {
+        res.status(404).json({
+          success: false,
+          error: 'Stream not found or no data available'
         });
       }
     } catch (error) {

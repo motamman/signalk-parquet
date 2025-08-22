@@ -3,6 +3,8 @@ import { HistoryAPI } from './HistoryAPI';
 import { AggregateMethod } from './HistoryAPI-types';
 import { ZonedDateTime, ZoneOffset } from '@js-joda/core';
 import * as WebSocket from 'ws';
+import * as fs from 'fs';
+import * as path from 'path';
 
 export class HistoricalStreamingService {
   private app: ServerAPI;
@@ -12,6 +14,8 @@ export class HistoricalStreamingService {
   private connectedClients = new Set<WebSocket>();
   private streamBuffers = new Map<string, number[]>();
   private streamLastTimestamps = new Map<string, string>();
+  private streamTimeSeriesData = new Map<string, any[]>();
+  private streamsConfigPath: string;
 
   constructor(app: ServerAPI, dataDir?: string) {
     this.app = app;
@@ -19,6 +23,8 @@ export class HistoricalStreamingService {
     const actualDataDir = dataDir || `${app.getDataDirPath()}/signalk-parquet`;
     this.app.debug(`Historical streaming using data directory: ${actualDataDir}`);
     this.historyAPI = new HistoryAPI(app.selfId, actualDataDir);
+    this.streamsConfigPath = path.join(actualDataDir, 'streams-config.json');
+    this.loadPersistedStreams();
     this.setupSubscriptionInterceptor();
   }
 
@@ -281,6 +287,7 @@ export class HistoricalStreamingService {
     // Clear stream buffers and timestamps
     this.streamBuffers.clear();
     this.streamLastTimestamps.clear();
+    this.streamTimeSeriesData.clear();
     
     // Close all WebSocket connections
     this.connectedClients.forEach(client => {
@@ -339,6 +346,66 @@ export class HistoricalStreamingService {
     }
   }
 
+  // Stream persistence methods
+  private loadPersistedStreams() {
+    try {
+      if (fs.existsSync(this.streamsConfigPath)) {
+        const data = fs.readFileSync(this.streamsConfigPath, 'utf8');
+        const persistedStreams = JSON.parse(data);
+        
+        if (Array.isArray(persistedStreams)) {
+          persistedStreams.forEach(streamConfig => {
+            // Restore stream but keep status as stopped initially
+            const stream = {
+              ...streamConfig,
+              status: 'stopped',
+              dataPointsStreamed: 0,
+              connectedClients: 0,
+              restoredAt: new Date().toISOString()
+            };
+            
+            this.streams.set(stream.id, stream);
+            this.streamBuffers.set(stream.id, []);
+            this.app.debug(`Restored stream: ${stream.id} - ${stream.name}`);
+            
+            // Auto-start streams that were running when server stopped
+            if (streamConfig.autoRestart === true) {
+              setTimeout(() => {
+                this.startStream(stream.id);
+                this.app.debug(`Auto-started restored stream: ${stream.id}`);
+              }, 2000); // Wait 2 seconds after startup
+            }
+          });
+          
+          this.app.debug(`Loaded ${persistedStreams.length} persisted streams`);
+        }
+      }
+    } catch (error) {
+      this.app.debug(`Error loading persisted streams: ${error}`);
+    }
+  }
+
+  private saveStreamsConfig() {
+    try {
+      // Ensure directory exists
+      const dir = path.dirname(this.streamsConfigPath);
+      if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+      }
+
+      // Save all streams with their current state
+      const streamsToSave = Array.from(this.streams.values()).map(stream => ({
+        ...stream,
+        autoRestart: stream.status === 'running' // Mark running streams for auto-restart
+      }));
+      
+      fs.writeFileSync(this.streamsConfigPath, JSON.stringify(streamsToSave, null, 2), 'utf8');
+      this.app.debug(`Saved ${streamsToSave.length} streams configuration`);
+    } catch (error) {
+      this.app.debug(`Error saving streams configuration: ${error}`);
+    }
+  }
+
   public createStream(streamConfig: any) {
     const streamId = `stream_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
     const stream = {
@@ -358,6 +425,7 @@ export class HistoricalStreamingService {
     };
     this.streams.set(streamId, stream);
     this.streamBuffers.set(streamId, []);
+    this.saveStreamsConfig();
     this.app.debug(`Created stream: ${streamId} for path: ${streamConfig.path} with aggregation: ${stream.aggregateMethod}`);
     return stream;
   }
@@ -381,6 +449,7 @@ export class HistoricalStreamingService {
     stream.status = 'running';
     stream.startedAt = new Date().toISOString();
     stream.dataPointsStreamed = 0;
+    this.saveStreamsConfig();
     
     // Set streaming time window
     const now = new Date();
@@ -424,6 +493,9 @@ export class HistoricalStreamingService {
         );
         
         if (historicalDataWindow && historicalDataWindow.dataPoints && historicalDataWindow.dataPoints.length > 0) {
+          // Store time-series data points for API access
+          this.storeTimeSeriesData(streamId, historicalDataWindow.dataPoints, historicalDataWindow.isIncremental);
+          
           // Send all bucketed data points to WebSocket clients
           this.broadcastTimeSeriesData(streamId, historicalDataWindow);
           
@@ -506,8 +578,92 @@ export class HistoricalStreamingService {
       }
     });
     
+    // Also emit SignalK delta messages for other apps to subscribe to
+    this.emitSignalKStreamData(streamId, timeSeriesData);
+    
     const mode = timeSeriesData.isIncremental ? 'incremental' : 'initial';
     this.app.debug(`📡 Sent ${timeSeriesData.totalPoints} ${mode} time-bucketed points to ${this.connectedClients.size} WebSocket clients for stream ${streamId}`);
+  }
+
+  private emitSignalKStreamData(streamId: string, timeSeriesData: any) {
+    const stream = this.streams.get(streamId);
+    if (!stream) return;
+
+    // Emit each data point as a SignalK delta message
+    timeSeriesData.dataPoints.forEach((point: any, index: number) => {
+      // Create a SignalK path for the stream data
+      const streamPath = `streaming.${stream.name.replace(/[^a-zA-Z0-9]/g, '_').toLowerCase()}.${stream.aggregateMethod}` as Path;
+      
+      const delta = {
+        context: this.app.selfContext as Context,
+        updates: [{
+          $source: `signalk-parquet-stream-${streamId}` as SourceRef,
+          timestamp: point.timestamp as Timestamp,
+          values: [{
+            path: streamPath,
+            value: {
+              // Original path being streamed
+              sourcePath: timeSeriesData.path,
+              // Statistical aggregate value
+              statisticalValue: point.value,
+              // Aggregation method used
+              method: timeSeriesData.aggregateMethod,
+              // Time bucket information
+              bucketIndex: point.bucketIndex,
+              resolution: timeSeriesData.resolution,
+              // Stream metadata
+              streamId: streamId,
+              streamName: stream.name,
+              isIncremental: timeSeriesData.isIncremental || false,
+              // Time range info
+              windowFrom: timeSeriesData.from,
+              windowTo: timeSeriesData.to
+            }
+          }]
+        }]
+      };
+
+      // Emit with small delay to avoid overwhelming the SignalK bus
+      setTimeout(() => {
+        try {
+          this.app.handleMessage(`signalk-parquet-stream-${streamId}`, delta);
+          this.app.debug(`📤 Emitted SignalK delta for stream ${streamId}, point ${index + 1}/${timeSeriesData.dataPoints.length}: ${streamPath}`);
+        } catch (error) {
+          this.app.debug(`❌ Error emitting SignalK delta for stream ${streamId}: ${error}`);
+        }
+      }, index * 10); // 10ms delay between points to avoid overwhelming
+    });
+
+    // Also emit stream status/metadata as a separate path
+    const statusPath = `streaming.${stream.name.replace(/[^a-zA-Z0-9]/g, '_').toLowerCase()}.status` as Path;
+    const statusDelta = {
+      context: this.app.selfContext as Context,
+      updates: [{
+        $source: `signalk-parquet-stream-${streamId}` as SourceRef,
+        timestamp: new Date().toISOString() as Timestamp,
+        values: [{
+          path: statusPath,
+          value: {
+            streamId: streamId,
+            streamName: stream.name,
+            status: stream.status,
+            sourcePath: timeSeriesData.path,
+            aggregateMethod: timeSeriesData.aggregateMethod,
+            resolution: timeSeriesData.resolution,
+            totalPoints: timeSeriesData.totalPoints,
+            dataPointsStreamed: stream.dataPointsStreamed || 0,
+            lastUpdate: new Date().toISOString()
+          }
+        }]
+      }]
+    };
+
+    try {
+      this.app.handleMessage(`signalk-parquet-stream-${streamId}`, statusDelta);
+      this.app.debug(`📤 Emitted SignalK stream status for ${streamId}: ${statusPath}`);
+    } catch (error) {
+      this.app.debug(`❌ Error emitting SignalK stream status: ${error}`);
+    }
   }
 
   private async getHistoricalDataWindow(streamId: string, path: string, resolution: number, aggregateMethod: AggregateMethod, timeRange: string): Promise<any> {
@@ -693,9 +849,11 @@ export class HistoricalStreamingService {
       // Resume streaming
       stream.status = 'running';
       this.startContinuousStreaming(streamId);
+      this.saveStreamsConfig();
     } else {
       // Pause streaming
       stream.status = 'paused';
+      this.saveStreamsConfig();
       const interval = this.streamIntervals.get(streamId);
       if (interval) {
         clearInterval(interval);
@@ -725,6 +883,7 @@ export class HistoricalStreamingService {
     
     stream.status = 'stopped';
     stream.stoppedAt = new Date().toISOString();
+    this.saveStreamsConfig();
     
     // Update time window to show final range
     if (stream.actualStartTime) {
@@ -753,9 +912,53 @@ export class HistoricalStreamingService {
     this.streams.delete(streamId);
     this.streamBuffers.delete(streamId);
     this.streamLastTimestamps.delete(streamId);
+    this.streamTimeSeriesData.delete(streamId);
+    this.saveStreamsConfig();
     
     this.app.debug(`Deleted stream: ${streamId}`);
     return { success: true };
+  }
+
+  public updateStream(streamId: string, streamConfig: any): boolean {
+    const stream = this.streams.get(streamId);
+    if (!stream) {
+      return false;
+    }
+
+    // Stop the stream if it's currently running
+    const wasRunning = stream.status === 'running';
+    if (wasRunning) {
+      this.stopStream(streamId);
+    }
+
+    // Update stream configuration
+    const updatedStream = {
+      ...stream,
+      name: streamConfig.name,
+      path: streamConfig.path,
+      timeRange: streamConfig.timeRange,
+      resolution: streamConfig.resolution || 30000,
+      rate: streamConfig.rate || 1000,
+      aggregateMethod: streamConfig.aggregateMethod || 'average',
+      windowSize: streamConfig.windowSize || 50
+    };
+
+    // Handle custom time range
+    if (streamConfig.timeRange === 'custom') {
+      updatedStream.startTime = streamConfig.startTime;
+      updatedStream.endTime = streamConfig.endTime;
+    }
+
+    this.streams.set(streamId, updatedStream);
+    this.saveStreamsConfig();
+    this.app.debug(`Updated stream configuration: ${streamId}`);
+
+    // Restart the stream if it was running before the update
+    if (wasRunning && streamConfig.autoRestart !== false) {
+      this.startStream(streamId);
+    }
+
+    return true;
   }
 
   public getStreamStats() {
@@ -782,5 +985,51 @@ export class HistoricalStreamingService {
   public removeWebSocketClient(ws: WebSocket) {
     this.connectedClients.delete(ws);
     this.app.debug(`📡 Removed WebSocket client. Total clients: ${this.connectedClients.size}`);
+  }
+
+  // Time-series data storage and retrieval methods
+  private storeTimeSeriesData(streamId: string, dataPoints: any[], isIncremental: boolean) {
+    const stream = this.streams.get(streamId);
+    if (!stream) return;
+
+    let storedData = this.streamTimeSeriesData.get(streamId) || [];
+    
+    // Add metadata to each data point
+    const enrichedDataPoints = dataPoints.map(point => ({
+      ...point,
+      streamId: streamId,
+      streamName: stream.name,
+      aggregateMethod: stream.aggregateMethod,
+      resolution: stream.resolution,
+      isIncremental: isIncremental,
+      deliveryTime: new Date().toISOString()
+    }));
+
+    if (isIncremental) {
+      // Add new points to the beginning (newest first)
+      storedData = [...enrichedDataPoints, ...storedData];
+    } else {
+      // For initial load, replace existing data
+      storedData = enrichedDataPoints;
+    }
+
+    // Keep only the most recent 200 data points per stream
+    if (storedData.length > 200) {
+      storedData = storedData.slice(0, 200);
+    }
+
+    this.streamTimeSeriesData.set(streamId, storedData);
+    
+    this.app.debug(`📊 Stored ${enrichedDataPoints.length} time-series data points for stream ${streamId} (total: ${storedData.length})`);
+  }
+
+  public getStreamTimeSeriesData(streamId: string, limit: number = 50): any[] | null {
+    const data = this.streamTimeSeriesData.get(streamId);
+    if (!data) return null;
+
+    const limitedData = data.slice(0, limit);
+    this.app.debug(`📊 Retrieved ${limitedData.length} time-series data points for stream ${streamId}`);
+    
+    return limitedData;
   }
 }

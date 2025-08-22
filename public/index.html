@@ -549,7 +549,15 @@
                         
                         <div class="form-group">
                             <label for="streamPath">SignalK Path:</label>
-                            <input type="text" id="streamPath" placeholder="e.g., navigation.position">
+                            <div style="display: flex; gap: 10px; align-items: center;">
+                                <select id="streamPath" style="flex: 1;">
+                                    <option value="">Loading available paths...</option>
+                                </select>
+                                <button type="button" onclick="refreshSignalKPaths()" style="padding: 8px; background: #007bff; color: white; border: none; border-radius: 3px;" title="Refresh path list">🔄</button>
+                            </div>
+                            <small style="color: #666; display: block; margin-top: 5px;">
+                                Available paths from historical data. Click refresh if you don't see your path.
+                            </small>
                         </div>
                         
                         <div class="form-group">
@@ -1674,7 +1682,25 @@
 
         function clearAddStreamForm() {
             document.getElementById('streamName').value = '';
-            document.getElementById('streamPath').value = '';
+            
+            // Reset path field to dropdown if it was converted to manual input
+            const pathField = document.getElementById('streamPath');
+            if (pathField.tagName === 'INPUT') {
+                // Recreate the select element
+                const pathContainer = pathField.parentNode;
+                const pathSelect = document.createElement('select');
+                pathSelect.id = 'streamPath';
+                pathSelect.style.cssText = 'flex: 1;';
+                pathSelect.innerHTML = '<option value="">Select a SignalK path...</option>';
+                
+                pathContainer.replaceChild(pathSelect, pathField);
+                
+                // Reload paths
+                loadSignalKPaths();
+            } else {
+                pathField.value = '';
+            }
+            
             document.getElementById('streamTimeRange').value = '1h';
             document.getElementById('streamResolution').value = '30000';
             document.getElementById('streamRate').value = '500';
@@ -1683,6 +1709,80 @@
             document.getElementById('streamStartTime').value = '';
             document.getElementById('streamEndTime').value = '';
         }
+
+        async function loadSignalKPaths() {
+            const pathSelect = document.getElementById('streamPath');
+            const originalHTML = pathSelect.innerHTML;
+            
+            try {
+                pathSelect.innerHTML = '<option value="">Loading paths...</option>';
+                
+                // Use the same endpoint as the Available Paths tab
+                const response = await fetch('/plugins/signalk-parquet/api/paths');
+                const result = await response.json();
+                
+                if (result.success && Array.isArray(result.paths) && result.paths.length > 0) {
+                    // Clear loading message and add paths
+                    pathSelect.innerHTML = '<option value="">Select a SignalK path...</option>';
+                    
+                    // Sort paths alphabetically for better UX
+                    const sortedPaths = result.paths.sort((a, b) => a.path.localeCompare(b.path));
+                    
+                    sortedPaths.forEach(pathInfo => {
+                        const option = document.createElement('option');
+                        option.value = pathInfo.path;
+                        option.textContent = `${pathInfo.path} (${pathInfo.fileCount} files)`;
+                        pathSelect.appendChild(option);
+                    });
+                    
+                    console.log(`Loaded ${result.paths.length} SignalK paths`);
+                } else {
+                    // No paths found - provide manual entry option
+                    pathSelect.innerHTML = '<option value="">No historical paths found</option>';
+                    const manualOption = document.createElement('option');
+                    manualOption.value = 'manual';
+                    manualOption.textContent = '✏️ Enter path manually';
+                    pathSelect.appendChild(manualOption);
+                }
+            } catch (error) {
+                console.error('Error loading SignalK paths:', error);
+                
+                // Provide manual entry option as fallback
+                pathSelect.innerHTML = '<option value="">Select or enter a SignalK path...</option>';
+                const manualOption = document.createElement('option');
+                manualOption.value = 'manual';
+                manualOption.textContent = '✏️ Enter path manually';
+                pathSelect.appendChild(manualOption);
+            }
+        }
+
+        async function refreshSignalKPaths() {
+            await loadSignalKPaths();
+        }
+
+        // Initialize page when DOM is loaded
+        document.addEventListener('DOMContentLoaded', async function() {
+            // Load SignalK paths for the dropdown
+            await loadSignalKPaths();
+            
+            // Add event listener for path selection to handle manual entry
+            const pathSelect = document.getElementById('streamPath');
+            let manualInput = null;
+            
+            pathSelect.addEventListener('change', function() {
+                if (this.value === 'manual') {
+                    // Replace select with text input for manual entry
+                    manualInput = document.createElement('input');
+                    manualInput.type = 'text';
+                    manualInput.id = 'streamPath';
+                    manualInput.placeholder = 'Enter SignalK path manually (e.g., navigation.position)';
+                    manualInput.style.cssText = this.style.cssText;
+                    
+                    this.parentNode.replaceChild(manualInput, this);
+                    manualInput.focus();
+                }
+            });
+        });
 
         async function createStream() {
             const streamConfig = {
@@ -1777,8 +1877,150 @@
         }
 
         async function editStream(streamId) {
-            // For now, just show an alert. Full edit functionality would require more complex UI
-            alert('Stream editing will be implemented in the next version. For now, you can delete and recreate the stream.');
+            try {
+                // Get the current stream configuration
+                const response = await fetch('/plugins/signalk-parquet/api/streams');
+                const result = await response.json();
+                
+                if (!result.success) {
+                    alert('Error loading stream data');
+                    return;
+                }
+                
+                const stream = result.streams.find(s => s.id === streamId);
+                if (!stream) {
+                    alert('Stream not found');
+                    return;
+                }
+                
+                // Populate the form with current values
+                document.getElementById('streamName').value = stream.name || '';
+                
+                // Handle path selection - check if it exists in dropdown
+                const pathSelect = document.getElementById('streamPath');
+                const streamPath = stream.path || '';
+                let pathFound = false;
+                
+                for (let option of pathSelect.options) {
+                    if (option.value === streamPath) {
+                        pathSelect.value = streamPath;
+                        pathFound = true;
+                        break;
+                    }
+                }
+                
+                // If path not found in dropdown, convert to manual input
+                if (!pathFound && streamPath) {
+                    const manualInput = document.createElement('input');
+                    manualInput.type = 'text';
+                    manualInput.id = 'streamPath';
+                    manualInput.value = streamPath;
+                    manualInput.placeholder = 'Enter SignalK path manually (e.g., navigation.position)';
+                    manualInput.style.cssText = pathSelect.style.cssText;
+                    
+                    pathSelect.parentNode.replaceChild(manualInput, pathSelect);
+                }
+                
+                document.getElementById('streamTimeRange').value = stream.timeRange || '1h';
+                document.getElementById('streamResolution').value = stream.resolution || 30000;
+                document.getElementById('streamRate').value = stream.rate || 1000;
+                document.getElementById('streamAggregateMethod').value = stream.aggregateMethod || 'average';
+                document.getElementById('streamWindowSize').value = stream.windowSize || 50;
+                document.getElementById('streamAutoStart').checked = false; // Don't auto-start on edit
+                
+                // Handle custom time range
+                if (stream.timeRange === 'custom') {
+                    document.getElementById('customTimeRange').style.display = 'block';
+                    document.getElementById('streamStartTime').value = stream.startTime || '';
+                    document.getElementById('streamEndTime').value = stream.endTime || '';
+                } else {
+                    document.getElementById('customTimeRange').style.display = 'none';
+                }
+                
+                // Show the form and change the create button to update
+                document.getElementById('addStreamForm').style.display = 'block';
+                document.getElementById('addStreamButton').style.display = 'none';
+                
+                // Change form title and button
+                const formTitle = document.querySelector('#addStreamForm h4');
+                formTitle.textContent = `Edit Stream: ${stream.name}`;
+                
+                // Replace create button with update/cancel buttons
+                const buttonContainer = document.querySelector('#addStreamForm .form-group:last-child > div');
+                buttonContainer.innerHTML = `
+                    <button onclick="updateStream('${streamId}')">✅ Update Stream</button>
+                    <button class="btn-secondary" onclick="cancelEditStream()">❌ Cancel</button>
+                `;
+                
+            } catch (error) {
+                alert(`Error loading stream for editing: ${error.message}`);
+            }
+        }
+
+        async function updateStream(streamId) {
+            const streamConfig = {
+                name: document.getElementById('streamName').value.trim(),
+                path: document.getElementById('streamPath').value.trim(),
+                timeRange: document.getElementById('streamTimeRange').value,
+                resolution: parseInt(document.getElementById('streamResolution').value),
+                rate: parseInt(document.getElementById('streamRate').value),
+                aggregateMethod: document.getElementById('streamAggregateMethod').value,
+                windowSize: parseInt(document.getElementById('streamWindowSize').value),
+                autoRestart: true // Restart if it was running
+            };
+
+            // Handle custom time range
+            if (streamConfig.timeRange === 'custom') {
+                streamConfig.startTime = document.getElementById('streamStartTime').value;
+                streamConfig.endTime = document.getElementById('streamEndTime').value;
+                
+                if (!streamConfig.startTime || !streamConfig.endTime) {
+                    alert('Custom time range requires both start and end times');
+                    return;
+                }
+            }
+
+            if (!streamConfig.name || !streamConfig.path) {
+                alert('Stream name and path are required');
+                return;
+            }
+
+            try {
+                const response = await fetch(`/plugins/signalk-parquet/api/streams/${streamId}`, {
+                    method: 'PUT',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(streamConfig)
+                });
+
+                const result = await response.json();
+
+                if (result.success) {
+                    cancelEditStream();
+                    await loadStreams();
+                    alert(`Stream '${streamConfig.name}' updated successfully!`);
+                } else {
+                    alert(`Error updating stream: ${result.error}`);
+                }
+            } catch (error) {
+                alert(`Network error: ${error.message}`);
+            }
+        }
+
+        function cancelEditStream() {
+            // Hide the form and reset it
+            hideAddStreamForm();
+            
+            // Reset form title and buttons
+            const formTitle = document.querySelector('#addStreamForm h4');
+            formTitle.textContent = 'Add New Stream Configuration';
+            
+            const buttonContainer = document.querySelector('#addStreamForm .form-group:last-child > div');
+            buttonContainer.innerHTML = `
+                <button onclick="createStream()">✅ Create Stream</button>
+                <button class="btn-secondary" onclick="hideAddStreamForm()">❌ Cancel</button>
+            `;
         }
 
         // Live Data Display Functions
@@ -2025,60 +2267,72 @@
             });
         }
 
-        // Enhanced polling function that shows real time-bucketed streaming data
+        // Enhanced polling function that shows real time-bucketed streaming data points
         function startLiveDataPolling() {
-            console.log('🔄 Starting enhanced polling mode for time-series data...');
+            console.log('🔄 Starting time-series data polling...');
             
             let pollCount = 0;
-            const maxDisplayEntries = 50; // Limit display to avoid overwhelming
             
             setInterval(async () => {
                 if (liveDataPaused) return;
 
                 pollCount++;
-                console.log(`📊 Poll #${pollCount}: Checking for streaming data...`);
+                console.log(`📊 Poll #${pollCount}: Fetching time-series data...`);
 
-                // Get current active streams and their detailed status
+                // Get running streams first
                 try {
-                    const response = await fetch('/plugins/signalk-parquet/api/streams');
-                    const data = await response.json();
+                    const streamsResponse = await fetch('/plugins/signalk-parquet/api/streams');
+                    const streamsData = await streamsResponse.json();
                     
-                    if (data.success && data.streams) {
-                        const runningStreams = data.streams.filter(s => s.status === 'running');
+                    if (streamsData.success && streamsData.streams) {
+                        const runningStreams = streamsData.streams.filter(s => s.status === 'running');
                         
                         if (runningStreams.length === 0) {
                             console.log('📊 No running streams found');
                             return;
                         }
 
-                        runningStreams.forEach((stream, index) => {
-                            console.log(`📊 Stream ${index + 1}: ${stream.name} (${stream.path})`);
-                            console.log(`   - Status: ${stream.status}`);
-                            console.log(`   - Data Points: ${stream.dataPointsStreamed || 0}`);
+                        // Fetch actual time-series data for each running stream
+                        for (const stream of runningStreams) {
+                            console.log(`📊 Stream: ${stream.name} (${stream.path})`);
+                            console.log(`   - Data Points Streamed: ${stream.dataPointsStreamed || 0}`);
                             console.log(`   - Total Buckets: ${stream.totalBuckets || 0}`);
-                            console.log(`   - Last Value: ${stream.lastValue}`);
-                            console.log(`   - Last Timestamp: ${stream.lastTimestamp}`);
                             console.log(`   - Mode: ${stream.isIncremental ? 'Incremental' : 'Initial'}`);
                             
-                            // Show streaming activity in the live display
-                            if (stream.lastValue !== undefined) {
-                                const displayValue = typeof stream.lastValue === 'object' ? 
-                                    JSON.stringify(stream.lastValue) : 
-                                    (typeof stream.lastValue === 'number' ? stream.lastValue.toFixed(3) : stream.lastValue);
+                            try {
+                                // Fetch the actual time-series data points
+                                const dataResponse = await fetch(`/plugins/signalk-parquet/api/streams/${stream.id}/data?limit=20`);
+                                const timeSeriesData = await dataResponse.json();
                                 
-                                const streamMode = stream.isIncremental ? '📈 INCREMENTAL' : '📊 INITIAL';
-                                const bucketCount = stream.totalBuckets ? ` (${stream.totalBuckets} buckets)` : '';
-                                const displayName = `${streamMode}: ${stream.aggregateMethod?.toUpperCase() || 'STREAM'} - ${stream.path}${bucketCount}`;
-                                
-                                addLiveDataEntry(
-                                    stream.id, 
-                                    displayName,
-                                    stream.path, 
-                                    displayValue,
-                                    stream.lastTimestamp || new Date().toISOString()
-                                );
+                                if (timeSeriesData.success && timeSeriesData.data && timeSeriesData.data.length > 0) {
+                                    console.log(`   📈 Retrieved ${timeSeriesData.data.length} time-series data points`);
+                                    
+                                    // Add each individual time-bucketed data point to the display
+                                    timeSeriesData.data.slice(0, 10).forEach((dataPoint, index) => {
+                                        const displayValue = typeof dataPoint.value === 'object' ? 
+                                            JSON.stringify(dataPoint.value) : 
+                                            (typeof dataPoint.value === 'number' ? dataPoint.value.toFixed(3) : dataPoint.value);
+                                        
+                                        const streamMode = dataPoint.isIncremental ? '📈 INCREMENTAL' : '📊 INITIAL';
+                                        const bucketInfo = `bucket #${dataPoint.bucketIndex}`;
+                                        const displayName = `${streamMode}: ${dataPoint.aggregateMethod?.toUpperCase()} - ${dataPoint.path} (${bucketInfo})`;
+                                        
+                                        // Add the individual data point
+                                        addLiveDataEntry(
+                                            `${stream.id}_${dataPoint.bucketIndex}`, 
+                                            displayName,
+                                            dataPoint.path, 
+                                            displayValue,
+                                            dataPoint.timestamp
+                                        );
+                                    });
+                                } else {
+                                    console.log(`   ⚠️ No time-series data available for stream ${stream.id}`);
+                                }
+                            } catch (error) {
+                                console.error(`   ❌ Error fetching time-series data for stream ${stream.id}:`, error);
                             }
-                        });
+                        }
                         
                         // Show summary in console
                         const totalPoints = runningStreams.reduce((sum, s) => sum + (s.dataPointsStreamed || 0), 0);
@@ -2086,12 +2340,12 @@
                         console.log(`📊 Streaming Summary: ${runningStreams.length} streams, ${totalPoints} points, ${totalBuckets} buckets`);
                         
                     } else {
-                        console.log('📊 No stream data available');
+                        console.log('📊 No streams available');
                     }
                 } catch (error) {
                     console.error('📊 Polling error:', error);
                 }
-            }, 2000); // Check every 2 seconds for faster updates
+            }, 3000); // Check every 3 seconds
         }
 
         // Initialize WebSocket connection when page loads  
