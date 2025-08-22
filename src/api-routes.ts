@@ -772,5 +772,62 @@ export function registerApiRoutes(
     }
   );
 
+  // Test endpoint
+  router.get('/api/test', (_: express.Request, res: express.Response) => {
+    res.json({
+      message: 'SignalK Parquet Plugin API is working',
+      timestamp: new Date().toISOString(),
+      config: state.currentConfig ? 'loaded' : 'not loaded',
+    });
+  });
+
+  // Historical streaming test endpoints
+  router.post('/api/historical/trigger/:path', (req: express.Request, res: express.Response) => {
+    try {
+      const path = req.params.path;
+      if (state.historicalStreamingService) {
+        state.historicalStreamingService.triggerHistoricalStream(path);
+        res.json({
+          success: true,
+          message: `Triggered historical stream for path: ${path}`,
+          timestamp: new Date().toISOString()
+        });
+      } else {
+        res.status(500).json({
+          success: false,
+          error: 'Historical streaming service not initialized'
+        });
+      }
+    } catch (error) {
+      res.status(500).json({
+        success: false,
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
+  });
+
+  router.get('/api/historical/subscriptions', (_: express.Request, res: express.Response) => {
+    try {
+      if (state.historicalStreamingService) {
+        const subscriptions = state.historicalStreamingService.getActiveSubscriptions();
+        res.json({
+          success: true,
+          subscriptions,
+          count: subscriptions.length
+        });
+      } else {
+        res.status(500).json({
+          success: false,
+          error: 'Historical streaming service not initialized'
+        });
+      }
+    } catch (error) {
+      res.status(500).json({
+        success: false,
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
+  });
+
   app.debug('Webapp API routes registered');
 }
