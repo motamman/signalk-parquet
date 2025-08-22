@@ -1,11 +1,17 @@
 import { ServerAPI, Context, Path, Timestamp, SourceRef } from '@signalk/server-api';
+import { HistoryAPI } from './HistoryAPI';
+import { ZonedDateTime, ZoneOffset } from '@js-joda/core';
 
 export class HistoricalStreamingService {
   private app: ServerAPI;
   private activeSubscriptions = new Map<string, any>();
+  private historyAPI: HistoryAPI;
 
   constructor(app: ServerAPI) {
     this.app = app;
+    // Initialize HistoryAPI - we'll get the data directory from the app
+    const dataDir = app.getDataDirPath();
+    this.historyAPI = new HistoryAPI(app.selfId, dataDir);
     this.setupSubscriptionInterceptor();
   }
 
@@ -119,33 +125,122 @@ export class HistoricalStreamingService {
 
       this.app.debug(`Starting historical stream for ${path}`);
 
-      // For now, send some sample historical data
-      this.streamSampleHistoricalData(subscriptionId, path);
+      // Stream real historical data from Parquet files
+      this.streamHistoricalData(subscriptionId, path);
 
     } catch (error) {
       this.app.error(`Error starting historical stream for ${path}`);
     }
   }
 
-  private streamSampleHistoricalData(_subscriptionId: string, path: string) {
-    this.app.debug(`🚀 Streaming sample historical data for ${path}`);
+  private async streamHistoricalData(_subscriptionId: string, path: string) {
+    this.app.debug(`🚀 Streaming real historical data for ${path}`);
 
-    // Generate sample historical data
+    try {
+      // Get historical data for the last hour with 30 second resolution
+      const to = ZonedDateTime.now(ZoneOffset.UTC);
+      const from = to.minusHours(1);
+      const timeResolutionMillis = 30000; // 30 seconds
+      
+      // Create a mock request/response for the HistoryAPI
+      const mockReq = {
+        query: {
+          paths: path,
+          resolution: timeResolutionMillis.toString()
+        }
+      } as any;
+
+      const mockRes = {
+        json: (data: any) => {
+          this.processHistoricalDataResponse(data, path);
+        },
+        status: (code: number) => ({
+          json: (error: any) => {
+            this.app.error(`❌ Historical data query failed with status ${code}: ${JSON.stringify(error)}`);
+          }
+        })
+      } as any;
+
+      this.app.debug(`📊 Querying historical data for ${path} from ${from.toString()} to ${to.toString()}`);
+      
+      // Call the HistoryAPI to get real historical data
+      await this.historyAPI.getValues(
+        this.app.selfContext as Context,
+        from,
+        to,
+        false, // shouldRefresh
+        this.app.debug.bind(this.app),
+        mockReq,
+        mockRes
+      );
+
+    } catch (error) {
+      this.app.error(`❌ Error streaming historical data for ${path}: ${error}`);
+      
+      // Fallback to sample data if real data fails
+      this.app.debug(`🔄 Falling back to sample data for ${path}`);
+      this.streamSampleDataFallback(path);
+    }
+  }
+
+  private processHistoricalDataResponse(historyResponse: any, path: string) {
+    this.app.debug(`📥 Received historical data response for ${path}`);
+
+    if (!historyResponse.data || historyResponse.data.length === 0) {
+      this.app.debug(`⚠️ No historical data found for ${path}, using sample data`);
+      this.streamSampleDataFallback(path);
+      return;
+    }
+
+    this.app.debug(`📊 Processing ${historyResponse.data.length} historical data points for ${path}`);
+
+    // Stream the historical data points
+    historyResponse.data.forEach((dataPoint: any, index: number) => {
+      const [timestamp, ...values] = dataPoint;
+      const value = values[0]; // Get first value for this path
+
+      if (value !== null && value !== undefined) {
+        const delta = {
+          context: this.app.selfContext as Context,
+          updates: [{
+            $source: 'signalk-parquet-historical' as SourceRef,
+            timestamp: timestamp as Timestamp,
+            values: [{
+              path: path as Path,
+              value: value
+            }]
+          }]
+        };
+
+        // Inject with small delays to avoid overwhelming
+        setTimeout(() => {
+          this.app.debug(`📤 Injecting historical data point ${index + 1}/${historyResponse.data.length} for ${path}`);
+          try {
+            this.app.handleMessage('signalk-parquet-historical', delta);
+          } catch (error) {
+            this.app.error(`❌ Error injecting historical data point: ${error}`);
+          }
+        }, index * 100); // 100ms between each data point
+      }
+    });
+
+    this.app.debug(`✅ Completed streaming ${historyResponse.data.length} historical data points for ${path}`);
+  }
+
+  private streamSampleDataFallback(path: string) {
+    this.app.debug(`🔄 Using sample data fallback for ${path}`);
+    
     const sampleData = [
       { timestamp: new Date(Date.now() - 3600000), value: Math.random() * 100 },
       { timestamp: new Date(Date.now() - 1800000), value: Math.random() * 100 },
       { timestamp: new Date(Date.now() - 900000), value: Math.random() * 100 },
     ];
 
-    this.app.debug(`📊 Generated ${sampleData.length} sample data points for ${path}`);
-
-    // Send sample data as delta messages
     sampleData.forEach((data, index) => {
-      // Create a delta message with historical data - use actual vessel context
       const delta = {
         context: this.app.selfContext as Context,
         updates: [{
-          $source: 'signalk-parquet-historical' as SourceRef,
+          $source: 'signalk-parquet-historical-sample' as SourceRef,
           timestamp: data.timestamp.toISOString() as Timestamp,
           values: [{
             path: path as Path,
@@ -154,16 +249,14 @@ export class HistoricalStreamingService {
         }]
       };
 
-      // Inject the historical data into SignalK's stream
       setTimeout(() => {
-        this.app.debug(`📤 Injecting historical data point ${index + 1} for ${path}: ${data.value}`);
+        this.app.debug(`📤 Injecting sample data point ${index + 1} for ${path}: ${data.value}`);
         try {
           this.app.handleMessage('signalk-parquet-historical', delta);
-          this.app.debug(`✅ Successfully injected historical data point ${index + 1} for ${path}`);
         } catch (error) {
-          this.app.error(`❌ Error injecting historical data: ${error}`);
+          this.app.error(`❌ Error injecting sample data: ${error}`);
         }
-      }, index * 1000); // 1 second between each data point
+      }, index * 1000);
     });
   }
 
@@ -183,7 +276,7 @@ export class HistoricalStreamingService {
   public triggerHistoricalStream(path: string) {
     this.app.debug(`Manually triggering historical stream for: ${path}`);
     try {
-      this.startHistoricalStream('vessels.self', path, { path, period: 1000 });
+      this.startHistoricalStream(this.app.selfContext, path, { path, period: 1000 });
       this.app.debug(`Successfully called startHistoricalStream for: ${path}`);
     } catch (error) {
       this.app.error(`Error in triggerHistoricalStream: ${error}`);
