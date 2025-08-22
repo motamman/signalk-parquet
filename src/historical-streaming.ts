@@ -288,8 +288,6 @@ export class HistoricalStreamingService {
       this.wsServer.close();
       this.wsServer = undefined;
     }
-    
-    this.app.debug('Historical streaming service shutdown complete');
   }
 
   public getActiveSubscriptions() {

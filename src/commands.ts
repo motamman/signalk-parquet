@@ -257,9 +257,6 @@ export function initializeCommandState(
       };
       currentPaths.push(commandPathConfig);
       addedMissingPaths = true;
-      app.debug(
-        `✅ Added missing path configuration for existing command: ${commandConfig.command}`
-      );
     }
   });
 
@@ -273,9 +270,6 @@ export function initializeCommandState(
     initializeCommandValue(commandConfig.command, false);
   });
 
-  app.debug(
-    `🎮 Command state initialized with ${currentCommands.length} commands`
-  );
 }
 
 // Command registration with full type safety

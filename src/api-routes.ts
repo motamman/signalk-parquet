@@ -534,9 +534,6 @@ export function registerApiRoutes(
           updateDataSubscriptions(currentPaths, state, state.currentConfig, app);
         }
 
-        app.debug(
-          `Removed path configuration: ${removedPath.name} (${removedPath.path})`
-        );
 
         res.json({
           success: true,

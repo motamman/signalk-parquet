@@ -43,16 +43,13 @@ export async function initializeS3(config: PluginConfig, app: ServerAPI): Promis
     // Wait for AWS SDK import to complete
     try {
       if (!S3Client) {
-        app.debug(`DEBUG: Waiting for AWS SDK import...`);
         const awsS3 = await import('@aws-sdk/client-s3');
         S3Client = awsS3.S3Client;
         PutObjectCommand = awsS3.PutObjectCommand;
         ListObjectsV2Command = awsS3.ListObjectsV2Command;
         HeadObjectCommand = awsS3.HeadObjectCommand;
-        app.debug(`DEBUG: AWS SDK imported successfully`);
       }
     } catch (importError) {
-      app.debug(`DEBUG: Failed to import AWS SDK: ${importError}`);
       S3Client = undefined;
     }
   }
@@ -80,14 +77,8 @@ export function createS3Client(config: PluginConfig, app: ServerAPI): any {
         accessKeyId: config.s3Upload.accessKeyId,
         secretAccessKey: config.s3Upload.secretAccessKey,
       };
-      app.debug(`DEBUG: S3 credentials provided`);
-    } else {
-      app.debug(
-        `DEBUG: No S3 credentials provided, using default AWS profile`
-      );
     }
 
-    app.debug(`DEBUG: Creating S3 client with region: ${s3Config.region}`);
     const s3Client = new S3Client(s3Config);
     app.debug(
       `S3 client initialized for bucket: ${config.s3Upload.bucket}`
@@ -439,7 +430,6 @@ function shouldSubscribeToPath(
 ): boolean {
   // Always subscribe if explicitly enabled
   if (pathConfig.enabled) {
-    app.debug(`✅ Path ${pathConfig.path} enabled (always on)`);
     return true;
   }
 
@@ -650,7 +640,6 @@ async function saveBufferToParquet(
       await uploadToS3(savedPath, config, state, app);
     }
   } catch (error) {
-    app.debug(`❌ Error saving buffer for ${signalkPath}: ${error}`);
   }
 }
 
@@ -715,12 +704,8 @@ export function initializeRegimenStates(
           }
         }
       } else {
-        app.debug(`📭 No current value found for ${pathConfig.path}`);
       }
     } catch (error) {
-      app.debug(
-        `❌ Error checking startup value for ${pathConfig.path}: ${error}`
-      );
     }
   });
 
@@ -812,10 +797,8 @@ export async function consolidateMissedDays(config: PluginConfig, state: PluginS
           config.s3Upload.enabled &&
           config.s3Upload.timing === 'consolidation'
         ) {
-          app.debug(`DEBUG: Starting S3 upload for ${dateStr}`);
           await uploadConsolidatedFilesToS3(config, date, state, app);
         } else {
-          app.debug(`DEBUG: S3 upload skipped for ${dateStr}`);
         }
       }
     }
@@ -873,7 +856,6 @@ export async function uploadAllConsolidatedFilesToS3(
   app: ServerAPI
 ): Promise<void> {
   try {
-    app.debug(`DEBUG: Uploading all existing consolidated files to S3`);
 
     // Find all consolidated parquet files
     const consolidatedPattern = `**/*_consolidated.parquet`;
@@ -912,7 +894,6 @@ async function uploadConsolidatedFilesToS3(
     const dateStr = date.toISOString().split('T')[0];
     const consolidatedPattern = `**/*_${dateStr}_consolidated.parquet`;
 
-    app.debug(`DEBUG: S3 upload function called for ${dateStr}`);
     app.debug(
       `DEBUG: Looking for pattern: ${consolidatedPattern} in ${config.outputDirectory}`
     );
@@ -927,7 +908,6 @@ async function uploadConsolidatedFilesToS3(
     app.debug(
       `Found ${consolidatedFiles.length} consolidated files to upload for ${dateStr}`
     );
-    app.debug(`DEBUG: Files found: ${JSON.stringify(consolidatedFiles)}`);
 
     // Upload each consolidated file
     for (const filePath of consolidatedFiles) {
@@ -978,9 +958,7 @@ async function uploadToS3(
 
           if (localLastModified <= s3LastModified) {
             shouldUpload = false;
-            app.debug(`⏭️ Skipping upload, S3 file is newer: ${s3Key}`);
           } else {
-            app.debug(`📤 Local file is newer, uploading: ${s3Key}`);
           }
         }
       }
@@ -990,12 +968,8 @@ async function uploadToS3(
         headError.name === 'NotFound' ||
         headError.$metadata?.httpStatusCode === 404
       ) {
-        app.debug(`📤 File not found in S3, uploading: ${s3Key}`);
         shouldUpload = true;
       } else {
-        app.debug(
-          `⚠️ Error checking S3 file, uploading anyway: ${headError.message}`
-        );
         shouldUpload = true;
       }
     }
@@ -1018,17 +992,14 @@ async function uploadToS3(
     });
 
     await state.s3Client.send(command);
-    app.debug(`✅ Uploaded to S3: s3://${config.s3Upload.bucket}/${s3Key}`);
 
     // Delete local file if configured
     if (config.s3Upload.deleteAfterUpload) {
       await fs.unlink(filePath);
-      app.debug(`🗑️ Deleted local file: ${filePath}`);
     }
 
     return true;
   } catch (error) {
-    app.debug(`❌ Error uploading ${filePath} to S3: ${error}`);
     return false;
   }
 }
