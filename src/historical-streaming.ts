@@ -314,6 +314,26 @@ export class HistoricalStreamingService {
   private streams = new Map<string, any>();
   private streamIntervals = new Map<string, NodeJS.Timeout>();
 
+  private parseTimeRange(timeRange: string): number {
+    // Parse time range strings like '1h', '30m', '2d' into milliseconds
+    const match = timeRange.match(/^(\d+)([smhd])$/);
+    if (!match) {
+      this.app.debug(`Invalid time range format: ${timeRange}, defaulting to 1h`);
+      return 60 * 60 * 1000; // 1 hour default
+    }
+    
+    const value = parseInt(match[1]);
+    const unit = match[2];
+    
+    switch (unit) {
+      case 's': return value * 1000;                    // seconds
+      case 'm': return value * 60 * 1000;               // minutes
+      case 'h': return value * 60 * 60 * 1000;          // hours  
+      case 'd': return value * 24 * 60 * 60 * 1000;     // days
+      default: return 60 * 60 * 1000; // 1 hour default
+    }
+  }
+
   public createStream(streamConfig: any) {
     const streamId = `stream_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
     const stream = {
@@ -354,11 +374,21 @@ export class HistoricalStreamingService {
     stream.startedAt = new Date().toISOString();
     stream.dataPointsStreamed = 0;
     
+    // Set streaming time window
+    const now = new Date();
+    const timeRangeDuration = this.parseTimeRange(stream.timeRange || '1h');
+    const windowStart = new Date(now.getTime() - timeRangeDuration);
+    
+    stream.startTime = windowStart.toLocaleTimeString();
+    stream.endTime = 'Live'; // For real-time streaming
+    stream.actualStartTime = windowStart.toISOString();
+    stream.actualEndTime = null; // null means live/ongoing
+    
     // Start continuous streaming
     try {
       this.startContinuousStreaming(streamId);
       this.streams.set(streamId, stream);
-      this.app.debug(`Started continuous stream: ${streamId} for path: ${stream.path}`);
+      this.app.debug(`Started continuous stream: ${streamId} for path: ${stream.path} (${stream.startTime} - ${stream.endTime})`);
       return { success: true };
     } catch (error) {
       stream.status = 'error';
@@ -528,6 +558,15 @@ export class HistoricalStreamingService {
     
     stream.status = 'stopped';
     stream.stoppedAt = new Date().toISOString();
+    
+    // Update time window to show final range
+    if (stream.actualStartTime) {
+      const startTime = new Date(stream.actualStartTime);
+      const endTime = new Date(stream.stoppedAt);
+      stream.startTime = startTime.toLocaleTimeString();
+      stream.endTime = endTime.toLocaleTimeString();
+    }
+    
     this.streams.set(streamId, stream);
     
     this.app.debug(`Stopped stream: ${streamId}`);
