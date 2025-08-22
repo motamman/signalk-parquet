@@ -180,8 +180,8 @@ export default function (app: ServerAPI): SignalKPlugin {
       app.error(`Failed to register History API routes with main server: ${error}`);
     }
 
-    // Initialize streaming service (disabled for now to stop UI resets)
-    if (false) { // Temporarily disabled
+    // Initialize streaming service (with delay to ensure clean startup)
+    if (true) { // Always enable streaming
       setTimeout(async () => {
         try {
           app.debug('Initializing streaming service...');
@@ -423,6 +423,75 @@ export default function (app: ServerAPI): SignalKPlugin {
   };
 
   return plugin;
+}
+
+/**
+ * Initialize streaming service for runtime control
+ */
+export async function initializeStreamingService(state: PluginState, app: ServerAPI): Promise<{ success: boolean, message?: string, error?: string }> {
+  if (state.streamingService) {
+    return { success: true, message: 'Streaming service is already running' };
+  }
+
+  try {
+    app.debug('Initializing streaming service...');
+    
+    const { HistoryAPI } = require('./HistoryAPI');
+    const historyAPI = new HistoryAPI(
+      app.selfId,
+      state.currentConfig!.outputDirectory
+    );
+    
+    const httpServer = (app as any).router?.parent?.server || 
+                     (app as any).httpServer || 
+                     (app as any).server;
+    
+    if (!httpServer) {
+      throw new Error('HTTP server not available');
+    }
+
+    state.streamingService = new StreamingService(httpServer, {
+      historyAPI: historyAPI,
+      selfId: app.selfId,
+      debug: true
+    });
+    
+    if (!state.streamingService) {
+      throw new Error('Streaming service creation returned null/undefined');
+    }
+
+    app.debug('Streaming service initialized successfully');
+    state.streamingEnabled = true;
+    
+    return { success: true, message: 'Streaming service initialized successfully' };
+  } catch (error) {
+    app.error(`Failed to initialize streaming service: ${error}`);
+    state.streamingService = undefined;
+    state.streamingEnabled = false;
+    return { success: false, error: (error as Error).message };
+  }
+}
+
+/**
+ * Shutdown streaming service for runtime control
+ */
+export function shutdownStreamingService(state: PluginState, app: ServerAPI): { success: boolean, message?: string, error?: string } {
+  if (!state.streamingService) {
+    return { success: true, message: 'Streaming service is not running' };
+  }
+
+  try {
+    app.debug('Shutting down streaming service...');
+    state.streamingService.shutdown();
+    state.streamingService = undefined;
+    state.streamingEnabled = false;
+    app.debug('Streaming service shut down successfully');
+    
+    return { success: true, message: 'Streaming service shut down successfully' };
+  } catch (error) {
+    app.error(`Error shutting down streaming service: ${error}`);
+    return { success: false, error: (error as Error).message };
+  }
 }
 
 // Re-export utility functions for backward compatibility

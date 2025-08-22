@@ -204,7 +204,7 @@ export class HistoryAPI {
       const timeResolutionMillis =
         req.query.resolution
           ? Number.parseFloat(req.query.resolution as string)
-          : (to.toEpochSecond() - from.toEpochSecond()) / 500 * 1000;
+          : Math.min((to.toEpochSecond() - from.toEpochSecond()) / 500 * 1000, 60000); // Max 1 minute buckets
           
       console.log('DEBUG: getValues resolution calc:', { 
         reqResolution: req.query.resolution, 

@@ -36,6 +36,7 @@ import {
 } from './commands';
 import { updateDataSubscriptions } from './data-handler';
 import { toContextFilePath, toParquetFilePath } from './utils/path-helpers';
+import { initializeStreamingService, shutdownStreamingService } from './index';
 import { ServerAPI, Context } from '@signalk/server-api';
 
 // AWS S3 for testing connection
@@ -780,11 +781,21 @@ export function registerApiRoutes(
         });
       }
 
-      res.status(501).json({
-        success: false,
-        error: 'Runtime streaming enable/disable not implemented yet - use new WebSocket streaming',
-        enabled: false
-      });
+      const result = await initializeStreamingService(state, app);
+      
+      if (result.success) {
+        res.json({
+          success: true,
+          message: result.message,
+          enabled: true
+        });
+      } else {
+        res.status(500).json({
+          success: false,
+          error: result.error,
+          enabled: false
+        });
+      }
     } catch (error) {
       app.error(`Error enabling streaming: ${error}`);
       res.status(500).json({
@@ -806,11 +817,21 @@ export function registerApiRoutes(
         });
       }
 
-      res.status(501).json({
-        success: false,
-        error: 'Runtime streaming enable/disable not implemented yet - use new WebSocket streaming',
-        enabled: false
-      });
+      const result = shutdownStreamingService(state, app);
+      
+      if (result.success) {
+        res.json({
+          success: true,
+          message: result.message,
+          enabled: false
+        });
+      } else {
+        res.status(500).json({
+          success: false,
+          error: result.error,
+          enabled: true
+        });
+      }
     } catch (error) {
       app.error(`Error disabling streaming: ${error}`);
       res.status(500).json({
