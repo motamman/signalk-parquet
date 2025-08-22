@@ -1497,22 +1497,26 @@
             html += '</tr></thead><tbody>';
 
             streams.forEach((stream, index) => {
-                const status = stream.active ? '🟢 Active' : stream.paused ? '⏸️ Paused' : '🔴 Stopped';
-                const progress = stream.progress ? `${stream.progress}%` : '-';
-                const timeRange = `${stream.timeRange} (${stream.startTime || 'N/A'} - ${stream.endTime || 'N/A'})`;
+                const isRunning = stream.status === 'running';
+                const isPaused = stream.status === 'paused';
+                const isStopped = stream.status === 'stopped' || stream.status === 'created';
+                
+                const status = isRunning ? '🟢 Running' : isPaused ? '⏸️ Paused' : '🔴 Stopped';
+                const progress = stream.dataPointsStreamed ? `${stream.dataPointsStreamed} points` : '-';
+                const timeRange = `${stream.timeRange || '1h'} (${stream.startTime || 'N/A'} - ${stream.endTime || 'N/A'})`;
                 
                 html += `<tr>
                     <td><strong>${stream.name}</strong></td>
                     <td><code>${stream.path}</code></td>
                     <td>${status}</td>
                     <td>${timeRange}</td>
-                    <td>${stream.resolution}ms</td>
-                    <td>${stream.rate}ms</td>
+                    <td>${stream.resolution || 30000}ms</td>
+                    <td>${stream.rate || 5000}ms</td>
                     <td>${progress}</td>
                     <td>
-                        ${!stream.active ? 
+                        ${isStopped ? 
                             `<button onclick="startStream('${stream.id}')" style="padding: 5px 10px; font-size: 12px; background: #28a745;">▶️ Start</button>` : 
-                            `<button onclick="pauseStream('${stream.id}')" style="padding: 5px 10px; font-size: 12px; background: #ffc107;">${stream.paused ? '▶️ Resume' : '⏸️ Pause'}</button>
+                            `<button onclick="pauseStream('${stream.id}')" style="padding: 5px 10px; font-size: 12px; background: #ffc107;">${isPaused ? '▶️ Resume' : '⏸️ Pause'}</button>
                              <button onclick="stopStream('${stream.id}')" style="padding: 5px 10px; font-size: 12px; background: #dc3545;">⏹️ Stop</button>`
                         }
                         <button onclick="editStream('${stream.id}')" style="padding: 5px 10px; font-size: 12px;">✏️ Edit</button>
