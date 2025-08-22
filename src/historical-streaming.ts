@@ -173,6 +173,11 @@ export class HistoricalStreamingService {
   // Manual trigger for testing historical data streaming
   public triggerHistoricalStream(path: string) {
     this.app.debug(`Manually triggering historical stream for: ${path}`);
-    this.startHistoricalStream('vessels.self', path, { path, period: 1000 });
+    try {
+      this.startHistoricalStream('vessels.self', path, { path, period: 1000 });
+      this.app.debug(`Successfully called startHistoricalStream for: ${path}`);
+    } catch (error) {
+      this.app.error(`Error in triggerHistoricalStream: ${error}`);
+    }
   }
 }
