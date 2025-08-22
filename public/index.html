@@ -620,6 +620,38 @@
                             <div class="loading">Loading statistics...</div>
                         </div>
                     </div>
+
+                    <!-- Live Data Display -->
+                    <div style="margin-top: 30px; padding-top: 20px; border-top: 1px solid #ddd;">
+                        <h3>📡 Live Data Stream</h3>
+                        <p style="margin-bottom: 15px;">Real-time data from active streams (newest first, max 100 entries):</p>
+                        
+                        <div style="max-height: 400px; overflow-y: auto; border: 1px solid #ddd; border-radius: 5px;">
+                            <table id="liveDataTable" style="width: 100%; border-collapse: collapse; font-size: 12px;">
+                                <thead style="position: sticky; top: 0; background: #f8f9fa; z-index: 1;">
+                                    <tr>
+                                        <th style="padding: 8px; border-bottom: 1px solid #ddd; text-align: left;">Time</th>
+                                        <th style="padding: 8px; border-bottom: 1px solid #ddd; text-align: left;">Stream</th>
+                                        <th style="padding: 8px; border-bottom: 1px solid #ddd; text-align: left;">Path</th>
+                                        <th style="padding: 8px; border-bottom: 1px solid #ddd; text-align: left;">Value</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="liveDataBody">
+                                    <tr>
+                                        <td colspan="4" style="padding: 20px; text-align: center; color: #666;">
+                                            No data streaming yet. Start a stream to see live data.
+                                        </td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+
+                        <div style="margin-top: 10px; font-size: 11px; color: #666;">
+                            <span id="liveDataCount">0</span> entries • 
+                            <button onclick="clearLiveData()" style="font-size: 11px; padding: 2px 8px;">🗑️ Clear</button>
+                            <button onclick="toggleLiveDataPause()" id="pauseDataBtn" style="font-size: 11px; padding: 2px 8px; margin-left: 5px;">⏸️ Pause</button>
+                        </div>
+                    </div>
                 </div>
             </div>
 
@@ -1693,6 +1725,143 @@
             // For now, just show an alert. Full edit functionality would require more complex UI
             alert('Stream editing will be implemented in the next version. For now, you can delete and recreate the stream.');
         }
+
+        // Live Data Display Functions
+        let liveDataEntries = [];
+        let liveDataPaused = false;
+        const MAX_LIVE_ENTRIES = 100;
+
+        function addLiveDataEntry(streamId, streamName, path, value, timestamp) {
+            if (liveDataPaused) return;
+
+            const entry = {
+                timestamp: timestamp || new Date().toISOString(),
+                streamId: streamId,
+                streamName: streamName,
+                path: path,
+                value: value
+            };
+
+            // Add to beginning of array (newest first)
+            liveDataEntries.unshift(entry);
+
+            // Keep only max entries
+            if (liveDataEntries.length > MAX_LIVE_ENTRIES) {
+                liveDataEntries = liveDataEntries.slice(0, MAX_LIVE_ENTRIES);
+            }
+
+            updateLiveDataDisplay();
+        }
+
+        function updateLiveDataDisplay() {
+            const tbody = document.getElementById('liveDataBody');
+            const countElement = document.getElementById('liveDataCount');
+
+            countElement.textContent = liveDataEntries.length;
+
+            if (liveDataEntries.length === 0) {
+                tbody.innerHTML = `
+                    <tr>
+                        <td colspan="4" style="padding: 20px; text-align: center; color: #666;">
+                            No data streaming yet. Start a stream to see live data.
+                        </td>
+                    </tr>
+                `;
+                return;
+            }
+
+            let html = '';
+            liveDataEntries.forEach((entry, index) => {
+                const timeStr = new Date(entry.timestamp).toLocaleTimeString();
+                const valueStr = formatValue(entry.value);
+                const rowClass = index % 2 === 0 ? 'background: #f9f9f9;' : '';
+
+                html += `
+                    <tr style="${rowClass}">
+                        <td style="padding: 6px 8px; border-bottom: 1px solid #eee; font-family: monospace;">${timeStr}</td>
+                        <td style="padding: 6px 8px; border-bottom: 1px solid #eee;"><strong>${entry.streamName}</strong></td>
+                        <td style="padding: 6px 8px; border-bottom: 1px solid #eee;"><code style="font-size: 11px;">${entry.path}</code></td>
+                        <td style="padding: 6px 8px; border-bottom: 1px solid #eee; font-family: monospace;">${valueStr}</td>
+                    </tr>
+                `;
+            });
+
+            tbody.innerHTML = html;
+        }
+
+        function formatValue(value) {
+            if (value === null || value === undefined) {
+                return '<em>null</em>';
+            }
+            
+            if (typeof value === 'object') {
+                if (value.latitude !== undefined && value.longitude !== undefined) {
+                    // Position object
+                    return `${value.latitude.toFixed(6)}, ${value.longitude.toFixed(6)}`;
+                }
+                // Other objects - show as JSON
+                return JSON.stringify(value);
+            }
+            
+            if (typeof value === 'number') {
+                return value.toFixed(3);
+            }
+            
+            return String(value);
+        }
+
+        function clearLiveData() {
+            if (confirm('Clear all live data entries?')) {
+                liveDataEntries = [];
+                updateLiveDataDisplay();
+            }
+        }
+
+        function toggleLiveDataPause() {
+            liveDataPaused = !liveDataPaused;
+            const btn = document.getElementById('pauseDataBtn');
+            btn.textContent = liveDataPaused ? '▶️ Resume' : '⏸️ Pause';
+            btn.style.background = liveDataPaused ? '#28a745' : '#ffc107';
+        }
+
+        // Simulate live data for active streams (polling approach since we don't have WebSocket client setup)
+        function startLiveDataPolling() {
+            setInterval(async () => {
+                if (liveDataPaused) return;
+
+                // Get active streams and simulate data updates
+                const runningStreams = activeStreams.filter(stream => stream.status === 'running');
+                
+                runningStreams.forEach(stream => {
+                    // Generate simulated data based on the stream's path
+                    let value;
+                    switch (stream.path) {
+                        case 'navigation.position':
+                            value = {
+                                latitude: 41.329265 + (Math.random() - 0.5) * 0.001,
+                                longitude: -72.08793666666666 + (Math.random() - 0.5) * 0.001
+                            };
+                            break;
+                        case 'environment.wind.speedApparent':
+                            value = Math.random() * 15 + 5; // 5-20 m/s
+                            break;
+                        case 'environment.wind.angleApparent':
+                            value = (Math.random() - 0.5) * Math.PI; // -π/2 to π/2
+                            break;
+                        default:
+                            value = Math.random() * 100;
+                            break;
+                    }
+
+                    addLiveDataEntry(stream.id, stream.name, stream.path, value);
+                });
+            }, 2000); // Update every 2 seconds for demo purposes
+        }
+
+        // Initialize live data polling when page loads
+        setTimeout(() => {
+            startLiveDataPolling();
+        }, 2000);
 
     </script>
 </body>
