@@ -82,6 +82,7 @@ export default function (app: ServerAPI): SignalKPlugin {
       fileFormat: options?.fileFormat || 'parquet',
       vesselMMSI: vesselMMSI,
       s3Upload: options?.s3Upload || { enabled: false },
+      enableStreaming: options?.enableStreaming ?? false,
     };
 
     // Load webapp configuration including commands
@@ -177,12 +178,26 @@ export default function (app: ServerAPI): SignalKPlugin {
       app.error(`Failed to register History API routes with main server: ${error}`);
     }
 
-    // Initialize historical streaming service
+    // Initialize historical streaming service (for history API endpoints)
     try {
       state.historicalStreamingService = new HistoricalStreamingService(app, state.currentConfig.outputDirectory);
       app.debug('Historical streaming service initialized successfully');
     } catch (error) {
       app.error(`Failed to initialize historical streaming service: ${error}`);
+    }
+
+    // Initialize runtime streaming service if enabled in configuration
+    if (state.currentConfig.enableStreaming) {
+      try {
+        const result = await initializeStreamingService(state, app);
+        if (result.success) {
+          app.debug('Runtime streaming service initialized at startup');
+        } else {
+          app.error(`Failed to initialize runtime streaming service: ${result.error}`);
+        }
+      } catch (error) {
+        app.error(`Error initializing runtime streaming service: ${error}`);
+      }
     }
 
     app.debug('Started');
@@ -220,6 +235,16 @@ export default function (app: ServerAPI): SignalKPlugin {
         }
       });
       state.streamSubscriptions = [];
+    }
+
+    // Shutdown runtime streaming service
+    if (state.streamingService) {
+      try {
+        shutdownStreamingService(state, app);
+        app.debug('Runtime streaming service shut down successfully');
+      } catch (error) {
+        app.error(`Error shutting down runtime streaming service: ${error}`);
+      }
     }
 
     // Shutdown historical streaming service
@@ -352,6 +377,12 @@ export default function (app: ServerAPI): SignalKPlugin {
           },
         },
       },
+      enableStreaming: {
+        type: 'boolean',
+        title: 'Enable WebSocket Streaming',
+        description: 'Enable real-time streaming of historical data via WebSocket connections',
+        default: false,
+      },
     },
   };
 
@@ -361,6 +392,66 @@ export default function (app: ServerAPI): SignalKPlugin {
   };
 
   return plugin;
+}
+
+// Streaming service lifecycle functions for runtime control
+export async function initializeStreamingService(state: PluginState, app: ServerAPI): Promise<{ success: boolean; error?: string }> {
+  try {
+    if (state.streamingService) {
+      return { success: true, error: 'Streaming service is already running' };
+    }
+
+    if (!state.currentConfig?.enableStreaming) {
+      return { success: false, error: 'Streaming is disabled in plugin configuration. Enable it in settings first.' };
+    }
+
+    // Initialize streaming service (reusing historical streaming service)
+    state.streamingService = new HistoricalStreamingService(app, state.currentConfig.outputDirectory);
+    state.streamingEnabled = true;
+    
+    // Restore any previous subscriptions if available
+    if (state.restoredSubscriptions && state.restoredSubscriptions.size > 0) {
+      app.debug(`Restoring ${state.restoredSubscriptions.size} streaming subscriptions`);
+      // The historical streaming service will automatically handle incoming subscriptions
+    }
+
+    app.debug('Streaming service initialized successfully for runtime control');
+    return { success: true };
+  } catch (error) {
+    app.error(`Failed to initialize streaming service: ${error}`);
+    return { success: false, error: (error as Error).message };
+  }
+}
+
+export function shutdownStreamingService(state: PluginState, app: ServerAPI): { success: boolean; error?: string } {
+  try {
+    if (!state.streamingService) {
+      return { success: true, error: 'Streaming service is not running' };
+    }
+
+    // Store active subscriptions for potential restoration
+    if (state.streamingService.getActiveSubscriptions) {
+      const activeSubscriptions = state.streamingService.getActiveSubscriptions();
+      if (activeSubscriptions.length > 0) {
+        state.restoredSubscriptions = new Map();
+        activeSubscriptions.forEach((sub: any, index: number) => {
+          state.restoredSubscriptions!.set(`sub_${index}`, sub);
+        });
+        app.debug(`Stored ${activeSubscriptions.length} subscriptions for restoration`);
+      }
+    }
+
+    // Shutdown the streaming service
+    state.streamingService.shutdown();
+    state.streamingService = undefined;
+    state.streamingEnabled = false;
+
+    app.debug('Streaming service shut down successfully');
+    return { success: true };
+  } catch (error) {
+    app.error(`Error shutting down streaming service: ${error}`);
+    return { success: false, error: (error as Error).message };
+  }
 }
 
 // Re-export utility functions for backward compatibility

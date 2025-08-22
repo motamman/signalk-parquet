@@ -32,6 +32,7 @@ export interface PluginConfig {
   fileFormat: 'json' | 'csv' | 'parquet';
   vesselMMSI: string;
   s3Upload: S3UploadConfig;
+  enableStreaming?: boolean; // Enable WebSocket streaming functionality
 }
 
 export interface PathConfig {
@@ -221,6 +222,9 @@ export interface PluginState {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   streamSubscriptions?: any[]; // Store streambundle stream references for cleanup
   historicalStreamingService?: any; // HistoricalStreamingService - avoiding circular import
+  streamingService?: any; // WebSocket streaming service for runtime control
+  streamingEnabled?: boolean; // Runtime control separate from config
+  restoredSubscriptions?: Map<string, any>; // Track active subscriptions
   dataBuffers: Map<string, DataRecord[]>;
   activeRegimens: Set<string>;
   subscribedPaths: Set<string>;

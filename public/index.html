@@ -425,6 +425,7 @@
         <div class="tab-navigation">
             <button class="tab-button active" onclick="showTab('pathConfig')">⚙️ Path Configuration</button>
             <button class="tab-button" onclick="showTab('commandManager')">🎮 Command Manager</button>
+            <button class="tab-button" onclick="showTab('liveConnections')">🔴 Live Connections</button>
             <button class="tab-button" onclick="showTab('dataPaths')">📁 Available Data Paths</button>
             <button class="tab-button" onclick="showTab('customQuery')">🔍 Custom Query</button>
             <button class="tab-button" onclick="showTab('s3Config')">☁️ Cloud Status</button>
@@ -521,6 +522,102 @@
                         <button onclick="loadCommandHistory()">🔄 Refresh History</button>
                         <div id="commandHistoryContainer" style="margin-top: 15px;">
                             <div class="loading">Loading command history...</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Live Connections Tab -->
+            <div id="liveConnections" class="tab-panel">
+                <div class="section">
+                    <h2>🔴 Live Connections</h2>
+                    <p>Manage historical data streaming connections:</p>
+                    
+                    <div style="margin-bottom: 20px;">
+                        <button onclick="loadStreams()">🔄 Refresh Streams</button>
+                        <button onclick="showAddStreamForm()">➕ Create New Stream</button>
+                    </div>
+
+                    <!-- Add Stream Form (hidden by default) -->
+                    <div id="addStreamForm" style="display: none; margin: 20px 0; padding: 20px; background: #f8f9fa; border-radius: 5px;">
+                        <h4>Create New Historical Stream</h4>
+                        
+                        <div class="form-group">
+                            <label for="streamName">Stream Name:</label>
+                            <input type="text" id="streamName" placeholder="e.g., Navigation History">
+                        </div>
+                        
+                        <div class="form-group">
+                            <label for="streamPath">SignalK Path:</label>
+                            <input type="text" id="streamPath" placeholder="e.g., navigation.position">
+                        </div>
+                        
+                        <div class="form-group">
+                            <label for="streamTimeRange">Time Range:</label>
+                            <select id="streamTimeRange">
+                                <option value="1h">Last 1 Hour</option>
+                                <option value="6h">Last 6 Hours</option>
+                                <option value="24h">Last 24 Hours</option>
+                                <option value="7d">Last 7 Days</option>
+                                <option value="30d">Last 30 Days</option>
+                                <option value="custom">Custom Range</option>
+                            </select>
+                        </div>
+                        
+                        <div class="form-group" id="customTimeRange" style="display: none;">
+                            <label>Custom Time Range:</label>
+                            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+                                <input type="datetime-local" id="streamStartTime" placeholder="Start time">
+                                <input type="datetime-local" id="streamEndTime" placeholder="End time">
+                            </div>
+                        </div>
+                        
+                        <div class="form-group">
+                            <label for="streamResolution">Data Resolution:</label>
+                            <select id="streamResolution">
+                                <option value="1000">1 second</option>
+                                <option value="5000">5 seconds</option>
+                                <option value="15000">15 seconds</option>
+                                <option value="30000" selected>30 seconds</option>
+                                <option value="60000">1 minute</option>
+                                <option value="300000">5 minutes</option>
+                            </select>
+                        </div>
+                        
+                        <div class="form-group">
+                            <label for="streamRate">Streaming Rate:</label>
+                            <select id="streamRate">
+                                <option value="100">Fast (100ms intervals)</option>
+                                <option value="500" selected>Normal (500ms intervals)</option>
+                                <option value="1000">Slow (1 second intervals)</option>
+                                <option value="5000">Very Slow (5 second intervals)</option>
+                            </select>
+                        </div>
+                        
+                        <div class="form-group">
+                            <label for="streamAutoStart">Auto-start stream:</label>
+                            <input type="checkbox" id="streamAutoStart" checked>
+                            <small style="color: #666; display: block; margin-top: 5px;">
+                                Start streaming immediately after creation
+                            </small>
+                        </div>
+                        
+                        <div style="margin-top: 20px; padding-top: 15px; border-top: 1px solid #ddd;">
+                            <button onclick="createStream()">✅ Create Stream</button>
+                            <button class="btn-secondary" onclick="hideAddStreamForm()">❌ Cancel</button>
+                        </div>
+                    </div>
+
+                    <!-- Active Streams Display -->
+                    <div id="streamsContainer">
+                        <div class="loading">Loading streams...</div>
+                    </div>
+                    
+                    <!-- Stream Statistics -->
+                    <div style="margin-top: 30px; padding-top: 20px; border-top: 1px solid #ddd;">
+                        <h3>📊 Stream Statistics</h3>
+                        <div id="streamStats" style="margin-top: 15px;">
+                            <div class="loading">Loading statistics...</div>
                         </div>
                     </div>
                 </div>
@@ -1359,6 +1456,238 @@
             
             html += '</tbody></table></div>';
             container.innerHTML = html;
+        }
+
+        // Live Connections / Stream Management Functions
+        let activeStreams = [];
+
+        async function loadStreams() {
+            try {
+                const response = await fetch('/plugins/signalk-parquet/api/streams');
+                const result = await response.json();
+                
+                if (result.success) {
+                    activeStreams = result.streams || [];
+                    displayStreams(activeStreams);
+                    loadStreamStats();
+                } else {
+                    document.getElementById('streamsContainer').innerHTML = `<div class="error">Error loading streams: ${result.error}</div>`;
+                }
+            } catch (error) {
+                document.getElementById('streamsContainer').innerHTML = `<div class="error">Network error: ${error.message}</div>`;
+            }
+        }
+
+        function displayStreams(streams) {
+            const container = document.getElementById('streamsContainer');
+            
+            if (!streams || streams.length === 0) {
+                container.innerHTML = `
+                    <div style="text-align: center; padding: 40px; background: #f8f9fa; border-radius: 5px; margin: 20px 0;">
+                        <h3 style="color: #666; margin-bottom: 10px;">No Active Streams</h3>
+                        <p style="color: #666; margin-bottom: 20px;">Create your first historical data stream to get started.</p>
+                        <button onclick="showAddStreamForm()">➕ Create Your First Stream</button>
+                    </div>
+                `;
+                return;
+            }
+
+            let html = '<div class="table-container"><table><thead><tr>';
+            html += '<th>Name</th><th>Path</th><th>Status</th><th>Time Range</th><th>Resolution</th><th>Rate</th><th>Progress</th><th>Actions</th>';
+            html += '</tr></thead><tbody>';
+
+            streams.forEach((stream, index) => {
+                const status = stream.active ? '🟢 Active' : stream.paused ? '⏸️ Paused' : '🔴 Stopped';
+                const progress = stream.progress ? `${stream.progress}%` : '-';
+                const timeRange = `${stream.timeRange} (${stream.startTime || 'N/A'} - ${stream.endTime || 'N/A'})`;
+                
+                html += `<tr>
+                    <td><strong>${stream.name}</strong></td>
+                    <td><code>${stream.path}</code></td>
+                    <td>${status}</td>
+                    <td>${timeRange}</td>
+                    <td>${stream.resolution}ms</td>
+                    <td>${stream.rate}ms</td>
+                    <td>${progress}</td>
+                    <td>
+                        ${!stream.active ? 
+                            `<button onclick="startStream('${stream.id}')" style="padding: 5px 10px; font-size: 12px; background: #28a745;">▶️ Start</button>` : 
+                            `<button onclick="pauseStream('${stream.id}')" style="padding: 5px 10px; font-size: 12px; background: #ffc107;">${stream.paused ? '▶️ Resume' : '⏸️ Pause'}</button>
+                             <button onclick="stopStream('${stream.id}')" style="padding: 5px 10px; font-size: 12px; background: #dc3545;">⏹️ Stop</button>`
+                        }
+                        <button onclick="editStream('${stream.id}')" style="padding: 5px 10px; font-size: 12px;">✏️ Edit</button>
+                        <button onclick="deleteStream('${stream.id}')" style="padding: 5px 10px; font-size: 12px; background: #dc3545;">🗑️ Delete</button>
+                    </td>
+                </tr>`;
+            });
+
+            html += '</tbody></table></div>';
+            container.innerHTML = html;
+        }
+
+        async function loadStreamStats() {
+            try {
+                const response = await fetch('/plugins/signalk-parquet/api/streams/stats');
+                const result = await response.json();
+                
+                if (result.success) {
+                    displayStreamStats(result.stats);
+                } else {
+                    document.getElementById('streamStats').innerHTML = `<div class="error">Error loading stats: ${result.error}</div>`;
+                }
+            } catch (error) {
+                document.getElementById('streamStats').innerHTML = `<div class="error">Network error: ${error.message}</div>`;
+            }
+        }
+
+        function displayStreamStats(stats) {
+            const container = document.getElementById('streamStats');
+            
+            const html = `
+                <div class="stats">
+                    <div class="stat-item">
+                        <div class="stat-value">${stats.totalStreams || 0}</div>
+                        <div class="stat-label">Total Streams</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-value">${stats.activeStreams || 0}</div>
+                        <div class="stat-label">Active</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-value">${stats.totalDataPoints || 0}</div>
+                        <div class="stat-label">Data Points Streamed</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-value">${stats.connectedClients || 0}</div>
+                        <div class="stat-label">Connected Clients</div>
+                    </div>
+                </div>
+            `;
+            
+            container.innerHTML = html;
+        }
+
+        function showAddStreamForm() {
+            document.getElementById('addStreamForm').style.display = 'block';
+            
+            // Show/hide custom time range based on selection
+            const timeRangeSelect = document.getElementById('streamTimeRange');
+            timeRangeSelect.addEventListener('change', function() {
+                const customDiv = document.getElementById('customTimeRange');
+                customDiv.style.display = this.value === 'custom' ? 'block' : 'none';
+            });
+        }
+
+        function hideAddStreamForm() {
+            document.getElementById('addStreamForm').style.display = 'none';
+            clearAddStreamForm();
+        }
+
+        function clearAddStreamForm() {
+            document.getElementById('streamName').value = '';
+            document.getElementById('streamPath').value = '';
+            document.getElementById('streamTimeRange').value = '1h';
+            document.getElementById('streamResolution').value = '30000';
+            document.getElementById('streamRate').value = '500';
+            document.getElementById('streamAutoStart').checked = true;
+            document.getElementById('customTimeRange').style.display = 'none';
+            document.getElementById('streamStartTime').value = '';
+            document.getElementById('streamEndTime').value = '';
+        }
+
+        async function createStream() {
+            const streamConfig = {
+                name: document.getElementById('streamName').value.trim(),
+                path: document.getElementById('streamPath').value.trim(),
+                timeRange: document.getElementById('streamTimeRange').value,
+                resolution: parseInt(document.getElementById('streamResolution').value),
+                rate: parseInt(document.getElementById('streamRate').value),
+                autoStart: document.getElementById('streamAutoStart').checked
+            };
+
+            // Handle custom time range
+            if (streamConfig.timeRange === 'custom') {
+                streamConfig.startTime = document.getElementById('streamStartTime').value;
+                streamConfig.endTime = document.getElementById('streamEndTime').value;
+                
+                if (!streamConfig.startTime || !streamConfig.endTime) {
+                    alert('Custom time range requires both start and end times');
+                    return;
+                }
+            }
+
+            if (!streamConfig.name || !streamConfig.path) {
+                alert('Stream name and path are required');
+                return;
+            }
+
+            try {
+                const response = await fetch('/plugins/signalk-parquet/api/streams', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(streamConfig)
+                });
+
+                const result = await response.json();
+
+                if (result.success) {
+                    hideAddStreamForm();
+                    await loadStreams();
+                    alert(`Stream '${streamConfig.name}' created successfully${streamConfig.autoStart ? ' and started' : ''}!`);
+                } else {
+                    alert(`Error creating stream: ${result.error}`);
+                }
+            } catch (error) {
+                alert(`Network error: ${error.message}`);
+            }
+        }
+
+        async function startStream(streamId) {
+            await streamAction(streamId, 'start');
+        }
+
+        async function pauseStream(streamId) {
+            await streamAction(streamId, 'pause');
+        }
+
+        async function stopStream(streamId) {
+            await streamAction(streamId, 'stop');
+        }
+
+        async function deleteStream(streamId) {
+            if (!confirm('Are you sure you want to delete this stream? This action cannot be undone.')) {
+                return;
+            }
+            await streamAction(streamId, 'delete');
+        }
+
+        async function streamAction(streamId, action) {
+            try {
+                const method = action === 'delete' ? 'DELETE' : 'PUT';
+                const url = action === 'delete' ? 
+                    `/plugins/signalk-parquet/api/streams/${streamId}` :
+                    `/plugins/signalk-parquet/api/streams/${streamId}/${action}`;
+                
+                const response = await fetch(url, { method });
+                const result = await response.json();
+
+                if (result.success) {
+                    await loadStreams();
+                    const actionMsg = action === 'delete' ? 'deleted' : `${action}ed`;
+                    // Don't show alert for successful actions, just refresh the display
+                } else {
+                    alert(`Error ${action}ing stream: ${result.error}`);
+                }
+            } catch (error) {
+                alert(`Network error: ${error.message}`);
+            }
+        }
+
+        async function editStream(streamId) {
+            // For now, just show an alert. Full edit functionality would require more complex UI
+            alert('Stream editing will be implemented in the next version. For now, you can delete and recreate the stream.');
         }
 
     </script>
