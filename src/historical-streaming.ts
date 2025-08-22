@@ -12,16 +12,52 @@ export class HistoricalStreamingService {
   private setupSubscriptionInterceptor() {
     this.app.debug('Setting up historical data subscription interceptor');
 
-    // Intercept all incoming delta messages to catch subscription requests
-    this.app.registerDeltaInputHandler((delta, next) => {
-      // Check if this is a subscription message
-      if (this.isSubscriptionMessage(delta)) {
-        this.handleSubscriptionRequest(delta);
+    // Try to hook into WebSocket server directly
+    try {
+      const server = (this.app as any).server;
+      if (server && server.interfaces && server.interfaces.ws) {
+        this.app.debug('Found WebSocket interface, attempting to hook into message handling');
+        
+        // Hook into WebSocket message handling
+        const originalMessageHandler = server.interfaces.ws.handleMessage;
+        if (originalMessageHandler) {
+          server.interfaces.ws.handleMessage = (ws: any, message: any) => {
+            // Check if this is a subscription message
+            try {
+              const parsed = typeof message === 'string' ? JSON.parse(message) : message;
+              if (this.isSubscriptionMessage(parsed)) {
+                this.app.debug(`Intercepted WebSocket subscription: ${JSON.stringify(parsed)}`);
+                this.handleSubscriptionRequest(parsed);
+              }
+            } catch (e) {
+              // Ignore parsing errors
+            }
+            
+            // Call original handler
+            return originalMessageHandler.call(server.interfaces.ws, ws, message);
+          };
+          this.app.debug('Successfully hooked into WebSocket message handler');
+        }
+      } else {
+        this.app.debug('WebSocket interface not found, using delta handler fallback');
+        // Fallback to delta handler
+        this.app.registerDeltaInputHandler((delta, next) => {
+          if (this.isSubscriptionMessage(delta)) {
+            this.handleSubscriptionRequest(delta);
+          }
+          next(delta);
+        });
       }
-      
-      // Always pass the delta through normally
-      next(delta);
-    });
+    } catch (error) {
+      this.app.debug(`Error setting up WebSocket hook: ${error}, using delta handler fallback`);
+      // Fallback to delta handler
+      this.app.registerDeltaInputHandler((delta, next) => {
+        if (this.isSubscriptionMessage(delta)) {
+          this.handleSubscriptionRequest(delta);
+        }
+        next(delta);
+      });
+    }
   }
 
   private isSubscriptionMessage(delta: any): boolean {
