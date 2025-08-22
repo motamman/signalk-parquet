@@ -1,4 +1,4 @@
-import { ServerAPI, Context, Path, Timestamp } from '@signalk/server-api';
+import { ServerAPI, Context, Path, Timestamp, SourceRef } from '@signalk/server-api';
 
 export class HistoricalStreamingService {
   private app: ServerAPI;
@@ -141,10 +141,11 @@ export class HistoricalStreamingService {
 
     // Send sample data as delta messages
     sampleData.forEach((data, index) => {
-      // Create a delta message with historical data
+      // Create a delta message with historical data - use actual vessel context
       const delta = {
-        context: 'vessels.self' as Context,
+        context: this.app.selfContext as Context,
         updates: [{
+          $source: 'signalk-parquet-historical' as SourceRef,
           timestamp: data.timestamp.toISOString() as Timestamp,
           values: [{
             path: path as Path,
