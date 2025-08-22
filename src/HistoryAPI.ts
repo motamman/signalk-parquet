@@ -181,7 +181,7 @@ function getContext(contextFromQuery: string, selfId: string): Context {
   return contextFromQuery.replace(/ /gi, '') as Context;
 }
 
-class HistoryAPI {
+export class HistoryAPI {
   readonly selfContextPath: string;
   constructor(
     private selfId: string,

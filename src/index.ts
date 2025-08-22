@@ -4,6 +4,7 @@ import { Router } from 'express';
 import { ParquetWriter } from './parquet-writer';
 import { registerHistoryApiRoute } from './HistoryAPI';
 import { registerApiRoutes } from './api-routes';
+import { HistoricalStreamingService } from './historical-streaming';
 import {
   SignalKPlugin,
   PluginConfig,
@@ -176,6 +177,14 @@ export default function (app: ServerAPI): SignalKPlugin {
       app.error(`Failed to register History API routes with main server: ${error}`);
     }
 
+    // Initialize historical streaming service
+    try {
+      state.historicalStreamingService = new HistoricalStreamingService(app);
+      app.debug('Historical streaming service initialized successfully');
+    } catch (error) {
+      app.error(`Failed to initialize historical streaming service: ${error}`);
+    }
+
     app.debug('Started');
   };
 
@@ -211,6 +220,17 @@ export default function (app: ServerAPI): SignalKPlugin {
         }
       });
       state.streamSubscriptions = [];
+    }
+
+    // Shutdown historical streaming service
+    if (state.historicalStreamingService) {
+      try {
+        state.historicalStreamingService.shutdown();
+        state.historicalStreamingService = undefined;
+        app.debug('Historical streaming service shut down successfully');
+      } catch (error) {
+        app.error(`Error shutting down historical streaming service: ${error}`);
+      }
     }
 
     // Clear data structures

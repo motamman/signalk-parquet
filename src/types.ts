@@ -220,6 +220,7 @@ export interface PluginState {
   unsubscribes: Array<() => void>;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   streamSubscriptions?: any[]; // Store streambundle stream references for cleanup
+  historicalStreamingService?: any; // HistoricalStreamingService - avoiding circular import
   dataBuffers: Map<string, DataRecord[]>;
   activeRegimens: Set<string>;
   subscribedPaths: Set<string>;
