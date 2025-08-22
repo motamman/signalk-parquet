@@ -282,14 +282,11 @@ export class HistoryAPI {
             '*.parquet'
           );
 
-          debug(`Looking for data files at: ${filePath}`);
-          debug(`Context: ${context}, SelfContextPath: ${this.selfContextPath}`);
 
           // Convert ZonedDateTime to ISO string format matching parquet schema
           const fromIso = from.toInstant().toString();
           const toIso = to.toInstant().toString();
           
-          debug(`Time range: ${fromIso} to ${toIso}`);
 
           // Build query with time bucketing - fix type casting
           const query = `
@@ -309,7 +306,6 @@ export class HistoryAPI {
           ORDER BY timestamp
           `;
 
-          debug(`Executing query for path ${pathSpec.path}: ${query}`);
           const duckDB = await DuckDBInstance.create();
           const connection = await duckDB.connect();
 
@@ -346,9 +342,6 @@ export class HistoryAPI {
             );
 
             allData[pathSpec.path] = pathData;
-            debug(
-              `Retrieved ${pathData.length} data points for ${pathSpec.path}`
-            );
           } finally {
             connection.disconnectSync();
           }

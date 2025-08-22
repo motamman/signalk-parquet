@@ -287,7 +287,6 @@ export function registerApiRoutes(
           });
         }
 
-        app.debug(`Executing query: ${processedQuery}`);
 
         const instance = await DuckDBInstance.create();
         const connection = await instance.connect();
