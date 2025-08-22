@@ -179,7 +179,7 @@ export default function (app: ServerAPI): SignalKPlugin {
 
     // Initialize historical streaming service
     try {
-      state.historicalStreamingService = new HistoricalStreamingService(app);
+      state.historicalStreamingService = new HistoricalStreamingService(app, state.currentConfig.outputDirectory);
       app.debug('Historical streaming service initialized successfully');
     } catch (error) {
       app.error(`Failed to initialize historical streaming service: ${error}`);

@@ -7,11 +7,12 @@ export class HistoricalStreamingService {
   private activeSubscriptions = new Map<string, any>();
   private historyAPI: HistoryAPI;
 
-  constructor(app: ServerAPI) {
+  constructor(app: ServerAPI, dataDir?: string) {
     this.app = app;
-    // Initialize HistoryAPI - we'll get the data directory from the app
-    const dataDir = app.getDataDirPath();
-    this.historyAPI = new HistoryAPI(app.selfId, dataDir);
+    // Initialize HistoryAPI - use provided data directory or default
+    const actualDataDir = dataDir || `${app.getDataDirPath()}/signalk-parquet`;
+    this.app.debug(`Historical streaming using data directory: ${actualDataDir}`);
+    this.historyAPI = new HistoryAPI(app.selfId, actualDataDir);
     this.setupSubscriptionInterceptor();
   }
 
