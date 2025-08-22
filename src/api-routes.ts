@@ -989,6 +989,25 @@ export function registerApiRoutes(
         return;
       }
 
+      // Validate aggregation method if provided
+      const validAggregationMethods = ['average', 'min', 'max', 'first', 'last', 'mid', 'middle_index'];
+      if (streamConfig.aggregateMethod && !validAggregationMethods.includes(streamConfig.aggregateMethod)) {
+        res.status(400).json({
+          success: false,
+          error: `Invalid aggregation method. Valid options: ${validAggregationMethods.join(', ')}`
+        });
+        return;
+      }
+
+      // Validate window size if provided
+      if (streamConfig.windowSize && (typeof streamConfig.windowSize !== 'number' || streamConfig.windowSize < 1 || streamConfig.windowSize > 1000)) {
+        res.status(400).json({
+          success: false,
+          error: 'Window size must be a number between 1 and 1000'
+        });
+        return;
+      }
+
       const stream = state.historicalStreamingService.createStream(streamConfig);
       res.json({
         success: true,

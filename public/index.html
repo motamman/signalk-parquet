@@ -595,6 +595,36 @@
                         </div>
                         
                         <div class="form-group">
+                            <label for="streamAggregateMethod">Statistical Function:</label>
+                            <select id="streamAggregateMethod">
+                                <option value="average" selected>Average - arithmetic mean of values</option>
+                                <option value="min">Minimum - lowest value in time window</option>
+                                <option value="max">Maximum - highest value in time window</option>
+                                <option value="first">First - earliest value in time window</option>
+                                <option value="last">Last - most recent value in time window</option>
+                                <option value="mid">Median - middle value when sorted</option>
+                                <option value="middle_index">Middle Index - middle value by position</option>
+                            </select>
+                            <small style="color: #666; display: block; margin-top: 5px;">
+                                Statistical function applied to data within each time window
+                            </small>
+                        </div>
+                        
+                        <div class="form-group">
+                            <label for="streamWindowSize">Rolling Window Size:</label>
+                            <select id="streamWindowSize">
+                                <option value="5">5 data points</option>
+                                <option value="10" selected>10 data points</option>
+                                <option value="20">20 data points</option>
+                                <option value="50">50 data points</option>
+                                <option value="100">100 data points</option>
+                            </select>
+                            <small style="color: #666; display: block; margin-top: 5px;">
+                                Number of recent values used for real-time statistical calculations
+                            </small>
+                        </div>
+                        
+                        <div class="form-group">
                             <label for="streamAutoStart">Auto-start stream:</label>
                             <input type="checkbox" id="streamAutoStart" checked>
                             <small style="color: #666; display: block; margin-top: 5px;">
@@ -624,16 +654,27 @@
                     <!-- Live Data Display -->
                     <div style="margin-top: 30px; padding-top: 20px; border-top: 1px solid #ddd;">
                         <h3>📡 Live Data Stream</h3>
-                        <p style="margin-bottom: 15px;">Real-time data from active streams (newest first, max 100 entries):</p>
+                        <p style="margin-bottom: 15px;">Real-time time-bucketed statistical streaming data (newest first, max 100 entries):</p>
+                        
+                        <!-- Data Interpretation Guide -->
+                        <div style="background: #f0f8ff; padding: 15px; border-radius: 5px; margin-bottom: 15px; font-size: 13px;">
+                            <strong>📊 How to Read This Data:</strong><br/>
+                            • <strong>📊 INITIAL</strong>: Full time window data (first load with many buckets)<br/>
+                            • <strong>📈 INCREMENTAL</strong>: New data points since last update (sliding window - fewer buckets)<br/>
+                            • <strong>Statistical Method</strong>: MAX, AVG, MIN, FIRST, LAST, MID applied to each time bucket<br/>
+                            • <strong>Buckets</strong>: Number of time intervals processed (e.g., 30-second time buckets)<br/>
+                            • <strong>Value</strong>: Result of statistical calculation for that time bucket<br/>
+                            • <strong>Time</strong>: Timestamp of the time bucket (not delivery time)
+                        </div>
                         
                         <div style="max-height: 400px; overflow-y: auto; border: 1px solid #ddd; border-radius: 5px;">
                             <table id="liveDataTable" style="width: 100%; border-collapse: collapse; font-size: 12px;">
                                 <thead style="position: sticky; top: 0; background: #f8f9fa; z-index: 1;">
                                     <tr>
-                                        <th style="padding: 8px; border-bottom: 1px solid #ddd; text-align: left;">Time</th>
-                                        <th style="padding: 8px; border-bottom: 1px solid #ddd; text-align: left;">Stream</th>
+                                        <th style="padding: 8px; border-bottom: 1px solid #ddd; text-align: left;">Bucket Time</th>
+                                        <th style="padding: 8px; border-bottom: 1px solid #ddd; text-align: left;">Stream Type & Statistical Method</th>
                                         <th style="padding: 8px; border-bottom: 1px solid #ddd; text-align: left;">Path</th>
-                                        <th style="padding: 8px; border-bottom: 1px solid #ddd; text-align: left;">Value</th>
+                                        <th style="padding: 8px; border-bottom: 1px solid #ddd; text-align: left;">Statistical Value</th>
                                     </tr>
                                 </thead>
                                 <tbody id="liveDataBody">
@@ -647,9 +688,16 @@
                         </div>
 
                         <div style="margin-top: 10px; font-size: 11px; color: #666;">
-                            <span id="liveDataCount">0</span> entries • 
+                            <span id="liveDataCount">0</span> time-bucketed entries • 
                             <button onclick="clearLiveData()" style="font-size: 11px; padding: 2px 8px;">🗑️ Clear</button>
                             <button onclick="toggleLiveDataPause()" id="pauseDataBtn" style="font-size: 11px; padding: 2px 8px; margin-left: 5px;">⏸️ Pause</button>
+                            <button onclick="showDataSummary()" style="font-size: 11px; padding: 2px 8px; margin-left: 5px;">📊 Summary</button>
+                        </div>
+                        
+                        <!-- Data Summary Panel -->
+                        <div id="dataSummaryPanel" style="display: none; margin-top: 15px; padding: 15px; background: #f8f9fa; border-radius: 5px;">
+                            <h4>📊 Data Summary & Trends</h4>
+                            <div id="dataSummaryContent"></div>
                         </div>
                     </div>
                 </div>
@@ -1525,7 +1573,7 @@
             }
 
             let html = '<div class="table-container"><table><thead><tr>';
-            html += '<th>Name</th><th>Path</th><th>Status</th><th>Time Range</th><th>Resolution</th><th>Rate</th><th>Progress</th><th>Actions</th>';
+            html += '<th>Name</th><th>Path</th><th>Status</th><th>Time Range</th><th>Resolution</th><th>Rate</th><th>Statistics</th><th>Progress</th><th>Actions</th>';
             html += '</tr></thead><tbody>';
 
             streams.forEach((stream, index) => {
@@ -1536,6 +1584,10 @@
                 const status = isRunning ? '🟢 Running' : isPaused ? '⏸️ Paused' : '🔴 Stopped';
                 const progress = stream.dataPointsStreamed ? `${stream.dataPointsStreamed} points` : '-';
                 const timeRange = `${stream.timeRange || '1h'} (${stream.startTime || 'N/A'} - ${stream.endTime || 'N/A'})`;
+                const statistics = `${stream.aggregateMethod || 'average'} method`;
+                const bucketInfo = stream.totalBuckets ? `<br/>${stream.totalBuckets} time buckets` : '';
+                const streamMode = stream.isIncremental ? '📈 Incremental' : '📊 Initial';
+                const lastTimestamp = stream.lastTimestamp ? `<br/><small>Last: ${new Date(stream.lastTimestamp).toLocaleTimeString()}</small>` : '';
                 
                 html += `<tr>
                     <td><strong>${stream.name}</strong></td>
@@ -1544,6 +1596,7 @@
                     <td>${timeRange}</td>
                     <td>${stream.resolution || 30000}ms</td>
                     <td>${stream.rate || 5000}ms</td>
+                    <td><small>${statistics}${bucketInfo}<br/>${streamMode}${lastTimestamp}</small></td>
                     <td>${progress}</td>
                     <td>
                         ${isStopped ? 
@@ -1638,6 +1691,8 @@
                 timeRange: document.getElementById('streamTimeRange').value,
                 resolution: parseInt(document.getElementById('streamResolution').value),
                 rate: parseInt(document.getElementById('streamRate').value),
+                aggregateMethod: document.getElementById('streamAggregateMethod').value,
+                windowSize: parseInt(document.getElementById('streamWindowSize').value),
                 autoStart: document.getElementById('streamAutoStart').checked
             };
 
@@ -1824,44 +1879,226 @@
             btn.style.background = liveDataPaused ? '#28a745' : '#ffc107';
         }
 
-        // Simulate live data for active streams (polling approach since we don't have WebSocket client setup)
+        function showDataSummary() {
+            const panel = document.getElementById('dataSummaryPanel');
+            const content = document.getElementById('dataSummaryContent');
+            
+            if (panel.style.display === 'none') {
+                // Analyze the data
+                const pathStats = {};
+                const streamTypes = {initial: 0, incremental: 0};
+                let totalBuckets = 0;
+                
+                liveDataEntries.forEach(entry => {
+                    // Extract path and value
+                    const path = entry.path;
+                    const value = parseFloat(entry.value);
+                    const streamName = entry.streamName;
+                    
+                    if (!isNaN(value)) {
+                        if (!pathStats[path]) {
+                            pathStats[path] = {
+                                values: [],
+                                methods: new Set(),
+                                bucketCounts: []
+                            };
+                        }
+                        pathStats[path].values.push(value);
+                        
+                        // Extract method and bucket count from stream name
+                        const methodMatch = streamName.match(/(INITIAL|INCREMENTAL): (\w+)/);
+                        if (methodMatch) {
+                            const [, type, method] = methodMatch;
+                            pathStats[path].methods.add(method);
+                            streamTypes[type.toLowerCase()]++;
+                        }
+                        
+                        // Extract bucket count
+                        const bucketMatch = streamName.match(/\((\d+) buckets\)/);
+                        if (bucketMatch) {
+                            const bucketCount = parseInt(bucketMatch[1]);
+                            pathStats[path].bucketCounts.push(bucketCount);
+                            totalBuckets += bucketCount;
+                        }
+                    }
+                });
+                
+                let summaryHtml = '<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">';
+                
+                // Stream Statistics
+                summaryHtml += '<div><strong>📈 Stream Activity:</strong><br/>';
+                summaryHtml += `Initial Loads: ${streamTypes.initial}<br/>`;
+                summaryHtml += `Incremental Updates: ${streamTypes.incremental}<br/>`;
+                summaryHtml += `Total Time Buckets: ${totalBuckets}</div>`;
+                
+                // Path Analysis
+                summaryHtml += '<div><strong>🎯 Path Analysis:</strong><br/>';
+                Object.entries(pathStats).forEach(([path, stats]) => {
+                    const values = stats.values;
+                    const min = Math.min(...values).toFixed(3);
+                    const max = Math.max(...values).toFixed(3);
+                    const avg = (values.reduce((a, b) => a + b, 0) / values.length).toFixed(3);
+                    const latest = values[0]?.toFixed(3) || 'N/A';
+                    const methods = Array.from(stats.methods).join(', ');
+                    const avgBuckets = stats.bucketCounts.length > 0 ? 
+                        (stats.bucketCounts.reduce((a, b) => a + b, 0) / stats.bucketCounts.length).toFixed(0) : 'N/A';
+                    
+                    summaryHtml += `<strong>${path}:</strong><br/>`;
+                    summaryHtml += `• Methods: ${methods}<br/>`;
+                    summaryHtml += `• Range: ${min} - ${max}<br/>`;
+                    summaryHtml += `• Average: ${avg}<br/>`;
+                    summaryHtml += `• Latest: ${latest}<br/>`;
+                    summaryHtml += `• Avg Buckets: ${avgBuckets}<br/><br/>`;
+                });
+                summaryHtml += '</div></div>';
+                
+                // Data Trends
+                summaryHtml += '<div style="margin-top: 15px;"><strong>📊 Data Interpretation:</strong><br/>';
+                summaryHtml += 'This shows your time-bucketed statistical streaming in action!<br/>';
+                summaryHtml += '• Each row represents a statistical calculation (MAX, AVG, etc.) for a time bucket<br/>';
+                summaryHtml += '• INITIAL = First load with full time window<br/>';
+                summaryHtml += '• INCREMENTAL = New buckets from sliding window updates<br/>';
+                summaryHtml += '• Values change as new data arrives and statistics are recalculated</div>';
+                
+                content.innerHTML = summaryHtml;
+                panel.style.display = 'block';
+            } else {
+                panel.style.display = 'none';
+            }
+        }
+
+        // WebSocket connection for real-time streaming data
+        let ws = null;
+        let wsReconnectAttempts = 0;
+        const maxReconnectAttempts = 5;
+
+        function connectWebSocket() {
+            // For now, use polling mode since we need a dedicated WebSocket server
+            console.log('🔄 WebSocket not yet implemented, using enhanced polling mode');
+            startLiveDataPolling();
+        }
+
+        function handleWebSocketMessage(message) {
+            // Handle time-series data from our streaming service
+            if (message.type === 'timeSeriesData') {
+                handleTimeSeriesData(message);
+            }
+            // Handle regular SignalK delta messages
+            else if (message.updates && Array.isArray(message.updates)) {
+                message.updates.forEach(update => {
+                    if (update.values && Array.isArray(update.values)) {
+                        update.values.forEach(valueUpdate => {
+                            addLiveDataEntry(
+                                'signalk',
+                                'SignalK Stream',
+                                valueUpdate.path,
+                                valueUpdate.value,
+                                update.timestamp || new Date().toISOString()
+                            );
+                        });
+                    }
+                });
+            }
+        }
+
+        function handleTimeSeriesData(message) {
+            const { streamId, metadata, data } = message;
+            
+            console.log(`📊 Received ${metadata.totalPoints} ${metadata.isIncremental ? 'incremental' : 'initial'} data points for stream ${streamId}`);
+            
+            // Add each time-bucketed data point to the live display
+            data.forEach((point, index) => {
+                const displayValue = typeof point.value === 'object' ? 
+                    JSON.stringify(point.value) : 
+                    (typeof point.value === 'number' ? point.value.toFixed(3) : point.value);
+                
+                const displayName = `${metadata.aggregateMethod.toUpperCase()}: ${metadata.path}`;
+                const bucketInfo = `[${point.bucketIndex}/${metadata.totalPoints}]`;
+                
+                addLiveDataEntry(
+                    streamId,
+                    `${displayName} ${bucketInfo}`,
+                    metadata.path,
+                    displayValue,
+                    point.timestamp
+                );
+            });
+        }
+
+        // Enhanced polling function that shows real time-bucketed streaming data
         function startLiveDataPolling() {
+            console.log('🔄 Starting enhanced polling mode for time-series data...');
+            
+            let pollCount = 0;
+            const maxDisplayEntries = 50; // Limit display to avoid overwhelming
+            
             setInterval(async () => {
                 if (liveDataPaused) return;
 
-                // Get active streams and simulate data updates
-                const runningStreams = activeStreams.filter(stream => stream.status === 'running');
-                
-                runningStreams.forEach(stream => {
-                    // Generate simulated data based on the stream's path
-                    let value;
-                    switch (stream.path) {
-                        case 'navigation.position':
-                            value = {
-                                latitude: 41.329265 + (Math.random() - 0.5) * 0.001,
-                                longitude: -72.08793666666666 + (Math.random() - 0.5) * 0.001
-                            };
-                            break;
-                        case 'environment.wind.speedApparent':
-                            value = Math.random() * 15 + 5; // 5-20 m/s
-                            break;
-                        case 'environment.wind.angleApparent':
-                            value = (Math.random() - 0.5) * Math.PI; // -π/2 to π/2
-                            break;
-                        default:
-                            value = Math.random() * 100;
-                            break;
-                    }
+                pollCount++;
+                console.log(`📊 Poll #${pollCount}: Checking for streaming data...`);
 
-                    addLiveDataEntry(stream.id, stream.name, stream.path, value);
-                });
-            }, 2000); // Update every 2 seconds for demo purposes
+                // Get current active streams and their detailed status
+                try {
+                    const response = await fetch('/plugins/signalk-parquet/api/streams');
+                    const data = await response.json();
+                    
+                    if (data.success && data.streams) {
+                        const runningStreams = data.streams.filter(s => s.status === 'running');
+                        
+                        if (runningStreams.length === 0) {
+                            console.log('📊 No running streams found');
+                            return;
+                        }
+
+                        runningStreams.forEach((stream, index) => {
+                            console.log(`📊 Stream ${index + 1}: ${stream.name} (${stream.path})`);
+                            console.log(`   - Status: ${stream.status}`);
+                            console.log(`   - Data Points: ${stream.dataPointsStreamed || 0}`);
+                            console.log(`   - Total Buckets: ${stream.totalBuckets || 0}`);
+                            console.log(`   - Last Value: ${stream.lastValue}`);
+                            console.log(`   - Last Timestamp: ${stream.lastTimestamp}`);
+                            console.log(`   - Mode: ${stream.isIncremental ? 'Incremental' : 'Initial'}`);
+                            
+                            // Show streaming activity in the live display
+                            if (stream.lastValue !== undefined) {
+                                const displayValue = typeof stream.lastValue === 'object' ? 
+                                    JSON.stringify(stream.lastValue) : 
+                                    (typeof stream.lastValue === 'number' ? stream.lastValue.toFixed(3) : stream.lastValue);
+                                
+                                const streamMode = stream.isIncremental ? '📈 INCREMENTAL' : '📊 INITIAL';
+                                const bucketCount = stream.totalBuckets ? ` (${stream.totalBuckets} buckets)` : '';
+                                const displayName = `${streamMode}: ${stream.aggregateMethod?.toUpperCase() || 'STREAM'} - ${stream.path}${bucketCount}`;
+                                
+                                addLiveDataEntry(
+                                    stream.id, 
+                                    displayName,
+                                    stream.path, 
+                                    displayValue,
+                                    stream.lastTimestamp || new Date().toISOString()
+                                );
+                            }
+                        });
+                        
+                        // Show summary in console
+                        const totalPoints = runningStreams.reduce((sum, s) => sum + (s.dataPointsStreamed || 0), 0);
+                        const totalBuckets = runningStreams.reduce((sum, s) => sum + (s.totalBuckets || 0), 0);
+                        console.log(`📊 Streaming Summary: ${runningStreams.length} streams, ${totalPoints} points, ${totalBuckets} buckets`);
+                        
+                    } else {
+                        console.log('📊 No stream data available');
+                    }
+                } catch (error) {
+                    console.error('📊 Polling error:', error);
+                }
+            }, 2000); // Check every 2 seconds for faster updates
         }
 
-        // Initialize live data polling when page loads
+        // Initialize WebSocket connection when page loads  
         setTimeout(() => {
-            startLiveDataPolling();
-        }, 2000);
+            console.log('🚀 Initializing live data streaming...');
+            connectWebSocket();
+        }, 1000);
 
     </script>
 </body>

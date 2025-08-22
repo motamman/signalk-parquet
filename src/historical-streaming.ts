@@ -1,5 +1,6 @@
 import { ServerAPI, Context, Path, Timestamp, SourceRef } from '@signalk/server-api';
 import { HistoryAPI } from './HistoryAPI';
+import { AggregateMethod } from './HistoryAPI-types';
 import { ZonedDateTime, ZoneOffset } from '@js-joda/core';
 import * as WebSocket from 'ws';
 
@@ -9,6 +10,8 @@ export class HistoricalStreamingService {
   private historyAPI: HistoryAPI;
   private wsServer?: WebSocket.Server;
   private connectedClients = new Set<WebSocket>();
+  private streamBuffers = new Map<string, number[]>();
+  private streamLastTimestamps = new Map<string, string>();
 
   constructor(app: ServerAPI, dataDir?: string) {
     this.app = app;
@@ -275,6 +278,10 @@ export class HistoricalStreamingService {
     });
     this.streamIntervals.clear();
     
+    // Clear stream buffers and timestamps
+    this.streamBuffers.clear();
+    this.streamLastTimestamps.clear();
+    
     // Close all WebSocket connections
     this.connectedClients.forEach(client => {
       if (client.readyState === WebSocket.OPEN) {
@@ -345,10 +352,13 @@ export class HistoricalStreamingService {
       rate: streamConfig.rate || 5000,
       resolution: streamConfig.resolution || 30000,
       timeRange: streamConfig.timeRange || '1h',
+      aggregateMethod: (streamConfig.aggregateMethod || 'average') as AggregateMethod,
+      windowSize: streamConfig.windowSize || 10,
       ...streamConfig
     };
     this.streams.set(streamId, stream);
-    this.app.debug(`Created stream: ${streamId} for path: ${streamConfig.path}`);
+    this.streamBuffers.set(streamId, []);
+    this.app.debug(`Created stream: ${streamId} for path: ${streamConfig.path} with aggregation: ${stream.aggregateMethod}`);
     return stream;
   }
 
@@ -404,18 +414,45 @@ export class HistoricalStreamingService {
       if (stream.status !== 'running') return;
 
       try {
-        // Get historical data for this path
-        const historicalData = await this.getHistoricalDataPoint(stream.path, stream.resolution);
+        // Get historical data window with proper time bucketing and statistics
+        const historicalDataWindow = await this.getHistoricalDataWindow(
+          streamId,
+          stream.path, 
+          stream.resolution, 
+          stream.aggregateMethod || ('average' as AggregateMethod),
+          stream.timeRange || '1h'
+        );
         
-        if (historicalData) {
-          // Send to WebSocket clients
-          this.broadcastToClients(streamId, historicalData);
+        if (historicalDataWindow && historicalDataWindow.dataPoints && historicalDataWindow.dataPoints.length > 0) {
+          // Send all bucketed data points to WebSocket clients
+          this.broadcastTimeSeriesData(streamId, historicalDataWindow);
           
           // Update stream statistics
-          stream.dataPointsStreamed = (stream.dataPointsStreamed || 0) + 1;
+          const dataPointCount = historicalDataWindow.dataPoints.length;
+          stream.dataPointsStreamed = (stream.dataPointsStreamed || 0) + dataPointCount;
           stream.lastDataPoint = new Date().toISOString();
           stream.connectedClients = this.connectedClients.size;
+          stream.totalBuckets = (stream.totalBuckets || 0) + dataPointCount;
+          stream.lastTimeWindow = `${historicalDataWindow.from} to ${historicalDataWindow.to}`;
+          stream.isIncremental = historicalDataWindow.isIncremental;
+          
+          // Get the most recent value for display
+          const latestPoint = historicalDataWindow.dataPoints[historicalDataWindow.dataPoints.length - 1];
+          stream.lastValue = latestPoint.value;
+          stream.lastTimestamp = latestPoint.timestamp;
+          
           this.streams.set(streamId, stream);
+          
+          const mode = historicalDataWindow.isIncremental ? 'new incremental' : 'initial';
+          this.app.debug(`📊 Streamed ${dataPointCount} ${mode} time-bucketed data points for stream ${streamId}`);
+        } else {
+          // No new data available - this is normal for incremental streaming
+          const lastTimestamp = this.streamLastTimestamps.get(streamId);
+          if (lastTimestamp) {
+            this.app.debug(`📊 No new data since ${lastTimestamp} for stream ${streamId}`);
+          } else {
+            this.app.debug(`⚠️ No data retrieved for stream ${streamId}`);
+          }
         }
       } catch (error) {
         this.app.error(`Error in continuous streaming for ${streamId}: ${error}`);
@@ -441,16 +478,74 @@ export class HistoricalStreamingService {
     });
   }
 
-  private async getHistoricalDataPoint(path: string, resolution: number): Promise<any> {
+  private broadcastTimeSeriesData(streamId: string, timeSeriesData: any) {
+    const message = JSON.stringify({
+      type: 'timeSeriesData',
+      streamId: streamId,
+      timestamp: new Date().toISOString(),
+      metadata: {
+        path: timeSeriesData.path,
+        aggregateMethod: timeSeriesData.aggregateMethod,
+        resolution: timeSeriesData.resolution,
+        timeRange: timeSeriesData.timeRange,
+        totalPoints: timeSeriesData.totalPoints,
+        isIncremental: timeSeriesData.isIncremental || false,
+        from: timeSeriesData.from,
+        to: timeSeriesData.to
+      },
+      data: timeSeriesData.dataPoints.map((point: any) => ({
+        timestamp: point.timestamp,
+        value: point.value,
+        bucketIndex: point.bucketIndex
+      }))
+    });
+
+    this.connectedClients.forEach(client => {
+      if (client.readyState === WebSocket.OPEN) {
+        client.send(message);
+      }
+    });
+    
+    const mode = timeSeriesData.isIncremental ? 'incremental' : 'initial';
+    this.app.debug(`📡 Sent ${timeSeriesData.totalPoints} ${mode} time-bucketed points to ${this.connectedClients.size} WebSocket clients for stream ${streamId}`);
+  }
+
+  private async getHistoricalDataWindow(streamId: string, path: string, resolution: number, aggregateMethod: AggregateMethod, timeRange: string): Promise<any> {
     try {
-      // Get recent historical data from the last minute
+      const stream = this.streams.get(streamId);
+      if (!stream) {
+        throw new Error(`Stream ${streamId} not found`);
+      }
+
       const to = ZonedDateTime.now(ZoneOffset.UTC);
-      const from = to.minusMinutes(1);
+      const lastTimestamp = this.streamLastTimestamps.get(streamId);
       
-      // Create a mock request for HistoryAPI
+      let from: ZonedDateTime;
+      let isIncremental = false;
+      
+      if (lastTimestamp) {
+        // Use sliding window: get new data since last timestamp
+        from = ZonedDateTime.parse(lastTimestamp).plusSeconds(1); // Start 1 second after last data
+        isIncremental = true;
+        this.app.debug(`📊 Getting incremental data for ${path} from ${from.toString()} to ${to.toString()}`);
+      } else {
+        // Initial load: get full time window
+        const timeRangeDuration = this.parseTimeRange(timeRange);
+        from = to.minusNanos(timeRangeDuration * 1000000); // Convert ms to nanoseconds
+        this.app.debug(`📊 Getting initial data window for ${path} from ${from.toString()} to ${to.toString()}`);
+      }
+
+      // Skip if time window is too small (less than resolution)
+      const timeDiffMs = to.toInstant().toEpochMilli() - from.toInstant().toEpochMilli();
+      if (timeDiffMs < resolution) {
+        this.app.debug(`⏭️ Skipping query - time window (${timeDiffMs}ms) smaller than resolution (${resolution}ms)`);
+        return null;
+      }
+      
+      // Create a mock request for HistoryAPI with aggregation method
       const mockReq = {
         query: {
-          paths: path,
+          paths: `${path}:${aggregateMethod}`,
           resolution: resolution.toString()
         }
       } as any;
@@ -459,23 +554,71 @@ export class HistoricalStreamingService {
         const mockRes = {
           json: (data: any) => {
             if (data.data && data.data.length > 0) {
-              // Return the most recent data point
-              const latestPoint = data.data[data.data.length - 1];
+              this.app.debug(`📊 Received ${data.data.length} ${isIncremental ? 'new' : 'initial'} time-bucketed data points for ${path}`);
+              
+              // Process all time-bucketed data points
+              const processedData = data.data.map((dataPoint: any, index: number) => {
+                const [timestamp, value] = dataPoint;
+                return {
+                  path: path,
+                  timestamp: timestamp,
+                  value: value,
+                  bucketIndex: index,
+                  aggregateMethod: aggregateMethod,
+                  resolution: resolution
+                };
+              });
+
+              // Update last timestamp for sliding window
+              const lastDataPoint = processedData[processedData.length - 1];
+              this.streamLastTimestamps.set(streamId, lastDataPoint.timestamp);
+              
+              // Return all processed data points
               resolve({
                 path: path,
-                timestamp: latestPoint[0],
-                value: latestPoint[1]
+                aggregateMethod: aggregateMethod,
+                resolution: resolution,
+                timeRange: timeRange,
+                dataPoints: processedData,
+                totalPoints: processedData.length,
+                isIncremental: isIncremental,
+                from: from.toString(),
+                to: to.toString()
+              });
+              
+            } else if (!isIncremental) {
+              // Generate sample time series only for initial load if no historical data available
+              this.app.debug(`⚠️ No historical data found for ${path}, generating sample time series`);
+              const sampleData = this.generateSampleTimeSeries(path, from, to, resolution);
+              
+              // Set last timestamp for sample data
+              if (sampleData.length > 0) {
+                this.streamLastTimestamps.set(streamId, sampleData[sampleData.length - 1].timestamp);
+              }
+              
+              resolve({
+                path: path,
+                aggregateMethod: aggregateMethod,
+                resolution: resolution,
+                timeRange: timeRange,
+                dataPoints: sampleData,
+                totalPoints: sampleData.length,
+                isIncremental: false,
+                from: from.toString(),
+                to: to.toString()
               });
             } else {
-              // Generate sample data if no historical data available
-              resolve({
-                path: path,
-                timestamp: new Date().toISOString(),
-                value: this.generateSampleData(path)
-              });
+              // No new data in incremental mode
+              this.app.debug(`📊 No new data available for ${path}`);
+              resolve(null);
             }
           },
-          status: () => ({ json: () => resolve(null) })
+          status: () => ({ 
+            json: (error: any) => {
+              this.app.error(`❌ Historical data query failed: ${JSON.stringify(error)}`);
+              resolve(null);
+            }
+          })
         } as any;
 
         this.historyAPI.getValues(
@@ -489,28 +632,54 @@ export class HistoricalStreamingService {
         );
       });
     } catch (error) {
-      this.app.debug(`Error getting historical data for ${path}: ${error}`);
-      return {
-        path: path,
-        timestamp: new Date().toISOString(),
-        value: this.generateSampleData(path)
-      };
+      this.app.debug(`Error getting historical data window for ${path}: ${error}`);
+      return null;
     }
   }
 
-  private generateSampleData(path: string): any {
+
+  private generateSampleTimeSeries(path: string, from: ZonedDateTime, to: ZonedDateTime, resolution: number): any[] {
+    const dataPoints = [];
+    const durationMs = to.toInstant().toEpochMilli() - from.toInstant().toEpochMilli();
+    const numPoints = Math.floor(durationMs / resolution);
+    
+    this.app.debug(`📊 Generating ${numPoints} sample data points for ${path} over ${durationMs}ms`);
+    
+    for (let i = 0; i < numPoints; i++) {
+      const timestamp = from.plusSeconds(Math.floor((i * resolution) / 1000));
+      const value = this.generateSampleValue(path, i, numPoints);
+      
+      dataPoints.push({
+        path: path,
+        timestamp: timestamp.toString(),
+        value: value,
+        bucketIndex: i,
+        aggregateMethod: 'sample',
+        resolution: resolution
+      });
+    }
+    
+    return dataPoints;
+  }
+
+  private generateSampleValue(path: string, index: number, total: number): any {
+    const progress = index / total;
+    
     switch (path) {
       case 'navigation.position':
         return {
-          latitude: 41.329265 + (Math.random() - 0.5) * 0.001,
-          longitude: -72.08793666666666 + (Math.random() - 0.5) * 0.001
+          latitude: 41.329265 + Math.sin(progress * Math.PI * 4) * 0.001,
+          longitude: -72.08793666666666 + Math.cos(progress * Math.PI * 4) * 0.001
         };
       case 'environment.wind.speedApparent':
-        return Math.random() * 15 + 5; // 5-20 m/s
+        return 10 + Math.sin(progress * Math.PI * 6) * 5 + Math.random() * 2; // 5-17 m/s with variation
+      case 'navigation.speedOverGround':
+        return 5 + Math.sin(progress * Math.PI * 8) * 2 + Math.random(); // 3-8 m/s with variation
       default:
-        return Math.random() * 100;
+        return 50 + Math.sin(progress * Math.PI * 10) * 25 + Math.random() * 10; // 15-85 with variation
     }
   }
+
 
   public pauseStream(streamId: string) {
     const stream = this.streams.get(streamId);
@@ -577,7 +746,14 @@ export class HistoricalStreamingService {
       return { success: false, error: 'Stream not found' };
     }
     
+    // Stop the stream first
+    this.stopStream(streamId);
+    
+    // Clean up stream data
     this.streams.delete(streamId);
+    this.streamBuffers.delete(streamId);
+    this.streamLastTimestamps.delete(streamId);
+    
     this.app.debug(`Deleted stream: ${streamId}`);
     return { success: true };
   }
@@ -595,5 +771,16 @@ export class HistoricalStreamingService {
       connectedClients: this.connectedClients.size,
       streams: streams
     };
+  }
+
+  // WebSocket client management methods
+  public addWebSocketClient(ws: WebSocket) {
+    this.connectedClients.add(ws);
+    this.app.debug(`📡 Added WebSocket client. Total clients: ${this.connectedClients.size}`);
+  }
+
+  public removeWebSocketClient(ws: WebSocket) {
+    this.connectedClients.delete(ws);
+    this.app.debug(`📡 Removed WebSocket client. Total clients: ${this.connectedClients.size}`);
   }
 }
