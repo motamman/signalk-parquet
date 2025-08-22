@@ -16,7 +16,6 @@ export function getAvailablePaths(dataDir: string, app: ServerAPI): PathInfo[] {
     .replace(/:/g, '_');
   const vesselsDir = path.join(dataDir, selfContextPath);
 
-
   if (!fs.existsSync(vesselsDir)) {
     return paths;
   }
@@ -47,7 +46,6 @@ export function getAvailablePaths(dataDir: string, app: ServerAPI): PathInfo[] {
               directory: fullPath,
               fileCount: fileCount,
             });
-          } else {
           }
 
           walkPaths(fullPath, newRelativePath);
