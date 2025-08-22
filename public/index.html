@@ -1581,7 +1581,7 @@
             }
 
             let html = '<div class="table-container"><table><thead><tr>';
-            html += '<th>Name</th><th>Path</th><th>Status</th><th>Time Range</th><th>Resolution</th><th>Rate</th><th>Statistics</th><th>Progress</th><th>Actions</th>';
+            html += '<th>Name</th><th>Path</th><th>Status</th><th>Time Range</th><th>Resolution</th><th>Rate</th><th>Statistics</th><th>Progress</th><th>Stream URL</th><th>Actions</th>';
             html += '</tr></thead><tbody>';
 
             streams.forEach((stream, index) => {
@@ -1596,6 +1596,13 @@
                 const streamMode = stream.isIncremental ? '📈' : '📊';
                 const lastTimestamp = stream.lastTimestamp ? new Date(stream.lastTimestamp).toLocaleTimeString() : 'Never';
                 
+                // Generate stream URLs
+                const streamName = stream.name.replace(/[^a-zA-Z0-9_]/g, '_').toLowerCase();
+                const aggregateMethod = stream.aggregateMethod || 'average';
+                const streamPath = `streaming.${streamName}.${aggregateMethod}`;
+                const wsUrl = `ws://${window.location.host}/signalk/v1/stream`;
+                const restUrl = `http://${window.location.host}/signalk/v1/api/vessels/self/${streamPath}`;
+                
                 html += `<tr>
                     <td><strong>${stream.name}</strong></td>
                     <td><code>${stream.path}</code></td>
@@ -1605,6 +1612,16 @@
                     <td>${stream.rate || 5000}ms</td>
                     <td><small>${statistics} ${streamMode}<br/>Last: ${lastTimestamp}</small></td>
                     <td>${progress}</td>
+                    <td>
+                        ${isRunning ? 
+                            `<div style="font-size: 11px;">
+                                <strong>Path:</strong> <code style="font-size: 10px;">${streamPath}</code><br/>
+                                <strong>REST:</strong> <a href="${restUrl}" target="_blank" style="font-size: 10px; color: #007bff;">API Link</a><br/>
+                                <strong>WS:</strong> <code style="font-size: 10px;">${wsUrl}</code>
+                            </div>` : 
+                            '<small style="color: #666;">Stream not running</small>'
+                        }
+                    </td>
                     <td>
                         ${isStopped ? 
                             `<button onclick="startStream('${stream.id}')" style="padding: 5px 10px; font-size: 12px; background: #28a745;">▶️ Start</button>` : 
