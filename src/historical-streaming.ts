@@ -12,41 +12,50 @@ export class HistoricalStreamingService {
   private setupSubscriptionInterceptor() {
     this.app.debug('Setting up historical data subscription interceptor');
 
-    // Debug: inspect what's available in the app object
-    this.app.debug(`App object keys: ${Object.keys(this.app).join(', ')}`);
-    
-    // Check for different possible WebSocket access points
-    const possiblePaths = [
-      'server.interfaces.ws',
-      'interfaces.ws', 
-      'websocket',
-      'ws',
-      'streamprovider',
-      'streamProvider'
-    ];
-    
-    let wsFound = false;
-    for (const path of possiblePaths) {
-      const value = this.getNestedProperty(this.app, path);
-      if (value) {
-        this.app.debug(`Found potential WebSocket at: ${path}`);
-        this.app.debug(`WebSocket object keys: ${Object.keys(value).join(', ')}`);
-        wsFound = true;
+    // Try to hook into WebSocket data stream
+    const wsInterface = (this.app as any).interfaces?.ws;
+    if (wsInterface && wsInterface.data) {
+      this.app.debug('Found WebSocket interface with data stream, attempting to hook in');
+      
+      try {
+        // Hook into the data stream to catch subscription messages
+        const originalDataEmit = wsInterface.data.emit;
+        wsInterface.data.emit = (event: string, ...args: any[]) => {
+          // Look for subscription-related events
+          if (event === 'message' || event === 'subscription') {
+            this.app.debug(`WebSocket event: ${event}, args: ${JSON.stringify(args)}`);
+            
+            // Check if any of the args contain subscription data
+            args.forEach(arg => {
+              if (this.isSubscriptionMessage(arg)) {
+                this.app.debug(`Found subscription in WebSocket event: ${JSON.stringify(arg)}`);
+                this.handleSubscriptionRequest(arg);
+              }
+            });
+          }
+          
+          // Call original emit
+          return originalDataEmit.apply(wsInterface.data, [event, ...args]);
+        };
+        
+        this.app.debug('Successfully hooked into WebSocket data stream');
+      } catch (error) {
+        this.app.debug(`Error hooking into WebSocket data stream: ${error}`);
       }
     }
-    
-    if (!wsFound) {
-      this.app.debug('No WebSocket interfaces found, using delta handler approach');
-    }
 
-    // For now, use a simple approach - just provide historical data when requested
-    // We'll trigger it manually rather than intercepting subscriptions
-    this.app.debug('Historical streaming service ready for manual triggers');
+    // Also register delta handler as fallback
+    this.app.registerDeltaInputHandler((delta, next) => {
+      if (this.isSubscriptionMessage(delta)) {
+        this.app.debug(`Delta handler caught subscription: ${JSON.stringify(delta)}`);
+        this.handleSubscriptionRequest(delta);
+      }
+      next(delta);
+    });
+
+    this.app.debug('Historical streaming service ready');
   }
   
-  private getNestedProperty(obj: any, path: string): any {
-    return path.split('.').reduce((current, key) => current?.[key], obj);
-  }
 
   private isSubscriptionMessage(delta: any): boolean {
     // Check if this looks like a subscription message
