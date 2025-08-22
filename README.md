@@ -364,6 +364,17 @@ This provides better compression, faster queries, and proper type safety for dat
 | `/api/config/paths` | GET/POST/PUT/DELETE | Manage path configurations |
 | `/api/test-s3` | POST | Test S3 connection |
 | `/api/health` | GET | Health check |
+| **Streaming API Endpoints** | | |
+| `/api/streams` | GET | List all streams (running, paused, stopped) |
+| `/api/streams` | POST | Create a new stream |
+| `/api/streams/:id` | PUT | Update stream configuration |
+| `/api/streams/:id/start` | PUT | Start or restart a stream |
+| `/api/streams/:id/pause` | PUT | Pause/resume a stream |
+| `/api/streams/:id/stop` | PUT | Stop a stream |
+| `/api/streams/:id` | DELETE | Delete a stream permanently |
+| `/api/streams/stats` | GET | Get streaming statistics summary |
+| `/api/streams/:id/data` | GET | Get time-series data for a stream |
+| **SignalK History API** | | |
 | `/signalk/v1/history/values` | GET | SignalK History API - Get historical values |
 | `/signalk/v1/history/contexts` | GET | SignalK History API - Get available contexts |
 | `/signalk/v1/history/paths` | GET | SignalK History API - Get available paths |
@@ -661,6 +672,218 @@ curl "http://localhost:3000/signalk/v1/api/vessels/self/streaming/"
 - ✅ **Rich Metadata** - Complete statistical context included  
 - ✅ **Multi-app Support** - Multiple subscribers supported
 - ✅ **Selective Subscription** - Subscribe to specific streams only
+
+## Streaming API Reference
+
+The plugin provides a comprehensive REST API for managing historical data streams programmatically.
+
+### Stream Management Endpoints
+
+#### List All Streams
+```bash
+GET /plugins/signalk-parquet/api/streams
+```
+Returns all streams with their current status, configuration, and statistics.
+
+**Response:**
+```json
+{
+  "success": true,
+  "streams": [
+    {
+      "id": "stream_1234567890",
+      "name": "Navigation History",
+      "path": "navigation.position",
+      "status": "running",
+      "timeRange": "1h",
+      "startTime": "2025-08-22T10:00:00Z",
+      "endTime": "2025-08-22T11:00:00Z",
+      "resolution": 30000,
+      "rate": 5000,
+      "aggregateMethod": "average",
+      "dataPointsStreamed": 145,
+      "totalBuckets": 120,
+      "isIncremental": true,
+      "lastTimestamp": "2025-08-22T10:45:00Z"
+    }
+  ]
+}
+```
+
+#### Create New Stream
+```bash
+POST /plugins/signalk-parquet/api/streams
+Content-Type: application/json
+
+{
+  "name": "Wind Data Stream",
+  "path": "environment.wind.speedApparent",
+  "timeRange": "2h",
+  "resolution": 60000,
+  "rate": 10000,
+  "aggregateMethod": "average",
+  "autoStart": true
+}
+```
+
+**Parameters:**
+- `name` - Display name for the stream
+- `path` - SignalK path to stream data from
+- `timeRange` - Time window (e.g., "1h", "30m", "2d")
+- `resolution` - Time bucket size in milliseconds
+- `rate` - Polling/update rate in milliseconds
+- `aggregateMethod` - Statistical method: `average`, `min`, `max`, `first`, `last`, `mid`, `middle_index`
+- `autoStart` - Whether to start the stream immediately (optional)
+
+#### Update Stream Configuration
+```bash
+PUT /plugins/signalk-parquet/api/streams/{streamId}
+Content-Type: application/json
+
+{
+  "name": "Updated Wind Data",
+  "timeRange": "4h",
+  "resolution": 120000,
+  "aggregateMethod": "max"
+}
+```
+Updates stream configuration. Note: This may reset the stream's data window.
+
+#### Start/Restart Stream
+```bash
+PUT /plugins/signalk-parquet/api/streams/{streamId}/start
+```
+Starts a stopped stream or restarts a running stream. **Restarting provides the initial data window followed by incremental updates.**
+
+#### Pause/Resume Stream
+```bash
+PUT /plugins/signalk-parquet/api/streams/{streamId}/pause
+```
+Toggles between paused and running states. Paused streams retain their position and resume where they left off.
+
+#### Stop Stream
+```bash
+PUT /plugins/signalk-parquet/api/streams/{streamId}/stop
+```
+Stops a running stream. Can be restarted later with `/start`.
+
+#### Delete Stream
+```bash
+DELETE /plugins/signalk-parquet/api/streams/{streamId}
+```
+Permanently deletes a stream and all its configuration.
+
+### Stream Data and Statistics
+
+#### Get Stream Statistics
+```bash
+GET /plugins/signalk-parquet/api/streams/stats
+```
+Returns summary statistics for all streams.
+
+**Response:**
+```json
+{
+  "success": true,
+  "stats": {
+    "runningStreams": 3,
+    "totalDataPointsStreamed": 15423,
+    "totalBuckets": 1205
+  }
+}
+```
+
+#### Get Stream Time-Series Data
+```bash
+GET /plugins/signalk-parquet/api/streams/{streamId}/data
+```
+Returns the current time-series data for a specific stream.
+
+**Response:**
+```json
+{
+  "success": true,
+  "streamId": "stream_1234567890",
+  "data": [
+    {
+      "timestamp": "2025-08-22T10:30:00Z",
+      "value": 7.832,
+      "bucketIndex": 30
+    },
+    {
+      "timestamp": "2025-08-22T10:31:00Z", 
+      "value": 8.123,
+      "bucketIndex": 31
+    }
+  ]
+}
+```
+
+### Client Application Integration
+
+#### Restarting Streams for Fresh Data
+To get both initial historical data and ongoing incremental updates:
+
+```javascript
+async function restartStreamForFreshData(streamId) {
+  try {
+    // Stop the stream
+    await fetch(`/plugins/signalk-parquet/api/streams/${streamId}/stop`, {
+      method: 'PUT'
+    });
+    
+    // Wait for cleanup
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    
+    // Start the stream (gets initial + incremental data)
+    const response = await fetch(`/plugins/signalk-parquet/api/streams/${streamId}/start`, {
+      method: 'PUT'
+    });
+    
+    const result = await response.json();
+    if (result.success) {
+      console.log('Stream restarted - will receive initial data followed by incremental updates');
+    }
+  } catch (error) {
+    console.error('Error restarting stream:', error);
+  }
+}
+```
+
+#### Monitoring Stream Status
+```javascript
+async function monitorStreams() {
+  const response = await fetch('/plugins/signalk-parquet/api/streams');
+  const data = await response.json();
+  
+  if (data.success) {
+    data.streams.forEach(stream => {
+      console.log(`${stream.name}: ${stream.status} - ${stream.dataPointsStreamed} points streamed`);
+      
+      // Get SignalK path for this stream
+      const streamName = stream.name.replace(/[^a-zA-Z0-9_]/g, '_').toLowerCase();
+      const signalkPath = `streaming.${streamName}.${stream.aggregateMethod}`;
+      console.log(`SignalK path: ${signalkPath}`);
+    });
+  }
+}
+```
+
+### Error Handling
+
+All endpoints return consistent error responses:
+```json
+{
+  "success": false,
+  "error": "Description of the error"
+}
+```
+
+Common HTTP status codes:
+- `200` - Success
+- `400` - Bad request (invalid parameters)
+- `404` - Stream not found
+- `500` - Internal server error
 
 ## S3 Integration
 
