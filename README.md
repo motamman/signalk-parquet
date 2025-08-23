@@ -15,6 +15,7 @@ A comprehensive TypeScript-based SignalK plugin that saves marine data directly 
 ### Real-time Streaming & Analytics
 - **Historical Data Streaming**: Create real-time statistical streams from historical Parquet data
 - **Multiple Aggregation Methods**: Support for average, min, max, first, last, mid, middle_index statistical processing
+- **Automatic Moving Averages**: EMA (Exponential) and SMA (Simple) moving averages calculated for all numeric streams
 - **Time Bucketing**: Configurable time resolution for data alignment and correlation analysis
 - **SignalK Integration**: Automatic publishing of stream data as standard SignalK delta messages
 - **WebSocket Support**: Real-time streaming via WebSocket subscriptions for live data feeds
@@ -590,8 +591,24 @@ The History API returns time-aligned data in standard SignalK format:
       "method": "average"
     },
     {
+      "path": "environment.wind.speedApparent.ema",
+      "method": "ema"
+    },
+    {
+      "path": "environment.wind.speedApparent.sma",
+      "method": "sma"
+    },
+    {
       "path": "environment.wind.speedApparent",
       "method": "max"
+    },
+    {
+      "path": "environment.wind.speedApparent.ema",
+      "method": "ema"
+    },
+    {
+      "path": "environment.wind.speedApparent.sma",
+      "method": "sma"
     },
     {
       "path": "navigation.position",
@@ -603,14 +620,14 @@ The History API returns time-aligned data in standard SignalK format:
     }
   ],
   "data": [
-    ["2025-01-01T00:00:00Z", 12.5, 15.2, {"latitude": 37.7749, "longitude": -122.4194}, {"latitude": 37.7750, "longitude": -122.4195}],
-    ["2025-01-01T00:01:00Z", 13.2, 16.1, {"latitude": 37.7750, "longitude": -122.4195}, {"latitude": 37.7751, "longitude": -122.4196}],
-    ["2025-01-01T00:02:00Z", 11.8, 14.3, null, null]
+    ["2025-01-01T00:00:00Z", 12.5, 12.5, 12.5, 15.2, 15.2, 15.2, {"latitude": 37.7749, "longitude": -122.4194}, null, null],
+    ["2025-01-01T00:01:00Z", 13.2, 12.64, 12.85, 16.1, 15.38, 15.65, {"latitude": 37.7750, "longitude": -122.4195}, null, null],
+    ["2025-01-01T00:02:00Z", 11.8, 12.45, 12.5, 14.3, 15.12, 15.2, null, null, null]
   ]
 }
 ```
 
-**Note**: Each data array contains `[timestamp, value1, value2, ...]` where values correspond to the paths in the same order as the `values` array. `null` indicates no data available for that path in that time bucket.
+**Note**: Each data array contains `[timestamp, value1, ema1, sma1, value2, ema2, sma2, ...]` where values correspond to the paths in the same order as the `values` array. EMA/SMA are automatically calculated for numeric values; non-numeric values show `null` for their EMA/SMA columns.
 
 ## Real-time Streaming Integration
 
@@ -638,6 +655,8 @@ streaming.{stream_name}.status               // Stream status
 {
   "sourcePath": "navigation.speedOverGround",
   "statisticalValue": 7.832,
+  "ema": 7.654,
+  "sma": 7.721,
   "method": "average", 
   "bucketIndex": 145,
   "resolution": 30000,
@@ -693,6 +712,59 @@ curl "http://localhost:3000/signalk/v1/api/vessels/self/streaming/"
 - ✅ **Rich Metadata** - Complete statistical context included  
 - ✅ **Multi-app Support** - Multiple subscribers supported
 - ✅ **Selective Subscription** - Subscribe to specific streams only
+
+## Moving Averages (EMA & SMA)
+
+The plugin automatically calculates **Exponential Moving Average (EMA)** and **Simple Moving Average (SMA)** for all numeric stream values, providing enhanced trend analysis capabilities.
+
+### Calculation Details
+
+#### Exponential Moving Average (EMA)
+- **Period**: ~10 equivalent (α = 0.2)
+- **Formula**: `EMA = α × currentValue + (1 - α) × previousEMA`
+- **Characteristic**: Responds faster to recent changes, emphasizes recent data
+- **Use Case**: Trend detection, rapid response to data changes
+
+#### Simple Moving Average (SMA)  
+- **Period**: 10 data points
+- **Formula**: Average of the last 10 values
+- **Characteristic**: Smooths out fluctuations, equal weight to all values in window
+- **Use Case**: Noise reduction, general trend analysis
+
+### Data Flow & Continuity
+
+```javascript
+// Initial Data Load (isIncremental: false)
+Point 1: Value=5.0, EMA=5.0,   SMA=5.0
+Point 2: Value=6.0, EMA=5.2,   SMA=5.5
+Point 3: Value=4.0, EMA=5.0,   SMA=5.0
+
+// Incremental Updates (isIncremental: true) 
+Point 4: Value=7.0, EMA=5.4,   SMA=5.5  // Continues from previous EMA
+Point 5: Value=5.5, EMA=5.42,  SMA=5.5  // Rolling 10-point SMA window
+```
+
+### Key Features
+
+- ✅ **Automatic Calculation**: No configuration required - calculated for all numeric streams
+- ✅ **State Continuity**: EMA continues across stream restarts and incremental updates  
+- ✅ **Memory Efficient**: SMA maintains rolling 10-point window
+- ✅ **Non-Numeric Handling**: Non-numeric values (strings, objects) show `null` for EMA/SMA
+- ✅ **Precision**: Values rounded to 3 decimal places to prevent floating-point noise
+
+### Real-world Applications
+
+**Marine Data Examples:**
+- **Wind Speed**: EMA detects gusts quickly, SMA shows general wind conditions
+- **Battery Voltage**: EMA shows charging/discharging trends, SMA indicates overall battery health  
+- **Engine RPM**: EMA responds to throttle changes, SMA shows average operating level
+- **Water Temperature**: EMA detects thermal changes, SMA provides stable baseline
+
+**Available in:**
+- 🌐 **Web Interface**: Live data table shows EMA/SMA columns  
+- 🔗 **REST API**: EMA/SMA included in stream data endpoints
+- 📡 **WebSocket**: Real-time EMA/SMA updates via SignalK delta messages
+- 📊 **History API**: EMA/SMA automatically calculated for all numeric paths
 
 ## Streaming API Reference
 
