@@ -978,28 +978,71 @@ export class HistoricalStreamingService {
       deliveryTime: new Date().toISOString()
     }));
 
+    // Filter out duplicate data points
+    const filteredDataPoints = this.deduplicateDataPoints(enrichedDataPoints, storedData, isIncremental);
+
+    if (filteredDataPoints.length === 0) {
+      // No new unique data to add
+      return;
+    }
+
     if (isIncremental) {
-      // Add new points to the beginning (newest first)
-      storedData = [...enrichedDataPoints, ...storedData];
+      // Add new points to the end (chronological order)
+      storedData = [...storedData, ...filteredDataPoints];
     } else {
       // For initial load, replace existing data
-      storedData = enrichedDataPoints;
+      storedData = filteredDataPoints;
     }
 
     // Keep only the most recent 200 data points per stream
     if (storedData.length > 200) {
-      storedData = storedData.slice(0, 200);
+      storedData = storedData.slice(-200); // Keep the LAST 200 points (most recent)
     }
 
     this.streamTimeSeriesData.set(streamId, storedData);
     
   }
 
+  private deduplicateDataPoints(newDataPoints: any[], existingData: any[], isIncremental: boolean): any[] {
+    // For initial load, deduplicate within the new data itself
+    if (!isIncremental) {
+      const seen = new Set<string>();
+      return newDataPoints.filter(point => {
+        const key = `${point.timestamp}_${point.value}`;
+        if (seen.has(key)) {
+          return false; // Skip duplicate
+        }
+        seen.add(key);
+        return true;
+      });
+    }
+
+    // For incremental updates, check against existing data
+    const existingKeys = new Set(
+      existingData.map(point => `${point.timestamp}_${point.value}`)
+    );
+
+    // Also track within the new batch to prevent internal duplicates
+    const newKeys = new Set<string>();
+
+    return newDataPoints.filter(point => {
+      const key = `${point.timestamp}_${point.value}`;
+      
+      // Skip if already exists in stored data or in this batch
+      if (existingKeys.has(key) || newKeys.has(key)) {
+        return false;
+      }
+      
+      newKeys.add(key);
+      return true;
+    });
+  }
+
   public getStreamTimeSeriesData(streamId: string, limit: number = 50): any[] | null {
     const data = this.streamTimeSeriesData.get(streamId);
     if (!data) return null;
 
-    const limitedData = data.slice(0, limit);
+    const limitedData = data.slice(-limit); // Get the LAST N points (most recent)
     
     return limitedData;
   }
