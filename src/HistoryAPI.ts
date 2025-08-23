@@ -354,17 +354,17 @@ export class HistoryAPI {
     // Merge all path data into time-ordered rows
     const mergedData = this.mergePathData(allData, pathSpecs);
 
+    // Add EMA and SMA calculations to numeric columns
+    const enhancedData = this.addMovingAverages(mergedData, pathSpecs);
+
     return {
       context,
       range: {
         from: from.toString() as Timestamp,
         to: to.toString() as Timestamp,
       },
-      values: pathSpecs.map(({ path, aggregateMethod }: PathSpec) => ({
-        path,
-        method: aggregateMethod,
-      })),
-      data: mergedData,
+      values: this.buildValuesWithMovingAverages(pathSpecs),
+      data: enhancedData,
     } as DataResult;
   }
 
@@ -392,6 +392,71 @@ export class HistoryAPI {
     return Array.from(timestampMap.entries())
       .sort(([a], [b]) => a.localeCompare(b))
       .map(([timestamp, values]) => [timestamp as Timestamp, ...values]);
+  }
+
+  private addMovingAverages(
+    data: Array<[Timestamp, ...unknown[]]>,
+    pathSpecs: PathSpec[]
+  ): Array<[Timestamp, ...unknown[]]> {
+    if (data.length === 0) return data;
+
+    const smaPeriod = 10;
+    const emaAlpha = 0.2;
+    
+    // For each column, track EMA and SMA state
+    const columnEMAs: (number | null)[] = new Array(pathSpecs.length).fill(null);
+    const columnSMAWindows: number[][] = pathSpecs.map(() => []);
+
+    return data.map((row, rowIndex) => {
+      const [timestamp, ...values] = row;
+      const enhancedValues: unknown[] = [];
+
+      values.forEach((value, colIndex) => {
+        enhancedValues.push(value);
+
+        // Calculate EMA and SMA for numeric values only
+        if (typeof value === 'number' && !isNaN(value)) {
+          // Calculate EMA
+          if (columnEMAs[colIndex] === null) {
+            columnEMAs[colIndex] = value; // First value
+          } else {
+            columnEMAs[colIndex] = emaAlpha * value + (1 - emaAlpha) * columnEMAs[colIndex]!;
+          }
+
+          // Calculate SMA
+          columnSMAWindows[colIndex].push(value);
+          if (columnSMAWindows[colIndex].length > smaPeriod) {
+            columnSMAWindows[colIndex] = columnSMAWindows[colIndex].slice(-smaPeriod);
+          }
+          const sma = columnSMAWindows[colIndex].reduce((sum, val) => sum + val, 0) / columnSMAWindows[colIndex].length;
+
+          // Add EMA and SMA as additional values (rounded to 3 decimal places)
+          enhancedValues.push(Math.round(columnEMAs[colIndex]! * 1000) / 1000); // EMA
+          enhancedValues.push(Math.round(sma * 1000) / 1000); // SMA
+        } else {
+          // Non-numeric values get null for EMA/SMA
+          enhancedValues.push(null); // EMA
+          enhancedValues.push(null); // SMA
+        }
+      });
+
+      return [timestamp, ...enhancedValues] as [Timestamp, ...unknown[]];
+    });
+  }
+
+  private buildValuesWithMovingAverages(pathSpecs: PathSpec[]): Array<{path: Path; method: AggregateMethod}> {
+    const result: Array<{path: Path; method: AggregateMethod}> = [];
+    
+    pathSpecs.forEach(({ path, aggregateMethod }) => {
+      // Add original path
+      result.push({ path, method: aggregateMethod });
+      
+      // Add EMA and SMA paths for this column
+      result.push({ path: `${path}.ema` as Path, method: 'ema' as AggregateMethod });
+      result.push({ path: `${path}.sma` as Path, method: 'sma' as AggregateMethod });
+    });
+    
+    return result;
   }
 }
 
