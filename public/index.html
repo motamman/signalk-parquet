@@ -672,6 +672,7 @@
                             • <strong>Statistical Method</strong>: MAX, AVG, MIN, FIRST, LAST, MID applied to each time bucket<br/>
                             • <strong>Buckets</strong>: Number of time intervals processed (e.g., 30-second time buckets)<br/>
                             • <strong>Value</strong>: Result of statistical calculation for that time bucket<br/>
+                            • <strong>EMA/SMA</strong>: Moving averages (10-period) calculated for numeric values - EMA responds faster to changes<br/>
                             • <strong>Time</strong>: Timestamp of the time bucket (not delivery time)
                         </div>
                         
@@ -683,11 +684,13 @@
                                         <th style="padding: 8px; border-bottom: 1px solid #ddd; text-align: left;">Stream Type & Statistical Method</th>
                                         <th style="padding: 8px; border-bottom: 1px solid #ddd; text-align: left;">Path</th>
                                         <th style="padding: 8px; border-bottom: 1px solid #ddd; text-align: left;">Statistical Value</th>
+                                        <th style="padding: 8px; border-bottom: 1px solid #ddd; text-align: left;">EMA (10)</th>
+                                        <th style="padding: 8px; border-bottom: 1px solid #ddd; text-align: left;">SMA (10)</th>
                                     </tr>
                                 </thead>
                                 <tbody id="liveDataBody">
                                     <tr>
-                                        <td colspan="4" style="padding: 20px; text-align: center; color: #666;">
+                                        <td colspan="6" style="padding: 20px; text-align: center; color: #666;">
                                             No data streaming yet. Start a stream to see live data.
                                         </td>
                                     </tr>
@@ -2068,7 +2071,7 @@
         let liveDataPaused = false;
         const MAX_LIVE_ENTRIES = 100;
 
-        function addLiveDataEntry(streamId, streamName, path, value, timestamp) {
+        function addLiveDataEntry(streamId, streamName, path, value, timestamp, ema = null, sma = null) {
             if (liveDataPaused) return;
 
             // Check for duplicates using streamId (which now includes timestamp)
@@ -2082,7 +2085,9 @@
                 streamId: streamId,
                 streamName: streamName,
                 path: path,
-                value: value
+                value: value,
+                ema: ema,
+                sma: sma
             };
 
             // Add entry to array
@@ -2108,7 +2113,7 @@
             if (liveDataEntries.length === 0) {
                 tbody.innerHTML = `
                     <tr>
-                        <td colspan="4" style="padding: 20px; text-align: center; color: #666;">
+                        <td colspan="6" style="padding: 20px; text-align: center; color: #666;">
                             No data streaming yet. Start a stream to see live data.
                         </td>
                     </tr>
@@ -2141,6 +2146,8 @@
                     timeStr = date.toLocaleString(undefined, options);
                 }
                 const valueStr = formatValue(entry.value);
+                const emaStr = entry.ema !== null ? entry.ema.toFixed(3) : '-';
+                const smaStr = entry.sma !== null ? entry.sma.toFixed(3) : '-';
                 const rowClass = index % 2 === 0 ? 'background: #f9f9f9;' : '';
                 
 
@@ -2150,6 +2157,8 @@
                         <td style="padding: 6px 8px; border-bottom: 1px solid #eee;"><strong>${entry.streamName}</strong></td>
                         <td style="padding: 6px 8px; border-bottom: 1px solid #eee;"><code style="font-size: 11px;">${entry.path}</code></td>
                         <td style="padding: 6px 8px; border-bottom: 1px solid #eee; font-family: monospace;">${valueStr}</td>
+                        <td style="padding: 6px 8px; border-bottom: 1px solid #eee; font-family: monospace; color: #007bff;">${emaStr}</td>
+                        <td style="padding: 6px 8px; border-bottom: 1px solid #eee; font-family: monospace; color: #28a745;">${smaStr}</td>
                     </tr>
                 `;
             });
@@ -2326,12 +2335,18 @@
                 const displayName = `${metadata.aggregateMethod.toUpperCase()}: ${metadata.path}`;
                 const bucketInfo = `[${point.bucketIndex}/${metadata.totalPoints}]`;
                 
+                // Extract EMA and SMA if available for numeric values
+                const ema = (typeof point.ema === 'number') ? point.ema : null;
+                const sma = (typeof point.sma === 'number') ? point.sma : null;
+                
                 addLiveDataEntry(
                     streamId,
                     `${displayName} ${bucketInfo}`,
                     metadata.path,
                     displayValue,
-                    point.timestamp
+                    point.timestamp,
+                    ema,
+                    sma
                 );
             });
         }
@@ -2381,13 +2396,19 @@
                                         // Create unique ID to prevent duplicates across polls
                                         const uniqueId = `${stream.id}_${dataPoint.bucketIndex}_${dataPoint.timestamp}`;
                                         
+                                        // Extract EMA and SMA if available for numeric values
+                                        const ema = (typeof dataPoint.ema === 'number') ? dataPoint.ema : null;
+                                        const sma = (typeof dataPoint.sma === 'number') ? dataPoint.sma : null;
+                                        
                                         // Add the individual data point
                                         addLiveDataEntry(
                                             uniqueId, 
                                             displayName,
                                             dataPoint.path, 
                                             displayValue,
-                                            dataPoint.timestamp
+                                            dataPoint.timestamp,
+                                            ema,
+                                            sma
                                         );
                                     });
                                 } else {
