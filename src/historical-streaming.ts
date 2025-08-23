@@ -967,16 +967,14 @@ export class HistoricalStreamingService {
 
     let storedData = this.streamTimeSeriesData.get(streamId) || [];
     
-    // Add metadata to each data point
-    const enrichedDataPoints = dataPoints.map(point => ({
-      ...point,
-      streamId: streamId,
-      streamName: stream.name,
-      aggregateMethod: stream.aggregateMethod,
-      resolution: stream.resolution,
-      isIncremental: isIncremental,
-      deliveryTime: new Date().toISOString()
-    }));
+    // Add metadata and moving averages to each data point
+    const enrichedDataPoints = this.enrichDataPointsWithMovingAverages(
+      dataPoints, 
+      streamId, 
+      stream, 
+      storedData, 
+      isIncremental
+    );
 
     // Filter out duplicate data points
     const filteredDataPoints = this.deduplicateDataPoints(enrichedDataPoints, storedData, isIncremental);
@@ -1037,6 +1035,71 @@ export class HistoricalStreamingService {
       return true;
     });
   }
+
+  private enrichDataPointsWithMovingAverages(
+    dataPoints: any[], 
+    streamId: string, 
+    stream: any, 
+    storedData: any[], 
+    isIncremental: boolean
+  ): any[] {
+    const enrichedPoints: any[] = [];
+    
+    // Get existing numeric values for SMA calculation
+    const existingNumericValues = storedData
+      .map(point => point.value)
+      .filter(value => typeof value === 'number' && !isNaN(value));
+    
+    // Get the last EMA value for continuous calculation
+    let currentEma = storedData.length > 0 && typeof storedData[storedData.length - 1].ema === 'number'
+      ? storedData[storedData.length - 1].ema
+      : null;
+    
+    // For SMA, maintain a rolling window
+    let smaValues = [...existingNumericValues];
+    const smaPeriod = 10;
+    const emaAlpha = 0.2;
+    
+    for (const point of dataPoints) {
+      const enrichedPoint = {
+        ...point,
+        streamId: streamId,
+        streamName: stream.name,
+        aggregateMethod: stream.aggregateMethod,
+        resolution: stream.resolution,
+        isIncremental: isIncremental,
+        deliveryTime: new Date().toISOString()
+      };
+
+      // Calculate EMA and SMA for numeric values
+      if (typeof point.value === 'number' && !isNaN(point.value)) {
+        // Calculate EMA
+        if (currentEma === null) {
+          // First numeric value - EMA starts with current value
+          currentEma = point.value;
+        } else {
+          // EMA formula: EMA = α * currentValue + (1 - α) * previousEMA
+          currentEma = emaAlpha * point.value + (1 - emaAlpha) * currentEma;
+        }
+        
+        // Calculate SMA
+        smaValues.push(point.value);
+        if (smaValues.length > smaPeriod) {
+          smaValues = smaValues.slice(-smaPeriod); // Keep only last N values
+        }
+        const sma = smaValues.reduce((sum, val) => sum + val, 0) / smaValues.length;
+        
+        // Round to reasonable precision
+        enrichedPoint.ema = Math.round(currentEma * 1000) / 1000;
+        enrichedPoint.sma = Math.round(sma * 1000) / 1000;
+      }
+
+      enrichedPoints.push(enrichedPoint);
+    }
+    
+    return enrichedPoints;
+  }
+
 
   public getStreamTimeSeriesData(streamId: string, limit: number = 50): any[] | null {
     const data = this.streamTimeSeriesData.get(streamId);
