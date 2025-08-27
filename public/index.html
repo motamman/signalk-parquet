@@ -425,7 +425,7 @@
         <div class="tab-navigation">
             <button class="tab-button active" onclick="showTab('pathConfig')">⚙️ Path Configuration</button>
             <button class="tab-button" onclick="showTab('commandManager')">🎮 Command Manager</button>
-            <button class="tab-button" onclick="showTab('liveConnections')">🔴 Live Connections</button>
+            <button class="tab-button" onclick="showTab('liveConnections')" style="display: none;">🔴 Live Connections</button>
             <button class="tab-button" onclick="showTab('dataPaths')">📁 Available Data Paths</button>
             <button class="tab-button" onclick="showTab('customQuery')">🔍 Custom Query</button>
             <button class="tab-button" onclick="showTab('s3Config')">☁️ Cloud Status</button>
@@ -529,9 +529,9 @@
 
             <!-- Live Connections Tab -->
             <div id="liveConnections" class="tab-panel">
-                <div class="section">
-                    <h2>🔴 Live Connections</h2>
-                    <p>Manage historical data streaming connections:</p>
+                <div class="section" style="display: none;">
+                    <h2>🔴 Live Connections - DISABLED</h2>
+                    <p>Streaming functionality has been disabled.</p>
                     
                     <div style="margin-bottom: 20px;">
                         <button onclick="loadStreams()">🔄 Refresh Streams</button>
@@ -1553,20 +1553,22 @@
         let activeStreams = [];
 
         async function loadStreams() {
-            try {
-                const response = await fetch('/plugins/signalk-parquet/api/streams');
-                const result = await response.json();
+            // DISABLED - Streaming functionality has been disabled
+            // try {
+            //     const response = await fetch('/plugins/signalk-parquet/api/streams');
+            //     const result = await response.json();
                 
-                if (result.success) {
-                    activeStreams = result.streams || [];
-                    displayStreams(activeStreams);
-                    loadStreamStats();
-                } else {
-                    document.getElementById('streamsContainer').innerHTML = `<div class="error">Error loading streams: ${result.error}</div>`;
-                }
-            } catch (error) {
-                document.getElementById('streamsContainer').innerHTML = `<div class="error">Network error: ${error.message}</div>`;
-            }
+            //     if (result.success) {
+            //         activeStreams = result.streams || [];
+            //         displayStreams(activeStreams);
+            //         loadStreamStats();
+            //     } else {
+            //         document.getElementById('streamsContainer').innerHTML = `<div class="error">Error loading streams: ${result.error}</div>`;
+            //     }
+            // } catch (error) {
+            //     document.getElementById('streamsContainer').innerHTML = `<div class="error">Network error: ${error.message}</div>`;
+            // }
+            return;
         }
 
         function displayStreams(streams) {
@@ -1662,18 +1664,20 @@
         }
 
         async function loadStreamStats() {
-            try {
-                const response = await fetch('/plugins/signalk-parquet/api/streams/stats');
-                const result = await response.json();
+            // DISABLED - Streaming functionality has been disabled
+            // try {
+            //     const response = await fetch('/plugins/signalk-parquet/api/streams/stats');
+            //     const result = await response.json();
                 
-                if (result.success) {
-                    displayStreamStats(result.stats);
-                } else {
-                    document.getElementById('streamStats').innerHTML = `<div class="error">Error loading stats: ${result.error}</div>`;
-                }
-            } catch (error) {
-                document.getElementById('streamStats').innerHTML = `<div class="error">Network error: ${error.message}</div>`;
-            }
+            //     if (result.success) {
+            //         displayStreamStats(result.stats);
+            //     } else {
+            //         document.getElementById('streamStats').innerHTML = `<div class="error">Error loading stats: ${result.error}</div>`;
+            //     }
+            // } catch (error) {
+            //     document.getElementById('streamStats').innerHTML = `<div class="error">Network error: ${error.message}</div>`;
+            // }
+            return;
         }
 
         function displayStreamStats(stats) {
@@ -1803,10 +1807,10 @@
             // Load SignalK paths for the dropdown
             await loadSignalKPaths();
             
-            // Set up auto-refresh for streams and stats
-            setInterval(() => {
-                loadStreams();
-            }, 5000); // Refresh every 5 seconds
+            // Set up auto-refresh for streams and stats - DISABLED
+            // setInterval(() => {
+            //     loadStreams();
+            // }, 5000); // Refresh every 5 seconds
             
             // Add event listener for path selection to handle manual entry
             const pathSelect = document.getElementById('streamPath');

@@ -37,7 +37,7 @@ import {
 import { updateDataSubscriptions } from './data-handler';
 import { toContextFilePath, toParquetFilePath } from './utils/path-helpers';
 import { ServerAPI, Context } from '@signalk/server-api';
-import { initializeStreamingService, shutdownStreamingService } from './index';
+// import { initializeStreamingService, shutdownStreamingService } from './index';
 
 // AWS S3 for testing connection
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -755,121 +755,121 @@ export function registerApiRoutes(
     }
   );
 
-  // Streaming Control API endpoints
+  // Streaming Control API endpoints - DISABLED
 
-  // Enable streaming at runtime
-  router.post('/api/streaming/enable', async (req: TypedRequest, res: TypedResponse) => {
-    try {
-      if (state.streamingService) {
-        return res.json({
-          success: true,
-          message: 'Streaming service is already running',
-          enabled: true
-        });
-      }
+  // // Enable streaming at runtime
+  // router.post('/api/streaming/enable', async (req: TypedRequest, res: TypedResponse) => {
+  //   try {
+  //     if (state.streamingService) {
+  //       return res.json({
+  //         success: true,
+  //         message: 'Streaming service is already running',
+  //         enabled: true
+  //       });
+  //     }
 
-      // Check if streaming is enabled in config
-      if (!state.currentConfig?.enableStreaming) {
-        return res.status(400).json({
-          success: false,
-          error: 'Streaming is disabled in plugin configuration. Enable it in plugin settings first.',
-          enabled: false
-        });
-      }
+  //     // Check if streaming is enabled in config
+  //     if (!state.currentConfig?.enableStreaming) {
+  //       return res.status(400).json({
+  //         success: false,
+  //         error: 'Streaming is disabled in plugin configuration. Enable it in plugin settings first.',
+  //         enabled: false
+  //       });
+  //     }
 
-      const result = await initializeStreamingService(state, app);
+  //     const result = await initializeStreamingService(state, app);
       
-      if (result.success) {
-        return res.json({
-          success: true,
-          message: 'Streaming service enabled successfully',
-          enabled: true
-        });
-      } else {
-        return res.status(500).json({
-          success: false,
-          error: result.error || 'Failed to enable streaming service',
-          enabled: false
-        });
-      }
-    } catch (error) {
-      app.error(`Error enabling streaming: ${error}`);
-      return res.status(500).json({
-        success: false,
-        error: (error as Error).message,
-        enabled: false
-      });
-    }
-  });
+  //     if (result.success) {
+  //       return res.json({
+  //         success: true,
+  //         message: 'Streaming service enabled successfully',
+  //         enabled: true
+  //       });
+  //     } else {
+  //       return res.status(500).json({
+  //         success: false,
+  //         error: result.error || 'Failed to enable streaming service',
+  //         enabled: false
+  //       });
+  //     }
+  //   } catch (error) {
+  //     app.error(`Error enabling streaming: ${error}`);
+  //     return res.status(500).json({
+  //       success: false,
+  //       error: (error as Error).message,
+  //       enabled: false
+  //     });
+  //   }
+  // });
 
-  // Disable streaming at runtime  
-  router.post('/api/streaming/disable', (req: TypedRequest, res: TypedResponse) => {
-    try {
-      if (!state.streamingService) {
-        return res.json({
-          success: true,
-          message: 'Streaming service is not running',
-          enabled: false
-        });
-      }
+  // // Disable streaming at runtime  
+  // router.post('/api/streaming/disable', (req: TypedRequest, res: TypedResponse) => {
+  //   try {
+  //     if (!state.streamingService) {
+  //       return res.json({
+  //         success: true,
+  //         message: 'Streaming service is not running',
+  //         enabled: false
+  //       });
+  //     }
 
-      const result = shutdownStreamingService(state, app);
+  //     const result = shutdownStreamingService(state, app);
       
-      if (result.success) {
-        return res.json({
-          success: true,
-          message: 'Streaming service disabled successfully',
-          enabled: false
-        });
-      } else {
-        return res.status(500).json({
-          success: false,
-          error: result.error || 'Failed to disable streaming service',
-          enabled: true
-        });
-      }
-    } catch (error) {
-      app.error(`Error disabling streaming: ${error}`);
-      return res.status(500).json({
-        success: false,
-        error: (error as Error).message,
-        enabled: true
-      });
-    }
-  });
+  //     if (result.success) {
+  //       return res.json({
+  //         success: true,
+  //         message: 'Streaming service disabled successfully',
+  //         enabled: false
+  //       });
+  //     } else {
+  //       return res.status(500).json({
+  //         success: false,
+  //         error: result.error || 'Failed to disable streaming service',
+  //         enabled: true
+  //       });
+  //     }
+  //   } catch (error) {
+  //     app.error(`Error disabling streaming: ${error}`);
+  //     return res.status(500).json({
+  //       success: false,
+  //       error: (error as Error).message,
+  //       enabled: true
+  //     });
+  //   }
+  // });
 
-  // Get current streaming status
-  router.get('/api/streaming/status', (req: TypedRequest, res: TypedResponse) => {
-    try {
-      const isEnabled = !!state.streamingService;
-      const configEnabled = state.currentConfig?.enableStreaming ?? false;
+  // // Get current streaming status
+  // router.get('/api/streaming/status', (req: TypedRequest, res: TypedResponse) => {
+  //   try {
+  //     const isEnabled = !!state.streamingService;
+  //     const configEnabled = state.currentConfig?.enableStreaming ?? false;
       
-      // Get streaming service statistics if available
-      let stats = {};
-      if (state.streamingService && state.streamingService.getActiveSubscriptions) {
-        const subscriptions = state.streamingService.getActiveSubscriptions();
-        stats = {
-          activeSubscriptions: subscriptions.length,
-          subscriptions: subscriptions
-        };
-      }
+  //     // Get streaming service statistics if available
+  //     let stats = {};
+  //     if (state.streamingService && state.streamingService.getActiveSubscriptions) {
+  //       const subscriptions = state.streamingService.getActiveSubscriptions();
+  //       stats = {
+  //         activeSubscriptions: subscriptions.length,
+  //         subscriptions: subscriptions
+  //       };
+  //     }
 
-      res.json({
-        success: true,
-        enabled: isEnabled,
-        configEnabled: configEnabled,
-        canEnable: configEnabled && !isEnabled,
-        canDisable: isEnabled,
-        ...stats
-      });
-    } catch (error) {
-      app.error(`Error getting streaming status: ${error}`);
-      res.status(500).json({
-        success: false,
-        error: (error as Error).message
-      });
-    }
-  });
+  //     res.json({
+  //       success: true,
+  //       enabled: isEnabled,
+  //       configEnabled: configEnabled,
+  //       canEnable: configEnabled && !isEnabled,
+  //       canDisable: isEnabled,
+  //       ...stats
+  //     });
+  //   } catch (error) {
+  //     app.error(`Error getting streaming status: ${error}`);
+  //     res.status(500).json({
+  //       success: false,
+  //       error: (error as Error).message
+  //     });
+  //   }
+  // });
 
   // Health check
   router.get(
@@ -892,378 +892,378 @@ export function registerApiRoutes(
     });
   });
 
-  // Historical streaming test endpoints
-  router.post('/api/historical/trigger/:path', (req: express.Request, res: express.Response) => {
-    try {
-      const path = req.params.path;
-      if (state.historicalStreamingService) {
-        state.historicalStreamingService.triggerHistoricalStream(path);
-        res.json({
-          success: true,
-          message: `Triggered historical stream for path: ${path}`,
-          timestamp: new Date().toISOString()
-        });
-      } else {
-        res.status(500).json({
-          success: false,
-          error: 'Historical streaming service not initialized'
-        });
-      }
-    } catch (error) {
-      res.status(500).json({
-        success: false,
-        error: error instanceof Error ? error.message : String(error)
-      });
-    }
-  });
+  // Historical streaming test endpoints - DISABLED
+  // router.post('/api/historical/trigger/:path', (req: express.Request, res: express.Response) => {
+  //   try {
+  //     const path = req.params.path;
+  //     if (state.historicalStreamingService) {
+  //       state.historicalStreamingService.triggerHistoricalStream(path);
+  //       res.json({
+  //         success: true,
+  //         message: `Triggered historical stream for path: ${path}`,
+  //         timestamp: new Date().toISOString()
+  //       });
+  //     } else {
+  //       res.status(500).json({
+  //         success: false,
+  //         error: 'Historical streaming service not initialized'
+  //       });
+  //     }
+  //   } catch (error) {
+  //     res.status(500).json({
+  //       success: false,
+  //       error: error instanceof Error ? error.message : String(error)
+  //     });
+  //   }
+  // });
 
-  router.get('/api/historical/subscriptions', (_: express.Request, res: express.Response) => {
-    try {
-      if (state.historicalStreamingService) {
-        const subscriptions = state.historicalStreamingService.getActiveSubscriptions();
-        res.json({
-          success: true,
-          subscriptions,
-          count: subscriptions.length
-        });
-      } else {
-        res.status(500).json({
-          success: false,
-          error: 'Historical streaming service not initialized'
-        });
-      }
-    } catch (error) {
-      res.status(500).json({
-        success: false,
-        error: error instanceof Error ? error.message : String(error)
-      });
-    }
-  });
+  // router.get('/api/historical/subscriptions', (_: express.Request, res: express.Response) => {
+  //   try {
+  //     if (state.historicalStreamingService) {
+  //       const subscriptions = state.historicalStreamingService.getActiveSubscriptions();
+  //       res.json({
+  //         success: true,
+  //         subscriptions,
+  //         count: subscriptions.length
+  //       });
+  //     } else {
+  //       res.status(500).json({
+  //         success: false,
+  //         error: 'Historical streaming service not initialized'
+  //       });
+  //     }
+  //   } catch (error) {
+  //     res.status(500).json({
+  //       success: false,
+  //       error: error instanceof Error ? error.message : String(error)
+  //     });
+  //   }
+  // });
 
-  // Stream Management API endpoints
+  // Stream Management API endpoints - DISABLED
   
-  // Get all streams
-  router.get('/api/streams', (_: express.Request, res: express.Response) => {
-    try {
-      if (state.historicalStreamingService) {
-        const streams = state.historicalStreamingService.getAllStreams();
-        res.json({
-          success: true,
-          streams
-        });
-      } else {
-        res.status(500).json({
-          success: false,
-          error: 'Historical streaming service not initialized'
-        });
-      }
-    } catch (error) {
-      res.status(500).json({
-        success: false,
-        error: error instanceof Error ? error.message : String(error)
-      });
-    }
-  });
+  // // Get all streams
+  // router.get('/api/streams', (_: express.Request, res: express.Response) => {
+  //   try {
+  //     if (state.historicalStreamingService) {
+  //       const streams = state.historicalStreamingService.getAllStreams();
+  //       res.json({
+  //         success: true,
+  //         streams
+  //       });
+  //     } else {
+  //       res.status(500).json({
+  //         success: false,
+  //         error: 'Historical streaming service not initialized'
+  //       });
+  //     }
+  //   } catch (error) {
+  //     res.status(500).json({
+  //       success: false,
+  //       error: error instanceof Error ? error.message : String(error)
+  //     });
+  //   }
+  // });
 
-  // Create new stream
-  router.post('/api/streams', (req: express.Request, res: express.Response) => {
-    try {
-      if (!state.historicalStreamingService) {
-        res.status(500).json({
-          success: false,
-          error: 'Historical streaming service not initialized'
-        });
-        return;
-      }
+  // // Create new stream
+  // router.post('/api/streams', (req: express.Request, res: express.Response) => {
+  //   try {
+  //     if (!state.historicalStreamingService) {
+  //       res.status(500).json({
+  //         success: false,
+  //         error: 'Historical streaming service not initialized'
+  //       });
+  //       return;
+  //     }
 
-      const streamConfig = req.body;
+  //     const streamConfig = req.body;
       
-      // Validate required fields
-      if (!streamConfig.name || !streamConfig.path) {
-        res.status(400).json({
-          success: false,
-          error: 'Stream name and path are required'
-        });
-        return;
-      }
+  //     // Validate required fields
+  //     if (!streamConfig.name || !streamConfig.path) {
+  //       res.status(400).json({
+  //         success: false,
+  //         error: 'Stream name and path are required'
+  //       });
+  //       return;
+  //     }
 
-      // Validate aggregation method if provided
-      const validAggregationMethods = ['average', 'min', 'max', 'first', 'last', 'mid', 'middle_index'];
-      if (streamConfig.aggregateMethod && !validAggregationMethods.includes(streamConfig.aggregateMethod)) {
-        res.status(400).json({
-          success: false,
-          error: `Invalid aggregation method. Valid options: ${validAggregationMethods.join(', ')}`
-        });
-        return;
-      }
+  //     // Validate aggregation method if provided
+  //     const validAggregationMethods = ['average', 'min', 'max', 'first', 'last', 'mid', 'middle_index'];
+  //     if (streamConfig.aggregateMethod && !validAggregationMethods.includes(streamConfig.aggregateMethod)) {
+  //       res.status(400).json({
+  //         success: false,
+  //         error: `Invalid aggregation method. Valid options: ${validAggregationMethods.join(', ')}`
+  //       });
+  //       return;
+  //     }
 
-      // Validate window size if provided
-      if (streamConfig.windowSize && (typeof streamConfig.windowSize !== 'number' || streamConfig.windowSize < 1 || streamConfig.windowSize > 1000)) {
-        res.status(400).json({
-          success: false,
-          error: 'Window size must be a number between 1 and 1000'
-        });
-        return;
-      }
+  //     // Validate window size if provided
+  //     if (streamConfig.windowSize && (typeof streamConfig.windowSize !== 'number' || streamConfig.windowSize < 1 || streamConfig.windowSize > 1000)) {
+  //       res.status(400).json({
+  //         success: false,
+  //         error: 'Window size must be a number between 1 and 1000'
+  //       });
+  //       return;
+  //     }
 
-      const stream = state.historicalStreamingService.createStream(streamConfig);
+  //     const stream = state.historicalStreamingService.createStream(streamConfig);
       
-      // Handle auto-start if requested
-      if (streamConfig.autoStart) {
-        const startResult = state.historicalStreamingService.startStream(stream.id);
-        if (startResult.success) {
-          stream.status = 'running';
-        }
-      }
+  //     // Handle auto-start if requested
+  //     if (streamConfig.autoStart) {
+  //       const startResult = state.historicalStreamingService.startStream(stream.id);
+  //       if (startResult.success) {
+  //         stream.status = 'running';
+  //       }
+  //     }
       
-      res.json({
-        success: true,
-        stream,
-        message: `Stream '${streamConfig.name}' created successfully${streamConfig.autoStart ? ' and started' : ''}`
-      });
-    } catch (error) {
-      res.status(500).json({
-        success: false,
-        error: error instanceof Error ? error.message : String(error)
-      });
-    }
-  });
+  //     res.json({
+  //       success: true,
+  //       stream,
+  //       message: `Stream '${streamConfig.name}' created successfully${streamConfig.autoStart ? ' and started' : ''}`
+  //     });
+  //   } catch (error) {
+  //     res.status(500).json({
+  //       success: false,
+  //       error: error instanceof Error ? error.message : String(error)
+  //     });
+  //   }
+  // });
 
-  // Update stream configuration
-  router.put('/api/streams/:id', (req: express.Request, res: express.Response) => {
-    try {
-      if (!state.historicalStreamingService) {
-        res.status(500).json({
-          success: false,
-          error: 'Historical streaming service not initialized'
-        });
-        return;
-      }
+  // // Update stream configuration
+  // router.put('/api/streams/:id', (req: express.Request, res: express.Response) => {
+  //   try {
+  //     if (!state.historicalStreamingService) {
+  //       res.status(500).json({
+  //         success: false,
+  //         error: 'Historical streaming service not initialized'
+  //       });
+  //       return;
+  //     }
 
-      const streamId = req.params.id;
-      const streamConfig = req.body;
+  //     const streamId = req.params.id;
+  //     const streamConfig = req.body;
 
-      // Validate required fields
-      if (!streamConfig.name || !streamConfig.path) {
-        res.status(400).json({
-          success: false,
-          error: 'Stream name and path are required'
-        });
-        return;
-      }
+  //     // Validate required fields
+  //     if (!streamConfig.name || !streamConfig.path) {
+  //       res.status(400).json({
+  //         success: false,
+  //         error: 'Stream name and path are required'
+  //       });
+  //       return;
+  //     }
 
-      // Validate window size if provided
-      if (streamConfig.windowSize && (typeof streamConfig.windowSize !== 'number' || streamConfig.windowSize < 1 || streamConfig.windowSize > 1000)) {
-        res.status(400).json({
-          success: false,
-          error: 'Window size must be a number between 1 and 1000'
-        });
-        return;
-      }
+  //     // Validate window size if provided
+  //     if (streamConfig.windowSize && (typeof streamConfig.windowSize !== 'number' || streamConfig.windowSize < 1 || streamConfig.windowSize > 1000)) {
+  //       res.status(400).json({
+  //         success: false,
+  //         error: 'Window size must be a number between 1 and 1000'
+  //       });
+  //       return;
+  //     }
 
-      const success = state.historicalStreamingService.updateStream(streamId, streamConfig);
-      if (success) {
-        res.json({
-          success: true,
-          message: `Stream '${streamConfig.name}' updated successfully`
-        });
-      } else {
-        res.status(404).json({
-          success: false,
-          error: 'Stream not found'
-        });
-      }
-    } catch (error) {
-      res.status(500).json({
-        success: false,
-        error: error instanceof Error ? error.message : String(error)
-      });
-    }
-  });
+  //     const success = state.historicalStreamingService.updateStream(streamId, streamConfig);
+  //     if (success) {
+  //       res.json({
+  //         success: true,
+  //         message: `Stream '${streamConfig.name}' updated successfully`
+  //       });
+  //     } else {
+  //       res.status(404).json({
+  //         success: false,
+  //         error: 'Stream not found'
+  //       });
+  //     }
+  //   } catch (error) {
+  //     res.status(500).json({
+  //       success: false,
+  //       error: error instanceof Error ? error.message : String(error)
+  //     });
+  //   }
+  // });
 
-  // Start stream
-  router.put('/api/streams/:id/start', (req: express.Request, res: express.Response) => {
-    try {
-      if (!state.historicalStreamingService) {
-        res.status(500).json({
-          success: false,
-          error: 'Historical streaming service not initialized'
-        });
-        return;
-      }
+  // // Start stream
+  // router.put('/api/streams/:id/start', (req: express.Request, res: express.Response) => {
+  //   try {
+  //     if (!state.historicalStreamingService) {
+  //       res.status(500).json({
+  //         success: false,
+  //         error: 'Historical streaming service not initialized'
+  //       });
+  //       return;
+  //     }
 
-      const streamId = req.params.id;
-      const result = state.historicalStreamingService.startStream(streamId);
+  //     const streamId = req.params.id;
+  //     const result = state.historicalStreamingService.startStream(streamId);
       
-      if (result.success) {
-        res.json({
-          success: true,
-          message: `Stream started successfully`
-        });
-      } else {
-        res.status(404).json({
-          success: false,
-          error: result.error || 'Stream not found'
-        });
-      }
-    } catch (error) {
-      res.status(500).json({
-        success: false,
-        error: error instanceof Error ? error.message : String(error)
-      });
-    }
-  });
+  //     if (result.success) {
+  //       res.json({
+  //         success: true,
+  //         message: `Stream started successfully`
+  //       });
+  //     } else {
+  //       res.status(404).json({
+  //         success: false,
+  //         error: result.error || 'Stream not found'
+  //       });
+  //     }
+  //   } catch (error) {
+  //     res.status(500).json({
+  //       success: false,
+  //       error: error instanceof Error ? error.message : String(error)
+  //     });
+  //   }
+  // });
 
-  // Pause stream
-  router.put('/api/streams/:id/pause', (req: express.Request, res: express.Response) => {
-    try {
-      if (!state.historicalStreamingService) {
-        res.status(500).json({
-          success: false,
-          error: 'Historical streaming service not initialized'
-        });
-        return;
-      }
+  // // Pause stream
+  // router.put('/api/streams/:id/pause', (req: express.Request, res: express.Response) => {
+  //   try {
+  //     if (!state.historicalStreamingService) {
+  //       res.status(500).json({
+  //         success: false,
+  //         error: 'Historical streaming service not initialized'
+  //       });
+  //       return;
+  //     }
 
-      const streamId = req.params.id;
-      const result = state.historicalStreamingService.pauseStream(streamId);
+  //     const streamId = req.params.id;
+  //     const result = state.historicalStreamingService.pauseStream(streamId);
       
-      if (result.success) {
-        res.json({
-          success: true,
-          message: `Stream ${result.paused ? 'paused' : 'resumed'} successfully`
-        });
-      } else {
-        res.status(404).json({
-          success: false,
-          error: result.error || 'Stream not found'
-        });
-      }
-    } catch (error) {
-      res.status(500).json({
-        success: false,
-        error: error instanceof Error ? error.message : String(error)
-      });
-    }
-  });
+  //     if (result.success) {
+  //       res.json({
+  //         success: true,
+  //         message: `Stream ${result.paused ? 'paused' : 'resumed'} successfully`
+  //       });
+  //     } else {
+  //       res.status(404).json({
+  //         success: false,
+  //         error: result.error || 'Stream not found'
+  //       });
+  //     }
+  //   } catch (error) {
+  //     res.status(500).json({
+  //       success: false,
+  //       error: error instanceof Error ? error.message : String(error)
+  //     });
+  //   }
+  // });
 
-  // Stop stream
-  router.put('/api/streams/:id/stop', (req: express.Request, res: express.Response) => {
-    try {
-      if (!state.historicalStreamingService) {
-        res.status(500).json({
-          success: false,
-          error: 'Historical streaming service not initialized'
-        });
-        return;
-      }
+  // // Stop stream
+  // router.put('/api/streams/:id/stop', (req: express.Request, res: express.Response) => {
+  //   try {
+  //     if (!state.historicalStreamingService) {
+  //       res.status(500).json({
+  //         success: false,
+  //         error: 'Historical streaming service not initialized'
+  //       });
+  //       return;
+  //     }
 
-      const streamId = req.params.id;
-      const result = state.historicalStreamingService.stopStream(streamId);
+  //     const streamId = req.params.id;
+  //     const result = state.historicalStreamingService.stopStream(streamId);
       
-      if (result.success) {
-        res.json({
-          success: true,
-          message: `Stream stopped successfully`
-        });
-      } else {
-        res.status(404).json({
-          success: false,
-          error: result.error || 'Stream not found'
-        });
-      }
-    } catch (error) {
-      res.status(500).json({
-        success: false,
-        error: error instanceof Error ? error.message : String(error)
-      });
-    }
-  });
+  //     if (result.success) {
+  //       res.json({
+  //         success: true,
+  //         message: `Stream stopped successfully`
+  //       });
+  //     } else {
+  //       res.status(404).json({
+  //         success: false,
+  //         error: result.error || 'Stream not found'
+  //       });
+  //     }
+  //   } catch (error) {
+  //     res.status(500).json({
+  //       success: false,
+  //       error: error instanceof Error ? error.message : String(error)
+  //     });
+  //   }
+  // });
 
-  // Delete stream
-  router.delete('/api/streams/:id', (req: express.Request, res: express.Response) => {
-    try {
-      if (!state.historicalStreamingService) {
-        res.status(500).json({
-          success: false,
-          error: 'Historical streaming service not initialized'
-        });
-        return;
-      }
+  // // Delete stream
+  // router.delete('/api/streams/:id', (req: express.Request, res: express.Response) => {
+  //   try {
+  //     if (!state.historicalStreamingService) {
+  //       res.status(500).json({
+  //         success: false,
+  //         error: 'Historical streaming service not initialized'
+  //       });
+  //       return;
+  //     }
 
-      const streamId = req.params.id;
-      const result = state.historicalStreamingService.deleteStream(streamId);
+  //     const streamId = req.params.id;
+  //     const result = state.historicalStreamingService.deleteStream(streamId);
       
-      if (result.success) {
-        res.json({
-          success: true,
-          message: `Stream deleted successfully`
-        });
-      } else {
-        res.status(404).json({
-          success: false,
-          error: result.error || 'Stream not found'
-        });
-      }
-    } catch (error) {
-      res.status(500).json({
-        success: false,
-        error: error instanceof Error ? error.message : String(error)
-      });
-    }
-  });
+  //     if (result.success) {
+  //       res.json({
+  //         success: true,
+  //         message: `Stream deleted successfully`
+  //       });
+  //     } else {
+  //       res.status(404).json({
+  //         success: false,
+  //         error: result.error || 'Stream not found'
+  //       });
+  //     }
+  //   } catch (error) {
+  //     res.status(500).json({
+  //       success: false,
+  //       error: error instanceof Error ? error.message : String(error)
+  //     });
+  //   }
+  // });
 
-  // Get stream statistics
-  router.get('/api/streams/stats', (_: express.Request, res: express.Response) => {
-    try {
-      if (state.historicalStreamingService) {
-        const stats = state.historicalStreamingService.getStreamStats();
-        res.json({
-          success: true,
-          stats
-        });
-      } else {
-        res.status(500).json({
-          success: false,
-          error: 'Historical streaming service not initialized'
-        });
-      }
-    } catch (error) {
-      res.status(500).json({
-        success: false,
-        error: error instanceof Error ? error.message : String(error)
-      });
-    }
-  });
+  // // Get stream statistics
+  // router.get('/api/streams/stats', (_: express.Request, res: express.Response) => {
+  //   try {
+  //     if (state.historicalStreamingService) {
+  //       const stats = state.historicalStreamingService.getStreamStats();
+  //       res.json({
+  //         success: true,
+  //         stats
+  //       });
+  //     } else {
+  //       res.status(500).json({
+  //         success: false,
+  //         error: 'Historical streaming service not initialized'
+  //       });
+  //     }
+  //   } catch (error) {
+  //     res.status(500).json({
+  //       success: false,
+  //       error: error instanceof Error ? error.message : String(error)
+  //     });
+  //   }
+  // });
 
-  // Get recent time-series data for a specific stream
-  router.get('/api/streams/:id/data', async (req: express.Request, res: express.Response) => {
-    try {
-      if (!state.historicalStreamingService) {
-        res.status(500).json({
-          success: false,
-          error: 'Historical streaming service not initialized'
-        });
-        return;
-      }
+  // // Get recent time-series data for a specific stream
+  // router.get('/api/streams/:id/data', async (req: express.Request, res: express.Response) => {
+  //   try {
+  //     if (!state.historicalStreamingService) {
+  //       res.status(500).json({
+  //         success: false,
+  //         error: 'Historical streaming service not initialized'
+  //       });
+  //       return;
+  //     }
 
-      const streamId = req.params.id;
-      const limit = parseInt(req.query.limit as string) || 50;
+  //     const streamId = req.params.id;
+  //     const limit = parseInt(req.query.limit as string) || 50;
       
-      const timeSeriesData = await (state.historicalStreamingService as any).getStreamTimeSeriesData(streamId, limit);
+  //     const timeSeriesData = await (state.historicalStreamingService as any).getStreamTimeSeriesData(streamId, limit);
       
-      // Always return success, even if no data (return empty array)
-      res.json({
-        success: true,
-        streamId: streamId,
-        data: timeSeriesData || []
-      });
-    } catch (error) {
-      res.status(500).json({
-        success: false,
-        error: error instanceof Error ? error.message : String(error)
-      });
-    }
-  });
+  //     // Always return success, even if no data (return empty array)
+  //     res.json({
+  //       success: true,
+  //       streamId: streamId,
+  //       data: timeSeriesData || []
+  //     });
+  //   } catch (error) {
+  //     res.status(500).json({
+  //       success: false,
+  //       error: error instanceof Error ? error.message : String(error)
+  //     });
+  //   }
+  // });
 
 }

@@ -81,7 +81,7 @@ export default function (app: ServerAPI): SignalKPlugin {
       fileFormat: options?.fileFormat || 'parquet',
       vesselMMSI: vesselMMSI,
       s3Upload: options?.s3Upload || { enabled: false },
-      enableStreaming: options?.enableStreaming ?? false,
+      // enableStreaming: options?.enableStreaming ?? false,
     };
 
     // Load webapp configuration including commands
@@ -180,16 +180,16 @@ export default function (app: ServerAPI): SignalKPlugin {
     }
 
     // Initialize runtime streaming service if enabled in configuration
-    if (state.currentConfig.enableStreaming) {
-      try {
-        const result = await initializeStreamingService(state, app);
-        if (!result.success) {
-          app.error(`Failed to initialize runtime streaming service: ${result.error}`);
-        }
-      } catch (error) {
-        app.error(`Error initializing runtime streaming service: ${error}`);
-      }
-    }
+    // if (state.currentConfig.enableStreaming) {
+    //   try {
+    //     const result = await initializeStreamingService(state, app);
+    //     if (!result.success) {
+    //       app.error(`Failed to initialize runtime streaming service: ${result.error}`);
+    //     }
+    //   } catch (error) {
+    //     app.error(`Error initializing runtime streaming service: ${error}`);
+    //   }
+    // }
 
   };
 
@@ -364,12 +364,12 @@ export default function (app: ServerAPI): SignalKPlugin {
           },
         },
       },
-      enableStreaming: {
-        type: 'boolean',
-        title: 'Enable WebSocket Streaming',
-        description: 'Enable real-time streaming of historical data via WebSocket connections',
-        default: false,
-      },
+      // enableStreaming: {
+      //   type: 'boolean',
+      //   title: 'Enable WebSocket Streaming',
+      //   description: 'Enable real-time streaming of historical data via WebSocket connections',
+      //   default: false,
+      // },
     },
   };
 

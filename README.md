@@ -2,7 +2,7 @@
 
 **Version 0.5.1-beta.0**
 
-A comprehensive TypeScript-based SignalK plugin that saves marine data directly to Parquet files with regimen-based control, real-time streaming capabilities, and advanced querying features.
+A comprehensive TypeScript-based SignalK plugin that saves marine data directly to Parquet files with regimen-based control and advanced querying features.
 
 ## Features
 
@@ -12,15 +12,6 @@ A comprehensive TypeScript-based SignalK plugin that saves marine data directly 
 - **Daily Consolidation**: Automatic daily file consolidation with S3 upload capabilities
 - **Real-time Buffering**: Efficient data buffering with configurable thresholds
 
-### Real-time Streaming & Analytics
-- **Historical Data Streaming**: Create real-time statistical streams from historical Parquet data
-- **Multiple Aggregation Methods**: Support for average, min, max, first, last, mid, middle_index statistical processing
-- **Automatic Moving Averages**: EMA (Exponential) and SMA (Simple) moving averages calculated for all numeric streams
-- **Time Bucketing**: Configurable time resolution for data alignment and correlation analysis
-- **SignalK Integration**: Automatic publishing of stream data as standard SignalK delta messages
-- **WebSocket Support**: Real-time streaming via WebSocket subscriptions for live data feeds
-- **REST API Access**: Direct HTTP access to history data values via standard SignalK REST endpoints
-- **Stream Persistence**: Automatic saving and restoration of stream configurations across restarts
 
 ### Advanced Querying
 - **SignalK History API**: Full compatibility with SignalK History API specification
@@ -34,11 +25,10 @@ A comprehensive TypeScript-based SignalK plugin that saves marine data directly 
 - **Regimen-Based Data Collection**: Control data collection with command-based regimens
 - **Multi-Vessel Support**: Wildcard vessel contexts (`vessels.*`) with MMSI-based exclusion filtering
 - **Source Filtering**: Filter data by SignalK source labels (bypasses server arbitration for raw data access)
-- **Comprehensive REST API**: Full programmatic control of streams, queries, and configuration
+- **Comprehensive REST API**: Full programmatic control of queries and configuration
 
 ### User Interface & Integration
-- **Responsive Web Interface**: Complete web-based management with real-time stream monitoring
-- **Stream URL Display**: Direct access to WebSocket and REST endpoints for each stream
+- **Responsive Web Interface**: Complete web-based management interface
 - **S3 Integration**: Upload files to Amazon S3 with configurable timing and conflict resolution
 - **Context Support**: Support for multiple vessel contexts with exclusion controls
 
@@ -187,7 +177,7 @@ Use the web interface to configure which SignalK paths to collect:
 
 ### Command Management
 
-The plugin now streamlines command management with automatic path configuration:
+The plugin streamlines command management with automatic path configuration:
 
 1. **Register Command**: Commands are automatically registered with enabled path configurations
 2. **Start Command**: Click **Start** button to activate a command regimen
@@ -224,7 +214,7 @@ Regimens allow you to control data collection based on SignalK commands:
 }
 ```
 
-**Note**: Source filtering accesses raw data streams before SignalK server arbitration, allowing collection of data from specific sources that might otherwise be filtered out.
+**Note**: Source filtering accesses raw data before SignalK server arbitration, allowing collection of data from specific sources that might otherwise be filtered out.
 
 **Multi-Vessel Example**: Collect navigation data from all vessels except specific MMSI numbers
 ```json
@@ -386,16 +376,6 @@ This provides better compression, faster queries, and proper type safety for dat
 | `/api/config/paths` | GET/POST/PUT/DELETE | Manage path configurations |
 | `/api/test-s3` | POST | Test S3 connection |
 | `/api/health` | GET | Health check |
-| **Streaming API Endpoints** | | |
-| `/api/streams` | GET | List all streams (running, paused, stopped) |
-| `/api/streams` | POST | Create a new stream |
-| `/api/streams/:id` | PUT | Update stream configuration |
-| `/api/streams/:id/start` | PUT | Start or restart a stream |
-| `/api/streams/:id/pause` | PUT | Pause/resume a stream |
-| `/api/streams/:id/stop` | PUT | Stop a stream |
-| `/api/streams/:id` | DELETE | Delete a stream permanently |
-| `/api/streams/stats` | GET | Get streaming statistics summary |
-| `/api/streams/:id/data` | GET | Get time-series data for a stream |
 | **SignalK History API** | | |
 | `/signalk/v1/history/values` | GET | SignalK History API - Get historical values |
 | `/signalk/v1/history/contexts` | GET | SignalK History API - Get available contexts |
@@ -629,93 +609,10 @@ The History API returns time-aligned data in standard SignalK format:
 
 **Note**: Each data array contains `[timestamp, value1, ema1, sma1, value2, ema2, sma2, ...]` where values correspond to the paths in the same order as the `values` array. EMA/SMA are automatically calculated for numeric values; non-numeric values show `null` for their EMA/SMA columns.
 
-## Real-time Streaming Integration
-
-The plugin provides real-time statistical streaming that automatically publishes to the SignalK data stream, making it accessible to other SignalK applications.
-
-### How Other SignalK Apps Can Access Streams
-
-All stream data is automatically emitted as standard SignalK delta messages, allowing any SignalK-compatible application to subscribe and receive real-time statistical data.
-
-#### Stream Data Paths
-Each active stream creates SignalK paths following this pattern:
-```
-streaming.{stream_name}.{aggregation_method}  // Data points
-streaming.{stream_name}.status               // Stream status
-```
-
-**Examples:**
-- `streaming.navigation_history.average` - Average values from "Navigation History" stream
-- `streaming.wind_data.max` - Maximum values from "Wind Data" stream  
-- `streaming.engine_monitoring.status` - Status of "Engine Monitoring" stream
-
-#### Data Structure
-**Stream Data Points:**
-```json
-{
-  "sourcePath": "navigation.speedOverGround",
-  "statisticalValue": 7.832,
-  "ema": 7.654,
-  "sma": 7.721,
-  "method": "average", 
-  "bucketIndex": 145,
-  "resolution": 30000,
-  "streamId": "stream_1692...",
-  "streamName": "Navigation History",
-  "isIncremental": true,
-  "windowFrom": "2025-08-22T10:00:00Z",
-  "windowTo": "2025-08-22T11:00:00Z"
-}
-```
-
-#### WebSocket Subscription Example
-```javascript
-const ws = new WebSocket('ws://localhost:3000/signalk/v1/stream');
-
-ws.onopen = () => {
-  ws.send(JSON.stringify({
-    context: 'vessels.self',
-    subscribe: [{
-      path: 'streaming.*',        // Subscribe to all streams
-      period: 1000,
-      format: 'delta'
-    }]
-  }));
-};
-
-ws.onmessage = (event) => {
-  const data = JSON.parse(event.data);
-  if (data.updates) {
-    data.updates.forEach(update => {
-      update.values.forEach(value => {
-        if (value.path.startsWith('streaming.')) {
-          console.log('Stream data:', value.path, value.value.statisticalValue);
-        }
-      });
-    });
-  }
-};
-```
-
-#### REST API Access
-```bash
-# Get current value of a stream
-curl "http://localhost:3000/signalk/v1/api/vessels/self/streaming/navigation_history/average"
-
-# Get all streaming data
-curl "http://localhost:3000/signalk/v1/api/vessels/self/streaming/"
-```
-
-#### Integration Benefits
-- ✅ **Standard SignalK Protocol** - Works with existing SignalK tools
-- ✅ **Real-time Updates** - Data arrives as it's processed
-- ✅ **Rich Metadata** - Complete statistical context included  
-- ✅ **Multi-app Support** - Multiple subscribers supported
-- ✅ **Selective Subscription** - Subscribe to specific streams only
 
 ## Moving Averages (EMA & SMA)
 
-The plugin automatically calculates **Exponential Moving Average (EMA)** and **Simple Moving Average (SMA)** for all numeric stream values, providing enhanced trend analysis capabilities.
+The plugin automatically calculates **Exponential Moving Average (EMA)** and **Simple Moving Average (SMA)** for all numeric values when querying historical data, providing enhanced trend analysis capabilities.
 
 ### Calculation Details
 
@@ -746,8 +643,7 @@ Point 5: Value=5.5, EMA=5.42,  SMA=5.5  // Rolling 10-point SMA window
 
 ### Key Features
 
-- ✅ **Automatic Calculation**: No configuration required - calculated for all numeric streams
-- ✅ **State Continuity**: EMA continues across stream restarts and incremental updates  
+- ✅ **Automatic Calculation**: No configuration required - calculated for all numeric data during queries
 - ✅ **Memory Efficient**: SMA maintains rolling 10-point window
 - ✅ **Non-Numeric Handling**: Non-numeric values (strings, objects) show `null` for EMA/SMA
 - ✅ **Precision**: Values rounded to 3 decimal places to prevent floating-point noise
@@ -761,222 +657,8 @@ Point 5: Value=5.5, EMA=5.42,  SMA=5.5  // Rolling 10-point SMA window
 - **Water Temperature**: EMA detects thermal changes, SMA provides stable baseline
 
 **Available in:**
-- 🌐 **Web Interface**: Live data table shows EMA/SMA columns  
-- 🔗 **REST API**: EMA/SMA included in stream data endpoints
-- 📡 **WebSocket**: Real-time EMA/SMA updates via SignalK delta messages
 - 📊 **History API**: EMA/SMA automatically calculated for all numeric paths
 
-## Streaming API Reference
-
-The plugin provides a comprehensive REST API for managing historical data streams programmatically.
-
-### Stream Management Endpoints
-
-#### List All Streams
-```bash
-GET /plugins/signalk-parquet/api/streams
-```
-Returns all streams with their current status, configuration, and statistics.
-
-**Response:**
-```json
-{
-  "success": true,
-  "streams": [
-    {
-      "id": "stream_1234567890",
-      "name": "Navigation History",
-      "path": "navigation.position",
-      "status": "running",
-      "timeRange": "1h",
-      "startTime": "2025-08-22T10:00:00Z",
-      "endTime": "2025-08-22T11:00:00Z",
-      "resolution": 30000,
-      "rate": 5000,
-      "aggregateMethod": "average",
-      "dataPointsStreamed": 145,
-      "totalBuckets": 120,
-      "isIncremental": true,
-      "lastTimestamp": "2025-08-22T10:45:00Z"
-    }
-  ]
-}
-```
-
-#### Create New Stream
-```bash
-POST /plugins/signalk-parquet/api/streams
-Content-Type: application/json
-
-{
-  "name": "Wind Data Stream",
-  "path": "environment.wind.speedApparent",
-  "timeRange": "2h",
-  "resolution": 60000,
-  "rate": 10000,
-  "aggregateMethod": "average",
-  "autoStart": true
-}
-```
-
-**Parameters:**
-- `name` - Display name for the stream
-- `path` - SignalK path to stream data from
-- `timeRange` - Time window (e.g., "1h", "30m", "2d")
-- `resolution` - Time bucket size in milliseconds
-- `rate` - Polling/update rate in milliseconds
-- `aggregateMethod` - Statistical method: `average`, `min`, `max`, `first`, `last`, `mid`, `middle_index`
-- `autoStart` - Whether to start the stream immediately (optional)
-
-#### Update Stream Configuration
-```bash
-PUT /plugins/signalk-parquet/api/streams/{streamId}
-Content-Type: application/json
-
-{
-  "name": "Updated Wind Data",
-  "timeRange": "4h",
-  "resolution": 120000,
-  "aggregateMethod": "max"
-}
-```
-Updates stream configuration. Note: This may reset the stream's data window.
-
-#### Start/Restart Stream
-```bash
-PUT /plugins/signalk-parquet/api/streams/{streamId}/start
-```
-Starts a stopped stream or restarts a running stream. **Restarting provides the initial data window followed by incremental updates.**
-
-#### Pause/Resume Stream
-```bash
-PUT /plugins/signalk-parquet/api/streams/{streamId}/pause
-```
-Toggles between paused and running states. Paused streams retain their position and resume where they left off.
-
-#### Stop Stream
-```bash
-PUT /plugins/signalk-parquet/api/streams/{streamId}/stop
-```
-Stops a running stream. Can be restarted later with `/start`.
-
-#### Delete Stream
-```bash
-DELETE /plugins/signalk-parquet/api/streams/{streamId}
-```
-Permanently deletes a stream and all its configuration.
-
-### Stream Data and Statistics
-
-#### Get Stream Statistics
-```bash
-GET /plugins/signalk-parquet/api/streams/stats
-```
-Returns summary statistics for all streams.
-
-**Response:**
-```json
-{
-  "success": true,
-  "stats": {
-    "runningStreams": 3,
-    "totalDataPointsStreamed": 15423,
-    "totalBuckets": 1205
-  }
-}
-```
-
-#### Get Stream Time-Series Data
-```bash
-GET /plugins/signalk-parquet/api/streams/{streamId}/data
-```
-Returns the current time-series data for a specific stream.
-
-**Response:**
-```json
-{
-  "success": true,
-  "streamId": "stream_1234567890",
-  "data": [
-    {
-      "timestamp": "2025-08-22T10:30:00Z",
-      "value": 7.832,
-      "bucketIndex": 30
-    },
-    {
-      "timestamp": "2025-08-22T10:31:00Z", 
-      "value": 8.123,
-      "bucketIndex": 31
-    }
-  ]
-}
-```
-
-### Client Application Integration
-
-#### Restarting Streams for Fresh Data
-To get both initial historical data and ongoing incremental updates:
-
-```javascript
-async function restartStreamForFreshData(streamId) {
-  try {
-    // Stop the stream
-    await fetch(`/plugins/signalk-parquet/api/streams/${streamId}/stop`, {
-      method: 'PUT'
-    });
-    
-    // Wait for cleanup
-    await new Promise(resolve => setTimeout(resolve, 1000));
-    
-    // Start the stream (gets initial + incremental data)
-    const response = await fetch(`/plugins/signalk-parquet/api/streams/${streamId}/start`, {
-      method: 'PUT'
-    });
-    
-    const result = await response.json();
-    if (result.success) {
-      console.log('Stream restarted - will receive initial data followed by incremental updates');
-    }
-  } catch (error) {
-    console.error('Error restarting stream:', error);
-  }
-}
-```
-
-#### Monitoring Stream Status
-```javascript
-async function monitorStreams() {
-  const response = await fetch('/plugins/signalk-parquet/api/streams');
-  const data = await response.json();
-  
-  if (data.success) {
-    data.streams.forEach(stream => {
-      console.log(`${stream.name}: ${stream.status} - ${stream.dataPointsStreamed} points streamed`);
-      
-      // Get SignalK path for this stream
-      const streamName = stream.name.replace(/[^a-zA-Z0-9_]/g, '_').toLowerCase();
-      const signalkPath = `streaming.${streamName}.${stream.aggregateMethod}`;
-      console.log(`SignalK path: ${signalkPath}`);
-    });
-  }
-}
-```
-
-### Error Handling
-
-All endpoints return consistent error responses:
-```json
-{
-  "success": false,
-  "error": "Description of the error"
-}
-```
-
-Common HTTP status codes:
-- `200` - Success
-- `400` - Bad request (invalid parameters)
-- `404` - Stream not found
-- `500` - Internal server error
 
 ## S3 Integration
 
@@ -1263,10 +945,10 @@ For detailed testing procedures, see [TESTING.md](TESTING.md).
 ### Version 0.5.0-beta.1
 - Complete TypeScript rewrite with enhanced type safety
 - **Source filtering with raw data access**: Bypass SignalK server arbitration for specific sources
-- **Streambundle API integration**: Improved performance with app.streambundle instead of subscription manager
+- **Enhanced API integration**: Improved performance with better subscription management
 - **Backward compatibility**: Automatic config migration for older path configurations
 - **Multi-vessel support**: `vessels.*` wildcard context with MMSI exclusion filtering
 - **Enhanced web interface**: Restored source filtering UI with improved controls
-- **Streamlined command management**: Automatic path configuration for commands
+- **Enhanced command management**: Automatic path configuration for commands
 - **SignalK API compliance**: Proper subscription patterns for vessel contexts
 - Performance optimizations and better error handling
