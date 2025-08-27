@@ -35,24 +35,18 @@ export async function initializeS3(config: PluginConfig, app: ServerAPI): Promis
   appInstance = app;
   
   // Initialize S3 client if enabled
-  app.debug(
-    `DEBUG: S3 setup - enabled: ${config.s3Upload.enabled}, S3Client available: ${!!S3Client}`
-  );
   
   if (config.s3Upload.enabled) {
     // Wait for AWS SDK import to complete
     try {
       if (!S3Client) {
-        app.debug(`DEBUG: Waiting for AWS SDK import...`);
         const awsS3 = await import('@aws-sdk/client-s3');
         S3Client = awsS3.S3Client;
         PutObjectCommand = awsS3.PutObjectCommand;
         ListObjectsV2Command = awsS3.ListObjectsV2Command;
         HeadObjectCommand = awsS3.HeadObjectCommand;
-        app.debug(`DEBUG: AWS SDK imported successfully`);
       }
     } catch (importError) {
-      app.debug(`DEBUG: Failed to import AWS SDK: ${importError}`);
       S3Client = undefined;
     }
   }
@@ -80,21 +74,11 @@ export function createS3Client(config: PluginConfig, app: ServerAPI): any {
         accessKeyId: config.s3Upload.accessKeyId,
         secretAccessKey: config.s3Upload.secretAccessKey,
       };
-      app.debug(`DEBUG: S3 credentials provided`);
-    } else {
-      app.debug(
-        `DEBUG: No S3 credentials provided, using default AWS profile`
-      );
     }
 
-    app.debug(`DEBUG: Creating S3 client with region: ${s3Config.region}`);
     const s3Client = new S3Client(s3Config);
-    app.debug(
-      `S3 client initialized for bucket: ${config.s3Upload.bucket}`
-    );
     return s3Client;
   } catch (error) {
-    app.debug(`Error initializing S3 client: ${error}`);
     return undefined;
   }
 }
@@ -125,15 +109,11 @@ export function subscribeToCommandPaths(
     })),
   };
 
-  app.debug(
-    `Subscribing to ${commandPaths.length} command paths via subscription manager`
-  );
 
   app.subscriptionmanager.subscribe(
     commandSubscription,
     state.unsubscribes,
     (subscriptionError: unknown) => {
-      app.debug(`Command subscription error: ${subscriptionError}`);
     },
     (delta: Delta) => {
       // Process each update in the delta
@@ -169,18 +149,12 @@ function handleCommandMessage(
   app: ServerAPI
 ): void {
   try {
-    app.debug(
-      `📦 Received command update for ${pathConfig.path}: ${JSON.stringify(valueUpdate, null, 2)}`
-    );
 
     // Check source filter if specified for commands too
     if (pathConfig.source && pathConfig.source.trim() !== '') {
       const messageSource =
         update.$source || (update.source ? update.source.label : null);
       if (messageSource !== pathConfig.source.trim()) {
-        app.debug(
-          `🚫 Command from source "${messageSource}" filtered out (expecting "${pathConfig.source.trim()}")`
-        );
         return;
       }
     }
@@ -189,9 +163,6 @@ function handleCommandMessage(
       const commandName = extractCommandName(pathConfig.path);
       const isActive = Boolean(valueUpdate.value);
 
-      app.debug(
-        `Command ${commandName}: ${isActive ? 'ACTIVE' : 'INACTIVE'}`
-      );
 
       if (isActive) {
         state.activeRegimens.add(commandName);
@@ -200,9 +171,6 @@ function handleCommandMessage(
       }
 
       // Debug active regimens state
-      app.debug(
-        `🎯 Active regimens: [${Array.from(state.activeRegimens).join(', ')}]`
-      );
 
       // Buffer this command change with complete metadata
       const bufferKey = `${pathConfig.context || 'vessels.self'}:${pathConfig.path}`;
@@ -228,7 +196,6 @@ function handleCommandMessage(
       );
     }
   } catch (error) {
-    app.debug(`Error handling command message: ${error}`);
   }
 }
 
@@ -270,12 +237,8 @@ function shouldExcludeVessel(
     } else {
       // For other vessels, we would need to get their MMSI from the delta or other means
       // For now, we'll skip MMSI filtering for other vessels
-      app.debug(
-        `MMSI filtering not implemented for vessel context: ${vesselContext}`
-      );
     }
   } catch (error) {
-    app.debug(`Error checking MMSI for vessel ${vesselContext}: ${error}`);
   }
 
   return false; // Don't exclude if we can't determine MMSI
@@ -297,7 +260,6 @@ export function updateDataSubscriptions(
   state.unsubscribes = [];
   state.subscribedPaths.clear();
 
-  app.debug('Cleared all existing subscriptions');
 
   // Re-subscribe to command paths
   subscribeToCommandPaths(currentPaths, state, config, app);
@@ -320,7 +282,6 @@ export function updateDataSubscriptions(
   );
 
   if (processedPaths.length === 0) {
-    app.debug('No data paths need subscription currently');
     return;
   }
 
@@ -337,16 +298,10 @@ export function updateDataSubscriptions(
   // Use app.streambundle approach as recommended by SignalK developer
   // This avoids server arbitration and provides true source filtering
   contextGroups.forEach((pathConfigs, context) => {
-    app.debug(
-      `Creating ${pathConfigs.length} streambundle subscriptions for context ${context}`
-    );
 
     pathConfigs.forEach((pathConfig: PathConfig) => {
       // Show MMSI exclusion config for troubleshooting
       if (pathConfig.excludeMMSI && pathConfig.excludeMMSI.length > 0) {
-        app.debug(
-          `🔧 Path ${pathConfig.path} has MMSI exclusions: [${pathConfig.excludeMMSI.join(', ')}]`
-        );
       }
 
       // Create individual stream for each path (developer's recommended approach)
@@ -439,7 +394,6 @@ function shouldSubscribeToPath(
 ): boolean {
   // Always subscribe if explicitly enabled
   if (pathConfig.enabled) {
-    app.debug(`✅ Path ${pathConfig.path} enabled (always on)`);
     return true;
   }
 
@@ -449,15 +403,9 @@ function shouldSubscribeToPath(
     const hasActiveRegimen = requiredRegimens.some(regimen =>
       state.activeRegimens.has(regimen)
     );
-    app.debug(
-      `🔍 Path ${pathConfig.path} requires regimens [${requiredRegimens.join(', ')}], active: [${Array.from(state.activeRegimens).join(', ')}] → ${hasActiveRegimen ? 'SUBSCRIBE' : 'SKIP'}`
-    );
     return hasActiveRegimen;
   }
 
-  app.debug(
-    `❌ Path ${pathConfig.path} has no regimen control and not enabled`
-  );
   return false;
 }
 
@@ -480,9 +428,6 @@ function handleStreamData(
       }
     } catch (error) {
       // Metadata retrieval failed, continue without it
-      app.debug(
-        `Failed to retrieve metadata for ${normalizedDelta.path}: ${error}`
-      );
     }
 
     const record: DataRecord = {
@@ -535,7 +480,6 @@ function handleStreamData(
     const bufferKey = `${normalizedDelta.context}:${pathConfig.path}`;
     bufferData(bufferKey, record, config, state, app);
   } catch (error) {
-    app.debug(`Error handling stream data: ${error}`);
   }
 }
 
@@ -561,9 +505,6 @@ function bufferData(
     const actualPath = pathMatch ? pathMatch[1] : signalkPath;
     const urnMatch = signalkPath.match(/^([^:]+):/);
     const urn = urnMatch ? urnMatch[1] : 'vessels.self';
-    app.debug(
-      `💾 Buffer full: ${buffer.length} rows | ${urn} | ${actualPath} | trigger=buffer_full`
-    );
     saveBufferToParquet(actualPath, buffer, config, state, app);
     state.dataBuffers.set(signalkPath, []); // Clear buffer
   }
@@ -579,9 +520,6 @@ export function saveAllBuffers(config: PluginConfig, state: PluginState, app: Se
       const actualPath = pathMatch ? pathMatch[1] : signalkPath;
       const urnMatch = signalkPath.match(/^([^:]+):/);
       const urn = urnMatch ? urnMatch[1] : 'vessels.self';
-      app.debug(
-        `💾 Timer flush: ${buffer.length} rows | ${urn} | ${actualPath} | trigger=timer`
-      );
       saveBufferToParquet(actualPath, buffer, config, state, app);
       state.dataBuffers.set(signalkPath, []); // Clear buffer
     }
@@ -650,7 +588,6 @@ async function saveBufferToParquet(
       await uploadToS3(savedPath, config, state, app);
     }
   } catch (error) {
-    app.debug(`❌ Error saving buffer for ${signalkPath}: ${error}`);
   }
 }
 
@@ -668,9 +605,6 @@ export function initializeRegimenStates(
       pathConfig.enabled
   );
 
-  app.debug(
-    `🔍 Checking current command values for ${commandPaths.length} command paths at startup`
-  );
 
   commandPaths.forEach((pathConfig: PathConfig) => {
     try {
@@ -678,9 +612,6 @@ export function initializeRegimenStates(
       const currentData = app.getSelfPath(pathConfig.path);
 
       if (currentData !== undefined && currentData !== null) {
-        app.debug(
-          `📋 Found current value for ${pathConfig.path}: ${JSON.stringify(currentData)}`
-        );
 
         // Check if there's source information
         const shouldProcess = true;
@@ -689,24 +620,15 @@ export function initializeRegimenStates(
         if (pathConfig.source && pathConfig.source.trim() !== '') {
           // For startup, we need to check the API source info
           // This is a simplified check - in real deltas we get more source info
-          app.debug(
-            `🔍 Source filter specified for ${pathConfig.path}: "${pathConfig.source.trim()}"`
-          );
 
           // For now, we'll process the value if it exists and log a warning
           // In practice, you might want to check the source here too
-          app.debug(
-            `⚠️  Startup value processed without source verification for ${pathConfig.path}`
-          );
         }
 
         if (shouldProcess && currentData.value !== undefined) {
           const commandName = extractCommandName(pathConfig.path);
           const isActive = Boolean(currentData.value);
 
-          app.debug(
-            `🚀 Startup: Command ${commandName}: ${isActive ? 'ACTIVE' : 'INACTIVE'}`
-          );
 
           if (isActive) {
             state.activeRegimens.add(commandName);
@@ -715,24 +637,16 @@ export function initializeRegimenStates(
           }
         }
       } else {
-        app.debug(`📭 No current value found for ${pathConfig.path}`);
       }
     } catch (error) {
-      app.debug(
-        `❌ Error checking startup value for ${pathConfig.path}: ${error}`
-      );
     }
   });
 
-  app.debug(
-    `🎯 Startup regimens initialized: [${Array.from(state.activeRegimens).join(', ')}]`
-  );
 }
 
 // Startup consolidation for missed previous days (excludes current day)
 export async function consolidateMissedDays(config: PluginConfig, state: PluginState, app: ServerAPI): Promise<void> {
   try {
-    app.debug('Checking for missed consolidations at startup...');
 
     // Get list of all date directories that exist
     const outputDir = config.outputDirectory;
@@ -787,7 +701,6 @@ export async function consolidateMissedDays(config: PluginConfig, state: PluginS
         parseInt(dayStr)
       );
 
-      app.debug(`Consolidating missed day: ${dateStr}`);
 
       const consolidatedCount = await state.parquetWriter!.consolidateDaily(
         config.outputDirectory,
@@ -795,40 +708,24 @@ export async function consolidateMissedDays(config: PluginConfig, state: PluginS
         config.filenamePrefix
       );
 
-      app.debug(
-        `DEBUG: consolidatedCount = ${consolidatedCount} for date ${dateStr}`
-      );
 
       if (consolidatedCount > 0) {
-        app.debug(
-          `Consolidated ${consolidatedCount} topic directories for ${dateStr}`
-        );
 
         // Upload consolidated files to S3 if enabled and timing is consolidation
-        app.debug(
-          `DEBUG: S3 check - enabled: ${config.s3Upload.enabled}, timing: ${config.s3Upload.timing}`
-        );
         if (
           config.s3Upload.enabled &&
           config.s3Upload.timing === 'consolidation'
         ) {
-          app.debug(`DEBUG: Starting S3 upload for ${dateStr}`);
           await uploadConsolidatedFilesToS3(config, date, state, app);
         } else {
-          app.debug(`DEBUG: S3 upload skipped for ${dateStr}`);
         }
       }
     }
 
     if (datesNeedingConsolidation.size > 0) {
-      app.debug(
-        `Startup consolidation completed for ${datesNeedingConsolidation.size} missed days`
-      );
     } else {
-      app.debug('No missed consolidations found at startup');
     }
   } catch (error) {
-    app.debug(`Error during startup consolidation: ${error}`);
   }
 }
 
@@ -844,14 +741,8 @@ export async function consolidateYesterday(config: PluginConfig, state: PluginSt
       config.filenamePrefix
     );
 
-    app.debug(
-      `DEBUG: Daily consolidatedCount = ${consolidatedCount} for yesterday`
-    );
 
     if (consolidatedCount > 0) {
-      app.debug(
-        `Consolidated ${consolidatedCount} topic directories for ${yesterday.toISOString().split('T')[0]}`
-      );
 
       // Upload consolidated files to S3 if enabled and timing is consolidation
       if (
@@ -862,7 +753,6 @@ export async function consolidateYesterday(config: PluginConfig, state: PluginSt
       }
     }
   } catch (error) {
-    app.debug(`Error during daily consolidation: ${error}`);
   }
 }
 
@@ -873,7 +763,6 @@ export async function uploadAllConsolidatedFilesToS3(
   app: ServerAPI
 ): Promise<void> {
   try {
-    app.debug(`DEBUG: Uploading all existing consolidated files to S3`);
 
     // Find all consolidated parquet files
     const consolidatedPattern = `**/*_consolidated.parquet`;
@@ -883,9 +772,6 @@ export async function uploadAllConsolidatedFilesToS3(
       nodir: true,
     });
 
-    app.debug(
-      `DEBUG: Found ${consolidatedFiles.length} consolidated files to upload`
-    );
 
     let uploadedCount = 0;
     for (const filePath of consolidatedFiles) {
@@ -893,11 +779,7 @@ export async function uploadAllConsolidatedFilesToS3(
       if (success) uploadedCount++;
     }
 
-    app.debug(
-      `DEBUG: Successfully uploaded ${uploadedCount}/${consolidatedFiles.length} consolidated files`
-    );
   } catch (error) {
-    app.debug(`Error uploading all consolidated files to S3: ${error}`);
   }
 }
 
@@ -912,10 +794,6 @@ async function uploadConsolidatedFilesToS3(
     const dateStr = date.toISOString().split('T')[0];
     const consolidatedPattern = `**/*_${dateStr}_consolidated.parquet`;
 
-    app.debug(`DEBUG: S3 upload function called for ${dateStr}`);
-    app.debug(
-      `DEBUG: Looking for pattern: ${consolidatedPattern} in ${config.outputDirectory}`
-    );
 
     // Find all consolidated files for the date
     const consolidatedFiles = await glob(consolidatedPattern, {
@@ -924,17 +802,12 @@ async function uploadConsolidatedFilesToS3(
       nodir: true,
     });
 
-    app.debug(
-      `Found ${consolidatedFiles.length} consolidated files to upload for ${dateStr}`
-    );
-    app.debug(`DEBUG: Files found: ${JSON.stringify(consolidatedFiles)}`);
 
     // Upload each consolidated file
     for (const filePath of consolidatedFiles) {
       await uploadToS3(filePath, config, state, app);
     }
   } catch (error) {
-    app.debug(`Error uploading consolidated files to S3: ${error}`);
   }
 }
 
@@ -978,9 +851,7 @@ async function uploadToS3(
 
           if (localLastModified <= s3LastModified) {
             shouldUpload = false;
-            app.debug(`⏭️ Skipping upload, S3 file is newer: ${s3Key}`);
           } else {
-            app.debug(`📤 Local file is newer, uploading: ${s3Key}`);
           }
         }
       }
@@ -990,12 +861,8 @@ async function uploadToS3(
         headError.name === 'NotFound' ||
         headError.$metadata?.httpStatusCode === 404
       ) {
-        app.debug(`📤 File not found in S3, uploading: ${s3Key}`);
         shouldUpload = true;
       } else {
-        app.debug(
-          `⚠️ Error checking S3 file, uploading anyway: ${headError.message}`
-        );
         shouldUpload = true;
       }
     }
@@ -1018,17 +885,14 @@ async function uploadToS3(
     });
 
     await state.s3Client.send(command);
-    app.debug(`✅ Uploaded to S3: s3://${config.s3Upload.bucket}/${s3Key}`);
 
     // Delete local file if configured
     if (config.s3Upload.deleteAfterUpload) {
       await fs.unlink(filePath);
-      app.debug(`🗑️ Deleted local file: ${filePath}`);
     }
 
     return true;
   } catch (error) {
-    app.debug(`❌ Error uploading ${filePath} to S3: ${error}`);
     return false;
   }
 }

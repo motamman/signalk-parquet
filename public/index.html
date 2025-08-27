@@ -425,6 +425,7 @@
         <div class="tab-navigation">
             <button class="tab-button active" onclick="showTab('pathConfig')">⚙️ Path Configuration</button>
             <button class="tab-button" onclick="showTab('commandManager')">🎮 Command Manager</button>
+            <button class="tab-button" onclick="showTab('liveConnections')" style="display: none;">🔴 Live Connections</button>
             <button class="tab-button" onclick="showTab('dataPaths')">📁 Available Data Paths</button>
             <button class="tab-button" onclick="showTab('customQuery')">🔍 Custom Query</button>
             <button class="tab-button" onclick="showTab('s3Config')">☁️ Cloud Status</button>
@@ -521,6 +522,193 @@
                         <button onclick="loadCommandHistory()">🔄 Refresh History</button>
                         <div id="commandHistoryContainer" style="margin-top: 15px;">
                             <div class="loading">Loading command history...</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Live Connections Tab -->
+            <div id="liveConnections" class="tab-panel">
+                <div class="section" style="display: none;">
+                    <h2>🔴 Live Connections - DISABLED</h2>
+                    <p>Streaming functionality has been disabled.</p>
+                    
+                    <div style="margin-bottom: 20px;">
+                        <button onclick="loadStreams()">🔄 Refresh Streams</button>
+                        <button onclick="showAddStreamForm()">➕ Create New Stream</button>
+                    </div>
+
+                    <!-- Add Stream Form (hidden by default) -->
+                    <div id="addStreamForm" style="display: none; margin: 20px 0; padding: 20px; background: #f8f9fa; border-radius: 5px;">
+                        <h4>Create New Historical Stream</h4>
+                        
+                        <div class="form-group">
+                            <label for="streamName">Stream Name:</label>
+                            <input type="text" id="streamName" placeholder="e.g., Navigation History">
+                        </div>
+                        
+                        <div class="form-group">
+                            <label for="streamPath">SignalK Path:</label>
+                            <div style="display: flex; gap: 10px; align-items: center;">
+                                <select id="streamPath" style="flex: 1;">
+                                    <option value="">Loading available paths...</option>
+                                </select>
+                                <button type="button" onclick="refreshSignalKPaths()" style="padding: 8px; background: #007bff; color: white; border: none; border-radius: 3px;" title="Refresh path list">🔄</button>
+                            </div>
+                            <small style="color: #666; display: block; margin-top: 5px;">
+                                Available paths from historical data. Click refresh if you don't see your path.
+                            </small>
+                        </div>
+                        
+                        <div class="form-group">
+                            <label for="streamTimeRange">Time Range:</label>
+                            <select id="streamTimeRange">
+                                <option value="1h">Last 1 Hour</option>
+                                <option value="6h">Last 6 Hours</option>
+                                <option value="24h">Last 24 Hours</option>
+                                <option value="7d">Last 7 Days</option>
+                                <option value="30d">Last 30 Days</option>
+                                <option value="custom">Custom Range</option>
+                            </select>
+                        </div>
+                        
+                        <div class="form-group" id="customTimeRange" style="display: none;">
+                            <label>Custom Time Range:</label>
+                            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+                                <input type="datetime-local" id="streamStartTime" placeholder="Start time">
+                                <input type="datetime-local" id="streamEndTime" placeholder="End time">
+                            </div>
+                        </div>
+                        
+                        <div class="form-group">
+                            <label for="streamResolution">Data Resolution:</label>
+                            <select id="streamResolution">
+                                <option value="1000">1 second</option>
+                                <option value="5000">5 seconds</option>
+                                <option value="15000">15 seconds</option>
+                                <option value="30000" selected>30 seconds</option>
+                                <option value="60000">1 minute</option>
+                                <option value="300000">5 minutes</option>
+                            </select>
+                        </div>
+                        
+                        <div class="form-group">
+                            <label for="streamRate">Streaming Rate:</label>
+                            <select id="streamRate">
+                                <option value="100">Fast (100ms intervals)</option>
+                                <option value="500" selected>Normal (500ms intervals)</option>
+                                <option value="1000">Slow (1 second intervals)</option>
+                                <option value="5000">Very Slow (5 second intervals)</option>
+                            </select>
+                        </div>
+                        
+                        <div class="form-group">
+                            <label for="streamAggregateMethod">Statistical Function:</label>
+                            <select id="streamAggregateMethod">
+                                <option value="average" selected>Average - arithmetic mean of values</option>
+                                <option value="min">Minimum - lowest value in time window</option>
+                                <option value="max">Maximum - highest value in time window</option>
+                                <option value="first">First - earliest value in time window</option>
+                                <option value="last">Last - most recent value in time window</option>
+                                <option value="mid">Median - middle value when sorted</option>
+                                <option value="middle_index">Middle Index - middle value by position</option>
+                            </select>
+                            <small style="color: #666; display: block; margin-top: 5px;">
+                                Statistical function applied to data within each time window
+                            </small>
+                        </div>
+                        
+                        <div class="form-group">
+                            <label for="streamWindowSize">Rolling Window Size:</label>
+                            <select id="streamWindowSize">
+                                <option value="5">5 data points</option>
+                                <option value="10" selected>10 data points</option>
+                                <option value="20">20 data points</option>
+                                <option value="50">50 data points</option>
+                                <option value="100">100 data points</option>
+                            </select>
+                            <small style="color: #666; display: block; margin-top: 5px;">
+                                Number of recent values used for real-time statistical calculations
+                            </small>
+                        </div>
+                        
+                        <div class="form-group">
+                            <label for="streamAutoStart">Auto-start stream:</label>
+                            <input type="checkbox" id="streamAutoStart" checked>
+                            <small style="color: #666; display: block; margin-top: 5px;">
+                                Start streaming immediately after creation
+                            </small>
+                        </div>
+                        
+                        <div style="margin-top: 20px; padding-top: 15px; border-top: 1px solid #ddd;">
+                            <button onclick="createStream()">✅ Create Stream</button>
+                            <button class="btn-secondary" onclick="hideAddStreamForm()">❌ Cancel</button>
+                        </div>
+                    </div>
+
+                    <!-- Active Streams Display -->
+                    <div id="streamsContainer">
+                        <div class="loading">Loading streams...</div>
+                    </div>
+                    
+                    <!-- Stream Statistics -->
+                    <div style="margin-top: 30px; padding-top: 20px; border-top: 1px solid #ddd;">
+                        <h3>📊 Stream Statistics</h3>
+                        <div id="streamStats" style="margin-top: 15px;">
+                            <div class="loading">Loading statistics...</div>
+                        </div>
+                    </div>
+
+                    <!-- Live Data Display -->
+                    <div style="margin-top: 30px; padding-top: 20px; border-top: 1px solid #ddd;">
+                        <h3>📡 Live Data Stream</h3>
+                        <p style="margin-bottom: 15px;">Real-time time-bucketed statistical streaming data (newest first, max 100 entries):</p>
+                        
+                        <!-- Data Interpretation Guide -->
+                        <div style="background: #f0f8ff; padding: 15px; border-radius: 5px; margin-bottom: 15px; font-size: 13px;">
+                            <strong>📊 How to Read This Data:</strong><br/>
+                            • <strong>📊 INITIAL</strong>: Full time window data (first load with many buckets)<br/>
+                            • <strong>📈 INCREMENTAL</strong>: New data points since last update (sliding window - fewer buckets)<br/>
+                            • <strong>Statistical Method</strong>: MAX, AVG, MIN, FIRST, LAST, MID applied to each time bucket<br/>
+                            • <strong>Buckets</strong>: Number of time intervals processed (e.g., 30-second time buckets)<br/>
+                            • <strong>Value</strong>: Result of statistical calculation for that time bucket<br/>
+                            • <strong>EMA/SMA</strong>: Moving averages (10-period) calculated for numeric values - EMA responds faster to changes<br/>
+                            • <strong>Time</strong>: Timestamp of the time bucket (not delivery time)
+                        </div>
+                        
+                        <div style="max-height: 400px; overflow-y: auto; border: 1px solid #ddd; border-radius: 5px;">
+                            <table id="liveDataTable" style="width: 100%; border-collapse: collapse; font-size: 12px;">
+                                <thead style="position: sticky; top: 0; background: #f8f9fa; z-index: 1;">
+                                    <tr>
+                                        <th style="padding: 8px; border-bottom: 1px solid #ddd; text-align: left;">Bucket Time</th>
+                                        <th style="padding: 8px; border-bottom: 1px solid #ddd; text-align: left;">Stream Type & Statistical Method</th>
+                                        <th style="padding: 8px; border-bottom: 1px solid #ddd; text-align: left;">Path</th>
+                                        <th style="padding: 8px; border-bottom: 1px solid #ddd; text-align: left;">Statistical Value</th>
+                                        <th style="padding: 8px; border-bottom: 1px solid #ddd; text-align: left;">EMA (10)</th>
+                                        <th style="padding: 8px; border-bottom: 1px solid #ddd; text-align: left;">SMA (10)</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="liveDataBody">
+                                    <tr>
+                                        <td colspan="6" style="padding: 20px; text-align: center; color: #666;">
+                                            No data streaming yet. Start a stream to see live data.
+                                        </td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+
+                        <div style="margin-top: 10px; font-size: 11px; color: #666;">
+                            <span id="liveDataCount">0</span> time-bucketed entries • 
+                            <button onclick="clearLiveData()" style="font-size: 11px; padding: 2px 8px;">🗑️ Clear</button>
+                            <button onclick="toggleLiveDataPause()" id="pauseDataBtn" style="font-size: 11px; padding: 2px 8px; margin-left: 5px;">⏸️ Pause</button>
+                            <button onclick="showDataSummary()" style="font-size: 11px; padding: 2px 8px; margin-left: 5px;">📊 Summary</button>
+                        </div>
+                        
+                        <!-- Data Summary Panel -->
+                        <div id="dataSummaryPanel" style="display: none; margin-top: 15px; padding: 15px; background: #f8f9fa; border-radius: 5px;">
+                            <h4>📊 Data Summary & Trends</h4>
+                            <div id="dataSummaryContent"></div>
                         </div>
                     </div>
                 </div>
@@ -1360,6 +1548,896 @@
             html += '</tbody></table></div>';
             container.innerHTML = html;
         }
+
+        // Live Connections / Stream Management Functions
+        let activeStreams = [];
+
+        async function loadStreams() {
+            // DISABLED - Streaming functionality has been disabled
+            // try {
+            //     const response = await fetch('/plugins/signalk-parquet/api/streams');
+            //     const result = await response.json();
+                
+            //     if (result.success) {
+            //         activeStreams = result.streams || [];
+            //         displayStreams(activeStreams);
+            //         loadStreamStats();
+            //     } else {
+            //         document.getElementById('streamsContainer').innerHTML = `<div class="error">Error loading streams: ${result.error}</div>`;
+            //     }
+            // } catch (error) {
+            //     document.getElementById('streamsContainer').innerHTML = `<div class="error">Network error: ${error.message}</div>`;
+            // }
+            return;
+        }
+
+        function displayStreams(streams) {
+            const container = document.getElementById('streamsContainer');
+            
+            if (!streams || streams.length === 0) {
+                container.innerHTML = `
+                    <div style="text-align: center; padding: 40px; background: #f8f9fa; border-radius: 5px; margin: 20px 0;">
+                        <h3 style="color: #666; margin-bottom: 10px;">No Active Streams</h3>
+                        <p style="color: #666; margin-bottom: 20px;">Create your first historical data stream to get started.</p>
+                        <button onclick="showAddStreamForm()">➕ Create Your First Stream</button>
+                    </div>
+                `;
+                return;
+            }
+
+            let html = '<div class="table-container"><table><thead><tr>';
+            html += '<th>Name</th><th>Path</th><th>Status</th><th>Time Range</th><th>Resolution</th><th>Rate</th><th>Statistics</th><th>Progress</th><th>Stream URL</th><th>Actions</th>';
+            html += '</tr></thead><tbody>';
+
+            streams.forEach((stream, index) => {
+                const isRunning = stream.status === 'running';
+                const isPaused = stream.status === 'paused';
+                const isStopped = stream.status === 'stopped' || stream.status === 'created';
+                
+                const status = isRunning ? '🟢 Running' : isPaused ? '⏸️ Paused' : '🔴 Stopped';
+                const progress = stream.dataPointsStreamed ? `${stream.dataPointsStreamed} points` : '-';
+                const timeRange = `${stream.timeRange || '1h'} (${stream.startTime || 'N/A'} - ${stream.endTime || 'N/A'})`;
+                const statistics = stream.aggregateMethod || 'average';
+                const streamMode = stream.isIncremental ? '📈' : '📊';
+                const lastTimestamp = stream.lastTimestamp ? new Date(stream.lastTimestamp).toLocaleTimeString() : 'Never';
+                
+                // Generate stream URLs
+                const streamName = stream.name.replace(/[^a-zA-Z0-9_]/g, '_').toLowerCase();
+                const aggregateMethod = stream.aggregateMethod || 'average';
+                const streamPath = `streaming.${streamName}.${aggregateMethod}`;
+                const wsUrl = `ws://${window.location.host}/signalk/v1/stream`;
+                const restUrl = `http://${window.location.host}/signalk/v1/api/vessels/self/${streamPath}`;
+                
+                html += `<tr>
+                    <td><strong>${stream.name}</strong></td>
+                    <td><code>${stream.path}</code></td>
+                    <td>${status}</td>
+                    <td>${timeRange}</td>
+                    <td>${stream.resolution || 30000}ms</td>
+                    <td>${stream.rate || 5000}ms</td>
+                    <td><small>${statistics} ${streamMode}<br/>Last: ${lastTimestamp}</small></td>
+                    <td>${progress}</td>
+                    <td>
+                        ${isRunning ? 
+                            `<div style="font-size: 11px;">
+                                <strong>Path:</strong> <code style="font-size: 10px;">${streamPath}</code><br/>
+                                <strong>REST:</strong> <a href="${restUrl}" target="_blank" style="font-size: 10px; color: #007bff;">API Link</a><br/>
+                                <strong>WS:</strong> <code style="font-size: 10px;">${wsUrl}</code>
+                            </div>` : 
+                            '<small style="color: #666;">Stream not running</small>'
+                        }
+                    </td>
+                    <td>
+                        ${isStopped ? 
+                            `<button onclick="startStream('${stream.id}')" style="padding: 5px 10px; font-size: 12px; background: #28a745;">▶️ Start</button>` : 
+                            `<button onclick="pauseStream('${stream.id}')" style="padding: 5px 10px; font-size: 12px; background: #ffc107;">${isPaused ? '▶️ Resume' : '⏸️ Pause'}</button>
+                             <button onclick="stopStream('${stream.id}')" style="padding: 5px 10px; font-size: 12px; background: #dc3545;">⏹️ Stop</button>`
+                        }
+                        <button onclick="editStream('${stream.id}')" style="padding: 5px 10px; font-size: 12px;">✏️ Edit</button>
+                        <button onclick="deleteStream('${stream.id}')" style="padding: 5px 10px; font-size: 12px; background: #dc3545;">🗑️ Delete</button>
+                    </td>
+                </tr>`;
+            });
+
+            html += '</tbody></table></div>';
+            container.innerHTML = html;
+            
+            // Update live connection icon based on active streams
+            updateLiveConnectionIcon(streams);
+        }
+
+        function updateLiveConnectionIcon(streams) {
+            const hasActiveStreams = streams && streams.some(stream => stream.status === 'running');
+            const icon = hasActiveStreams ? '🟢' : '🔴';
+            
+            // Update tab button
+            const tabButton = document.querySelector('.tab-button[onclick="showTab(\'liveConnections\')"]');
+            if (tabButton) {
+                tabButton.innerHTML = `${icon} Live Connections`;
+            }
+            
+            // Update section header
+            const sectionHeader = document.querySelector('#liveConnections h2');
+            if (sectionHeader) {
+                sectionHeader.innerHTML = `${icon} Live Connections`;
+            }
+        }
+
+        async function loadStreamStats() {
+            // DISABLED - Streaming functionality has been disabled
+            // try {
+            //     const response = await fetch('/plugins/signalk-parquet/api/streams/stats');
+            //     const result = await response.json();
+                
+            //     if (result.success) {
+            //         displayStreamStats(result.stats);
+            //     } else {
+            //         document.getElementById('streamStats').innerHTML = `<div class="error">Error loading stats: ${result.error}</div>`;
+            //     }
+            // } catch (error) {
+            //     document.getElementById('streamStats').innerHTML = `<div class="error">Network error: ${error.message}</div>`;
+            // }
+            return;
+        }
+
+        function displayStreamStats(stats) {
+            const container = document.getElementById('streamStats');
+            
+            const html = `
+                <div class="stats">
+                    <div class="stat-item">
+                        <div class="stat-value">${stats.totalStreams || 0}</div>
+                        <div class="stat-label">Total Streams</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-value">${stats.runningStreams || 0}</div>
+                        <div class="stat-label">Active</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-value">${stats.totalDataPointsStreamed || 0}</div>
+                        <div class="stat-label">Data Points Streamed</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-value">${stats.connectedClients || 0}</div>
+                        <div class="stat-label">Connected Clients</div>
+                    </div>
+                </div>
+            `;
+            
+            container.innerHTML = html;
+        }
+
+        function showAddStreamForm() {
+            document.getElementById('addStreamForm').style.display = 'block';
+            
+            // Show/hide custom time range based on selection
+            const timeRangeSelect = document.getElementById('streamTimeRange');
+            timeRangeSelect.addEventListener('change', function() {
+                const customDiv = document.getElementById('customTimeRange');
+                customDiv.style.display = this.value === 'custom' ? 'block' : 'none';
+            });
+        }
+
+        function hideAddStreamForm() {
+            document.getElementById('addStreamForm').style.display = 'none';
+            clearAddStreamForm();
+        }
+
+        function clearAddStreamForm() {
+            document.getElementById('streamName').value = '';
+            
+            // Reset path field to dropdown if it was converted to manual input
+            const pathField = document.getElementById('streamPath');
+            if (pathField.tagName === 'INPUT') {
+                // Recreate the select element
+                const pathContainer = pathField.parentNode;
+                const pathSelect = document.createElement('select');
+                pathSelect.id = 'streamPath';
+                pathSelect.style.cssText = 'flex: 1;';
+                pathSelect.innerHTML = '<option value="">Select a SignalK path...</option>';
+                
+                pathContainer.replaceChild(pathSelect, pathField);
+                
+                // Reload paths
+                loadSignalKPaths();
+            } else {
+                pathField.value = '';
+            }
+            
+            document.getElementById('streamTimeRange').value = '1h';
+            document.getElementById('streamResolution').value = '30000';
+            document.getElementById('streamRate').value = '500';
+            document.getElementById('streamAutoStart').checked = true;
+            document.getElementById('customTimeRange').style.display = 'none';
+            document.getElementById('streamStartTime').value = '';
+            document.getElementById('streamEndTime').value = '';
+        }
+
+        async function loadSignalKPaths() {
+            const pathSelect = document.getElementById('streamPath');
+            const originalHTML = pathSelect.innerHTML;
+            
+            try {
+                pathSelect.innerHTML = '<option value="">Loading paths...</option>';
+                
+                // Use the same endpoint as the Available Paths tab
+                const response = await fetch('/plugins/signalk-parquet/api/paths');
+                const result = await response.json();
+                
+                if (result.success && Array.isArray(result.paths) && result.paths.length > 0) {
+                    // Clear loading message and add paths
+                    pathSelect.innerHTML = '<option value="">Select a SignalK path...</option>';
+                    
+                    // Sort paths alphabetically for better UX
+                    const sortedPaths = result.paths.sort((a, b) => a.path.localeCompare(b.path));
+                    
+                    sortedPaths.forEach(pathInfo => {
+                        const option = document.createElement('option');
+                        option.value = pathInfo.path;
+                        option.textContent = `${pathInfo.path} (${pathInfo.fileCount} files)`;
+                        pathSelect.appendChild(option);
+                    });
+                    
+                } else {
+                    // No paths found - provide manual entry option
+                    pathSelect.innerHTML = '<option value="">No historical paths found</option>';
+                    const manualOption = document.createElement('option');
+                    manualOption.value = 'manual';
+                    manualOption.textContent = '✏️ Enter path manually';
+                    pathSelect.appendChild(manualOption);
+                }
+            } catch (error) {
+                console.error('Error loading SignalK paths:', error);
+                
+                // Provide manual entry option as fallback
+                pathSelect.innerHTML = '<option value="">Select or enter a SignalK path...</option>';
+                const manualOption = document.createElement('option');
+                manualOption.value = 'manual';
+                manualOption.textContent = '✏️ Enter path manually';
+                pathSelect.appendChild(manualOption);
+            }
+        }
+
+        async function refreshSignalKPaths() {
+            await loadSignalKPaths();
+        }
+
+        // Initialize page when DOM is loaded
+        document.addEventListener('DOMContentLoaded', async function() {
+            // Load SignalK paths for the dropdown
+            await loadSignalKPaths();
+            
+            // Set up auto-refresh for streams and stats - DISABLED
+            // setInterval(() => {
+            //     loadStreams();
+            // }, 5000); // Refresh every 5 seconds
+            
+            // Add event listener for path selection to handle manual entry
+            const pathSelect = document.getElementById('streamPath');
+            let manualInput = null;
+            
+            pathSelect.addEventListener('change', function() {
+                if (this.value === 'manual') {
+                    // Replace select with text input for manual entry
+                    manualInput = document.createElement('input');
+                    manualInput.type = 'text';
+                    manualInput.id = 'streamPath';
+                    manualInput.placeholder = 'Enter SignalK path manually (e.g., navigation.position)';
+                    manualInput.style.cssText = this.style.cssText;
+                    
+                    this.parentNode.replaceChild(manualInput, this);
+                    manualInput.focus();
+                }
+            });
+        });
+
+        async function createStream() {
+            const streamConfig = {
+                name: document.getElementById('streamName').value.trim(),
+                path: document.getElementById('streamPath').value.trim(),
+                timeRange: document.getElementById('streamTimeRange').value,
+                resolution: parseInt(document.getElementById('streamResolution').value),
+                rate: parseInt(document.getElementById('streamRate').value),
+                aggregateMethod: document.getElementById('streamAggregateMethod').value,
+                windowSize: parseInt(document.getElementById('streamWindowSize').value),
+                autoStart: document.getElementById('streamAutoStart').checked
+            };
+
+            // Handle custom time range
+            if (streamConfig.timeRange === 'custom') {
+                streamConfig.startTime = document.getElementById('streamStartTime').value;
+                streamConfig.endTime = document.getElementById('streamEndTime').value;
+                
+                if (!streamConfig.startTime || !streamConfig.endTime) {
+                    alert('Custom time range requires both start and end times');
+                    return;
+                }
+            }
+
+            if (!streamConfig.name || !streamConfig.path) {
+                alert('Stream name and path are required');
+                return;
+            }
+
+            try {
+                const response = await fetch('/plugins/signalk-parquet/api/streams', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(streamConfig)
+                });
+
+                const result = await response.json();
+
+                if (result.success) {
+                    hideAddStreamForm();
+                    await loadStreams();
+                    alert(`Stream '${streamConfig.name}' created successfully${streamConfig.autoStart ? ' and started' : ''}!`);
+                } else {
+                    alert(`Error creating stream: ${result.error}`);
+                }
+            } catch (error) {
+                alert(`Network error: ${error.message}`);
+            }
+        }
+
+        async function startStream(streamId) {
+            await streamAction(streamId, 'start');
+        }
+
+        async function pauseStream(streamId) {
+            await streamAction(streamId, 'pause');
+        }
+
+        async function stopStream(streamId) {
+            await streamAction(streamId, 'stop');
+        }
+
+        async function deleteStream(streamId) {
+            if (!confirm('Are you sure you want to delete this stream? This action cannot be undone.')) {
+                return;
+            }
+            await streamAction(streamId, 'delete');
+        }
+
+        async function streamAction(streamId, action) {
+            try {
+                const method = action === 'delete' ? 'DELETE' : 'PUT';
+                const url = action === 'delete' ? 
+                    `/plugins/signalk-parquet/api/streams/${streamId}` :
+                    `/plugins/signalk-parquet/api/streams/${streamId}/${action}`;
+                
+                const response = await fetch(url, { method });
+                const result = await response.json();
+
+                if (result.success) {
+                    await loadStreams();
+                    const actionMsg = action === 'delete' ? 'deleted' : `${action}ed`;
+                    // Don't show alert for successful actions, just refresh the display
+                } else {
+                    alert(`Error ${action}ing stream: ${result.error}`);
+                }
+            } catch (error) {
+                alert(`Network error: ${error.message}`);
+            }
+        }
+
+        async function editStream(streamId) {
+            try {
+                // Get the current stream configuration
+                const response = await fetch('/plugins/signalk-parquet/api/streams');
+                const result = await response.json();
+                
+                if (!result.success) {
+                    alert('Error loading stream data');
+                    return;
+                }
+                
+                const stream = result.streams.find(s => s.id === streamId);
+                if (!stream) {
+                    alert('Stream not found');
+                    return;
+                }
+                
+                // Populate the form with current values
+                document.getElementById('streamName').value = stream.name || '';
+                
+                // Handle path selection - check if it exists in dropdown
+                const pathSelect = document.getElementById('streamPath');
+                const streamPath = stream.path || '';
+                let pathFound = false;
+                
+                for (let option of pathSelect.options) {
+                    if (option.value === streamPath) {
+                        pathSelect.value = streamPath;
+                        pathFound = true;
+                        break;
+                    }
+                }
+                
+                // If path not found in dropdown, convert to manual input
+                if (!pathFound && streamPath) {
+                    const manualInput = document.createElement('input');
+                    manualInput.type = 'text';
+                    manualInput.id = 'streamPath';
+                    manualInput.value = streamPath;
+                    manualInput.placeholder = 'Enter SignalK path manually (e.g., navigation.position)';
+                    manualInput.style.cssText = pathSelect.style.cssText;
+                    
+                    pathSelect.parentNode.replaceChild(manualInput, pathSelect);
+                }
+                
+                document.getElementById('streamTimeRange').value = stream.timeRange || '1h';
+                document.getElementById('streamResolution').value = stream.resolution || 30000;
+                document.getElementById('streamRate').value = stream.rate || 1000;
+                document.getElementById('streamAggregateMethod').value = stream.aggregateMethod || 'average';
+                document.getElementById('streamWindowSize').value = stream.windowSize || 50;
+                document.getElementById('streamAutoStart').checked = false; // Don't auto-start on edit
+                
+                // Handle custom time range
+                if (stream.timeRange === 'custom') {
+                    document.getElementById('customTimeRange').style.display = 'block';
+                    document.getElementById('streamStartTime').value = stream.startTime || '';
+                    document.getElementById('streamEndTime').value = stream.endTime || '';
+                } else {
+                    document.getElementById('customTimeRange').style.display = 'none';
+                }
+                
+                // Show the form and change the create button to update
+                document.getElementById('addStreamForm').style.display = 'block';
+                document.getElementById('addStreamButton').style.display = 'none';
+                
+                // Change form title and button
+                const formTitle = document.querySelector('#addStreamForm h4');
+                formTitle.textContent = `Edit Stream: ${stream.name}`;
+                
+                // Replace create button with update/cancel buttons
+                const buttonContainer = document.querySelector('#addStreamForm .form-group:last-child > div');
+                buttonContainer.innerHTML = `
+                    <button onclick="updateStream('${streamId}')">✅ Update Stream</button>
+                    <button class="btn-secondary" onclick="cancelEditStream()">❌ Cancel</button>
+                `;
+                
+            } catch (error) {
+                alert(`Error loading stream for editing: ${error.message}`);
+            }
+        }
+
+        async function updateStream(streamId) {
+            const streamConfig = {
+                name: document.getElementById('streamName').value.trim(),
+                path: document.getElementById('streamPath').value.trim(),
+                timeRange: document.getElementById('streamTimeRange').value,
+                resolution: parseInt(document.getElementById('streamResolution').value),
+                rate: parseInt(document.getElementById('streamRate').value),
+                aggregateMethod: document.getElementById('streamAggregateMethod').value,
+                windowSize: parseInt(document.getElementById('streamWindowSize').value),
+                autoRestart: true // Restart if it was running
+            };
+
+            // Handle custom time range
+            if (streamConfig.timeRange === 'custom') {
+                streamConfig.startTime = document.getElementById('streamStartTime').value;
+                streamConfig.endTime = document.getElementById('streamEndTime').value;
+                
+                if (!streamConfig.startTime || !streamConfig.endTime) {
+                    alert('Custom time range requires both start and end times');
+                    return;
+                }
+            }
+
+            if (!streamConfig.name || !streamConfig.path) {
+                alert('Stream name and path are required');
+                return;
+            }
+
+            try {
+                const response = await fetch(`/plugins/signalk-parquet/api/streams/${streamId}`, {
+                    method: 'PUT',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(streamConfig)
+                });
+
+                const result = await response.json();
+
+                if (result.success) {
+                    cancelEditStream();
+                    await loadStreams();
+                    alert(`Stream '${streamConfig.name}' updated successfully!`);
+                } else {
+                    alert(`Error updating stream: ${result.error}`);
+                }
+            } catch (error) {
+                alert(`Network error: ${error.message}`);
+            }
+        }
+
+        function cancelEditStream() {
+            // Hide the form and reset it
+            hideAddStreamForm();
+            
+            // Reset form title and buttons
+            const formTitle = document.querySelector('#addStreamForm h4');
+            formTitle.textContent = 'Add New Stream Configuration';
+            
+            const buttonContainer = document.querySelector('#addStreamForm .form-group:last-child > div');
+            buttonContainer.innerHTML = `
+                <button onclick="createStream()">✅ Create Stream</button>
+                <button class="btn-secondary" onclick="hideAddStreamForm()">❌ Cancel</button>
+            `;
+        }
+
+        // Live Data Display Functions
+        let liveDataEntries = [];
+        let liveDataPaused = false;
+        const MAX_LIVE_ENTRIES = 100;
+
+        function addLiveDataEntry(streamId, streamName, path, value, timestamp, ema = null, sma = null) {
+            if (liveDataPaused) return;
+
+            // Check for duplicates using streamId (which now includes timestamp)
+            const existingEntry = liveDataEntries.find(entry => entry.streamId === streamId);
+            if (existingEntry) {
+                return; // Skip duplicate entry
+            }
+
+            const entry = {
+                timestamp: timestamp || new Date().toISOString(),
+                streamId: streamId,
+                streamName: streamName,
+                path: path,
+                value: value,
+                ema: ema,
+                sma: sma
+            };
+
+            // Add entry to array
+            liveDataEntries.push(entry);
+            
+            // Sort by timestamp (newest first)
+            liveDataEntries.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+
+            // Keep only max entries
+            if (liveDataEntries.length > MAX_LIVE_ENTRIES) {
+                liveDataEntries = liveDataEntries.slice(0, MAX_LIVE_ENTRIES);
+            }
+
+            updateLiveDataDisplay();
+        }
+
+        function updateLiveDataDisplay() {
+            const tbody = document.getElementById('liveDataBody');
+            const countElement = document.getElementById('liveDataCount');
+
+            countElement.textContent = liveDataEntries.length;
+
+            if (liveDataEntries.length === 0) {
+                tbody.innerHTML = `
+                    <tr>
+                        <td colspan="6" style="padding: 20px; text-align: center; color: #666;">
+                            No data streaming yet. Start a stream to see live data.
+                        </td>
+                    </tr>
+                `;
+                return;
+            }
+
+            let html = '';
+            liveDataEntries.forEach((entry, index) => {
+                // Create date object and handle UTC timestamps properly
+                const date = new Date(entry.timestamp);
+                const now = new Date();
+                
+                // Check if timestamp is from today
+                const isToday = date.toDateString() === now.toDateString();
+                
+                let timeStr;
+                if (isToday) {
+                    // Today: just show time
+                    timeStr = date.toLocaleTimeString();
+                } else {
+                    // Not today: show "Aug 21, 6:25 PM" format
+                    const options = { 
+                        month: 'short', 
+                        day: 'numeric', 
+                        hour: 'numeric', 
+                        minute: '2-digit',
+                        hour12: true 
+                    };
+                    timeStr = date.toLocaleString(undefined, options);
+                }
+                const valueStr = formatValue(entry.value);
+                const emaStr = entry.ema !== null ? entry.ema.toFixed(3) : '-';
+                const smaStr = entry.sma !== null ? entry.sma.toFixed(3) : '-';
+                const rowClass = index % 2 === 0 ? 'background: #f9f9f9;' : '';
+                
+
+                html += `
+                    <tr style="${rowClass}">
+                        <td style="padding: 6px 8px; border-bottom: 1px solid #eee; font-family: monospace;">${timeStr}</td>
+                        <td style="padding: 6px 8px; border-bottom: 1px solid #eee;"><strong>${entry.streamName}</strong></td>
+                        <td style="padding: 6px 8px; border-bottom: 1px solid #eee;"><code style="font-size: 11px;">${entry.path}</code></td>
+                        <td style="padding: 6px 8px; border-bottom: 1px solid #eee; font-family: monospace;">${valueStr}</td>
+                        <td style="padding: 6px 8px; border-bottom: 1px solid #eee; font-family: monospace; color: #007bff;">${emaStr}</td>
+                        <td style="padding: 6px 8px; border-bottom: 1px solid #eee; font-family: monospace; color: #28a745;">${smaStr}</td>
+                    </tr>
+                `;
+            });
+
+            tbody.innerHTML = html;
+        }
+
+        function formatValue(value) {
+            if (value === null || value === undefined) {
+                return '<em>null</em>';
+            }
+            
+            if (typeof value === 'object') {
+                if (value.latitude !== undefined && value.longitude !== undefined) {
+                    // Position object
+                    return `${value.latitude.toFixed(6)}, ${value.longitude.toFixed(6)}`;
+                }
+                // Other objects - show as JSON
+                return JSON.stringify(value);
+            }
+            
+            if (typeof value === 'number') {
+                return value.toFixed(3);
+            }
+            
+            return String(value);
+        }
+
+        function clearLiveData() {
+            if (confirm('Clear all live data entries?')) {
+                liveDataEntries = [];
+                updateLiveDataDisplay();
+            }
+        }
+
+        function toggleLiveDataPause() {
+            liveDataPaused = !liveDataPaused;
+            const btn = document.getElementById('pauseDataBtn');
+            btn.textContent = liveDataPaused ? '▶️ Resume' : '⏸️ Pause';
+            btn.style.background = liveDataPaused ? '#28a745' : '#ffc107';
+        }
+
+        function showDataSummary() {
+            const panel = document.getElementById('dataSummaryPanel');
+            const content = document.getElementById('dataSummaryContent');
+            
+            if (panel.style.display === 'none') {
+                // Analyze the data
+                const pathStats = {};
+                const streamTypes = {initial: 0, incremental: 0};
+                let totalBuckets = 0;
+                
+                liveDataEntries.forEach(entry => {
+                    // Extract path and value
+                    const path = entry.path;
+                    const value = parseFloat(entry.value);
+                    const streamName = entry.streamName;
+                    
+                    if (!isNaN(value)) {
+                        if (!pathStats[path]) {
+                            pathStats[path] = {
+                                values: [],
+                                methods: new Set(),
+                                bucketCounts: []
+                            };
+                        }
+                        pathStats[path].values.push(value);
+                        
+                        // Extract method and bucket count from stream name
+                        const methodMatch = streamName.match(/(INITIAL|INCREMENTAL): (\w+)/);
+                        if (methodMatch) {
+                            const [, type, method] = methodMatch;
+                            pathStats[path].methods.add(method);
+                            streamTypes[type.toLowerCase()]++;
+                        }
+                        
+                        // Extract bucket count
+                        const bucketMatch = streamName.match(/\((\d+) buckets\)/);
+                        if (bucketMatch) {
+                            const bucketCount = parseInt(bucketMatch[1]);
+                            pathStats[path].bucketCounts.push(bucketCount);
+                            totalBuckets += bucketCount;
+                        }
+                    }
+                });
+                
+                let summaryHtml = '<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">';
+                
+                // Stream Statistics
+                summaryHtml += '<div><strong>📈 Stream Activity:</strong><br/>';
+                summaryHtml += `Initial Loads: ${streamTypes.initial}<br/>`;
+                summaryHtml += `Incremental Updates: ${streamTypes.incremental}<br/>`;
+                summaryHtml += `Total Time Buckets: ${totalBuckets}</div>`;
+                
+                // Path Analysis
+                summaryHtml += '<div><strong>🎯 Path Analysis:</strong><br/>';
+                Object.entries(pathStats).forEach(([path, stats]) => {
+                    const values = stats.values;
+                    const min = Math.min(...values).toFixed(3);
+                    const max = Math.max(...values).toFixed(3);
+                    const avg = (values.reduce((a, b) => a + b, 0) / values.length).toFixed(3);
+                    const latest = values[0]?.toFixed(3) || 'N/A';
+                    const methods = Array.from(stats.methods).join(', ');
+                    const avgBuckets = stats.bucketCounts.length > 0 ? 
+                        (stats.bucketCounts.reduce((a, b) => a + b, 0) / stats.bucketCounts.length).toFixed(0) : 'N/A';
+                    
+                    summaryHtml += `<strong>${path}:</strong><br/>`;
+                    summaryHtml += `• Methods: ${methods}<br/>`;
+                    summaryHtml += `• Range: ${min} - ${max}<br/>`;
+                    summaryHtml += `• Average: ${avg}<br/>`;
+                    summaryHtml += `• Latest: ${latest}<br/>`;
+                    summaryHtml += `• Avg Buckets: ${avgBuckets}<br/><br/>`;
+                });
+                summaryHtml += '</div></div>';
+                
+                // Data Trends
+                summaryHtml += '<div style="margin-top: 15px;"><strong>📊 Data Interpretation:</strong><br/>';
+                summaryHtml += 'This shows your time-bucketed statistical streaming in action!<br/>';
+                summaryHtml += '• Each row represents a statistical calculation (MAX, AVG, etc.) for a time bucket<br/>';
+                summaryHtml += '• INITIAL = First load with full time window<br/>';
+                summaryHtml += '• INCREMENTAL = New buckets from sliding window updates<br/>';
+                summaryHtml += '• Values change as new data arrives and statistics are recalculated</div>';
+                
+                content.innerHTML = summaryHtml;
+                panel.style.display = 'block';
+            } else {
+                panel.style.display = 'none';
+            }
+        }
+
+        // WebSocket connection for real-time streaming data
+        let ws = null;
+        let wsReconnectAttempts = 0;
+        const maxReconnectAttempts = 5;
+
+        function connectWebSocket() {
+            // For now, use polling mode since we need a dedicated WebSocket server
+            startLiveDataPolling();
+        }
+
+        function handleWebSocketMessage(message) {
+            // Handle time-series data from our streaming service
+            if (message.type === 'timeSeriesData') {
+                handleTimeSeriesData(message);
+            }
+            // Handle regular SignalK delta messages
+            else if (message.updates && Array.isArray(message.updates)) {
+                message.updates.forEach(update => {
+                    if (update.values && Array.isArray(update.values)) {
+                        update.values.forEach(valueUpdate => {
+                            addLiveDataEntry(
+                                'signalk',
+                                'SignalK Stream',
+                                valueUpdate.path,
+                                valueUpdate.value,
+                                update.timestamp || new Date().toISOString()
+                            );
+                        });
+                    }
+                });
+            }
+        }
+
+        function handleTimeSeriesData(message) {
+            const { streamId, metadata, data } = message;
+            
+            
+            // Add each time-bucketed data point to the live display
+            data.forEach((point, index) => {
+                const displayValue = typeof point.value === 'object' ? 
+                    JSON.stringify(point.value) : 
+                    (typeof point.value === 'number' ? point.value.toFixed(3) : point.value);
+                
+                const displayName = `${metadata.aggregateMethod.toUpperCase()}: ${metadata.path}`;
+                const bucketInfo = `[${point.bucketIndex}/${metadata.totalPoints}]`;
+                
+                // Extract EMA and SMA if available for numeric values
+                const ema = (typeof point.ema === 'number') ? point.ema : null;
+                const sma = (typeof point.sma === 'number') ? point.sma : null;
+                
+                addLiveDataEntry(
+                    streamId,
+                    `${displayName} ${bucketInfo}`,
+                    metadata.path,
+                    displayValue,
+                    point.timestamp,
+                    ema,
+                    sma
+                );
+            });
+        }
+
+        // Enhanced polling function that shows real time-bucketed streaming data points
+        function startLiveDataPolling() {
+            
+            let pollCount = 0;
+            
+            setInterval(async () => {
+                if (liveDataPaused) return;
+
+                pollCount++;
+
+                // Get running streams first
+                try {
+                    const streamsResponse = await fetch('/plugins/signalk-parquet/api/streams');
+                    const streamsData = await streamsResponse.json();
+                    
+                    if (streamsData.success && streamsData.streams) {
+                        const runningStreams = streamsData.streams.filter(s => s.status === 'running');
+                        
+                        if (runningStreams.length === 0) {
+                            return;
+                        }
+
+                        // Fetch actual time-series data for each running stream
+                        for (const stream of runningStreams) {
+                            
+                            try {
+                                // Fetch the actual time-series data points
+                                const dataResponse = await fetch(`/plugins/signalk-parquet/api/streams/${stream.id}/data?limit=20`);
+                                const timeSeriesData = await dataResponse.json();
+                                
+                                if (timeSeriesData.success && timeSeriesData.data && timeSeriesData.data.length > 0) {
+                                    
+                                    // Add each individual time-bucketed data point to the display
+                                    timeSeriesData.data.slice(0, 10).forEach((dataPoint, index) => {
+                                        const displayValue = typeof dataPoint.value === 'object' ? 
+                                            JSON.stringify(dataPoint.value) : 
+                                            (typeof dataPoint.value === 'number' ? dataPoint.value.toFixed(3) : dataPoint.value);
+                                        
+                                        const streamMode = dataPoint.isIncremental ? '📈 INCREMENTAL' : '📊 INITIAL';
+                                        const bucketInfo = `bucket #${dataPoint.bucketIndex}`;
+                                        const displayName = `${streamMode}: ${dataPoint.aggregateMethod?.toUpperCase()} - ${dataPoint.path} (${bucketInfo})`;
+                                        
+                                        // Create unique ID to prevent duplicates across polls
+                                        const uniqueId = `${stream.id}_${dataPoint.bucketIndex}_${dataPoint.timestamp}`;
+                                        
+                                        // Extract EMA and SMA if available for numeric values
+                                        const ema = (typeof dataPoint.ema === 'number') ? dataPoint.ema : null;
+                                        const sma = (typeof dataPoint.sma === 'number') ? dataPoint.sma : null;
+                                        
+                                        // Add the individual data point
+                                        addLiveDataEntry(
+                                            uniqueId, 
+                                            displayName,
+                                            dataPoint.path, 
+                                            displayValue,
+                                            dataPoint.timestamp,
+                                            ema,
+                                            sma
+                                        );
+                                    });
+                                } else {
+                                }
+                            } catch (error) {
+                                console.error(`   ❌ Error fetching time-series data for stream ${stream.id}:`, error);
+                            }
+                        }
+                        
+                        // Show summary in console
+                        const totalPoints = runningStreams.reduce((sum, s) => sum + (s.dataPointsStreamed || 0), 0);
+                        const totalBuckets = runningStreams.reduce((sum, s) => sum + (s.totalBuckets || 0), 0);
+                        
+                    } else {
+                    }
+                } catch (error) {
+                    console.error('📊 Polling error:', error);
+                }
+            }, 3000); // Check every 3 seconds
+        }
+
+        // Initialize WebSocket connection when page loads  
+        setTimeout(() => {
+            connectWebSocket();
+        }, 1000);
 
     </script>
 </body>

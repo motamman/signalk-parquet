@@ -1,23 +1,35 @@
 # SignalK Parquet Data Store
 
-**Version 0.5.0-beta.8**
+**Version 0.5.1-beta.0**
 
-A comprehensive TypeScript-based SignalK plugin that saves marine data directly to Parquet files with regimen-based control, web interface for querying, and S3 upload capabilities.
+A comprehensive TypeScript-based SignalK plugin that saves marine data directly to Parquet files with regimen-based control and advanced querying features.
 
 ## Features
 
+### Core Data Management
 - **Smart Data Types**: Intelligent Parquet schema detection preserves native data types (DOUBLE, BOOLEAN) instead of forcing everything to strings
+- **Multiple File Formats**: Support for Parquet, JSON, and CSV output formats (querying in parquet only)
+- **Daily Consolidation**: Automatic daily file consolidation with S3 upload capabilities
+- **Real-time Buffering**: Efficient data buffering with configurable thresholds
+
+
+### Advanced Querying
+- **SignalK History API**: Full compatibility with SignalK History API specification
+- **Backward Querying**: Query backwards from current time or specific datetime with duration-based windows
+- **Time Alignment**: Automatic alignment of data from different sensors using time bucketing
+- **Timezone Intelligence**: Smart local-to-UTC conversion with configurable timezone handling
+- **DuckDB Integration**: Direct SQL querying of Parquet files with type-safe operations
+
+### Management & Control
 - **Command Management**: Register, execute, and manage SignalK commands with automatic path configuration
 - **Regimen-Based Data Collection**: Control data collection with command-based regimens
 - **Multi-Vessel Support**: Wildcard vessel contexts (`vessels.*`) with MMSI-based exclusion filtering
-- **Multiple File Formats**: Support for Parquet, JSON, and CSV output formats (querying in parquet only)
-- **Web Interface**: Responsive web interface for data exploration and configuration
-- **DuckDB Integration**: Query Parquet files directly with SQL
-- **History API Integration**: Full SignalK History API implementation for historical data queries
-- **S3 Integration**: Upload files to Amazon S3 with configurable timing
-- **Daily Consolidation**: Automatic daily file consolidation
-- **Real-time Buffering**: Efficient data buffering with configurable thresholds
 - **Source Filtering**: Filter data by SignalK source labels (bypasses server arbitration for raw data access)
+- **Comprehensive REST API**: Full programmatic control of queries and configuration
+
+### User Interface & Integration
+- **Responsive Web Interface**: Complete web-based management interface
+- **S3 Integration**: Upload files to Amazon S3 with configurable timing and conflict resolution
 - **Context Support**: Support for multiple vessel contexts with exclusion controls
 
 ## Installation
@@ -165,7 +177,7 @@ Use the web interface to configure which SignalK paths to collect:
 
 ### Command Management
 
-The plugin now streamlines command management with automatic path configuration:
+The plugin streamlines command management with automatic path configuration:
 
 1. **Register Command**: Commands are automatically registered with enabled path configurations
 2. **Start Command**: Click **Start** button to activate a command regimen
@@ -202,7 +214,7 @@ Regimens allow you to control data collection based on SignalK commands:
 }
 ```
 
-**Note**: Source filtering accesses raw data streams before SignalK server arbitration, allowing collection of data from specific sources that might otherwise be filtered out.
+**Note**: Source filtering accesses raw data before SignalK server arbitration, allowing collection of data from specific sources that might otherwise be filtered out.
 
 **Multi-Vessel Example**: Collect navigation data from all vessels except specific MMSI numbers
 ```json
@@ -364,6 +376,7 @@ This provides better compression, faster queries, and proper type safety for dat
 | `/api/config/paths` | GET/POST/PUT/DELETE | Manage path configurations |
 | `/api/test-s3` | POST | Test S3 connection |
 | `/api/health` | GET | Health check |
+| **SignalK History API** | | |
 | `/signalk/v1/history/values` | GET | SignalK History API - Get historical values |
 | `/signalk/v1/history/contexts` | GET | SignalK History API - Get available contexts |
 | `/signalk/v1/history/paths` | GET | SignalK History API - Get available paths |
@@ -558,8 +571,24 @@ The History API returns time-aligned data in standard SignalK format:
       "method": "average"
     },
     {
+      "path": "environment.wind.speedApparent.ema",
+      "method": "ema"
+    },
+    {
+      "path": "environment.wind.speedApparent.sma",
+      "method": "sma"
+    },
+    {
       "path": "environment.wind.speedApparent",
       "method": "max"
+    },
+    {
+      "path": "environment.wind.speedApparent.ema",
+      "method": "ema"
+    },
+    {
+      "path": "environment.wind.speedApparent.sma",
+      "method": "sma"
     },
     {
       "path": "navigation.position",
@@ -571,14 +600,65 @@ The History API returns time-aligned data in standard SignalK format:
     }
   ],
   "data": [
-    ["2025-01-01T00:00:00Z", 12.5, 15.2, {"latitude": 37.7749, "longitude": -122.4194}, {"latitude": 37.7750, "longitude": -122.4195}],
-    ["2025-01-01T00:01:00Z", 13.2, 16.1, {"latitude": 37.7750, "longitude": -122.4195}, {"latitude": 37.7751, "longitude": -122.4196}],
-    ["2025-01-01T00:02:00Z", 11.8, 14.3, null, null]
+    ["2025-01-01T00:00:00Z", 12.5, 12.5, 12.5, 15.2, 15.2, 15.2, {"latitude": 37.7749, "longitude": -122.4194}, null, null],
+    ["2025-01-01T00:01:00Z", 13.2, 12.64, 12.85, 16.1, 15.38, 15.65, {"latitude": 37.7750, "longitude": -122.4195}, null, null],
+    ["2025-01-01T00:02:00Z", 11.8, 12.45, 12.5, 14.3, 15.12, 15.2, null, null, null]
   ]
 }
 ```
 
-**Note**: Each data array contains `[timestamp, value1, value2, ...]` where values correspond to the paths in the same order as the `values` array. `null` indicates no data available for that path in that time bucket.
+**Note**: Each data array contains `[timestamp, value1, ema1, sma1, value2, ema2, sma2, ...]` where values correspond to the paths in the same order as the `values` array. EMA/SMA are automatically calculated for numeric values; non-numeric values show `null` for their EMA/SMA columns.
+
+
+## Moving Averages (EMA & SMA)
+
+The plugin automatically calculates **Exponential Moving Average (EMA)** and **Simple Moving Average (SMA)** for all numeric values when querying historical data, providing enhanced trend analysis capabilities.
+
+### Calculation Details
+
+#### Exponential Moving Average (EMA)
+- **Period**: ~10 equivalent (α = 0.2)
+- **Formula**: `EMA = α × currentValue + (1 - α) × previousEMA`
+- **Characteristic**: Responds faster to recent changes, emphasizes recent data
+- **Use Case**: Trend detection, rapid response to data changes
+
+#### Simple Moving Average (SMA)  
+- **Period**: 10 data points
+- **Formula**: Average of the last 10 values
+- **Characteristic**: Smooths out fluctuations, equal weight to all values in window
+- **Use Case**: Noise reduction, general trend analysis
+
+### Data Flow & Continuity
+
+```javascript
+// Initial Data Load (isIncremental: false)
+Point 1: Value=5.0, EMA=5.0,   SMA=5.0
+Point 2: Value=6.0, EMA=5.2,   SMA=5.5
+Point 3: Value=4.0, EMA=5.0,   SMA=5.0
+
+// Incremental Updates (isIncremental: true) 
+Point 4: Value=7.0, EMA=5.4,   SMA=5.5  // Continues from previous EMA
+Point 5: Value=5.5, EMA=5.42,  SMA=5.5  // Rolling 10-point SMA window
+```
+
+### Key Features
+
+- ✅ **Automatic Calculation**: No configuration required - calculated for all numeric data during queries
+- ✅ **Memory Efficient**: SMA maintains rolling 10-point window
+- ✅ **Non-Numeric Handling**: Non-numeric values (strings, objects) show `null` for EMA/SMA
+- ✅ **Precision**: Values rounded to 3 decimal places to prevent floating-point noise
+
+### Real-world Applications
+
+**Marine Data Examples:**
+- **Wind Speed**: EMA detects gusts quickly, SMA shows general wind conditions
+- **Battery Voltage**: EMA shows charging/discharging trends, SMA indicates overall battery health  
+- **Engine RPM**: EMA responds to throttle changes, SMA shows average operating level
+- **Water Temperature**: EMA detects thermal changes, SMA provides stable baseline
+
+**Available in:**
+- 📊 **History API**: EMA/SMA automatically calculated for all numeric paths
+
 
 ## S3 Integration
 
@@ -865,10 +945,10 @@ For detailed testing procedures, see [TESTING.md](TESTING.md).
 ### Version 0.5.0-beta.1
 - Complete TypeScript rewrite with enhanced type safety
 - **Source filtering with raw data access**: Bypass SignalK server arbitration for specific sources
-- **Streambundle API integration**: Improved performance with app.streambundle instead of subscription manager
+- **Enhanced API integration**: Improved performance with better subscription management
 - **Backward compatibility**: Automatic config migration for older path configurations
 - **Multi-vessel support**: `vessels.*` wildcard context with MMSI exclusion filtering
 - **Enhanced web interface**: Restored source filtering UI with improved controls
-- **Streamlined command management**: Automatic path configuration for commands
+- **Enhanced command management**: Automatic path configuration for commands
 - **SignalK API compliance**: Proper subscription patterns for vessel contexts
 - Performance optimizations and better error handling

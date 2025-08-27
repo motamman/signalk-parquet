@@ -16,17 +16,12 @@ export function getAvailablePaths(dataDir: string, app: ServerAPI): PathInfo[] {
     .replace(/:/g, '_');
   const vesselsDir = path.join(dataDir, selfContextPath);
 
-  app.debug(`🔍 Looking for paths in vessel directory: ${vesselsDir}`);
-  app.debug(`📡 Using vessel context: ${app.selfContext} → ${selfContextPath}`);
-
   if (!fs.existsSync(vesselsDir)) {
-    app.debug(`❌ Vessel directory does not exist: ${vesselsDir}`);
     return paths;
   }
 
   function walkPaths(currentPath: string, relativePath: string = ''): void {
     try {
-      app.debug(`🚶 Walking path: ${currentPath} (relative: ${relativePath})`);
       const items = fs.readdirSync(currentPath);
       items.forEach((item: string) => {
         const fullPath = path.join(currentPath, item);
@@ -46,25 +41,18 @@ export function getAvailablePaths(dataDir: string, app: ServerAPI): PathInfo[] {
             const fileCount = fs
               .readdirSync(fullPath)
               .filter((file: string) => file.endsWith('.parquet')).length;
-            app.debug(
-              `✅ Found SignalK path with data: ${newRelativePath} (${fileCount} files)`
-            );
             paths.push({
               path: newRelativePath,
               directory: fullPath,
               fileCount: fileCount,
             });
-          } else {
-            app.debug(`📁 Directory ${newRelativePath} has no parquet files`);
           }
 
           walkPaths(fullPath, newRelativePath);
         }
       });
     } catch (error) {
-      app.debug(
-        `❌ Error reading directory ${currentPath}: ${(error as Error).message}`
-      );
+      // Error reading directory - skip
     }
   }
 
@@ -72,9 +60,6 @@ export function getAvailablePaths(dataDir: string, app: ServerAPI): PathInfo[] {
     walkPaths(vesselsDir);
   }
 
-  app.debug(
-    `📊 Path discovery complete: found ${paths.length} paths with data`
-  );
   return paths;
 }
 

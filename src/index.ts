@@ -4,6 +4,7 @@ import { Router } from 'express';
 import { ParquetWriter } from './parquet-writer';
 import { registerHistoryApiRoute } from './HistoryAPI';
 import { registerApiRoutes } from './api-routes';
+import { HistoricalStreamingService } from './historical-streaming';
 import {
   SignalKPlugin,
   PluginConfig,
@@ -63,7 +64,6 @@ export default function (app: ServerAPI): SignalKPlugin {
   plugin.start = async function (
     options: Partial<PluginConfig>
   ): Promise<void> {
-    app.debug('Starting...');
 
     // Get vessel MMSI from SignalK
     const vesselMMSI =
@@ -81,6 +81,7 @@ export default function (app: ServerAPI): SignalKPlugin {
       fileFormat: options?.fileFormat || 'parquet',
       vesselMMSI: vesselMMSI,
       s3Upload: options?.s3Upload || { enabled: false },
+      // enableStreaming: options?.enableStreaming ?? false,
     };
 
     // Load webapp configuration including commands
@@ -133,9 +134,6 @@ export default function (app: ServerAPI): SignalKPlugin {
     );
     const msUntilMidnightUTC = nextMidnightUTC.getTime() - now.getTime();
 
-    app.debug(
-      `Next consolidation at ${nextMidnightUTC.toISOString()} (in ${Math.round(msUntilMidnightUTC / 1000 / 60)} minutes)`
-    );
 
     setTimeout(() => {
       consolidateYesterday(state.currentConfig!, state, app);
@@ -162,7 +160,6 @@ export default function (app: ServerAPI): SignalKPlugin {
     }
 
     // Register History API routes directly with the main app
-    app.debug('Registering History API routes with main server...');
     try {
       registerHistoryApiRoute(
         app as unknown as Router,
@@ -171,16 +168,32 @@ export default function (app: ServerAPI): SignalKPlugin {
         app.debug,
         app
       );
-      app.debug('History API routes registered with main server successfully');
     } catch (error) {
       app.error(`Failed to register History API routes with main server: ${error}`);
     }
 
-    app.debug('Started');
+    // Initialize historical streaming service (for history API endpoints)
+    try {
+      state.historicalStreamingService = new HistoricalStreamingService(app, state.currentConfig.outputDirectory);
+    } catch (error) {
+      app.error(`Failed to initialize historical streaming service: ${error}`);
+    }
+
+    // Initialize runtime streaming service if enabled in configuration
+    // if (state.currentConfig.enableStreaming) {
+    //   try {
+    //     const result = await initializeStreamingService(state, app);
+    //     if (!result.success) {
+    //       app.error(`Failed to initialize runtime streaming service: ${result.error}`);
+    //     }
+    //   } catch (error) {
+    //     app.error(`Error initializing runtime streaming service: ${error}`);
+    //   }
+    // }
+
   };
 
   plugin.stop = function (): void {
-    app.debug('Stopping...');
 
     // Clear intervals
     if (state.saveInterval) {
@@ -211,6 +224,25 @@ export default function (app: ServerAPI): SignalKPlugin {
         }
       });
       state.streamSubscriptions = [];
+    }
+
+    // Shutdown runtime streaming service
+    if (state.streamingService) {
+      try {
+        shutdownStreamingService(state, app);
+      } catch (error) {
+        app.error(`Error shutting down runtime streaming service: ${error}`);
+      }
+    }
+
+    // Shutdown historical streaming service
+    if (state.historicalStreamingService) {
+      try {
+        state.historicalStreamingService.shutdown();
+        state.historicalStreamingService = undefined;
+      } catch (error) {
+        app.error(`Error shutting down historical streaming service: ${error}`);
+      }
     }
 
     // Clear data structures
@@ -332,6 +364,12 @@ export default function (app: ServerAPI): SignalKPlugin {
           },
         },
       },
+      // enableStreaming: {
+      //   type: 'boolean',
+      //   title: 'Enable WebSocket Streaming',
+      //   description: 'Enable real-time streaming of historical data via WebSocket connections',
+      //   default: false,
+      // },
     },
   };
 
@@ -341,6 +379,60 @@ export default function (app: ServerAPI): SignalKPlugin {
   };
 
   return plugin;
+}
+
+// Streaming service lifecycle functions for runtime control
+export async function initializeStreamingService(state: PluginState, app: ServerAPI): Promise<{ success: boolean; error?: string }> {
+  try {
+    if (state.streamingService) {
+      return { success: true, error: 'Streaming service is already running' };
+    }
+
+    if (!state.currentConfig?.enableStreaming) {
+      return { success: false, error: 'Streaming is disabled in plugin configuration. Enable it in settings first.' };
+    }
+
+    // Reuse the existing historical streaming service instead of creating a new one
+    state.streamingService = state.historicalStreamingService;
+    state.streamingEnabled = true;
+    
+    // Restore any previous subscriptions if available
+    // The historical streaming service will automatically handle incoming subscriptions
+
+    return { success: true };
+  } catch (error) {
+    app.error(`Failed to initialize streaming service: ${error}`);
+    return { success: false, error: (error as Error).message };
+  }
+}
+
+export function shutdownStreamingService(state: PluginState, app: ServerAPI): { success: boolean; error?: string } {
+  try {
+    if (!state.streamingService) {
+      return { success: true, error: 'Streaming service is not running' };
+    }
+
+    // Store active subscriptions for potential restoration
+    if (state.streamingService.getActiveSubscriptions) {
+      const activeSubscriptions = state.streamingService.getActiveSubscriptions();
+      if (activeSubscriptions.length > 0) {
+        state.restoredSubscriptions = new Map();
+        activeSubscriptions.forEach((sub: any, index: number) => {
+          state.restoredSubscriptions!.set(`sub_${index}`, sub);
+        });
+      }
+    }
+
+    // Shutdown the streaming service
+    state.streamingService.shutdown();
+    state.streamingService = undefined;
+    state.streamingEnabled = false;
+
+    return { success: true };
+  } catch (error) {
+    app.error(`Error shutting down streaming service: ${error}`);
+    return { success: false, error: (error as Error).message };
+  }
 }
 
 // Re-export utility functions for backward compatibility
