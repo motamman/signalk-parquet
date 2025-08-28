@@ -428,6 +428,7 @@
             <button class="tab-button" onclick="showTab('liveConnections')" style="display: none;">🔴 Live Connections</button>
             <button class="tab-button" onclick="showTab('dataPaths')">📁 Available Data Paths</button>
             <button class="tab-button" onclick="showTab('customQuery')">🔍 Custom Query</button>
+            <button class="tab-button" onclick="showTab('aiAnalysis')">🧠 AI Analysis</button>
             <button class="tab-button" onclick="showTab('s3Config')">☁️ Cloud Status</button>
         </div>
 
@@ -714,6 +715,144 @@
                 </div>
             </div>
 
+            <!-- AI Analysis Tab -->
+            <div id="aiAnalysis" class="tab-panel">
+                <div class="section">
+                    <h2>🧠 AI Analysis with Claude</h2>
+                    <p>Analyze your maritime data using Claude AI for insights, patterns, and recommendations.</p>
+                    
+                    <!-- Connection Test -->
+                    <div style="margin-bottom: 20px;">
+                        <button onclick="testClaudeConnection()" id="testConnectionBtn">🔗 Test Claude Connection</button>
+                        <div id="claudeConnectionResult" style="margin-top: 10px;"></div>
+                    </div>
+                    
+                    
+                    <!-- Custom Analysis -->
+                    <div style="margin-bottom: 30px;">
+                        <h3>🎯 Custom Analysis</h3>
+                        <div style="margin-top: 15px;">
+                            <div style="margin-bottom: 15px;">
+                                <label>Data Paths (select one or more):</label>
+                                <div id="analysisDataPathContainer" style="max-height: 200px; overflow-y: auto; border: 1px solid #ddd; border-radius: 4px; padding: 10px; margin-top: 5px; background: white;">
+                                    <div style="color: #666; font-style: italic;">Loading available paths...</div>
+                                </div>
+                                <style>
+                                    .path-checkbox-row {
+                                        display: flex;
+                                        align-items: center;
+                                        padding: 8px 8px 8px 5px;
+                                        margin: 2px 0;
+                                        border-radius: 4px;
+                                    }
+                                    .path-checkbox-row:nth-child(odd) {
+                                        background-color: #f8f9fa;
+                                    }
+                                    .path-checkbox-row:nth-child(even) {
+                                        background-color: white;
+                                    }
+                                    .path-checkbox-row:hover {
+                                        background-color: #e3f2fd;
+                                    }
+                                    .path-info {
+                                        display: flex;
+                                        align-items: center;
+                                        flex-grow: 1;
+                                    }
+                                    .path-icon {
+                                        margin-right: 8px;
+                                        font-size: 16px;
+                                    }
+                                    .path-checkbox {
+                                        margin-left: auto;
+                                        width: 16px;
+                                        height: 16px;
+                                        flex-shrink: 0;
+                                    }
+                                </style>
+                                <div style="margin-top: 5px; font-size: 0.9em; color: #666; display: flex; justify-content: space-between; align-items: center;">
+                                    <span><span id="selectedPathCount">0</span> path(s) selected</span>
+                                    <div>
+                                        <button onclick="selectAllPaths()" style="font-size: 0.8em; padding: 2px 6px; margin-right: 5px;">Select All</button>
+                                        <button onclick="clearAllPaths()" style="font-size: 0.8em; padding: 2px 6px;">Clear All</button>
+                                    </div>
+                                </div>
+                            </div>
+                            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-bottom: 15px;">
+                                <div>
+                                    <label for="analysisStartDate">Start Date:</label>
+                                    <input type="datetime-local" id="analysisStartDate" style="width: 100%; padding: 8px; margin-top: 5px;">
+                                </div>
+                                <div>
+                                    <label for="analysisEndDate">End Date:</label>
+                                    <input type="datetime-local" id="analysisEndDate" style="width: 100%; padding: 8px; margin-top: 5px;">
+                                </div>
+                            </div>
+                            <div style="margin-bottom: 15px;">
+                                <label for="aggregationMethod">Aggregation Method:</label>
+                                <select id="aggregationMethod" style="width: 100%; padding: 8px; margin-top: 5px;">
+                                    <option value="average" selected>Average - Mean values over time buckets</option>
+                                    <option value="min">Min - Minimum values over time buckets</option>
+                                    <option value="max">Max - Maximum values over time buckets</option>
+                                    <option value="first">First - First value in each time bucket</option>
+                                    <option value="last">Last - Last value in each time bucket</option>
+                                    <option value="mid">Median - Middle values over time buckets</option>
+                                    <option value="multiple">Multiple - Get min, max, and average</option>
+                                </select>
+                            </div>
+                            <div style="margin-bottom: 15px;">
+                                <label for="resolution">Time Resolution:</label>
+                                <select id="resolution" style="width: 100%; padding: 8px; margin-top: 5px;">
+                                    <option value="">Auto - Let HistoryAPI choose optimal bucketing</option>
+                                    <option value="1000">1 Second - Highest detail</option>
+                                    <option value="10000">10 Seconds - High detail</option>
+                                    <option value="30000">30 Seconds - Medium detail</option>
+                                    <option value="60000" selected>1 Minute - Balanced (Recommended)</option>
+                                    <option value="120000">2 Minutes - Lower detail</option>
+                                    <option value="300000">5 Minutes - Low detail</option>
+                                    <option value="600000">10 Minutes - Lowest detail</option>
+                                </select>
+                                <p style="font-size: 0.9em; color: #666; margin: 5px 0 0 0;">Higher resolution = more data points but longer analysis time. Use Auto for optimal performance.</p>
+                            </div>
+                            <div style="margin-bottom: 15px;">
+                                <label for="claudeModel">Claude AI Model:</label>
+                                <select id="claudeModel" style="width: 100%; padding: 8px; margin-top: 5px;">
+                                    <option value="claude-opus-4-1-20250805">Claude Opus 4.1 - Most Capable & Intelligent (Premium)</option>
+                                    <option value="claude-opus-4-20250514">Claude Opus 4 - Previous Flagship Model (Premium)</option>
+                                    <option value="claude-sonnet-4-20250514">Claude Sonnet 4 - Exceptional Reasoning (High Performance)</option>
+                                    <option value="claude-3-7-sonnet-20250219" selected>Claude 3.7 Sonnet - Extended Thinking (Recommended)</option>
+                                    <option value="claude-3-5-haiku-20241022">Claude 3.5 Haiku - Fast & Balanced</option>
+                                    <option value="claude-3-haiku-20240307">Claude 3 Haiku - Fastest & Most Cost-Effective</option>
+                                </select>
+                                <p style="font-size: 0.9em; color: #666; margin: 5px 0 0 0;">Choose the Claude model for analysis. Sonnet provides the most detailed insights.</p>
+                            </div>
+                            <div style="margin-bottom: 15px;">
+                                <label for="customPrompt">Custom Analysis Request (optional):</label>
+                                <textarea id="customPrompt" placeholder="What specific insights are you looking for? Leave blank for general analysis..." style="width: 100%; padding: 8px; margin-top: 5px; min-height: 60px; resize: vertical;"></textarea>
+                            </div>
+                            <button onclick="runCustomAnalysis()" style="padding: 12px 25px;">🚀 Run Custom Analysis</button>
+                        </div>
+                    </div>
+                    
+                    <!-- Analysis Results -->
+                    <div id="analysisResults" style="display: none;">
+                        <h3>📊 Analysis Results</h3>
+                        <div id="analysisContent" style="background: #f8f9fa; padding: 20px; border-radius: 8px; margin-top: 15px;">
+                            <!-- Results will appear here -->
+                        </div>
+                    </div>
+                    
+                    <!-- Analysis History -->
+                    <div style="margin-top: 30px;">
+                        <h3>📈 Analysis History</h3>
+                        <button onclick="loadAnalysisHistory()" id="loadHistoryBtn">🔄 Load History</button>
+                        <div id="analysisHistory" style="margin-top: 15px;">
+                            <!-- History will appear here -->
+                        </div>
+                    </div>
+                </div>
+            </div>
+
             <!-- S3 Configuration Tab -->
             <div id="s3Config" class="tab-panel">
                 <div class="section">
@@ -849,6 +988,7 @@
                         <h4>${pathInfo.path}</h4>
                         <p>${pathInfo.fileCount} files</p>
                         <button onclick="generateQueryForPath('${pathInfo.path}', '${pathInfo.directory}')">📋 Generate Query</button>
+                        <button onclick="analyzeDataPath('${pathInfo.path}', '${pathInfo.directory}')" style="margin-left: 10px; background: #667eea; color: white; border: none; padding: 8px 12px; border-radius: 4px; cursor: pointer;">🧠 Analyze</button>
                     </div>
                 `;
             });
@@ -1042,6 +1182,11 @@
             const clickedButton = document.querySelector(`[onclick="showTab('${tabId}')"]`);
             if (clickedButton) {
                 clickedButton.classList.add('active');
+            }
+            
+            // Initialize AI Analysis tab when it becomes active
+            if (tabId === 'aiAnalysis') {
+                initializeAIAnalysisTab();
             }
         }
 
@@ -1859,27 +2004,8 @@
                 return;
             }
 
-            try {
-                const response = await fetch('/plugins/signalk-parquet/api/streams', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify(streamConfig)
-                });
-
-                const result = await response.json();
-
-                if (result.success) {
-                    hideAddStreamForm();
-                    await loadStreams();
-                    alert(`Stream '${streamConfig.name}' created successfully${streamConfig.autoStart ? ' and started' : ''}!`);
-                } else {
-                    alert(`Error creating stream: ${result.error}`);
-                }
-            } catch (error) {
-                alert(`Network error: ${error.message}`);
-            }
+            // Streaming functionality has been disabled
+            alert('Streaming functionality has been disabled');
         }
 
         async function startStream(streamId) {
@@ -1912,7 +2038,7 @@
                 const result = await response.json();
 
                 if (result.success) {
-                    await loadStreams();
+                    // Streaming disabled - no need to refresh
                     const actionMsg = action === 'delete' ? 'deleted' : `${action}ed`;
                     // Don't show alert for successful actions, just refresh the display
                 } else {
@@ -1926,8 +2052,9 @@
         async function editStream(streamId) {
             try {
                 // Get the current stream configuration
-                const response = await fetch('/plugins/signalk-parquet/api/streams');
-                const result = await response.json();
+                // Streaming functionality has been disabled
+                alert('Streaming functionality has been disabled');
+                return;
                 
                 if (!result.success) {
                     alert('Error loading stream data');
@@ -2032,27 +2159,8 @@
                 return;
             }
 
-            try {
-                const response = await fetch(`/plugins/signalk-parquet/api/streams/${streamId}`, {
-                    method: 'PUT',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify(streamConfig)
-                });
-
-                const result = await response.json();
-
-                if (result.success) {
-                    cancelEditStream();
-                    await loadStreams();
-                    alert(`Stream '${streamConfig.name}' updated successfully!`);
-                } else {
-                    alert(`Error updating stream: ${result.error}`);
-                }
-            } catch (error) {
-                alert(`Network error: ${error.message}`);
-            }
+            // Streaming functionality has been disabled
+            alert('Streaming functionality has been disabled');
         }
 
         function cancelEditStream() {
@@ -2365,72 +2473,8 @@
 
                 pollCount++;
 
-                // Get running streams first
-                try {
-                    const streamsResponse = await fetch('/plugins/signalk-parquet/api/streams');
-                    const streamsData = await streamsResponse.json();
-                    
-                    if (streamsData.success && streamsData.streams) {
-                        const runningStreams = streamsData.streams.filter(s => s.status === 'running');
-                        
-                        if (runningStreams.length === 0) {
-                            return;
-                        }
-
-                        // Fetch actual time-series data for each running stream
-                        for (const stream of runningStreams) {
-                            
-                            try {
-                                // Fetch the actual time-series data points
-                                const dataResponse = await fetch(`/plugins/signalk-parquet/api/streams/${stream.id}/data?limit=20`);
-                                const timeSeriesData = await dataResponse.json();
-                                
-                                if (timeSeriesData.success && timeSeriesData.data && timeSeriesData.data.length > 0) {
-                                    
-                                    // Add each individual time-bucketed data point to the display
-                                    timeSeriesData.data.slice(0, 10).forEach((dataPoint, index) => {
-                                        const displayValue = typeof dataPoint.value === 'object' ? 
-                                            JSON.stringify(dataPoint.value) : 
-                                            (typeof dataPoint.value === 'number' ? dataPoint.value.toFixed(3) : dataPoint.value);
-                                        
-                                        const streamMode = dataPoint.isIncremental ? '📈 INCREMENTAL' : '📊 INITIAL';
-                                        const bucketInfo = `bucket #${dataPoint.bucketIndex}`;
-                                        const displayName = `${streamMode}: ${dataPoint.aggregateMethod?.toUpperCase()} - ${dataPoint.path} (${bucketInfo})`;
-                                        
-                                        // Create unique ID to prevent duplicates across polls
-                                        const uniqueId = `${stream.id}_${dataPoint.bucketIndex}_${dataPoint.timestamp}`;
-                                        
-                                        // Extract EMA and SMA if available for numeric values
-                                        const ema = (typeof dataPoint.ema === 'number') ? dataPoint.ema : null;
-                                        const sma = (typeof dataPoint.sma === 'number') ? dataPoint.sma : null;
-                                        
-                                        // Add the individual data point
-                                        addLiveDataEntry(
-                                            uniqueId, 
-                                            displayName,
-                                            dataPoint.path, 
-                                            displayValue,
-                                            dataPoint.timestamp,
-                                            ema,
-                                            sma
-                                        );
-                                    });
-                                } else {
-                                }
-                            } catch (error) {
-                                console.error(`   ❌ Error fetching time-series data for stream ${stream.id}:`, error);
-                            }
-                        }
-                        
-                        // Show summary in console
-                        const totalPoints = runningStreams.reduce((sum, s) => sum + (s.dataPointsStreamed || 0), 0);
-                        const totalBuckets = runningStreams.reduce((sum, s) => sum + (s.totalBuckets || 0), 0);
-                        
-                    } else {
-                    }
-                } catch (error) {
-                    console.error('📊 Polling error:', error);
-                }
+                // Streaming functionality has been disabled - no running streams
+                return;
             }, 3000); // Check every 3 seconds
         }
 
@@ -2438,6 +2482,500 @@
         setTimeout(() => {
             connectWebSocket();
         }, 1000);
+
+        // ===========================================
+        // CLAUDE AI INTEGRATION FUNCTIONS
+        // ===========================================
+
+        // Test Claude API connection
+        async function testClaudeConnection() {
+            const btn = document.getElementById('testConnectionBtn');
+            const result = document.getElementById('claudeConnectionResult');
+            
+            btn.disabled = true;
+            btn.innerHTML = '🔄 Testing...';
+            result.innerHTML = '';
+            
+            try {
+                const response = await fetch('/plugins/signalk-parquet/api/analyze/test-connection', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' }
+                });
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    result.innerHTML = `<div style="color: green; padding: 10px; background: #d4edda; border-radius: 5px;">
+                        ✅ Claude API connection successful!<br>
+                        Model: ${data.model}<br>
+                        Response time: ${data.responseTime}ms
+                    </div>`;
+                } else {
+                    result.innerHTML = `<div style="color: red; padding: 10px; background: #f8d7da; border-radius: 5px;">
+                        ❌ Connection failed: ${data.error}
+                    </div>`;
+                }
+            } catch (error) {
+                result.innerHTML = `<div style="color: red; padding: 10px; background: #f8d7da; border-radius: 5px;">
+                    ❌ Error: ${error.message}
+                </div>`;
+            } finally {
+                btn.disabled = false;
+                btn.innerHTML = '🔗 Test Claude Connection';
+            }
+        }
+
+        // Load analysis templates and populate UI
+        async function loadAnalysisTemplates() {
+            try {
+                const response = await fetch('/plugins/signalk-parquet/api/analyze/templates');
+                const data = await response.json();
+                
+                if (data.success && data.templates) {
+                    // Flatten template categories into a single array
+                    const allTemplates = [];
+                    data.templates.forEach(category => {
+                        if (category.templates) {
+                            allTemplates.push(...category.templates);
+                        }
+                    });
+                    populateTemplateCards(allTemplates);
+                    populateTemplateDropdown(allTemplates);
+                }
+            } catch (error) {
+                console.error('Error loading analysis templates:', error);
+            }
+        }
+
+
+        // Populate template dropdown
+        function populateTemplateDropdown(templates) {
+            const select = document.getElementById('analysisTemplate');
+            select.innerHTML = '<option value="">Select a template...</option>';
+            
+            templates.forEach(template => {
+                const option = document.createElement('option');
+                option.value = template.id;
+                option.textContent = `${template.icon} ${template.name}`;
+                select.appendChild(option);
+            });
+        }
+
+        // Run quick analysis WITHOUT templates - just analyze data directly
+        async function runQuickAnalysis(dataPath) {
+            const result = document.getElementById('analysisResults');
+            const content = document.getElementById('analysisContent');
+            
+            result.style.display = 'block';
+            content.innerHTML = '<div style="text-align: center; padding: 20px;">🔄 Running direct analysis...</div>';
+            
+            try {
+                // Skip templates entirely - use custom analysis with generic prompt
+                const analysisRequest = {
+                    dataPath,
+                    analysisType: 'custom',
+                    customPrompt: `Analyze this maritime sensor data and provide insights. Focus on:
+1. Data patterns and trends over time
+2. Any anomalies or unusual readings  
+3. Statistical summary of the data
+4. Practical insights for maritime operations
+5. Data quality assessment
+
+Provide actionable insights based on what you observe in the data.`,
+                    timeRange: {
+                        start: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString(), // Last 7 days
+                        end: new Date().toISOString()
+                    }
+                };
+                
+                console.log(`🚀 Running template-free analysis for: ${dataPath}`);
+                
+                const response = await fetch('/plugins/signalk-parquet/api/analyze', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(analysisRequest)
+                });
+                
+                const data = await response.json();
+                
+                if (data.success && data.data) {
+                    displayAnalysisResult(data.data);
+                } else {
+                    content.innerHTML = `<div style="color: red;">❌ Analysis failed: ${data.error}</div>`;
+                }
+                
+            } catch (error) {
+                content.innerHTML = `<div style="color: red;">❌ Error: ${error.message}</div>`;
+            }
+        }
+
+        // Get selected data paths
+        function getSelectedDataPaths() {
+            const checkboxes = document.querySelectorAll('#analysisDataPathContainer input[type="checkbox"]:checked');
+            return Array.from(checkboxes).map(checkbox => checkbox.value);
+        }
+
+        // Update selected path count
+        function updateSelectedPathCount() {
+            const selectedPaths = getSelectedDataPaths();
+            document.getElementById('selectedPathCount').textContent = selectedPaths.length;
+        }
+
+        // Handle path checkbox change
+        function handlePathCheckboxChange() {
+            updateSelectedPathCount();
+        }
+
+        // Select all paths
+        function selectAllPaths() {
+            const checkboxes = document.querySelectorAll('#analysisDataPathContainer input[type="checkbox"]');
+            checkboxes.forEach(checkbox => checkbox.checked = true);
+            updateSelectedPathCount();
+        }
+
+        // Clear all paths
+        function clearAllPaths() {
+            const checkboxes = document.querySelectorAll('#analysisDataPathContainer input[type="checkbox"]');
+            checkboxes.forEach(checkbox => checkbox.checked = false);
+            updateSelectedPathCount();
+        }
+
+        // Get path icon based on path name
+        function getPathIcon(path) {
+            let icon = '📊';
+            if (path.includes('wind')) icon = '💨';
+            else if (path.includes('navigation')) icon = '🧭';
+            else if (path.includes('position')) icon = '📍';
+            else if (path.includes('temperature')) icon = '🌡️';
+            else if (path.includes('battery') || path.includes('electrical')) icon = '🔋';
+            else if (path.includes('command')) icon = '⚙️';
+            return icon;
+        }
+
+        // Populate analysis path checkboxes
+        function populateAnalysisPathCheckboxes(paths) {
+            const container = document.getElementById('analysisDataPathContainer');
+            
+            if (!paths || paths.length === 0) {
+                container.innerHTML = '<div style="color: #666; font-style: italic;">No data paths available</div>';
+                return;
+            }
+            
+            container.innerHTML = ''; // Clear loading message
+            
+            paths.forEach((pathInfo, index) => {
+                const checkboxDiv = document.createElement('div');
+                checkboxDiv.className = 'path-checkbox-row';
+                
+                const pathInfoDiv = document.createElement('div');
+                pathInfoDiv.className = 'path-info';
+                
+                const iconSpan = document.createElement('span');
+                iconSpan.className = 'path-icon';
+                iconSpan.textContent = getPathIcon(pathInfo.path);
+                
+                const label = document.createElement('label');
+                label.htmlFor = `path_${pathInfo.path.replace(/[^a-zA-Z0-9]/g, '_')}`;
+                label.textContent = `${pathInfo.path} (${pathInfo.fileCount} files)`;
+                label.style.cssText = 'cursor: pointer; margin: 0;';
+                
+                const checkbox = document.createElement('input');
+                checkbox.type = 'checkbox';
+                checkbox.value = pathInfo.path;
+                checkbox.id = `path_${pathInfo.path.replace(/[^a-zA-Z0-9]/g, '_')}`;
+                checkbox.onchange = handlePathCheckboxChange;
+                checkbox.className = 'path-checkbox';
+                
+                pathInfoDiv.appendChild(iconSpan);
+                pathInfoDiv.appendChild(label);
+                checkboxDiv.appendChild(pathInfoDiv);
+                checkboxDiv.appendChild(checkbox);
+                container.appendChild(checkboxDiv);
+            });
+            
+            updateSelectedPathCount();
+        }
+
+        // Run custom analysis
+        async function runCustomAnalysis() {
+            const selectedPaths = getSelectedDataPaths();
+            const customPrompt = document.getElementById('customPrompt').value;
+            const startDate = document.getElementById('analysisStartDate').value;
+            const endDate = document.getElementById('analysisEndDate').value;
+            const aggregationMethod = document.getElementById('aggregationMethod').value;
+            const resolution = document.getElementById('resolution').value;
+            const claudeModel = document.getElementById('claudeModel').value;
+            
+            if (!selectedPaths || selectedPaths.length === 0) {
+                alert('Please select at least one data path');
+                return;
+            }
+            
+            const result = document.getElementById('analysisResults');
+            const content = document.getElementById('analysisContent');
+            
+            result.style.display = 'block';
+            content.innerHTML = '<div style="text-align: center; padding: 20px;">🔄 Running custom analysis...</div>';
+            
+            try {
+                const analysisRequest = {
+                    dataPath: selectedPaths.join(','), // REST API supports comma-separated paths
+                    analysisType: 'custom',
+                    customPrompt: customPrompt || `Analyze this maritime sensor data and provide insights. Focus on:
+1. Data patterns and trends over time
+2. Any anomalies or unusual readings  
+3. Statistical summary of the data
+4. Practical insights for maritime operations
+5. Data quality assessment
+
+Provide actionable insights based on what you observe in the data.`,
+                    timeRange: {
+                        start: startDate ? new Date(startDate).toISOString() : new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString(),
+                        end: endDate ? new Date(endDate).toISOString() : new Date().toISOString()
+                    },
+                    aggregationMethod: aggregationMethod || 'average',
+                    resolution: resolution || '',  // Empty string = Auto
+                    claudeModel: claudeModel || 'claude-3-7-sonnet-20250219',
+                };
+                
+                console.log(`🚀 Running custom analysis for paths: ${selectedPaths.join(', ')}`);
+                
+                const response = await fetch('/plugins/signalk-parquet/api/analyze', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(analysisRequest)
+                });
+                
+                const data = await response.json();
+                
+                if (data.success && data.data) {
+                    displayAnalysisResult(data.data);
+                } else {
+                    content.innerHTML = `<div style="color: red;">❌ Analysis failed: ${data.error}</div>`;
+                }
+                
+            } catch (error) {
+                content.innerHTML = `<div style="color: red;">❌ Error: ${error.message}</div>`;
+            }
+        }
+
+        // Display analysis results
+        function displayAnalysisResult(analysisResult) {
+            const content = document.getElementById('analysisContent');
+            
+            let html = `
+                <div style="border-left: 4px solid #667eea; padding-left: 15px; margin-bottom: 20px;">
+                    <h4 style="color: #667eea; margin: 0 0 10px 0;">📊 Analysis Summary</h4>
+                    <div style="white-space: pre-wrap; line-height: 1.6;">${analysisResult.analysis}</div>
+                </div>
+            `;
+            
+            if (analysisResult.insights && analysisResult.insights.length > 0) {
+                html += `
+                    <div style="margin-bottom: 20px;">
+                        <h4 style="color: #28a745; margin: 0 0 10px 0;">💡 Key Insights</h4>
+                        <ul style="padding-left: 20px;">
+                            ${analysisResult.insights.map(insight => `<li style="margin-bottom: 5px;">${insight}</li>`).join('')}
+                        </ul>
+                    </div>
+                `;
+            }
+            
+            if (analysisResult.recommendations && analysisResult.recommendations.length > 0) {
+                html += `
+                    <div style="margin-bottom: 20px;">
+                        <h4 style="color: #ffc107; margin: 0 0 10px 0;">🎯 Recommendations</h4>
+                        <ul style="padding-left: 20px;">
+                            ${analysisResult.recommendations.map(rec => `<li style="margin-bottom: 5px;">${rec}</li>`).join('')}
+                        </ul>
+                    </div>
+                `;
+            }
+            
+            if (analysisResult.anomalies && analysisResult.anomalies.length > 0) {
+                html += `
+                    <div style="margin-bottom: 20px;">
+                        <h4 style="color: #dc3545; margin: 0 0 10px 0;">⚠️ Anomalies Detected</h4>
+                        <div style="background: #f8f9fa; padding: 10px; border-radius: 5px;">
+                            ${analysisResult.anomalies.map(anomaly => `
+                                <div style="margin-bottom: 8px; padding: 8px; background: white; border-radius: 4px;">
+                                    <strong>${anomaly.severity.toUpperCase()}</strong> - ${anomaly.description}
+                                    <br><small style="color: #666;">Timestamp: ${new Date(anomaly.timestamp).toLocaleString()}</small>
+                                </div>
+                            `).join('')}
+                        </div>
+                    </div>
+                `;
+            }
+            
+            html += `
+                <div style="margin-top: 20px; padding-top: 15px; border-top: 1px solid #dee2e6; font-size: 12px; color: #6c757d;">
+                    <strong>Analysis Metadata:</strong><br>
+                    Data Path: ${analysisResult.metadata.dataPath}<br>
+                    Records Analyzed: ${analysisResult.metadata.recordCount}<br>
+                    Confidence: ${(analysisResult.confidence * 100).toFixed(1)}%<br>
+                    Data Quality: ${analysisResult.dataQuality}<br>
+                    Timestamp: ${new Date(analysisResult.timestamp).toLocaleString()}
+                </div>
+            `;
+            
+            content.innerHTML = html;
+        }
+
+        // Load analysis history
+        async function loadAnalysisHistory() {
+            const btn = document.getElementById('loadHistoryBtn');
+            const container = document.getElementById('analysisHistory');
+            
+            btn.disabled = true;
+            btn.innerHTML = '🔄 Loading...';
+            
+            try {
+                const response = await fetch('/plugins/signalk-parquet/api/analyze/history');
+                const data = await response.json();
+                
+                if (data.success && data.data && data.data.length > 0) {
+                    let html = '<div style="margin-top: 10px;">';
+                    
+                    data.data.slice(0, 5).forEach((analysis, index) => { // Show last 5 analyses
+                        html += `
+                            <div style="background: white; border: 1px solid #ddd; border-radius: 5px; padding: 15px; margin-bottom: 10px;">
+                                <div style="display: flex; justify-content: between; align-items: center; margin-bottom: 10px;">
+                                    <strong>${analysis.metadata.analysisType}</strong>
+                                    <small style="color: #666;">${new Date(analysis.timestamp).toLocaleString()}</small>
+                                </div>
+                                <div style="font-size: 14px; color: #333; margin-bottom: 8px;">
+                                    Path: ${analysis.metadata.dataPath}
+                                </div>
+                                <div style="font-size: 13px; color: #666; max-height: 60px; overflow: hidden;">
+                                    ${analysis.analysis.substring(0, 200)}...
+                                </div>
+                                <button onclick="displayAnalysisResult(${JSON.stringify(analysis).replace(/"/g, '&quot;')})" 
+                                        style="margin-top: 8px; font-size: 12px; padding: 4px 8px;">
+                                    View Full Analysis
+                                </button>
+                            </div>
+                        `;
+                    });
+                    
+                    html += '</div>';
+                    container.innerHTML = html;
+                } else {
+                    container.innerHTML = '<p style="color: #666; margin-top: 10px;">No analysis history found.</p>';
+                }
+                
+            } catch (error) {
+                container.innerHTML = `<p style="color: red; margin-top: 10px;">Error loading history: ${error.message}</p>`;
+            } finally {
+                btn.disabled = false;
+                btn.innerHTML = '🔄 Load History';
+            }
+        }
+
+        // Analyze data from Data Paths tab
+        async function analyzeDataPath(signalkPath, directory) {
+            // Switch to AI Analysis tab
+            showTab('aiAnalysis');
+            
+            // Select the checkbox for this path in the custom analysis form
+            const checkboxId = `path_${signalkPath.replace(/[^a-zA-Z0-9]/g, '_')}`;
+            const checkbox = document.getElementById(checkboxId);
+            if (checkbox) {
+                // Clear all other selections and select only this path
+                const allCheckboxes = document.querySelectorAll('#analysisDataPathContainer input[type="checkbox"]');
+                allCheckboxes.forEach(cb => cb.checked = false);
+                checkbox.checked = true;
+                updateSelectedPathCount();
+            }
+            
+            // Scroll to custom analysis section
+            document.getElementById('analysisTemplate').scrollIntoView({ behavior: 'smooth' });
+        }
+
+        // Initialize AI Analysis tab when it becomes active
+        function initializeAIAnalysisTab() {
+            // Load available data paths for both cards and dropdown
+            loadAvailableDataPaths();
+            
+            // Set default date range (last 24 hours)
+            const now = new Date();
+            const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+            
+            document.getElementById('analysisEndDate').value = now.toISOString().slice(0, 16);
+            document.getElementById('analysisStartDate').value = yesterday.toISOString().slice(0, 16);
+        }
+        
+        // Load available data paths for analysis
+        async function loadAvailableDataPaths() {
+            try {
+                const response = await fetch('/plugins/signalk-parquet/api/paths');
+                const data = await response.json();
+                
+                if (data.success && data.paths) {
+                    // Populate custom analysis checkboxes
+                    populateAnalysisPathCheckboxes(data.paths);
+                } else {
+                    console.error('Failed to load data paths:', data.error);
+                }
+            } catch (error) {
+                console.error('Error loading available data paths:', error);
+            }
+        }
+
+        // Load data paths for analysis dropdown
+        async function loadDataPathsForAnalysis() {
+            try {
+                const response = await fetch('/plugins/signalk-parquet/api/paths');
+                const data = await response.json();
+                
+                if (data.success && data.paths) {
+                    const container = document.getElementById('analysisDataPathContainer');
+                    
+                    if (data.paths.length === 0) {
+                        container.innerHTML = '<div style="color: #666; font-style: italic;">No data paths available</div>';
+                        return;
+                    }
+                    
+                    container.innerHTML = ''; // Clear loading message
+                    
+                    data.paths.forEach((pathInfo, index) => {
+                        const checkboxDiv = document.createElement('div');
+                        checkboxDiv.className = 'path-checkbox-row';
+                        
+                        const pathInfoDiv = document.createElement('div');
+                        pathInfoDiv.className = 'path-info';
+                        
+                        const iconSpan = document.createElement('span');
+                        iconSpan.className = 'path-icon';
+                        iconSpan.textContent = getPathIcon(pathInfo.path);
+                        
+                        const label = document.createElement('label');
+                        label.htmlFor = `path_${pathInfo.path.replace(/[^a-zA-Z0-9]/g, '_')}`;
+                        label.textContent = `${pathInfo.path} (${pathInfo.fileCount} files)`;
+                        label.style.cssText = 'cursor: pointer; margin: 0;';
+                        
+                        const checkbox = document.createElement('input');
+                        checkbox.type = 'checkbox';
+                        checkbox.value = pathInfo.path;
+                        checkbox.id = `path_${pathInfo.path.replace(/[^a-zA-Z0-9]/g, '_')}`;
+                        checkbox.onchange = handlePathCheckboxChange;
+                        checkbox.className = 'path-checkbox';
+                        
+                        pathInfoDiv.appendChild(iconSpan);
+                        pathInfoDiv.appendChild(label);
+                        checkboxDiv.appendChild(pathInfoDiv);
+                        checkboxDiv.appendChild(checkbox);
+                        container.appendChild(checkboxDiv);
+                    });
+                    
+                    updateSelectedPathCount();
+                }
+            } catch (error) {
+                console.error('Error loading data paths for analysis:', error);
+                const container = document.getElementById('analysisDataPathContainer');
+                container.innerHTML = '<div style="color: #d32f2f;">Error loading paths</div>';
+            }
+        }
 
     </script>
 </body>
