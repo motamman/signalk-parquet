@@ -1,8 +1,8 @@
 # SignalK Parquet Data Store
 
-**Version 0.5.1-beta.0**
+**Version 0.5.2-beta.1**
 
-A comprehensive TypeScript-based SignalK plugin that saves marine data directly to Parquet files with regimen-based control and advanced querying features.
+A comprehensive TypeScript-based SignalK plugin and webpp that saves marine data directly to Parquet files with regimen-based control and advanced querying features, including a REST API built on the SignalK History API and Claude AI history data analysis. 
 
 ## Features
 
@@ -10,7 +10,7 @@ A comprehensive TypeScript-based SignalK plugin that saves marine data directly 
 - **Smart Data Types**: Intelligent Parquet schema detection preserves native data types (DOUBLE, BOOLEAN) instead of forcing everything to strings
 - **Multiple File Formats**: Support for Parquet, JSON, and CSV output formats (querying in parquet only)
 - **Daily Consolidation**: Automatic daily file consolidation with S3 upload capabilities
-- **Real-time Buffering**: Efficient data buffering with configurable thresholds
+- **Near Real-time Buffering**: Efficient data buffering with configurable thresholds
 
 
 ### Advanced Querying
@@ -31,6 +31,13 @@ A comprehensive TypeScript-based SignalK plugin that saves marine data directly 
 - **Responsive Web Interface**: Complete web-based management interface
 - **S3 Integration**: Upload files to Amazon S3 with configurable timing and conflict resolution
 - **Context Support**: Support for multiple vessel contexts with exclusion controls
+
+### Claude AI Integration
+- **AI-Powered Analysis**: Advanced maritime data analysis using Claude AI models
+- **Pre-built Templates**: Ready-to-use analysis templates for common maritime operations (TO COME)
+- **Custom Analysis**: Create custom analysis prompts for specific operational needs
+- **Anomaly Detection**: Intelligent detection of unusual patterns and safety concerns
+- **Performance Insights**: AI-generated insights for fuel efficiency and operational optimization
 
 ## Installation
 
@@ -144,6 +151,39 @@ Configure S3 upload settings in the plugin configuration:
 | **Access Key ID** | AWS credentials (optional) | - |
 | **Secret Access Key** | AWS credentials (optional) | - |
 | **Delete After Upload** | Delete local files after upload | `false` |
+
+### Claude AI Configuration
+
+Configure Claude AI integration in the plugin configuration for advanced data analysis:
+
+| Setting | Description | Default |
+|---------|-------------|---------|
+| **Enable Claude Integration** | Enable AI-powered data analysis | `false` |
+| **API Key** | Anthropic Claude API key (required) | - |
+| **Model** | Claude model to use for analysis | `claude-3-7-sonnet-20250219` |
+| **Max Tokens** | Maximum tokens for AI responses | `4000` |
+| **Temperature** | AI creativity level (0-1) | `0.3` |
+
+#### Supported Claude Models
+
+| Model | Description | Use Case |
+|-------|-------------|----------|
+| `claude-opus-4-1-20250805` | Latest Opus model - highest intelligence | Complex analysis, detailed insights |
+| `claude-opus-4-20250514` | Opus model - very high intelligence | Advanced maritime analysis |
+| `claude-sonnet-4-20250514` | Sonnet model - balanced performance | General analysis tasks |
+| `claude-3-7-sonnet-20250219` | Updated Sonnet - good performance | **Recommended default** |
+| `claude-3-5-haiku-20241022` | Haiku model - fast responses | Quick analysis, simple tasks |
+| `claude-3-haiku-20240307` | Original Haiku - fastest | Basic analysis |
+
+#### Getting a Claude API Key
+
+1. Visit [Anthropic Console](https://console.anthropic.com/)
+2. Create an account or sign in
+3. Navigate to **API Keys** section
+4. Generate a new API key
+5. Copy the key and paste it in the plugin configuration
+
+**Note**: Claude AI analysis requires an active Anthropic API subscription. Usage is billed based on tokens consumed during analysis.
 
 ## Path Configuration
 
@@ -376,6 +416,12 @@ This provides better compression, faster queries, and proper type safety for dat
 | `/api/config/paths` | GET/POST/PUT/DELETE | Manage path configurations |
 | `/api/test-s3` | POST | Test S3 connection |
 | `/api/health` | GET | Health check |
+| **Claude AI Analysis API** | | |
+| `/api/claude/analyze` | POST | Perform AI analysis on data |
+| `/api/claude/templates` | GET | Get available analysis templates |
+| `/api/claude/quick-analysis` | POST | Quick analysis using templates |
+| `/api/claude/history` | GET | Get analysis history |
+| `/api/claude/test` | GET | Test Claude API connection |
 | **SignalK History API** | | |
 | `/signalk/v1/history/values` | GET | SignalK History API - Get historical values |
 | `/signalk/v1/history/contexts` | GET | SignalK History API - Get available contexts |
@@ -609,6 +655,166 @@ The History API returns time-aligned data in standard SignalK format:
 
 **Note**: Each data array contains `[timestamp, value1, ema1, sma1, value2, ema2, sma2, ...]` where values correspond to the paths in the same order as the `values` array. EMA/SMA are automatically calculated for numeric values; non-numeric values show `null` for their EMA/SMA columns.
 
+## Claude AI Analysis
+
+The plugin integrates Claude AI to provide intelligent analysis of maritime data, offering insights that would be difficult to extract through traditional querying methods.
+
+### PLANNED Analysis Templates NB: NOT YET IMPLEMENTED
+
+EXAMPLES OF POSSIBLE Pre-built analysis templates provide ready-to-use analysis for common maritime operations:
+
+#### Navigation & Routing Templates
+- **Navigation Summary**: Comprehensive analysis of navigation patterns and route efficiency
+- **Route Optimization**: Identify opportunities to optimize routes for efficiency and safety
+- **Anchoring Analysis**: Analyze anchoring patterns, duration, and safety considerations
+
+#### Weather & Environment Templates
+- **Weather Impact Analysis**: Analyze how weather conditions affect vessel performance
+- **Wind Pattern Analysis**: Detailed wind analysis for sailing optimization
+
+#### Electrical System Templates
+- **Battery Health Assessment**: Comprehensive battery performance and charging pattern analysis
+- **Power Consumption Analysis**: Analyze electrical power usage patterns and efficiency
+
+#### Safety & Monitoring Templates
+- **Safety Anomaly Detection**: Detect unusual patterns that might indicate safety concerns
+- **Equipment Health Monitoring**: Monitor equipment performance and predict maintenance needs
+
+#### Performance & Efficiency Templates
+- **Fuel Efficiency Analysis**: Analyze fuel consumption patterns and identify efficiency opportunities
+- **Overall Performance Trends**: Comprehensive vessel performance analysis over time
+
+### Using Claude AI Analysis
+
+#### Via Web Interface
+1. Navigate to the plugin's web interface
+2. Go to the **🧠 AI Analysis** tab
+3. Select a data path to analyze
+4. Choose an analysis template or create custom analysis
+5. Configure time range and analysis parameters
+6. Click **Analyze Data** to generate insights
+
+#### Via API
+
+**Test Claude Connection:**
+```bash
+curl http://localhost:3000/plugins/signalk-parquet/api/claude/test
+```
+
+**Get Available Templates:**
+```bash
+curl http://localhost:3000/plugins/signalk-parquet/api/claude/templates
+```
+
+**Quick Template-based Analysis:**
+```bash
+curl -X POST http://localhost:3000/plugins/signalk-parquet/api/claude/quick-analysis \
+  -H "Content-Type: application/json" \
+  -d '{
+    "dataPath": "navigation.position",
+    "templateId": "navigation-summary",
+    "timeRange": {
+      "start": "2025-01-01T00:00:00Z",
+      "end": "2025-01-02T00:00:00Z"
+    }
+  }'
+```
+
+**Custom Analysis:**
+```bash
+curl -X POST http://localhost:3000/plugins/signalk-parquet/api/claude/analyze \
+  -H "Content-Type: application/json" \
+  -d '{
+    "dataPath": "environment.wind.speedTrue,navigation.speedOverGround",
+    "analysisType": "correlation",
+    "customPrompt": "Analyze the relationship between wind speed and vessel speed. Identify optimal wind conditions for best performance.",
+    "timeRange": {
+      "start": "2025-01-01T00:00:00Z",
+      "end": "2025-01-07T00:00:00Z"
+    },
+    "aggregationMethod": "average",
+    "resolution": "3600000"
+  }'
+```
+
+### Analysis Response Format
+
+Claude AI analysis returns structured insights:
+
+```json
+{
+  "id": "analysis_1234567890_abcdef123",
+  "analysis": "Main analysis text with detailed insights",
+  "insights": [
+    "Key insight 1",
+    "Key insight 2",
+    "Key insight 3"
+  ],
+  "recommendations": [
+    "Actionable recommendation 1",
+    "Actionable recommendation 2"
+  ],
+  "anomalies": [
+    {
+      "timestamp": "2025-01-01T12:00:00Z",
+      "value": 25.5,
+      "expectedRange": {"min": 10.0, "max": 20.0},
+      "severity": "medium",
+      "description": "Wind speed higher than normal range",
+      "confidence": 0.87
+    }
+  ],
+  "confidence": 0.92,
+  "dataQuality": "High quality data with 98% completeness",
+  "timestamp": "2025-01-01T15:30:00Z",
+  "metadata": {
+    "dataPath": "environment.wind.speedTrue",
+    "analysisType": "summary",
+    "recordCount": 1440,
+    "timeRange": {
+      "start": "2025-01-01T00:00:00Z",
+      "end": "2025-01-02T00:00:00Z"
+    }
+  }
+}
+```
+
+### Analysis History
+
+All Claude AI analyses are automatically saved and can be retrieved:
+
+**Get Analysis History:**
+```bash
+curl http://localhost:3000/plugins/signalk-parquet/api/claude/history?limit=10
+```
+
+History files are stored in: `data/analysis-history/analysis_*.json`
+
+### Best Practices
+
+1. **Data Quality**: Ensure good data coverage for more reliable analysis
+2. **Time Ranges**: Use appropriate time ranges - longer for trends, shorter for anomalies
+3. **Path Selection**: Combine related paths for correlation analysis
+4. **Template Usage**: Start with templates then customize prompts as needed
+5. **API Limits**: Be mindful of Anthropic API token limits and costs
+6. **Model Selection**: Use Opus for complex analysis, Sonnet for general use, Haiku for quick insights
+
+### Troubleshooting Claude AI
+
+**Common Issues:**
+- **"Claude not enabled"**: Check plugin configuration and enable Claude integration
+- **"API key missing"**: Add valid Anthropic API key in plugin settings
+- **"Analysis timeout"**: Reduce data size or use faster model (Haiku)
+- **"Token limit exceeded"**: Reduce time range or use data sampling
+
+**Debug Claude Integration:**
+```bash
+# Test API connection
+curl http://localhost:3000/plugins/signalk-parquet/api/claude/test
+
+# Check plugin logs for Claude-specific messages
+journalctl -u signalk -f | grep -i claude
+```
 
 ## Moving Averages (EMA & SMA)
 
@@ -879,6 +1085,20 @@ For detailed testing procedures, see [TESTING.md](TESTING.md).
 6. Submit a pull request
 
 ## Changelog
+
+### Version 0.5.1-beta.1
+- **🤖 Claude AI Integration**: Added comprehensive Claude AI integration with configurable options
+  - New Claude AI configuration settings in types and index files
+  - Support for AI-powered data analysis and insights
+  - Configurable AI model parameters and endpoints
+- **📈 Enhanced Analytics**: Expanded moving averages (EMA/SMA) calculations across the platform
+  - Automatic EMA and SMA calculations for all numeric streams in HistoryAPI
+  - Enhanced data points with moving averages in historical streaming service
+  - Live data entries now include EMA and SMA calculations for real-time analytics
+  - Improved deduplication of data points in historical streaming service
+- **🔧 Streaming Optimization**: Disabled streaming functionality to improve performance and reliability
+  - Better resource management and reduced memory usage
+  - More stable data processing pipeline
 
 ### Version 0.5.0-beta.8
 - **🔧 Fixed History API Time Bucketing**: Resolved SQL type casting errors in time bucketing queries

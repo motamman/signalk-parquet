@@ -23,6 +23,8 @@ import {
   PluginState,
   PluginConfig,
   PathConfig,
+  AnalysisApiResponse,
+  ClaudeConnectionTestResponse,
 } from './types';
 import {
   loadWebAppConfig,
@@ -37,11 +39,48 @@ import {
 import { updateDataSubscriptions } from './data-handler';
 import { toContextFilePath, toParquetFilePath } from './utils/path-helpers';
 import { ServerAPI, Context } from '@signalk/server-api';
+import { ClaudeAnalyzer, AnalysisRequest } from './claude-analyzer';
+import { AnalysisTemplateManager, TEMPLATE_CATEGORIES } from './analysis-templates';
 // import { initializeStreamingService, shutdownStreamingService } from './index';
 
 // AWS S3 for testing connection
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let ListObjectsV2Command: any;
+
+// Helper function to migrate deprecated Claude model names
+function migrateClaudeModel(model?: string, app?: ServerAPI): string {
+  const currentModel = model || 'claude-3-7-sonnet-20250219';
+  
+  // Migration mapping for deprecated models
+  const migrations: Record<string, string> = {
+    'claude-3-sonnet-20240229': 'claude-3-7-sonnet-20250219',
+    'claude-3-5-sonnet-20241022': 'claude-3-7-sonnet-20250219',
+  };
+  
+  if (migrations[currentModel]) {
+    const newModel = migrations[currentModel];
+    app?.debug(`Auto-migrated deprecated Claude model ${currentModel} to ${newModel}`);
+    return newModel;
+  }
+  
+  // Validate that the model is in our supported list
+  const supportedModels = [
+    'claude-opus-4-1-20250805',
+    'claude-opus-4-20250514', 
+    'claude-sonnet-4-20250514',
+    'claude-3-7-sonnet-20250219',
+    'claude-3-5-haiku-20241022',
+    'claude-3-haiku-20240307'
+  ];
+
+  // If model is not in supported list, fall back to default
+  if (!supportedModels.includes(currentModel)) {
+    app?.debug(`Unknown Claude model ${currentModel}, falling back to default`);
+    return 'claude-3-7-sonnet-20250219';
+  }
+
+  return currentModel;
+}
 
 export function registerApiRoutes(
   router: Router,
@@ -882,6 +921,268 @@ export function registerApiRoutes(
       });
     }
   );
+
+  // ===========================================
+  // CLAUDE AI ANALYSIS API ROUTES
+  // ===========================================
+
+  // Get available analysis templates
+  router.get(
+    '/api/analyze/templates',
+    (_: TypedRequest, res: TypedResponse<AnalysisApiResponse>) => {
+      try {
+        const templates = TEMPLATE_CATEGORIES.map(category => ({
+          ...category,
+          templates: category.templates.map(template => ({
+            id: template.id,
+            name: template.name,
+            description: template.description,
+            category: template.category,
+            icon: template.icon,
+            complexity: template.complexity,
+            estimatedTime: template.estimatedTime,
+            requiredPaths: template.requiredPaths
+          }))
+        }));
+
+        res.json({
+          success: true,
+          templates: templates as any
+        });
+      } catch (error) {
+        app.error(`Template retrieval failed: ${(error as Error).message}`);
+        res.status(500).json({
+          success: false,
+          error: 'Failed to retrieve analysis templates'
+        });
+      }
+    }
+  );
+
+  // Test Claude connection
+  router.post(
+    '/api/analyze/test-connection',
+    async (_req: TypedRequest, res: TypedResponse<ClaudeConnectionTestResponse>) => {
+      try {
+        const config = state.currentConfig;
+        if (!config?.claudeIntegration?.enabled || !config.claudeIntegration.apiKey) {
+          return res.status(400).json({
+            success: false,
+            error: 'Claude integration is not configured or enabled'
+          });
+        }
+
+        const analyzer = new ClaudeAnalyzer({
+          apiKey: config.claudeIntegration.apiKey,
+          model: migrateClaudeModel(config.claudeIntegration.model, app) as any,
+          maxTokens: config.claudeIntegration.maxTokens || 4000,
+          temperature: config.claudeIntegration.temperature || 0.3
+        }, app, getDataDir());
+
+        const startTime = Date.now();
+        const testResult = await analyzer.testConnection();
+        const responseTime = Date.now() - startTime;
+
+        if (testResult.success) {
+          return res.json({
+            success: true,
+            model: migrateClaudeModel(config.claudeIntegration.model, app),
+            responseTime,
+            tokenUsage: 50 // Approximate for test
+          });
+        } else {
+          return res.status(400).json({
+            success: false,
+            error: testResult.error || 'Connection test failed'
+          });
+        }
+      } catch (error) {
+        app.error(`Claude connection test failed: ${(error as Error).message}`);
+        return res.status(500).json({
+          success: false,
+          error: 'Claude connection test failed'
+        });
+      }
+    }
+  );
+
+  // Main analysis endpoint
+  router.post(
+    '/api/analyze',
+    async (req: TypedRequest<{
+      dataPath: string;
+      analysisType?: string;
+      templateId?: string;
+      customPrompt?: string;
+      timeRange?: { start: string; end: string };
+      aggregationMethod?: string;
+      resolution?: string;
+      claudeModel?: string;
+    }>, res: TypedResponse<AnalysisApiResponse>) => {
+      try {
+        const config = state.currentConfig;
+        if (!config?.claudeIntegration?.enabled || !config.claudeIntegration.apiKey) {
+          return res.status(400).json({
+            success: false,
+            error: 'Claude integration is not configured or enabled'
+          });
+        }
+
+        const { dataPath, analysisType, templateId, customPrompt, timeRange, aggregationMethod, resolution, claudeModel } = req.body;
+
+        console.log(`🧠 ANALYSIS REQUEST: dataPath=${dataPath}, templateId=${templateId}, analysisType=${analysisType}, aggregationMethod=${aggregationMethod}, model=${claudeModel || 'config-default'}`);
+
+        if (!dataPath) {
+          return res.status(400).json({
+            success: false,
+            error: 'Data path is required'
+          });
+        }
+
+        // Create analyzer instance - use model from request or fall back to config
+        const selectedModel = claudeModel || config.claudeIntegration.model || 'claude-3-7-sonnet-20250219';
+        const analyzer = new ClaudeAnalyzer({
+          apiKey: config.claudeIntegration.apiKey,
+          model: migrateClaudeModel(selectedModel, app) as any,
+          maxTokens: config.claudeIntegration.maxTokens || 4000,
+          temperature: config.claudeIntegration.temperature || 0.3
+        }, app, getDataDir());
+
+        // Build analysis request
+        let analysisRequest: AnalysisRequest;
+
+        if (templateId) {
+          // Use template
+          const parsedTimeRange = timeRange ? {
+            start: new Date(timeRange.start),
+            end: new Date(timeRange.end)
+          } : undefined;
+
+          const templateRequest = AnalysisTemplateManager.createAnalysisRequest(
+            templateId,
+            dataPath,
+            customPrompt,
+            parsedTimeRange
+          );
+
+          if (!templateRequest) {
+            return res.status(400).json({
+              success: false,
+              error: `Template not found: ${templateId}`
+            });
+          }
+          
+          analysisRequest = templateRequest;
+        } else {
+          // Custom analysis
+          analysisRequest = {
+            dataPath,
+            analysisType: (analysisType as any) || 'custom',
+            customPrompt: customPrompt || 'Analyze this maritime data and provide insights',
+            timeRange: timeRange ? {
+              start: new Date(timeRange.start),
+              end: new Date(timeRange.end)
+            } : undefined,
+            aggregationMethod,
+            resolution
+          };
+        }
+
+        // Execute analysis
+        app.debug(`Starting Claude analysis: ${analysisRequest.analysisType} for ${dataPath}`);
+        const result = await analyzer.analyzeData(analysisRequest);
+
+        return res.json({
+          success: true,
+          data: {
+            id: result.id,
+            analysis: result.analysis,
+            insights: result.insights,
+            recommendations: result.recommendations,
+            anomalies: result.anomalies?.map(a => ({
+              timestamp: a.timestamp,
+              value: a.value,
+              expectedRange: a.expectedRange,
+              severity: a.severity,
+              description: a.description,
+              confidence: a.confidence
+            })),
+            confidence: result.confidence,
+            dataQuality: result.dataQuality,
+            timestamp: result.timestamp,
+            metadata: result.metadata
+          }
+        });
+
+      } catch (error) {
+        app.error(`Analysis failed: ${(error as Error).message}`);
+        return res.status(500).json({
+          success: false,
+          error: `Analysis failed: ${(error as Error).message}`
+        });
+      }
+    }
+  );
+
+  // Get analysis history
+  router.get(
+    '/api/analyze/history',
+    async (req: TypedRequest<any> & { query: { limit?: string } }, res: TypedResponse<AnalysisApiResponse>) => {
+      try {
+        const config = state.currentConfig;
+        if (!config?.claudeIntegration?.enabled || !config.claudeIntegration.apiKey) {
+          return res.status(400).json({
+            success: false,
+            error: 'Claude integration is not configured or enabled'
+          });
+        }
+
+        const limit = parseInt(req.query.limit || '20', 10);
+        
+        const analyzer = new ClaudeAnalyzer({
+          apiKey: config.claudeIntegration.apiKey,
+          model: migrateClaudeModel(config.claudeIntegration.model, app) as any,
+          maxTokens: config.claudeIntegration.maxTokens || 4000,
+          temperature: config.claudeIntegration.temperature || 0.3
+        }, app, getDataDir());
+
+        const history = await analyzer.getAnalysisHistory(limit);
+        
+        return res.json({
+          success: true,
+          data: history.map(h => ({
+            id: h.id,
+            analysis: h.analysis,
+            insights: h.insights,
+            recommendations: h.recommendations,
+            anomalies: h.anomalies?.map(a => ({
+              timestamp: a.timestamp,
+              value: a.value,
+              expectedRange: a.expectedRange,
+              severity: a.severity,
+              description: a.description,
+              confidence: a.confidence
+            })),
+            confidence: h.confidence,
+            dataQuality: h.dataQuality,
+            timestamp: h.timestamp,
+            metadata: h.metadata
+          }))
+        });
+
+      } catch (error) {
+        app.error(`Analysis history retrieval failed: ${(error as Error).message}`);
+        return res.status(500).json({
+          success: false,
+          error: 'Failed to retrieve analysis history'
+        });
+      }
+    }
+  );
+
+  // ===========================================
+  // END CLAUDE AI ANALYSIS API ROUTES
+  // ===========================================
 
   // Test endpoint
   router.get('/api/test', (_: express.Request, res: express.Response) => {

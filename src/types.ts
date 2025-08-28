@@ -33,6 +33,22 @@ export interface PluginConfig {
   vesselMMSI: string;
   s3Upload: S3UploadConfig;
   enableStreaming?: boolean; // Enable WebSocket streaming functionality
+  claudeIntegration?: ClaudeIntegrationConfig;
+}
+
+export interface ClaudeIntegrationConfig {
+  enabled: boolean;
+  apiKey?: string;
+  model?: 'claude-opus-4-1-20250805' | 'claude-opus-4-20250514' | 'claude-sonnet-4-20250514' | 'claude-3-7-sonnet-20250219' | 'claude-3-5-haiku-20241022' | 'claude-3-haiku-20240307';
+  maxTokens?: number;
+  temperature?: number;
+  autoAnalysis?: {
+    daily: boolean;
+    anomaly: boolean;
+    threshold: number;
+  };
+  cacheEnabled?: boolean;
+  templates?: string[];
 }
 
 export interface PathConfig {
@@ -202,6 +218,59 @@ export interface S3TestApiResponse extends ApiResponse {
   keyPrefix?: string;
 }
 
+// Claude Analysis API Response Types
+export interface AnalysisApiResponse extends ApiResponse {
+  analysis?: AnalysisResult;
+  history?: AnalysisResult[];
+  templates?: AnalysisTemplateInfo[];
+}
+
+export interface AnalysisResult {
+  id: string;
+  analysis: string;
+  insights: string[];
+  recommendations?: string[];
+  anomalies?: AnomalyInfo[];
+  confidence: number;
+  dataQuality: string;
+  timestamp: string;
+  metadata: AnalysisMetadata;
+}
+
+export interface AnomalyInfo {
+  timestamp: string;
+  value: any;
+  expectedRange: { min: number; max: number };
+  severity: 'low' | 'medium' | 'high';
+  description: string;
+  confidence: number;
+}
+
+export interface AnalysisMetadata {
+  dataPath: string;
+  analysisType: string;
+  recordCount: number;
+  timeRange?: { start: Date; end: Date };
+  templateUsed?: string;
+}
+
+export interface AnalysisTemplateInfo {
+  id: string;
+  name: string;
+  description: string;
+  category: string;
+  icon: string;
+  complexity: string;
+  estimatedTime: string;
+  requiredPaths: string[];
+}
+
+export interface ClaudeConnectionTestResponse extends ApiResponse {
+  model?: string;
+  responseTime?: number;
+  tokenUsage?: number;
+}
+
 // Express Router Types
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export interface TypedRequest<T = any> extends Request {
@@ -354,6 +423,39 @@ export interface ParquetField {
 
 export interface ParquetSchema {
   [fieldName: string]: ParquetField;
+}
+
+// Data Analysis Related Types
+export interface DataSummary {
+  rowCount: number;
+  timeRange: { start: Date; end: Date };
+  columns: ColumnInfo[];
+  statisticalSummary: Record<string, Statistics>;
+  dataQuality: DataQualityMetrics;
+}
+
+export interface ColumnInfo {
+  name: string;
+  type: string;
+  nullCount: number;
+  uniqueCount: number;
+  sampleValues: any[];
+}
+
+export interface Statistics {
+  count: number;
+  mean?: number;
+  median?: number;
+  min?: any;
+  max?: any;
+  stdDev?: number;
+}
+
+export interface DataQualityMetrics {
+  completeness: number; // Percentage of non-null values
+  consistency: number;  // Data format consistency
+  timeliness: number;   // Data freshness
+  accuracy: number;     // Estimated data accuracy
 }
 
 // File Processing Types
