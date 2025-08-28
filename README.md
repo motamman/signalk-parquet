@@ -1,6 +1,6 @@
 # SignalK Parquet Data Store
 
-**Version 0.5.1-beta.1**
+**Version 0.5.2-beta.1**
 
 A comprehensive TypeScript-based SignalK plugin and webpp that saves marine data directly to Parquet files with regimen-based control and advanced querying features, including a REST API built on the SignalK History API and Claude AI history data analysis. 
 
