@@ -899,7 +899,7 @@ Begin your analysis by querying relevant data.`;
       const maxQueries = 10; // Prevent infinite loops
 
       while (queryCount < maxQueries) {
-        const response = await this.client.messages.create({
+        const response = await this.callClaudeWithRetry({
           model: this.config.model,
           max_tokens: Math.max(this.config.maxTokens, 8000), // Increased for comprehensive analysis
           temperature: this.config.temperature,
@@ -977,7 +977,7 @@ Begin your analysis by querying relevant data.`;
         }
 
         // If Claude didn't use any tools, we're done
-        const hasToolUse = response.content.some(block => block.type === 'tool_use');
+        const hasToolUse = response.content.some((block: any) => block.type === 'tool_use');
         if (!hasToolUse) {
           break;
         }
@@ -1033,6 +1033,29 @@ Begin your analysis by querying relevant data.`;
   }
 
   /**
+   * Call Claude API with retry logic for overload errors
+   */
+  private async callClaudeWithRetry(params: any, maxRetries: number = 3): Promise<any> {
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        return await this.client.messages.create(params);
+      } catch (error: any) {
+        const isOverloaded = error?.status === 529 || 
+                           (error?.message && error.message.includes('overloaded')) ||
+                           (error?.error?.type === 'overloaded_error');
+        
+        if (isOverloaded && attempt < maxRetries) {
+          const delayMs = Math.pow(2, attempt) * 1000; // 2s, 4s, 8s
+          this.app?.debug(`Claude overloaded (attempt ${attempt}/${maxRetries}), retrying in ${delayMs}ms...`);
+          await new Promise(resolve => setTimeout(resolve, delayMs));
+          continue;
+        }
+        throw error;
+      }
+    }
+  }
+
+  /**
    * Continue conversation with follow-up question
    */
   async askFollowUp(request: FollowUpRequest): Promise<AnalysisResponse> {
@@ -1061,7 +1084,7 @@ Begin your analysis by querying relevant data.`;
 
       // Continue the conversation with Claude
       while (queryCount < maxQueries) {
-        const response = await this.client.messages.create({
+        const response = await this.callClaudeWithRetry({
           model: this.config.model,
           max_tokens: Math.max(this.config.maxTokens, 8000),
           temperature: this.config.temperature,
@@ -1137,7 +1160,7 @@ Begin your analysis by querying relevant data.`;
         }
 
         // Check if Claude used tools - if not, we're done
-        const hasToolUse = response.content.some(block => block.type === 'tool_use');
+        const hasToolUse = response.content.some((block: any) => block.type === 'tool_use');
         if (!hasToolUse) {
           break;
         }
