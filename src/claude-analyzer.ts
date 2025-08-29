@@ -1,6 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { ServerAPI } from '@signalk/server-api';
 import { DataRecord } from './types';
+import { VesselContextManager } from './vessel-context';
 import * as fs from 'fs-extra';
 import * as path from 'path';
 
@@ -85,11 +86,13 @@ export class ClaudeAnalyzer {
   private config: ClaudeAnalyzerConfig;
   private app?: ServerAPI;
   private dataDirectory?: string;
+  private vesselContextManager: VesselContextManager;
 
   constructor(config: ClaudeAnalyzerConfig, app?: ServerAPI, dataDirectory?: string) {
     this.config = config;
     this.app = app;
     this.dataDirectory = dataDirectory;
+    this.vesselContextManager = new VesselContextManager(app, dataDirectory);
     
     if (!config.apiKey) {
       throw new Error('Claude API key is required for analysis functionality');
@@ -179,8 +182,10 @@ export class ClaudeAnalyzer {
    */
   private async prepareDataForAnalysis(request: AnalysisRequest): Promise<any> {
     try {
-      // Load data from parquet files
-      const data = await this.loadDataFromPath(request.dataPath, request.timeRange, request.aggregationMethod, request.resolution);
+      let data: any[];
+      
+      // Load data from parquet files using existing method
+      data = await this.loadDataFromPath(request.dataPath, request.timeRange, request.aggregationMethod, request.resolution);
       
       // Generate statistical summary
       const summary = this.generateDataSummary(data);
@@ -545,8 +550,11 @@ export class ClaudeAnalyzer {
     const { summary, sampleData } = data;
     
     const dataStructureNote = this.analyzeDataStructure(sampleData);
+    const vesselContext = this.vesselContextManager.generateClaudeContext();
     
     let prompt = `You are an expert maritime data analyst. Analyze the following SignalK vessel data and provide insights.
+
+${vesselContext}
 
 DATA SUMMARY:
 - Path: ${request.dataPath}
@@ -635,6 +643,7 @@ IMPORTANT: When analyzing the data, note that:
 Please provide detailed analysis addressing the specific request while considering maritime operations context.
 `;
         break;
+
 
       default:
         prompt += `
@@ -744,8 +753,11 @@ Please structure your response as JSON with the following format:
    */
   private async saveAnalysisToHistory(analysis: AnalysisResponse): Promise<void> {
     try {
-      // Create history directory if it doesn't exist
-      const historyDir = path.join(process.cwd(), 'data', 'analysis-history');
+      // Create history directory in plugin's data directory
+      if (!this.dataDirectory) {
+        throw new Error('No data directory configured for plugin');
+      }
+      const historyDir = path.join(this.dataDirectory, 'analysis-history');
       await fs.ensureDir(historyDir);
 
       // Save analysis to file
@@ -766,7 +778,10 @@ Please structure your response as JSON with the following format:
    */
   async getAnalysisHistory(limit: number = 20): Promise<AnalysisResponse[]> {
     try {
-      const historyDir = path.join(process.cwd(), 'data', 'analysis-history');
+      if (!this.dataDirectory) {
+        return []; // No data directory configured, return empty history
+      }
+      const historyDir = path.join(this.dataDirectory, 'analysis-history');
       
       if (!await fs.pathExists(historyDir)) {
         return [];
@@ -794,6 +809,35 @@ Please structure your response as JSON with the following format:
   }
 
   /**
+   * Delete an analysis from history
+   */
+  async deleteAnalysis(analysisId: string): Promise<{ success: boolean; error?: string }> {
+    try {
+      if (!this.dataDirectory) {
+        return { success: false, error: 'No data directory configured for plugin' };
+      }
+      
+      const historyDir = path.join(this.dataDirectory, 'analysis-history');
+      const filename = `${analysisId}.json`;
+      const filePath = path.join(historyDir, filename);
+
+      if (!await fs.pathExists(filePath)) {
+        return { success: false, error: 'Analysis not found' };
+      }
+
+      await fs.remove(filePath);
+      this.app?.debug(`Deleted analysis: ${analysisId}`);
+      
+      return { success: true };
+
+    } catch (error) {
+      this.app?.error(`Failed to delete analysis: ${(error as Error).message}`);
+      return { success: false, error: (error as Error).message };
+    }
+  }
+
+
+  /**
    * Test Claude API connection
    */
   async testConnection(): Promise<{ success: boolean; error?: string }> {
@@ -816,6 +860,26 @@ Please structure your response as JSON with the following format:
 
     } catch (error) {
       return { success: false, error: (error as Error).message };
+    }
+  }
+
+  /**
+   * Get vessel context manager
+   */
+  getVesselContextManager(): VesselContextManager {
+    return this.vesselContextManager;
+  }
+
+  /**
+   * Refresh vessel information from SignalK
+   */
+  async refreshVesselContext(): Promise<void> {
+    try {
+      await this.vesselContextManager.refreshVesselInfo();
+      this.app?.debug('Vessel context refreshed from SignalK data');
+    } catch (error) {
+      this.app?.error(`Failed to refresh vessel context: ${(error as Error).message}`);
+      throw error;
     }
   }
 }

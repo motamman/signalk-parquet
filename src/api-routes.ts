@@ -41,6 +41,7 @@ import { toContextFilePath, toParquetFilePath } from './utils/path-helpers';
 import { ServerAPI, Context } from '@signalk/server-api';
 import { ClaudeAnalyzer, AnalysisRequest } from './claude-analyzer';
 import { AnalysisTemplateManager, TEMPLATE_CATEGORIES } from './analysis-templates';
+import { VesselContextManager } from './vessel-context';
 // import { initializeStreamingService, shutdownStreamingService } from './index';
 
 // AWS S3 for testing connection
@@ -1179,6 +1180,190 @@ export function registerApiRoutes(
       }
     }
   );
+
+  // Delete analysis from history
+  router.delete(
+    '/api/analyze/history/:id',
+    async (req: TypedRequest<any> & { params: { id: string } }, res: TypedResponse<any>) => {
+      try {
+        const config = state.currentConfig;
+        if (!config?.claudeIntegration?.enabled || !config.claudeIntegration.apiKey) {
+          return res.status(400).json({
+            success: false,
+            error: 'Claude integration is not configured or enabled'
+          });
+        }
+
+        const analysisId = req.params.id;
+        
+        const analyzer = new ClaudeAnalyzer({
+          apiKey: config.claudeIntegration.apiKey,
+          model: migrateClaudeModel(config.claudeIntegration.model, app) as any,
+          maxTokens: config.claudeIntegration.maxTokens || 4000,
+          temperature: config.claudeIntegration.temperature || 0.3
+        }, app, getDataDir());
+
+        const result = await analyzer.deleteAnalysis(analysisId);
+        
+        if (result.success) {
+          return res.json({
+            success: true,
+            message: 'Analysis deleted successfully'
+          });
+        } else {
+          return res.status(404).json({
+            success: false,
+            error: result.error
+          });
+        }
+
+      } catch (error) {
+        app.error(`Analysis deletion failed: ${(error as Error).message}`);
+        return res.status(500).json({
+          success: false,
+          error: 'Failed to delete analysis'
+        });
+      }
+    }
+  );
+
+  // ===========================================
+  // VESSEL CONTEXT API ROUTES
+  // ===========================================
+
+  // Get vessel context
+  router.get(
+    '/api/vessel-context',
+    async (_: TypedRequest, res: TypedResponse<any>) => {
+      try {
+        const contextManager = new VesselContextManager(app, getDataDir());
+        const context = await contextManager.getVesselContext();
+        
+        return res.json({
+          success: true,
+          data: context
+        });
+
+      } catch (error) {
+        app.error(`Failed to get vessel context: ${(error as Error).message}`);
+        return res.status(500).json({
+          success: false,
+          error: 'Failed to get vessel context'
+        });
+      }
+    }
+  );
+
+  // Update vessel context
+  router.post(
+    '/api/vessel-context',
+    async (req: TypedRequest<{
+      vesselInfo?: any;
+      customContext?: string;
+    }>, res: TypedResponse<any>) => {
+      try {
+        const { vesselInfo, customContext } = req.body;
+        
+        const contextManager = new VesselContextManager(app, getDataDir());
+        const updatedContext = await contextManager.updateVesselContext(
+          vesselInfo,
+          customContext,
+          false // Not auto-extracted since it's from user input
+        );
+        
+        return res.json({
+          success: true,
+          data: updatedContext,
+          message: 'Vessel context updated successfully'
+        });
+
+      } catch (error) {
+        app.error(`Failed to update vessel context: ${(error as Error).message}`);
+        return res.status(500).json({
+          success: false,
+          error: 'Failed to update vessel context'
+        });
+      }
+    }
+  );
+
+  // Refresh vessel context from SignalK
+  router.post(
+    '/api/vessel-context/refresh',
+    async (_: TypedRequest, res: TypedResponse<any>) => {
+      try {
+        const contextManager = new VesselContextManager(app, getDataDir());
+        const refreshedContext = await contextManager.refreshVesselInfo();
+        
+        return res.json({
+          success: true,
+          data: refreshedContext,
+          message: 'Vessel context refreshed from SignalK data'
+        });
+
+      } catch (error) {
+        app.error(`Failed to refresh vessel context: ${(error as Error).message}`);
+        return res.status(500).json({
+          success: false,
+          error: 'Failed to refresh vessel context from SignalK'
+        });
+      }
+    }
+  );
+
+  // Get vessel data paths for UI
+  router.get(
+    '/api/vessel-context/data-paths',
+    (_: TypedRequest, res: TypedResponse<any>) => {
+      try {
+        const dataPaths = VesselContextManager.getVesselDataPaths();
+        
+        return res.json({
+          success: true,
+          data: dataPaths
+        });
+
+      } catch (error) {
+        app.error(`Failed to get vessel data paths: ${(error as Error).message}`);
+        return res.status(500).json({
+          success: false,
+          error: 'Failed to get vessel data paths'
+        });
+      }
+    }
+  );
+
+  // Generate Claude context preview
+  router.get(
+    '/api/vessel-context/claude-preview',
+    async (_: TypedRequest, res: TypedResponse<any>) => {
+      try {
+        const contextManager = new VesselContextManager(app, getDataDir());
+        // Ensure context is loaded before generating preview
+        await contextManager.getVesselContext();
+        const claudeContext = contextManager.generateClaudeContext();
+        
+        return res.json({
+          success: true,
+          data: {
+            contextText: claudeContext,
+            length: claudeContext.length
+          }
+        });
+
+      } catch (error) {
+        app.error(`Failed to generate Claude context preview: ${(error as Error).message}`);
+        return res.status(500).json({
+          success: false,
+          error: 'Failed to generate Claude context preview'
+        });
+      }
+    }
+  );
+
+  // ===========================================
+  // END VESSEL CONTEXT API ROUTES
+  // ===========================================
 
   // ===========================================
   // END CLAUDE AI ANALYSIS API ROUTES
