@@ -39,10 +39,29 @@ import {
 import { updateDataSubscriptions } from './data-handler';
 import { toContextFilePath, toParquetFilePath } from './utils/path-helpers';
 import { ServerAPI, Context } from '@signalk/server-api';
-import { ClaudeAnalyzer, AnalysisRequest } from './claude-analyzer';
+import { ClaudeAnalyzer, AnalysisRequest, FollowUpRequest } from './claude-analyzer';
 import { AnalysisTemplateManager, TEMPLATE_CATEGORIES } from './analysis-templates';
 import { VesselContextManager } from './vessel-context';
 // import { initializeStreamingService, shutdownStreamingService } from './index';
+
+// Shared analyzer instance to maintain conversation state across requests
+let sharedAnalyzer: ClaudeAnalyzer | null = null;
+
+/**
+ * Get or create the shared Claude analyzer instance
+ */
+function getSharedAnalyzer(config: any, app: ServerAPI, getDataDir: () => string): ClaudeAnalyzer {
+  if (!sharedAnalyzer) {
+    sharedAnalyzer = new ClaudeAnalyzer({
+      apiKey: config.claudeIntegration.apiKey,
+      model: migrateClaudeModel(config.claudeIntegration.model, app) as any,
+      maxTokens: config.claudeIntegration.maxTokens || 4000,
+      temperature: config.claudeIntegration.temperature || 0.3
+    }, app, getDataDir());
+    app.debug('🔧 Created shared Claude analyzer instance');
+  }
+  return sharedAnalyzer;
+}
 
 // AWS S3 for testing connection
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -973,12 +992,7 @@ export function registerApiRoutes(
           });
         }
 
-        const analyzer = new ClaudeAnalyzer({
-          apiKey: config.claudeIntegration.apiKey,
-          model: migrateClaudeModel(config.claudeIntegration.model, app) as any,
-          maxTokens: config.claudeIntegration.maxTokens || 4000,
-          temperature: config.claudeIntegration.temperature || 0.3
-        }, app, getDataDir());
+        const analyzer = getSharedAnalyzer(config, app, getDataDir);
 
         const startTime = Date.now();
         const testResult = await analyzer.testConnection();
@@ -1019,6 +1033,7 @@ export function registerApiRoutes(
       aggregationMethod?: string;
       resolution?: string;
       claudeModel?: string;
+      useDatabaseAccess?: boolean;
     }>, res: TypedResponse<AnalysisApiResponse>) => {
       try {
         const config = state.currentConfig;
@@ -1029,7 +1044,7 @@ export function registerApiRoutes(
           });
         }
 
-        const { dataPath, analysisType, templateId, customPrompt, timeRange, aggregationMethod, resolution, claudeModel } = req.body;
+        const { dataPath, analysisType, templateId, customPrompt, timeRange, aggregationMethod, resolution, claudeModel, useDatabaseAccess } = req.body;
 
         console.log(`🧠 ANALYSIS REQUEST: dataPath=${dataPath}, templateId=${templateId}, analysisType=${analysisType}, aggregationMethod=${aggregationMethod}, model=${claudeModel || 'config-default'}`);
 
@@ -1040,14 +1055,8 @@ export function registerApiRoutes(
           });
         }
 
-        // Create analyzer instance - use model from request or fall back to config
-        const selectedModel = claudeModel || config.claudeIntegration.model || 'claude-3-7-sonnet-20250219';
-        const analyzer = new ClaudeAnalyzer({
-          apiKey: config.claudeIntegration.apiKey,
-          model: migrateClaudeModel(selectedModel, app) as any,
-          maxTokens: config.claudeIntegration.maxTokens || 4000,
-          temperature: config.claudeIntegration.temperature || 0.3
-        }, app, getDataDir());
+        // Use shared analyzer instance to maintain conversation state
+        const analyzer = getSharedAnalyzer(config, app, getDataDir);
 
         // Build analysis request
         let analysisRequest: AnalysisRequest;
@@ -1085,7 +1094,8 @@ export function registerApiRoutes(
               end: new Date(timeRange.end)
             } : undefined,
             aggregationMethod,
-            resolution
+            resolution,
+            useDatabaseAccess: useDatabaseAccess || false
           };
         }
 
@@ -1125,6 +1135,56 @@ export function registerApiRoutes(
     }
   );
 
+  // Follow-up question endpoint
+  router.post(
+    '/api/analyze/followup',
+    async (req: TypedRequest<{ conversationId: string; question: string }>, res: TypedResponse<AnalysisApiResponse>) => {
+      try {
+        const config = state.currentConfig;
+        if (!config?.claudeIntegration?.enabled || !config.claudeIntegration.apiKey) {
+          return res.status(400).json({
+            success: false,
+            error: 'Claude integration is not configured or enabled'
+          });
+        }
+
+        const { conversationId, question } = req.body;
+
+        if (!conversationId || !question) {
+          return res.status(400).json({
+            success: false,
+            error: 'Both conversationId and question are required'
+          });
+        }
+
+        console.log(`🔄 FOLLOW-UP REQUEST: conversationId=${conversationId}, question=${question.substring(0, 100)}...`);
+
+        // Use shared analyzer instance to access stored conversations
+        const analyzer = getSharedAnalyzer(config, app, getDataDir);
+
+        // Process follow-up question
+        const followUpRequest = {
+          conversationId,
+          question
+        };
+
+        const analysisResult = await analyzer.askFollowUp(followUpRequest);
+
+        return res.json({
+          success: true,
+          data: analysisResult
+        });
+
+      } catch (error) {
+        app.error(`Follow-up question failed: ${(error as Error).message}`);
+        return res.status(500).json({
+          success: false,
+          error: `Follow-up question failed: ${(error as Error).message}`
+        });
+      }
+    }
+  );
+
   // Get analysis history
   router.get(
     '/api/analyze/history',
@@ -1140,12 +1200,7 @@ export function registerApiRoutes(
 
         const limit = parseInt(req.query.limit || '20', 10);
         
-        const analyzer = new ClaudeAnalyzer({
-          apiKey: config.claudeIntegration.apiKey,
-          model: migrateClaudeModel(config.claudeIntegration.model, app) as any,
-          maxTokens: config.claudeIntegration.maxTokens || 4000,
-          temperature: config.claudeIntegration.temperature || 0.3
-        }, app, getDataDir());
+        const analyzer = getSharedAnalyzer(config, app, getDataDir);
 
         const history = await analyzer.getAnalysisHistory(limit);
         
@@ -1196,12 +1251,7 @@ export function registerApiRoutes(
 
         const analysisId = req.params.id;
         
-        const analyzer = new ClaudeAnalyzer({
-          apiKey: config.claudeIntegration.apiKey,
-          model: migrateClaudeModel(config.claudeIntegration.model, app) as any,
-          maxTokens: config.claudeIntegration.maxTokens || 4000,
-          temperature: config.claudeIntegration.temperature || 0.3
-        }, app, getDataDir());
+        const analyzer = getSharedAnalyzer(config, app, getDataDir);
 
         const result = await analyzer.deleteAnalysis(analysisId);
         

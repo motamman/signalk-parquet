@@ -510,9 +510,9 @@ export class VesselContextManager {
     // Add physical characteristics
     if (vesselInfo.length || vesselInfo.beam || vesselInfo.draft || vesselInfo.height || vesselInfo.displacement) {
       contextParts.push('\n--- PHYSICAL CHARACTERISTICS ---');
-      if (vesselInfo.length) contextParts.push(`Length Overall (LOA): ${vesselInfo.length}m`);
-      if (vesselInfo.beam) contextParts.push(`Beam: ${vesselInfo.beam}m`);
-      if (vesselInfo.draft) contextParts.push(`Draft: ${vesselInfo.draft}m`);
+      if (vesselInfo.length) contextParts.push(`Length Overall (LOA): ${typeof vesselInfo.length === 'object' ? JSON.stringify(vesselInfo.length) : vesselInfo.length}m`);
+      if (vesselInfo.beam) contextParts.push(`Beam: ${typeof vesselInfo.beam === 'object' ? JSON.stringify(vesselInfo.beam) : vesselInfo.beam}m`);
+      if (vesselInfo.draft) contextParts.push(`Draft: ${typeof vesselInfo.draft === 'object' ? JSON.stringify(vesselInfo.draft) : vesselInfo.draft}m`);
       if (vesselInfo.height) contextParts.push(`Air Draft/Height: ${vesselInfo.height}m`);
       if (vesselInfo.displacement) contextParts.push(`Displacement: ${vesselInfo.displacement} tonnes`);
     }

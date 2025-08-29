@@ -787,105 +787,141 @@
                     <div style="margin-bottom: 30px;">
                         <h3>🎯 Custom Analysis</h3>
                         <div style="margin-top: 15px;">
-                            <div style="margin-bottom: 15px;">
-                                <label>Data Paths (select one or more):</label>
-                                <div id="analysisDataPathContainer" style="max-height: 200px; overflow-y: auto; border: 1px solid #ddd; border-radius: 4px; padding: 10px; margin-top: 5px; background: white;">
-                                    <div style="color: #666; font-style: italic;">Loading available paths...</div>
+                            <!-- Analysis Mode Toggle with Model Selector -->
+                            <div style="margin-bottom: 20px; padding: 15px; border: 2px solid #e3f2fd; border-radius: 8px; background: #f8f9ff;">
+                                <div style="margin-bottom: 10px;">
+                                    <label style="display: flex; align-items: center; justify-content: space-between; cursor: pointer; font-weight: bold;">
+                                        <span>🚀 Direct Database Access (Tony's Approach)</span>
+                                        <input type="checkbox" id="enableDatabaseAccess" checked onchange="toggleAnalysisMode()" style="transform: scale(1.2);">
+                                    </label>
                                 </div>
-                                <style>
-                                    .path-checkbox-row {
-                                        display: flex;
-                                        align-items: center;
-                                        padding: 8px 8px 8px 5px;
-                                        margin: 2px 0;
-                                        border-radius: 4px;
-                                    }
-                                    .path-checkbox-row:nth-child(odd) {
-                                        background-color: #f8f9fa;
-                                    }
-                                    .path-checkbox-row:nth-child(even) {
-                                        background-color: white;
-                                    }
-                                    .path-checkbox-row:hover {
-                                        background-color: #e3f2fd;
-                                    }
-                                    .path-info {
-                                        display: flex;
-                                        align-items: center;
-                                        flex-grow: 1;
-                                    }
-                                    .path-icon {
-                                        margin-right: 8px;
-                                        font-size: 16px;
-                                    }
-                                    .path-checkbox {
-                                        margin-left: auto;
-                                        width: 16px;
-                                        height: 16px;
-                                        flex-shrink: 0;
-                                    }
-                                </style>
-                                <div style="margin-top: 5px; font-size: 0.9em; color: #666; display: flex; justify-content: space-between; align-items: center;">
-                                    <span><span id="selectedPathCount">0</span> path(s) selected</span>
-                                    <div>
-                                        <button onclick="selectAllPaths()" style="font-size: 0.8em; padding: 2px 6px; margin-right: 5px;">Select All</button>
-                                        <button onclick="clearAllPaths()" style="font-size: 0.8em; padding: 2px 6px;">Clear All</button>
+                                <div style="font-size: 0.9em; color: #555;">
+                                    <div id="legacyModeDesc" style="color: #666; display: none;">
+                                        <strong>Legacy:</strong> Pre-load data samples for analysis (faster, limited scope)
+                                    </div>
+                                    <div id="databaseModeDesc" style="color: #1976d2;">
+                                        <strong>Enhanced:</strong> Claude explores your database interactively (more powerful, complete historical access)
                                     </div>
                                 </div>
-                            </div>
-                            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-bottom: 15px;">
-                                <div>
-                                    <label for="analysisStartDate">Start Date:</label>
-                                    <input type="datetime-local" id="analysisStartDate" style="width: 100%; padding: 8px; margin-top: 5px;">
+                                
+                                <!-- Claude Model Selection - moved here -->
+                                <div style="margin-top: 15px;">
+                                    <label for="claudeModelMain">Claude Model:</label>
+                                    <select id="claudeModelMain" style="width: 100%; padding: 8px; margin-top: 5px;">
+                                        <option value="claude-3-7-sonnet-20250219" selected>Claude 3.7 Sonnet - Best balance of speed and intelligence</option>
+                                        <option value="claude-sonnet-4-20250514">Claude Sonnet 4 - Latest Sonnet model (premium)</option>
+                                        <option value="claude-opus-4-20250514">Claude Opus 4 - Most powerful model (premium)</option>
+                                        <option value="claude-3-5-haiku-20241022">Claude 3.5 Haiku - Fast responses</option>
+                                        <option value="claude-3-haiku-20240307">Claude 3 Haiku - Fastest model</option>
+                                    </select>
+                                    <p style="font-size: 0.9em; color: #666; margin: 5px 0 0 0;">Choose the Claude model for analysis. Sonnet provides the most detailed insights.</p>
                                 </div>
-                                <div>
-                                    <label for="analysisEndDate">End Date:</label>
-                                    <input type="datetime-local" id="analysisEndDate" style="width: 100%; padding: 8px; margin-top: 5px;">
+                            </div>
+
+                            <!-- Collapsible Selection Options -->
+                            <div id="selectionOptionsSection" style="margin-bottom: 20px;">
+                                <div onclick="toggleSelectionOptions()" style="cursor: pointer; padding: 10px; background: #f8f9fa; border: 1px solid #dee2e6; border-radius: 5px; user-select: none;">
+                                    <span id="selectionToggleIcon" style="margin-right: 8px;">▶</span>
+                                    <strong>Selection Options</strong>
+                                    <span id="selectionToggleSubtext" style="font-size: 0.9em; color: #666; margin-left: 10px;">(Advanced options for legacy mode)</span>
+                                </div>
+                                <div id="selectionOptionsContainer" style="display: none; border: 1px solid #dee2e6; border-top: none; border-radius: 0 0 5px 5px; padding: 15px; background: #f9f9f9;">
+                                    <!-- Data Path Selection -->
+                                    <div style="margin-bottom: 15px;">
+                                        <label>Data Paths (select one or more):</label>
+                                        <div id="analysisDataPathContainer" style="max-height: 200px; overflow-y: auto; border: 1px solid #ddd; border-radius: 4px; padding: 10px; margin-top: 5px; background: white;">
+                                            <div style="color: #666; font-style: italic;">Loading available paths...</div>
+                                        </div>
+                                        <style>
+                                            .path-checkbox-row {
+                                                display: flex;
+                                                align-items: center;
+                                                padding: 8px 8px 8px 5px;
+                                                margin: 2px 0;
+                                                border-radius: 4px;
+                                            }
+                                            .path-checkbox-row:nth-child(odd) {
+                                                background-color: #f8f9fa;
+                                            }
+                                            .path-checkbox-row:nth-child(even) {
+                                                background-color: white;
+                                            }
+                                            .path-checkbox-row:hover {
+                                                background-color: #e3f2fd;
+                                            }
+                                            .path-info {
+                                                display: flex;
+                                                align-items: center;
+                                                flex-grow: 1;
+                                            }
+                                            .path-icon {
+                                                margin-right: 8px;
+                                                font-size: 16px;
+                                            }
+                                            .path-checkbox {
+                                                margin-left: auto;
+                                                width: 16px;
+                                                height: 16px;
+                                                flex-shrink: 0;
+                                            }
+                                        </style>
+                                        <div style="margin-top: 5px; font-size: 0.9em; color: #666; display: flex; justify-content: space-between; align-items: center;">
+                                            <span><span id="selectedPathCount">0</span> path(s) selected</span>
+                                            <div>
+                                                <button onclick="selectAllPaths()" style="font-size: 0.8em; padding: 2px 6px; margin-right: 5px;">Select All</button>
+                                                <button onclick="clearAllPaths()" style="font-size: 0.8em; padding: 2px 6px;">Clear All</button>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    
+                                    <!-- Date Range Selection -->
+                                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-bottom: 15px;">
+                                        <div>
+                                            <label for="analysisStartDate">Start Date:</label>
+                                            <input type="datetime-local" id="analysisStartDate" style="width: 100%; padding: 8px; margin-top: 5px;">
+                                        </div>
+                                        <div>
+                                            <label for="analysisEndDate">End Date:</label>
+                                            <input type="datetime-local" id="analysisEndDate" style="width: 100%; padding: 8px; margin-top: 5px;">
+                                        </div>
+                                    </div>
+                                    
+                                    <!-- Aggregation Method -->
+                                    <div style="margin-bottom: 15px;">
+                                        <label for="aggregationMethod">Aggregation Method:</label>
+                                        <select id="aggregationMethod" style="width: 100%; padding: 8px; margin-top: 5px;">
+                                            <option value="average" selected>Average - Mean values over time buckets</option>
+                                            <option value="min">Min - Minimum values over time buckets</option>
+                                            <option value="max">Max - Maximum values over time buckets</option>
+                                            <option value="first">First - First value in each time bucket</option>
+                                            <option value="last">Last - Last value in each time bucket</option>
+                                            <option value="mid">Median - Middle values over time buckets</option>
+                                            <option value="multiple">Multiple - Get min, max, and average</option>
+                                        </select>
+                                    </div>
+                                    
+                                    <!-- Time Resolution -->
+                                    <div style="margin-bottom: 15px;">
+                                        <label for="resolution">Time Resolution:</label>
+                                        <select id="resolution" style="width: 100%; padding: 8px; margin-top: 5px;">
+                                            <option value="" selected>Auto - Automatically determine best resolution</option>
+                                            <option value="1m">1 minute - Fine-grained data</option>
+                                            <option value="5m">5 minutes - Detailed data</option>
+                                            <option value="15m">15 minutes - Regular sampling</option>
+                                            <option value="1h">1 hour - Hourly summaries</option>
+                                            <option value="1d">1 day - Daily summaries</option>
+                                        </select>
+                                    </div>
+                                    
                                 </div>
                             </div>
-                            <div style="margin-bottom: 15px;">
-                                <label for="aggregationMethod">Aggregation Method:</label>
-                                <select id="aggregationMethod" style="width: 100%; padding: 8px; margin-top: 5px;">
-                                    <option value="average" selected>Average - Mean values over time buckets</option>
-                                    <option value="min">Min - Minimum values over time buckets</option>
-                                    <option value="max">Max - Maximum values over time buckets</option>
-                                    <option value="first">First - First value in each time bucket</option>
-                                    <option value="last">Last - Last value in each time bucket</option>
-                                    <option value="mid">Median - Middle values over time buckets</option>
-                                    <option value="multiple">Multiple - Get min, max, and average</option>
-                                </select>
-                            </div>
-                            <div style="margin-bottom: 15px;">
-                                <label for="resolution">Time Resolution:</label>
-                                <select id="resolution" style="width: 100%; padding: 8px; margin-top: 5px;">
-                                    <option value="">Auto - Let HistoryAPI choose optimal bucketing</option>
-                                    <option value="1000">1 Second - Highest detail</option>
-                                    <option value="10000">10 Seconds - High detail</option>
-                                    <option value="30000">30 Seconds - Medium detail</option>
-                                    <option value="60000" selected>1 Minute - Balanced (Recommended)</option>
-                                    <option value="120000">2 Minutes - Lower detail</option>
-                                    <option value="300000">5 Minutes - Low detail</option>
-                                    <option value="600000">10 Minutes - Lowest detail</option>
-                                </select>
-                                <p style="font-size: 0.9em; color: #666; margin: 5px 0 0 0;">Higher resolution = more data points but longer analysis time. Use Auto for optimal performance.</p>
-                            </div>
-                            <div style="margin-bottom: 15px;">
-                                <label for="claudeModel">Claude AI Model:</label>
-                                <select id="claudeModel" style="width: 100%; padding: 8px; margin-top: 5px;">
-                                    <option value="claude-opus-4-1-20250805">Claude Opus 4.1 - Most Capable & Intelligent (Premium)</option>
-                                    <option value="claude-opus-4-20250514">Claude Opus 4 - Previous Flagship Model (Premium)</option>
-                                    <option value="claude-sonnet-4-20250514">Claude Sonnet 4 - Exceptional Reasoning (High Performance)</option>
-                                    <option value="claude-3-7-sonnet-20250219" selected>Claude 3.7 Sonnet - Extended Thinking (Recommended)</option>
-                                    <option value="claude-3-5-haiku-20241022">Claude 3.5 Haiku - Fast & Balanced</option>
-                                    <option value="claude-3-haiku-20240307">Claude 3 Haiku - Fastest & Most Cost-Effective</option>
-                                </select>
-                                <p style="font-size: 0.9em; color: #666; margin: 5px 0 0 0;">Choose the Claude model for analysis. Sonnet provides the most detailed insights.</p>
-                            </div>
+
                             <div style="margin-bottom: 15px;">
                                 <label for="customPrompt">Custom Analysis Request (optional):</label>
                                 <textarea id="customPrompt" placeholder="What specific insights are you looking for? Leave blank for general analysis..." style="width: 100%; padding: 8px; margin-top: 5px; min-height: 60px; resize: vertical;"></textarea>
                             </div>
-                            <button onclick="runCustomAnalysis()" style="padding: 12px 25px;">🚀 Run Custom Analysis</button>
+
+                            <button onclick="runCustomAnalysis()" style="padding: 12px 25px; margin-top: 15px;">🚀 Run Custom Analysis</button>
                         </div>
                     </div>
                     
@@ -894,6 +930,18 @@
                         <h3>📊 Analysis Results</h3>
                         <div id="analysisContent" style="background: #f8f9fa; padding: 20px; border-radius: 8px; margin-top: 15px;">
                             <!-- Results will appear here -->
+                        </div>
+                        
+                        <!-- Follow-up Questions -->
+                        <div id="followUpSection" style="display: none; margin-top: 20px; padding: 15px; border: 2px solid #e8f4f8; border-radius: 8px; background: #f8fdff;">
+                            <h4 style="margin: 0 0 10px 0; color: #1976d2;">💬 Ask Follow-up Questions</h4>
+                            <p style="font-size: 0.9em; color: #666; margin: 0 0 15px 0;">Continue the conversation to explore your data deeper.</p>
+                            <div style="display: flex; gap: 10px; align-items: flex-end;">
+                                <div style="flex: 1;">
+                                    <textarea id="followUpQuestion" placeholder="Ask Claude to explore further... (e.g., 'Show me wind patterns during high waves' or 'What happened around 3 PM?')" style="width: 100%; padding: 8px; min-height: 40px; border: 1px solid #ddd; border-radius: 4px; resize: vertical;"></textarea>
+                                </div>
+                                <button id="askFollowUpBtn" onclick="askFollowUpQuestion()" style="padding: 8px 15px; background: #1976d2; color: white; border: none; border-radius: 4px; cursor: pointer; white-space: nowrap;">💬 Ask</button>
+                            </div>
                         </div>
                     </div>
                     
@@ -985,6 +1033,7 @@
         let availablePaths = [];
         let dataDirectory = '';
         let showCommandPaths = false; // Default to hiding command paths
+        let currentAnalysisId = null; // Track current analysis for follow-up questions
 
         // Get the plugin path dynamically
         function getPluginPath() {
@@ -3040,9 +3089,11 @@ Provide actionable insights based on what you observe in the data.`,
             const endDate = document.getElementById('analysisEndDate').value;
             const aggregationMethod = document.getElementById('aggregationMethod').value;
             const resolution = document.getElementById('resolution').value;
-            const claudeModel = document.getElementById('claudeModel').value;
+            const claudeModel = document.getElementById('claudeModelMain').value;
+            const enableDatabaseAccess = document.getElementById('enableDatabaseAccess').checked;
             
-            if (!selectedPaths || selectedPaths.length === 0) {
+            // Skip path validation in database access mode - Claude can access all data
+            if (!enableDatabaseAccess && (!selectedPaths || selectedPaths.length === 0)) {
                 alert('Please select at least one data path');
                 return;
             }
@@ -3055,7 +3106,7 @@ Provide actionable insights based on what you observe in the data.`,
             
             try {
                 const analysisRequest = {
-                    dataPath: selectedPaths.join(','), // REST API supports comma-separated paths
+                    dataPath: enableDatabaseAccess ? 'database_access_mode' : selectedPaths.join(','), // REST API supports comma-separated paths
                     analysisType: 'custom',
                     customPrompt: customPrompt || `Analyze this maritime sensor data and provide insights. Focus on:
 1. Data patterns and trends over time
@@ -3072,6 +3123,7 @@ Provide actionable insights based on what you observe in the data.`,
                     aggregationMethod: aggregationMethod || 'average',
                     resolution: resolution || '',  // Empty string = Auto
                     claudeModel: claudeModel || 'claude-3-7-sonnet-20250219',
+                    useDatabaseAccess: enableDatabaseAccess,
                 };
                 
                 console.log(`🚀 Running custom analysis for paths: ${selectedPaths.join(', ')}`);
@@ -3156,6 +3208,21 @@ Provide actionable insights based on what you observe in the data.`,
             `;
             
             content.innerHTML = html;
+            
+            // Show follow-up section for database access mode and store analysis ID
+            if (analysisResult.metadata && analysisResult.metadata.useDatabaseAccess && analysisResult.id) {
+                currentAnalysisId = analysisResult.id;
+                const followUpSection = document.getElementById('followUpSection');
+                if (followUpSection) {
+                    followUpSection.style.display = 'block';
+                }
+            } else {
+                currentAnalysisId = null;
+                const followUpSection = document.getElementById('followUpSection');
+                if (followUpSection) {
+                    followUpSection.style.display = 'none';
+                }
+            }
         }
 
         // Open analysis history modal
@@ -3407,6 +3474,57 @@ Provide actionable insights based on what you observe in the data.`,
             document.getElementById('analysisTemplate').scrollIntoView({ behavior: 'smooth' });
         }
 
+        // Toggle between analysis modes
+        function toggleAnalysisMode() {
+            const checkbox = document.getElementById('enableDatabaseAccess');
+            const legacyDesc = document.getElementById('legacyModeDesc');
+            const databaseDesc = document.getElementById('databaseModeDesc');
+            const selectionSection = document.getElementById('selectionOptionsSection');
+            const selectionSubtext = document.getElementById('selectionToggleSubtext');
+            
+            if (checkbox.checked) {
+                // Show database mode description
+                legacyDesc.style.display = 'none';
+                databaseDesc.style.display = 'block';
+                
+                // Grey out selection options for database mode
+                selectionSection.style.opacity = '0.5';
+                selectionSection.style.pointerEvents = 'none';
+                selectionSubtext.textContent = '(Not needed for database access mode)';
+                
+                console.log('Switched to Direct Database Access mode');
+            } else {
+                // Show legacy mode description
+                legacyDesc.style.display = 'block';
+                databaseDesc.style.display = 'none';
+                
+                // Enable selection options for legacy mode
+                selectionSection.style.opacity = '1';
+                selectionSection.style.pointerEvents = 'auto';
+                selectionSubtext.textContent = '(Advanced options for legacy mode)';
+                
+                console.log('Switched to Legacy Data Sampling mode');
+            }
+        }
+
+        // Toggle selection options visibility
+        function toggleSelectionOptions() {
+            const container = document.getElementById('selectionOptionsContainer');
+            const icon = document.getElementById('selectionToggleIcon');
+            
+            if (container.style.display === 'none' || !container.style.display) {
+                // Show options
+                container.style.display = 'block';
+                icon.textContent = '▼';
+                console.log('Selection options expanded');
+            } else {
+                // Hide options
+                container.style.display = 'none';
+                icon.textContent = '▶';
+                console.log('Selection options collapsed');
+            }
+        }
+
         // Initialize AI Analysis tab when it becomes active
         function initializeAIAnalysisTab() {
             // Load vessel context
@@ -3421,6 +3539,9 @@ Provide actionable insights based on what you observe in the data.`,
             
             document.getElementById('analysisEndDate').value = now.toISOString().slice(0, 16);
             document.getElementById('analysisStartDate').value = yesterday.toISOString().slice(0, 16);
+            
+            // Initialize UI state based on default checkbox state
+            toggleAnalysisMode();
         }
         
         // Load available data paths for analysis
@@ -3492,6 +3613,75 @@ Provide actionable insights based on what you observe in the data.`,
                 console.error('Error loading data paths for analysis:', error);
                 const container = document.getElementById('analysisDataPathContainer');
                 container.innerHTML = '<div style="color: #d32f2f;">Error loading paths</div>';
+            }
+        }
+
+        // Ask follow-up question to continue conversation
+        async function askFollowUpQuestion() {
+            const questionTextarea = document.getElementById('followUpQuestion');
+            const askButton = document.getElementById('askFollowUpBtn');
+            const question = questionTextarea.value.trim();
+            
+            if (!question) {
+                alert('Please enter a question.');
+                return;
+            }
+            
+            if (!currentAnalysisId) {
+                alert('No active conversation. Please run a database analysis first.');
+                return;
+            }
+            
+            // Disable UI during request
+            askButton.disabled = true;
+            askButton.textContent = '💬 Asking...';
+            questionTextarea.disabled = true;
+            
+            try {
+                const response = await fetch(`${getPluginPath()}/api/analyze/followup`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        conversationId: currentAnalysisId,
+                        question: question
+                    })
+                });
+                
+                const result = await response.json();
+                
+                if (result.success) {
+                    // Display the follow-up response in the analysis content area
+                    const content = document.getElementById('analysisContent');
+                    const followUpHtml = `
+                        <div style="border-left: 4px solid #1976d2; padding-left: 15px; margin-bottom: 20px; background: #f8fdff;">
+                            <h4 style="color: #1976d2; margin: 0 0 10px 0;">💬 Follow-up Question</h4>
+                            <div style="font-style: italic; color: #666; margin-bottom: 10px;">${question}</div>
+                            <div style="white-space: pre-wrap; line-height: 1.6;">${result.data.analysis}</div>
+                        </div>
+                    `;
+                    
+                    // Append to existing content
+                    content.innerHTML += followUpHtml;
+                    
+                    // Clear the question input
+                    questionTextarea.value = '';
+                    
+                    // Scroll to show the new response
+                    content.scrollIntoView({ behavior: 'smooth', block: 'end' });
+                } else {
+                    alert(`Error: ${result.error}`);
+                }
+            } catch (error) {
+                console.error('Follow-up question error:', error);
+                alert('Failed to ask follow-up question. Please try again.');
+            } finally {
+                // Re-enable UI
+                askButton.disabled = false;
+                askButton.textContent = '💬 Ask';
+                questionTextarea.disabled = false;
+                questionTextarea.focus();
             }
         }
 
