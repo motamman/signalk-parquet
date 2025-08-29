@@ -1292,7 +1292,11 @@ IMPORTANT NOTES:
 - Position data: use value_latitude/value_longitude columns directly (they're already DOUBLE)
 - Complex data: parse value_json for structured data like wind direction/speed
 - Always use glob patterns like '*.parquet' for file matching
-- Path structure follows SignalK standard (navigation.position, environment.wind.speedTrue, etc.)`;
+- Path structure follows SignalK standard (navigation.position, environment.wind.speedTrue, etc.)
+
+DATA LIMITATIONS:
+- NO meta/*.parquet files exist - vessel metadata is provided in the vessel context above
+- For vessel names/specs, refer to the VESSEL CONTEXT section, not database queries`;
   }
 
   /**
