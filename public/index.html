@@ -3102,7 +3102,30 @@ Provide actionable insights based on what you observe in the data.`,
             const content = document.getElementById('analysisContent');
             
             result.style.display = 'block';
-            content.innerHTML = '<div style="text-align: center; padding: 20px;">🔄 Running custom analysis...</div>';
+            
+            // Start timer
+            const startTime = new Date();
+            const timerElement = document.createElement('div');
+            timerElement.id = 'analysisTimer';
+            timerElement.style.cssText = 'background: #e3f2fd; border: 1px solid #2196f3; border-radius: 5px; padding: 10px; margin-bottom: 15px; text-align: center; font-family: monospace;';
+            
+            content.innerHTML = '';
+            content.appendChild(timerElement);
+            
+            const loadingElement = document.createElement('div');
+            loadingElement.style.cssText = 'text-align: center; padding: 20px;';
+            loadingElement.innerHTML = '🔄 Running custom analysis...';
+            content.appendChild(loadingElement);
+            
+            // Update timer every 100ms
+            const timerInterval = setInterval(() => {
+                const elapsed = (new Date() - startTime) / 1000;
+                timerElement.innerHTML = `
+                    <strong>⏱️ Analysis Timer</strong><br>
+                    Prompt sent: ${startTime.toLocaleTimeString()}<br>
+                    Elapsed: ${elapsed.toFixed(1)}s
+                `;
+            }, 100);
             
             try {
                 const analysisRequest = {
@@ -3136,14 +3159,50 @@ Provide actionable insights based on what you observe in the data.`,
                 
                 const data = await response.json();
                 
+                // Stop timer and show final time
+                clearInterval(timerInterval);
+                const endTime = new Date();
+                const totalTime = (endTime - startTime) / 1000;
+                timerElement.innerHTML = `
+                    <strong>⏱️ Analysis Complete</strong><br>
+                    Started: ${startTime.toLocaleTimeString()}<br>
+                    Completed: ${endTime.toLocaleTimeString()}<br>
+                    <strong>Total Time: ${totalTime.toFixed(1)}s</strong>
+                `;
+                timerElement.style.background = data.success ? '#e8f5e8' : '#ffeaea';
+                timerElement.style.borderColor = data.success ? '#4caf50' : '#f44336';
+                
+                // Remove loading message
+                loadingElement.remove();
+                
                 if (data.success && data.data) {
                     displayAnalysisResult(data.data);
                 } else {
-                    content.innerHTML = `<div style="color: red;">❌ Analysis failed: ${data.error}</div>`;
+                    const errorElement = document.createElement('div');
+                    errorElement.style.color = 'red';
+                    errorElement.innerHTML = `❌ Analysis failed: ${data.error}`;
+                    content.appendChild(errorElement);
                 }
                 
             } catch (error) {
-                content.innerHTML = `<div style="color: red;">❌ Error: ${error.message}</div>`;
+                // Stop timer on error
+                clearInterval(timerInterval);
+                const endTime = new Date();
+                const totalTime = (endTime - startTime) / 1000;
+                timerElement.innerHTML = `
+                    <strong>⏱️ Analysis Failed</strong><br>
+                    Started: ${startTime.toLocaleTimeString()}<br>
+                    Failed: ${endTime.toLocaleTimeString()}<br>
+                    <strong>Total Time: ${totalTime.toFixed(1)}s</strong>
+                `;
+                timerElement.style.background = '#ffeaea';
+                timerElement.style.borderColor = '#f44336';
+                
+                loadingElement.remove();
+                const errorElement = document.createElement('div');
+                errorElement.style.color = 'red';
+                errorElement.innerHTML = `❌ Error: ${error.message}`;
+                content.appendChild(errorElement);
             }
         }
 
@@ -3151,6 +3210,8 @@ Provide actionable insights based on what you observe in the data.`,
         function displayAnalysisResult(analysisResult) {
             const content = document.getElementById('analysisContent');
             
+            // Keep the existing timer element at the top
+            const existingTimer = document.getElementById('analysisTimer');
             let html = `
                 <div style="border-left: 4px solid #667eea; padding-left: 15px; margin-bottom: 20px;">
                     <h4 style="color: #667eea; margin: 0 0 10px 0;">📊 Analysis Summary</h4>
@@ -3207,7 +3268,23 @@ Provide actionable insights based on what you observe in the data.`,
                 </div>
             `;
             
-            content.innerHTML = html;
+            // Preserve the timer and append results after it
+            if (existingTimer) {
+                // Create a results container
+                const resultsDiv = document.createElement('div');
+                resultsDiv.innerHTML = html;
+                
+                // Clear content but keep timer, then append results
+                const children = Array.from(content.children);
+                children.forEach(child => {
+                    if (child.id !== 'analysisTimer') {
+                        child.remove();
+                    }
+                });
+                content.appendChild(resultsDiv);
+            } else {
+                content.innerHTML = html;
+            }
             
             // Show follow-up section for database access mode and store analysis ID
             if (analysisResult.metadata && analysisResult.metadata.useDatabaseAccess && analysisResult.id) {
@@ -3637,6 +3714,24 @@ Provide actionable insights based on what you observe in the data.`,
             askButton.textContent = '💬 Asking...';
             questionTextarea.disabled = true;
             
+            // Start timer for follow-up
+            const startTime = new Date();
+            const content = document.getElementById('analysisContent');
+            const followUpTimerElement = document.createElement('div');
+            followUpTimerElement.id = 'followUpTimer';
+            followUpTimerElement.style.cssText = 'background: #fff3e0; border: 1px solid #ff9800; border-radius: 5px; padding: 10px; margin-bottom: 15px; text-align: center; font-family: monospace;';
+            content.appendChild(followUpTimerElement);
+            
+            // Update timer every 100ms
+            const timerInterval = setInterval(() => {
+                const elapsed = (new Date() - startTime) / 1000;
+                followUpTimerElement.innerHTML = `
+                    <strong>⏱️ Follow-up Timer</strong><br>
+                    Question sent: ${startTime.toLocaleTimeString()}<br>
+                    Elapsed: ${elapsed.toFixed(1)}s
+                `;
+            }, 100);
+            
             try {
                 const response = await fetch(`${getPluginPath()}/api/analyze/followup`, {
                     method: 'POST',
@@ -3651,9 +3746,21 @@ Provide actionable insights based on what you observe in the data.`,
                 
                 const result = await response.json();
                 
+                // Stop timer and show final time
+                clearInterval(timerInterval);
+                const endTime = new Date();
+                const totalTime = (endTime - startTime) / 1000;
+                followUpTimerElement.innerHTML = `
+                    <strong>⏱️ Follow-up Complete</strong><br>
+                    Started: ${startTime.toLocaleTimeString()}<br>
+                    Completed: ${endTime.toLocaleTimeString()}<br>
+                    <strong>Total Time: ${totalTime.toFixed(1)}s</strong>
+                `;
+                followUpTimerElement.style.background = result.success ? '#e8f5e8' : '#ffeaea';
+                followUpTimerElement.style.borderColor = result.success ? '#4caf50' : '#f44336';
+                
                 if (result.success) {
                     // Display the follow-up response in the analysis content area
-                    const content = document.getElementById('analysisContent');
                     const followUpHtml = `
                         <div style="border-left: 4px solid #1976d2; padding-left: 15px; margin-bottom: 20px; background: #f8fdff;">
                             <h4 style="color: #1976d2; margin: 0 0 10px 0;">💬 Follow-up Question</h4>
@@ -3671,9 +3778,25 @@ Provide actionable insights based on what you observe in the data.`,
                     // Scroll to show the new response
                     content.scrollIntoView({ behavior: 'smooth', block: 'end' });
                 } else {
-                    alert(`Error: ${result.error}`);
+                    const errorElement = document.createElement('div');
+                    errorElement.style.color = 'red';
+                    errorElement.innerHTML = `❌ Follow-up failed: ${result.error}`;
+                    content.appendChild(errorElement);
                 }
             } catch (error) {
+                // Stop timer on error
+                clearInterval(timerInterval);
+                const endTime = new Date();
+                const totalTime = (endTime - startTime) / 1000;
+                followUpTimerElement.innerHTML = `
+                    <strong>⏱️ Follow-up Failed</strong><br>
+                    Started: ${startTime.toLocaleTimeString()}<br>
+                    Failed: ${endTime.toLocaleTimeString()}<br>
+                    <strong>Total Time: ${totalTime.toFixed(1)}s</strong>
+                `;
+                followUpTimerElement.style.background = '#ffeaea';
+                followUpTimerElement.style.borderColor = '#f44336';
+                
                 console.error('Follow-up question error:', error);
                 alert('Failed to ask follow-up question. Please try again.');
             } finally {
