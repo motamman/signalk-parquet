@@ -226,12 +226,32 @@ export class VesselContextManager {
                 } else if (value.hull !== undefined) {
                   extractedValue = value.hull;
                 } else if (value.value !== undefined) {
-                  extractedValue = value.value;
+                  // Handle nested value objects (like {"value":{"overall":16}})
+                  if (typeof value.value === 'object' && value.value !== null) {
+                    if (value.value.overall !== undefined) {
+                      extractedValue = value.value.overall;
+                    } else if (value.value.maximum !== undefined) {
+                      extractedValue = value.value.maximum;
+                    } else if (value.value.minimum !== undefined) {
+                      extractedValue = value.value.minimum;
+                    } else {
+                      // Take first available value from nested object
+                      const nestedKeys = Object.keys(value.value);
+                      if (nestedKeys.length > 0) {
+                        extractedValue = value.value[nestedKeys[0]];
+                      }
+                    }
+                  } else {
+                    extractedValue = value.value;
+                  }
                 } else {
                   // If it's a simple object with one key, try to extract that value
                   const keys = Object.keys(value);
                   if (keys.length === 1) {
                     extractedValue = value[keys[0]];
+                  } else if (keys.length > 1) {
+                    // Take the second value if multiple keys exist
+                    extractedValue = value[keys[1]];
                   }
                 }
                 
@@ -510,9 +530,9 @@ export class VesselContextManager {
     // Add physical characteristics
     if (vesselInfo.length || vesselInfo.beam || vesselInfo.draft || vesselInfo.height || vesselInfo.displacement) {
       contextParts.push('\n--- PHYSICAL CHARACTERISTICS ---');
-      if (vesselInfo.length) contextParts.push(`Length Overall (LOA): ${typeof vesselInfo.length === 'object' ? JSON.stringify(vesselInfo.length) : vesselInfo.length}m`);
-      if (vesselInfo.beam) contextParts.push(`Beam: ${typeof vesselInfo.beam === 'object' ? JSON.stringify(vesselInfo.beam) : vesselInfo.beam}m`);
-      if (vesselInfo.draft) contextParts.push(`Draft: ${typeof vesselInfo.draft === 'object' ? JSON.stringify(vesselInfo.draft) : vesselInfo.draft}m`);
+      if (vesselInfo.length) contextParts.push(`Length Overall (LOA): ${vesselInfo.length}m`);
+      if (vesselInfo.beam) contextParts.push(`Beam: ${vesselInfo.beam}m`);
+      if (vesselInfo.draft) contextParts.push(`Draft: ${vesselInfo.draft}m`);
       if (vesselInfo.height) contextParts.push(`Air Draft/Height: ${vesselInfo.height}m`);
       if (vesselInfo.displacement) contextParts.push(`Displacement: ${vesselInfo.displacement} tonnes`);
     }
