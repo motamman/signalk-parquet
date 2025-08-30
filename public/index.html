@@ -726,111 +726,202 @@
                         <button onclick="testClaudeConnection()" id="testConnectionBtn">🔗 Test Claude Connection</button>
                         <div id="claudeConnectionResult" style="margin-top: 10px;"></div>
                     </div>
-                    
+
+                    <!-- Vessel Context Section -->
+                    <div style="margin-bottom: 30px; border: 2px solid #e3f2fd; border-radius: 8px; background: #fafbfc;">
+                        <div onclick="toggleVesselContext()" style="padding: 15px 20px; cursor: pointer; display: flex; align-items: center; justify-content: space-between; user-select: none;">
+                            <div>
+                                <h3 style="margin: 0;">⚓ Vessel Context Document</h3>
+                                <p style="margin: 5px 0 0 0; color: #555; font-size: 0.9em;">Click to expand - context automatically included with every AI analysis</p>
+                            </div>
+                            <span id="vesselContextToggleIcon" style="font-size: 1.2em; color: #667eea;">▶</span>
+                        </div>
+                        <div id="vesselContextContent" style="display: none; padding: 0 20px 20px 20px; border-top: 1px solid #e3f2fd;">
+                        
+                        <!-- Auto-extracted vessel info -->
+                        <div style="margin-bottom: 20px;">
+                            <h4 style="margin-bottom: 10px; display: flex; align-items: center; justify-content: space-between;">
+                                <span>📊 Auto-Extracted Vessel Information</span>
+                                <button onclick="refreshVesselInfo()" style="font-size: 0.9em; padding: 6px 12px;">🔄 Refresh from SignalK</button>
+                            </h4>
+                            <div id="autoVesselInfo" style="background: white; padding: 15px; border-radius: 5px; border: 1px solid #ddd;">
+                                <div style="color: #666; font-style: italic;">Loading vessel information...</div>
+                            </div>
+                        </div>
+
+                        <!-- Custom context -->
+                        <div style="margin-bottom: 20px;">
+                            <h4 style="margin-bottom: 10px;">✏️ Custom Context & Notes</h4>
+                            <p style="font-size: 0.9em; color: #666; margin-bottom: 10px;">Add any additional context about your vessel, operations, or specific information you want Claude to consider during analysis:</p>
+                            <textarea id="customVesselContext" 
+                                placeholder="e.g., 'This is a racing sailboat primarily used for coastal sailing. The vessel has recently had engine maintenance. We're particularly interested in wind performance analysis...'"
+                                style="width: 100%; min-height: 120px; padding: 12px; border: 1px solid #ddd; border-radius: 5px; resize: vertical; font-family: inherit;"></textarea>
+                        </div>
+
+                        <!-- Context preview and actions -->
+                        <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+                            <button onclick="saveVesselContext()" style="background: #4CAF50; padding: 8px 16px;">💾 Save Context</button>
+                            <button onclick="previewClaudeContext()" style="background: #2196F3; padding: 8px 16px;">👁️ Preview Claude Context</button>
+                            <div id="vesselContextStatus" style="margin-left: 10px; font-size: 0.9em;"></div>
+                        </div>
+
+                        <!-- Context preview modal -->
+                        <div id="contextPreviewModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 1000; overflow-y: auto;">
+                            <div style="max-width: 800px; margin: 50px auto; background: white; border-radius: 10px; padding: 20px; max-height: 80vh; overflow-y: auto;">
+                                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                                    <h3>👁️ Claude Context Preview</h3>
+                                    <button onclick="closeContextPreview()" style="background: #f44336; color: white; padding: 5px 10px; border-radius: 3px;">&times;</button>
+                                </div>
+                                <p style="color: #666; margin-bottom: 15px;">This is the context that will be sent to Claude with every analysis:</p>
+                                <pre id="contextPreviewContent" style="background: #f8f9fa; padding: 15px; border-radius: 5px; border: 1px solid #ddd; white-space: pre-wrap; font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace; font-size: 0.9em; line-height: 1.4; max-height: 400px; overflow-y: auto;"></pre>
+                                <div style="margin-top: 15px; padding: 10px; background: #e8f5e8; border-radius: 5px; border-left: 4px solid #4CAF50;">
+                                    <small><strong>💡 Tip:</strong> A good vessel context helps Claude provide more accurate and relevant insights for your specific vessel and operations.</small>
+                                </div>
+                            </div>
+                        </div>
+
+                        </div>
+                    </div>
                     
                     <!-- Custom Analysis -->
                     <div style="margin-bottom: 30px;">
                         <h3>🎯 Custom Analysis</h3>
                         <div style="margin-top: 15px;">
-                            <div style="margin-bottom: 15px;">
-                                <label>Data Paths (select one or more):</label>
-                                <div id="analysisDataPathContainer" style="max-height: 200px; overflow-y: auto; border: 1px solid #ddd; border-radius: 4px; padding: 10px; margin-top: 5px; background: white;">
-                                    <div style="color: #666; font-style: italic;">Loading available paths...</div>
+                            <!-- Analysis Mode Toggle with Model Selector -->
+                            <div style="margin-bottom: 20px; padding: 15px; border: 2px solid #e3f2fd; border-radius: 8px; background: #f8f9ff;">
+                                <div style="margin-bottom: 10px;">
+                                    <label style="display: flex; align-items: center; justify-content: space-between; cursor: pointer; font-weight: bold;">
+                                        <span>🚀 Direct Database Access (Tony's Approach)</span>
+                                        <input type="checkbox" id="enableDatabaseAccess" checked onchange="toggleAnalysisMode()" style="transform: scale(1.2);">
+                                    </label>
                                 </div>
-                                <style>
-                                    .path-checkbox-row {
-                                        display: flex;
-                                        align-items: center;
-                                        padding: 8px 8px 8px 5px;
-                                        margin: 2px 0;
-                                        border-radius: 4px;
-                                    }
-                                    .path-checkbox-row:nth-child(odd) {
-                                        background-color: #f8f9fa;
-                                    }
-                                    .path-checkbox-row:nth-child(even) {
-                                        background-color: white;
-                                    }
-                                    .path-checkbox-row:hover {
-                                        background-color: #e3f2fd;
-                                    }
-                                    .path-info {
-                                        display: flex;
-                                        align-items: center;
-                                        flex-grow: 1;
-                                    }
-                                    .path-icon {
-                                        margin-right: 8px;
-                                        font-size: 16px;
-                                    }
-                                    .path-checkbox {
-                                        margin-left: auto;
-                                        width: 16px;
-                                        height: 16px;
-                                        flex-shrink: 0;
-                                    }
-                                </style>
-                                <div style="margin-top: 5px; font-size: 0.9em; color: #666; display: flex; justify-content: space-between; align-items: center;">
-                                    <span><span id="selectedPathCount">0</span> path(s) selected</span>
-                                    <div>
-                                        <button onclick="selectAllPaths()" style="font-size: 0.8em; padding: 2px 6px; margin-right: 5px;">Select All</button>
-                                        <button onclick="clearAllPaths()" style="font-size: 0.8em; padding: 2px 6px;">Clear All</button>
+                                <div style="font-size: 0.9em; color: #555;">
+                                    <div id="legacyModeDesc" style="color: #666; display: none;">
+                                        <strong>Legacy:</strong> Pre-load data samples for analysis (faster, limited scope)
+                                    </div>
+                                    <div id="databaseModeDesc" style="color: #1976d2;">
+                                        <strong>Enhanced:</strong> Claude explores your database interactively (more powerful, complete historical access)
                                     </div>
                                 </div>
-                            </div>
-                            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-bottom: 15px;">
-                                <div>
-                                    <label for="analysisStartDate">Start Date:</label>
-                                    <input type="datetime-local" id="analysisStartDate" style="width: 100%; padding: 8px; margin-top: 5px;">
+                                
+                                <!-- Claude Model Selection - moved here -->
+                                <div style="margin-top: 15px;">
+                                    <label for="claudeModelMain">Claude Model:</label>
+                                    <select id="claudeModelMain" style="width: 100%; padding: 8px; margin-top: 5px;">
+                                        <option value="claude-3-7-sonnet-20250219" selected>Claude 3.7 Sonnet - Best balance of speed and intelligence</option>
+                                        <option value="claude-sonnet-4-20250514">Claude Sonnet 4 - Latest Sonnet model (premium)</option>
+                                        <option value="claude-opus-4-20250514">Claude Opus 4 - Most powerful model (premium)</option>
+                                        <option value="claude-3-5-haiku-20241022">Claude 3.5 Haiku - Fast responses</option>
+                                        <option value="claude-3-haiku-20240307">Claude 3 Haiku - Fastest model</option>
+                                    </select>
+                                    <p style="font-size: 0.9em; color: #666; margin: 5px 0 0 0;">Choose the Claude model for analysis. Sonnet provides the most detailed insights.</p>
                                 </div>
-                                <div>
-                                    <label for="analysisEndDate">End Date:</label>
-                                    <input type="datetime-local" id="analysisEndDate" style="width: 100%; padding: 8px; margin-top: 5px;">
+                            </div>
+
+                            <!-- Collapsible Selection Options -->
+                            <div id="selectionOptionsSection" style="margin-bottom: 20px;">
+                                <div onclick="toggleSelectionOptions()" style="cursor: pointer; padding: 10px; background: #f8f9fa; border: 1px solid #dee2e6; border-radius: 5px; user-select: none;">
+                                    <span id="selectionToggleIcon" style="margin-right: 8px;">▶</span>
+                                    <strong>Selection Options</strong>
+                                    <span id="selectionToggleSubtext" style="font-size: 0.9em; color: #666; margin-left: 10px;">(Advanced options for legacy mode)</span>
+                                </div>
+                                <div id="selectionOptionsContainer" style="display: none; border: 1px solid #dee2e6; border-top: none; border-radius: 0 0 5px 5px; padding: 15px; background: #f9f9f9;">
+                                    <!-- Data Path Selection -->
+                                    <div style="margin-bottom: 15px;">
+                                        <label>Data Paths (select one or more):</label>
+                                        <div id="analysisDataPathContainer" style="max-height: 200px; overflow-y: auto; border: 1px solid #ddd; border-radius: 4px; padding: 10px; margin-top: 5px; background: white;">
+                                            <div style="color: #666; font-style: italic;">Loading available paths...</div>
+                                        </div>
+                                        <style>
+                                            .path-checkbox-row {
+                                                display: flex;
+                                                align-items: center;
+                                                padding: 8px 8px 8px 5px;
+                                                margin: 2px 0;
+                                                border-radius: 4px;
+                                            }
+                                            .path-checkbox-row:nth-child(odd) {
+                                                background-color: #f8f9fa;
+                                            }
+                                            .path-checkbox-row:nth-child(even) {
+                                                background-color: white;
+                                            }
+                                            .path-checkbox-row:hover {
+                                                background-color: #e3f2fd;
+                                            }
+                                            .path-info {
+                                                display: flex;
+                                                align-items: center;
+                                                flex-grow: 1;
+                                            }
+                                            .path-icon {
+                                                margin-right: 8px;
+                                                font-size: 16px;
+                                            }
+                                            .path-checkbox {
+                                                margin-left: auto;
+                                                width: 16px;
+                                                height: 16px;
+                                                flex-shrink: 0;
+                                            }
+                                        </style>
+                                        <div style="margin-top: 5px; font-size: 0.9em; color: #666; display: flex; justify-content: space-between; align-items: center;">
+                                            <span><span id="selectedPathCount">0</span> path(s) selected</span>
+                                            <div>
+                                                <button onclick="selectAllPaths()" style="font-size: 0.8em; padding: 2px 6px; margin-right: 5px;">Select All</button>
+                                                <button onclick="clearAllPaths()" style="font-size: 0.8em; padding: 2px 6px;">Clear All</button>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    
+                                    <!-- Date Range Selection -->
+                                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-bottom: 15px;">
+                                        <div>
+                                            <label for="analysisStartDate">Start Date:</label>
+                                            <input type="datetime-local" id="analysisStartDate" style="width: 100%; padding: 8px; margin-top: 5px;">
+                                        </div>
+                                        <div>
+                                            <label for="analysisEndDate">End Date:</label>
+                                            <input type="datetime-local" id="analysisEndDate" style="width: 100%; padding: 8px; margin-top: 5px;">
+                                        </div>
+                                    </div>
+                                    
+                                    <!-- Aggregation Method -->
+                                    <div style="margin-bottom: 15px;">
+                                        <label for="aggregationMethod">Aggregation Method:</label>
+                                        <select id="aggregationMethod" style="width: 100%; padding: 8px; margin-top: 5px;">
+                                            <option value="average" selected>Average - Mean values over time buckets</option>
+                                            <option value="min">Min - Minimum values over time buckets</option>
+                                            <option value="max">Max - Maximum values over time buckets</option>
+                                            <option value="first">First - First value in each time bucket</option>
+                                            <option value="last">Last - Last value in each time bucket</option>
+                                            <option value="mid">Median - Middle values over time buckets</option>
+                                            <option value="multiple">Multiple - Get min, max, and average</option>
+                                        </select>
+                                    </div>
+                                    
+                                    <!-- Time Resolution -->
+                                    <div style="margin-bottom: 15px;">
+                                        <label for="resolution">Time Resolution:</label>
+                                        <select id="resolution" style="width: 100%; padding: 8px; margin-top: 5px;">
+                                            <option value="" selected>Auto - Automatically determine best resolution</option>
+                                            <option value="1m">1 minute - Fine-grained data</option>
+                                            <option value="5m">5 minutes - Detailed data</option>
+                                            <option value="15m">15 minutes - Regular sampling</option>
+                                            <option value="1h">1 hour - Hourly summaries</option>
+                                            <option value="1d">1 day - Daily summaries</option>
+                                        </select>
+                                    </div>
+                                    
                                 </div>
                             </div>
-                            <div style="margin-bottom: 15px;">
-                                <label for="aggregationMethod">Aggregation Method:</label>
-                                <select id="aggregationMethod" style="width: 100%; padding: 8px; margin-top: 5px;">
-                                    <option value="average" selected>Average - Mean values over time buckets</option>
-                                    <option value="min">Min - Minimum values over time buckets</option>
-                                    <option value="max">Max - Maximum values over time buckets</option>
-                                    <option value="first">First - First value in each time bucket</option>
-                                    <option value="last">Last - Last value in each time bucket</option>
-                                    <option value="mid">Median - Middle values over time buckets</option>
-                                    <option value="multiple">Multiple - Get min, max, and average</option>
-                                </select>
-                            </div>
-                            <div style="margin-bottom: 15px;">
-                                <label for="resolution">Time Resolution:</label>
-                                <select id="resolution" style="width: 100%; padding: 8px; margin-top: 5px;">
-                                    <option value="">Auto - Let HistoryAPI choose optimal bucketing</option>
-                                    <option value="1000">1 Second - Highest detail</option>
-                                    <option value="10000">10 Seconds - High detail</option>
-                                    <option value="30000">30 Seconds - Medium detail</option>
-                                    <option value="60000" selected>1 Minute - Balanced (Recommended)</option>
-                                    <option value="120000">2 Minutes - Lower detail</option>
-                                    <option value="300000">5 Minutes - Low detail</option>
-                                    <option value="600000">10 Minutes - Lowest detail</option>
-                                </select>
-                                <p style="font-size: 0.9em; color: #666; margin: 5px 0 0 0;">Higher resolution = more data points but longer analysis time. Use Auto for optimal performance.</p>
-                            </div>
-                            <div style="margin-bottom: 15px;">
-                                <label for="claudeModel">Claude AI Model:</label>
-                                <select id="claudeModel" style="width: 100%; padding: 8px; margin-top: 5px;">
-                                    <option value="claude-opus-4-1-20250805">Claude Opus 4.1 - Most Capable & Intelligent (Premium)</option>
-                                    <option value="claude-opus-4-20250514">Claude Opus 4 - Previous Flagship Model (Premium)</option>
-                                    <option value="claude-sonnet-4-20250514">Claude Sonnet 4 - Exceptional Reasoning (High Performance)</option>
-                                    <option value="claude-3-7-sonnet-20250219" selected>Claude 3.7 Sonnet - Extended Thinking (Recommended)</option>
-                                    <option value="claude-3-5-haiku-20241022">Claude 3.5 Haiku - Fast & Balanced</option>
-                                    <option value="claude-3-haiku-20240307">Claude 3 Haiku - Fastest & Most Cost-Effective</option>
-                                </select>
-                                <p style="font-size: 0.9em; color: #666; margin: 5px 0 0 0;">Choose the Claude model for analysis. Sonnet provides the most detailed insights.</p>
-                            </div>
+
                             <div style="margin-bottom: 15px;">
                                 <label for="customPrompt">Custom Analysis Request (optional):</label>
                                 <textarea id="customPrompt" placeholder="What specific insights are you looking for? Leave blank for general analysis..." style="width: 100%; padding: 8px; margin-top: 5px; min-height: 60px; resize: vertical;"></textarea>
                             </div>
-                            <button onclick="runCustomAnalysis()" style="padding: 12px 25px;">🚀 Run Custom Analysis</button>
+
+                            <button onclick="runCustomAnalysis()" style="padding: 12px 25px; margin-top: 15px;">🚀 Run Custom Analysis</button>
                         </div>
                     </div>
                     
@@ -840,15 +931,26 @@
                         <div id="analysisContent" style="background: #f8f9fa; padding: 20px; border-radius: 8px; margin-top: 15px;">
                             <!-- Results will appear here -->
                         </div>
+                        
+                        <!-- Follow-up Questions -->
+                        <div id="followUpSection" style="display: none; margin-top: 20px; padding: 15px; border: 2px solid #e8f4f8; border-radius: 8px; background: #f8fdff;">
+                            <h4 style="margin: 0 0 10px 0; color: #1976d2;">💬 Ask Follow-up Questions</h4>
+                            <p style="font-size: 0.9em; color: #666; margin: 0 0 15px 0;">Continue the conversation to explore your data deeper.</p>
+                            <div style="display: flex; gap: 10px; align-items: flex-end;">
+                                <div style="flex: 1;">
+                                    <textarea id="followUpQuestion" placeholder="Ask Claude to explore further... (e.g., 'Show me wind patterns during high waves' or 'What happened around 3 PM?')" style="width: 100%; padding: 8px; min-height: 40px; border: 1px solid #ddd; border-radius: 4px; resize: vertical;"></textarea>
+                                </div>
+                                <button id="askFollowUpBtn" onclick="askFollowUpQuestion()" style="padding: 8px 15px; background: #1976d2; color: white; border: none; border-radius: 4px; cursor: pointer; white-space: nowrap;">💬 Ask</button>
+                            </div>
+                        </div>
                     </div>
                     
+
                     <!-- Analysis History -->
                     <div style="margin-top: 30px;">
                         <h3>📈 Analysis History</h3>
-                        <button onclick="loadAnalysisHistory()" id="loadHistoryBtn">🔄 Load History</button>
-                        <div id="analysisHistory" style="margin-top: 15px;">
-                            <!-- History will appear here -->
-                        </div>
+                        <button onclick="openAnalysisHistoryModal()" id="loadHistoryBtn">📈 View Analysis History</button>
+                        <p style="font-size: 0.9em; color: #666; margin-top: 10px;">View and manage your previous Claude AI analyses.</p>
                     </div>
                 </div>
             </div>
@@ -931,6 +1033,7 @@
         let availablePaths = [];
         let dataDirectory = '';
         let showCommandPaths = false; // Default to hiding command paths
+        let currentAnalysisId = null; // Track current analysis for follow-up questions
 
         // Get the plugin path dynamically
         function getPluginPath() {
@@ -2525,6 +2628,288 @@
             }
         }
 
+        // ===========================================
+        // VESSEL CONTEXT FUNCTIONS
+        // ===========================================
+
+        // Load vessel context when AI tab is initialized
+        async function loadVesselContext() {
+            try {
+                console.log('Loading vessel context...');
+                const response = await fetch('/plugins/signalk-parquet/api/vessel-context');
+                console.log('Vessel context response status:', response.status);
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
+                
+                const data = await response.json();
+                console.log('Vessel context data:', data);
+                
+                if (data.success && data.data) {
+                    const context = data.data;
+                    
+                    // Update auto-extracted vessel info display
+                    displayVesselInfo(context.vesselInfo);
+                    
+                    // Update custom context textarea
+                    const customContextTextarea = document.getElementById('customVesselContext');
+                    if (customContextTextarea) {
+                        customContextTextarea.value = context.customContext || '';
+                    }
+                    
+                    // Show last updated info
+                    updateVesselContextStatus(`Last updated: ${new Date(context.lastUpdated).toLocaleString()}`);
+                } else {
+                    console.log('No vessel context data found, showing empty state');
+                    displayVesselInfo({});
+                    updateVesselContextStatus('No vessel context found - click Refresh to extract from SignalK');
+                }
+            } catch (error) {
+                console.error('Error loading vessel context:', error);
+                const autoInfoDiv = document.getElementById('autoVesselInfo');
+                if (autoInfoDiv) {
+                    autoInfoDiv.innerHTML = `<div style="color: red;">Error loading vessel context: ${error.message}</div>`;
+                }
+                updateVesselContextStatus('Error loading vessel context: ' + error.message, true);
+            }
+        }
+
+        // Display vessel information in the UI
+        function displayVesselInfo(vesselInfo) {
+            const autoInfoDiv = document.getElementById('autoVesselInfo');
+            if (!autoInfoDiv) return;
+            
+            if (!vesselInfo || Object.keys(vesselInfo).length === 0) {
+                autoInfoDiv.innerHTML = `
+                    <div style="color: #666; font-style: italic; text-align: center; padding: 20px;">
+                        No vessel information found.<br>
+                        <small>Click "Refresh from SignalK" to extract vessel data automatically.</small>
+                    </div>`;
+                return;
+            }
+            
+            const sections = [];
+            
+            // Basic identification
+            if (vesselInfo.name || vesselInfo.callsign || vesselInfo.mmsi) {
+                const items = [];
+                if (vesselInfo.name) items.push(`<strong>Name:</strong> ${vesselInfo.name}`);
+                if (vesselInfo.callsign) items.push(`<strong>Call Sign:</strong> ${vesselInfo.callsign}`);
+                if (vesselInfo.mmsi) items.push(`<strong>MMSI:</strong> ${vesselInfo.mmsi}`);
+                if (vesselInfo.flag) items.push(`<strong>Flag:</strong> ${vesselInfo.flag}`);
+                sections.push(`<div><strong>🆔 Identification:</strong> ${items.join(', ')}</div>`);
+            }
+            
+            // Physical characteristics
+            const physical = [];
+            
+            // Handle length - could be number or object with overall property
+            if (vesselInfo.length) {
+                const lengthValue = typeof vesselInfo.length === 'object' && vesselInfo.length.overall 
+                    ? vesselInfo.length.overall 
+                    : vesselInfo.length;
+                if (lengthValue) physical.push(`${lengthValue}m LOA`);
+            }
+            
+            if (vesselInfo.beam) physical.push(`${vesselInfo.beam}m beam`);
+            
+            // Handle draft - could be number or object with maximum property  
+            if (vesselInfo.draft) {
+                const draftValue = typeof vesselInfo.draft === 'object' && vesselInfo.draft.maximum
+                    ? vesselInfo.draft.maximum
+                    : vesselInfo.draft;
+                if (draftValue) physical.push(`${draftValue}m draft`);
+            }
+            
+            if (vesselInfo.height) physical.push(`${vesselInfo.height}m height`);
+            if (vesselInfo.displacement) physical.push(`${vesselInfo.displacement}t displacement`);
+            if (physical.length > 0) {
+                sections.push(`<div><strong>📏 Physical:</strong> ${physical.join(', ')}</div>`);
+            }
+            
+            // Vessel type
+            if (vesselInfo.vesselType) {
+                sections.push(`<div><strong>🚢 Type:</strong> ${vesselInfo.vesselType}</div>`);
+            }
+            
+            // Technical specs
+            const technical = [];
+            if (vesselInfo.grossTonnage) technical.push(`${vesselInfo.grossTonnage} GT`);
+            if (vesselInfo.netTonnage) technical.push(`${vesselInfo.netTonnage} NT`);
+            if (vesselInfo.deadWeight) technical.push(`${vesselInfo.deadWeight}t DWT`);
+            if (technical.length > 0) {
+                sections.push(`<div><strong>⚖️ Tonnage:</strong> ${technical.join(', ')}</div>`);
+            }
+            
+            // Build info
+            const build = [];
+            if (vesselInfo.builder) build.push(`Built by ${vesselInfo.builder}`);
+            if (vesselInfo.buildYear) build.push(`in ${vesselInfo.buildYear}`);
+            if (vesselInfo.hullNumber) build.push(`(Hull: ${vesselInfo.hullNumber})`);
+            if (build.length > 0) {
+                sections.push(`<div><strong>🔨 Build:</strong> ${build.join(' ')}</div>`);
+            }
+            
+            if (sections.length === 0) {
+                autoInfoDiv.innerHTML = `<div style="color: #666; font-style: italic;">No vessel details available - try refreshing from SignalK</div>`;
+            } else {
+                autoInfoDiv.innerHTML = sections.join('<br style="margin: 8px 0;">');
+            }
+        }
+
+        // Refresh vessel information from SignalK
+        async function refreshVesselInfo() {
+            const btn = event.target;
+            btn.disabled = true;
+            btn.innerHTML = '🔄 Refreshing...';
+            
+            try {
+                console.log('Refreshing vessel info from SignalK...');
+                const response = await fetch('/plugins/signalk-parquet/api/vessel-context/refresh', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' }
+                });
+                console.log('Refresh response status:', response.status);
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
+                
+                const data = await response.json();
+                console.log('Refresh data:', data);
+                
+                if (data.success && data.data) {
+                    displayVesselInfo(data.data.vesselInfo);
+                    updateVesselContextStatus('Vessel information refreshed from SignalK data');
+                } else {
+                    console.error('Refresh failed:', data);
+                    updateVesselContextStatus('Failed to refresh: ' + (data.error || 'Unknown error'), true);
+                }
+            } catch (error) {
+                console.error('Error refreshing vessel info:', error);
+                updateVesselContextStatus('Error refreshing vessel information: ' + error.message, true);
+            } finally {
+                btn.disabled = false;
+                btn.innerHTML = '🔄 Refresh from SignalK';
+            }
+        }
+
+        // Save vessel context (both auto-extracted and custom)
+        async function saveVesselContext() {
+            const btn = event.target;
+            btn.disabled = true;
+            btn.innerHTML = '💾 Saving...';
+            
+            try {
+                const customContext = document.getElementById('customVesselContext').value;
+                
+                const response = await fetch('/plugins/signalk-parquet/api/vessel-context', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        customContext: customContext
+                    })
+                });
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    updateVesselContextStatus('Context saved successfully ✅');
+                } else {
+                    updateVesselContextStatus('Failed to save: ' + (data.error || 'Unknown error'), true);
+                }
+            } catch (error) {
+                console.error('Error saving vessel context:', error);
+                updateVesselContextStatus('Error saving context: ' + error.message, true);
+            } finally {
+                btn.disabled = false;
+                btn.innerHTML = '💾 Save Context';
+            }
+        }
+
+        // Preview Claude context
+        async function previewClaudeContext() {
+            try {
+                console.log('Generating Claude context preview...');
+                const response = await fetch('/plugins/signalk-parquet/api/vessel-context/claude-preview');
+                console.log('Preview response status:', response.status);
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
+                
+                const data = await response.json();
+                console.log('Preview data:', data);
+                
+                if (data.success && data.data) {
+                    const modal = document.getElementById('contextPreviewModal');
+                    const content = document.getElementById('contextPreviewContent');
+                    
+                    content.textContent = data.data.contextText;
+                    modal.style.display = 'block';
+                } else {
+                    console.error('Preview failed:', data);
+                    updateVesselContextStatus('Failed to generate preview: ' + (data.error || 'Unknown error'), true);
+                }
+            } catch (error) {
+                console.error('Error previewing context:', error);
+                updateVesselContextStatus('Error generating preview: ' + error.message, true);
+            }
+        }
+
+        // Close context preview modal
+        function closeContextPreview() {
+            const modal = document.getElementById('contextPreviewModal');
+            modal.style.display = 'none';
+        }
+
+        // Close modals when clicking outside
+        window.onclick = function(event) {
+            const contextModal = document.getElementById('contextPreviewModal');
+            const historyModal = document.getElementById('analysisHistoryModal');
+            const viewModal = document.getElementById('analysisViewModal');
+            
+            if (event.target === contextModal) {
+                contextModal.style.display = 'none';
+            } else if (event.target === historyModal) {
+                historyModal.style.display = 'none';
+            } else if (event.target === viewModal) {
+                viewModal.style.display = 'none';
+            }
+        }
+
+        // Update vessel context status message
+        function updateVesselContextStatus(message, isError = false) {
+            const statusDiv = document.getElementById('vesselContextStatus');
+            if (statusDiv) {
+                statusDiv.innerHTML = `<span style="color: ${isError ? 'red' : 'green'};">${message}</span>`;
+                
+                // Clear status after 5 seconds
+                setTimeout(() => {
+                    statusDiv.innerHTML = '';
+                }, 5000);
+            }
+        }
+
+        // Toggle vessel context section
+        function toggleVesselContext() {
+            const content = document.getElementById('vesselContextContent');
+            const icon = document.getElementById('vesselContextToggleIcon');
+            
+            if (content.style.display === 'none') {
+                content.style.display = 'block';
+                icon.textContent = '▼';
+            } else {
+                content.style.display = 'none';
+                icon.textContent = '▶';
+            }
+        }
+
+        // ===========================================
+        // END VESSEL CONTEXT FUNCTIONS
+        // ===========================================
+
         // Load analysis templates and populate UI
         async function loadAnalysisTemplates() {
             try {
@@ -2704,9 +3089,11 @@ Provide actionable insights based on what you observe in the data.`,
             const endDate = document.getElementById('analysisEndDate').value;
             const aggregationMethod = document.getElementById('aggregationMethod').value;
             const resolution = document.getElementById('resolution').value;
-            const claudeModel = document.getElementById('claudeModel').value;
+            const claudeModel = document.getElementById('claudeModelMain').value;
+            const enableDatabaseAccess = document.getElementById('enableDatabaseAccess').checked;
             
-            if (!selectedPaths || selectedPaths.length === 0) {
+            // Skip path validation in database access mode - Claude can access all data
+            if (!enableDatabaseAccess && (!selectedPaths || selectedPaths.length === 0)) {
                 alert('Please select at least one data path');
                 return;
             }
@@ -2719,7 +3106,7 @@ Provide actionable insights based on what you observe in the data.`,
             
             try {
                 const analysisRequest = {
-                    dataPath: selectedPaths.join(','), // REST API supports comma-separated paths
+                    dataPath: enableDatabaseAccess ? 'database_access_mode' : selectedPaths.join(','), // REST API supports comma-separated paths
                     analysisType: 'custom',
                     customPrompt: customPrompt || `Analyze this maritime sensor data and provide insights. Focus on:
 1. Data patterns and trends over time
@@ -2736,6 +3123,7 @@ Provide actionable insights based on what you observe in the data.`,
                     aggregationMethod: aggregationMethod || 'average',
                     resolution: resolution || '',  // Empty string = Auto
                     claudeModel: claudeModel || 'claude-3-7-sonnet-20250219',
+                    useDatabaseAccess: enableDatabaseAccess,
                 };
                 
                 console.log(`🚀 Running custom analysis for paths: ${selectedPaths.join(', ')}`);
@@ -2820,57 +3208,251 @@ Provide actionable insights based on what you observe in the data.`,
             `;
             
             content.innerHTML = html;
+            
+            // Show follow-up section for database access mode and store analysis ID
+            if (analysisResult.metadata && analysisResult.metadata.useDatabaseAccess && analysisResult.id) {
+                currentAnalysisId = analysisResult.id;
+                const followUpSection = document.getElementById('followUpSection');
+                if (followUpSection) {
+                    followUpSection.style.display = 'block';
+                }
+            } else {
+                currentAnalysisId = null;
+                const followUpSection = document.getElementById('followUpSection');
+                if (followUpSection) {
+                    followUpSection.style.display = 'none';
+                }
+            }
         }
 
-        // Load analysis history
-        async function loadAnalysisHistory() {
-            const btn = document.getElementById('loadHistoryBtn');
-            const container = document.getElementById('analysisHistory');
+        // Open analysis history modal
+        async function openAnalysisHistoryModal() {
+            const modal = document.getElementById('analysisHistoryModal');
+            const content = document.getElementById('analysisHistoryModalContent');
             
-            btn.disabled = true;
-            btn.innerHTML = '🔄 Loading...';
+            // Show modal immediately
+            modal.style.display = 'block';
+            content.innerHTML = '<div style="text-align: center; padding: 20px;"><div>🔄 Loading analysis history...</div></div>';
             
             try {
-                const response = await fetch('/plugins/signalk-parquet/api/analyze/history');
+                const response = await fetch('/plugins/signalk-parquet/api/analyze/history?limit=20');
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
+                
                 const data = await response.json();
                 
                 if (data.success && data.data && data.data.length > 0) {
-                    let html = '<div style="margin-top: 10px;">';
+                    let html = '<div>';
                     
-                    data.data.slice(0, 5).forEach((analysis, index) => { // Show last 5 analyses
+                    data.data.forEach((analysis, index) => {
+                        const date = new Date(analysis.timestamp);
+                        const isRecent = (Date.now() - date.getTime()) < 24 * 60 * 60 * 1000; // Less than 24 hours
+                        
                         html += `
-                            <div style="background: white; border: 1px solid #ddd; border-radius: 5px; padding: 15px; margin-bottom: 10px;">
-                                <div style="display: flex; justify-content: between; align-items: center; margin-bottom: 10px;">
-                                    <strong>${analysis.metadata.analysisType}</strong>
-                                    <small style="color: #666;">${new Date(analysis.timestamp).toLocaleString()}</small>
+                            <div style="background: ${isRecent ? '#f0f8ff' : 'white'}; border: 1px solid #ddd; border-radius: 8px; padding: 20px; margin-bottom: 15px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
+                                <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 15px;">
+                                    <div>
+                                        <h4 style="margin: 0 0 5px 0; color: #333; font-size: 1.1em;">${analysis.metadata.analysisType || 'Custom Analysis'}</h4>
+                                        <div style="font-size: 0.9em; color: #666; margin-bottom: 5px;">
+                                            <strong>Path:</strong> ${analysis.metadata.dataPath}
+                                        </div>
+                                        <div style="font-size: 0.85em; color: #888;">
+                                            ${date.toLocaleString()} ${isRecent ? '(Recent)' : ''}
+                                        </div>
+                                    </div>
+                                    <div style="display: flex; gap: 8px;">
+                                        <button onclick="viewAnalysis('${analysis.id}')" style="background: #2196F3; color: white; border: none; padding: 8px 12px; border-radius: 4px; cursor: pointer; font-size: 0.9em;">
+                                            👁️ View
+                                        </button>
+                                        <button onclick="deleteAnalysis('${analysis.id}')" style="background: #f44336; color: white; border: none; padding: 8px 12px; border-radius: 4px; cursor: pointer; font-size: 0.9em;">
+                                            🗑️ Delete
+                                        </button>
+                                    </div>
                                 </div>
-                                <div style="font-size: 14px; color: #333; margin-bottom: 8px;">
-                                    Path: ${analysis.metadata.dataPath}
+                                <div style="font-size: 0.9em; color: #555; line-height: 1.4; max-height: 80px; overflow: hidden; position: relative;">
+                                    ${analysis.analysis.substring(0, 300)}${analysis.analysis.length > 300 ? '...' : ''}
                                 </div>
-                                <div style="font-size: 13px; color: #666; max-height: 60px; overflow: hidden;">
-                                    ${analysis.analysis.substring(0, 200)}...
-                                </div>
-                                <button onclick="displayAnalysisResult(${JSON.stringify(analysis).replace(/"/g, '&quot;')})" 
-                                        style="margin-top: 8px; font-size: 12px; padding: 4px 8px;">
-                                    View Full Analysis
-                                </button>
+                                ${analysis.insights && analysis.insights.length > 0 ? `
+                                    <div style="margin-top: 10px; font-size: 0.85em; color: #666;">
+                                        <strong>Key Insights:</strong> ${analysis.insights.slice(0, 2).join(', ')}${analysis.insights.length > 2 ? '...' : ''}
+                                    </div>
+                                ` : ''}
                             </div>
                         `;
                     });
                     
                     html += '</div>';
-                    container.innerHTML = html;
+                    content.innerHTML = html;
                 } else {
-                    container.innerHTML = '<p style="color: #666; margin-top: 10px;">No analysis history found.</p>';
+                    content.innerHTML = `
+                        <div style="text-align: center; padding: 40px; color: #666;">
+                            <div style="font-size: 3em; margin-bottom: 20px;">📈</div>
+                            <h3>No Analysis History Found</h3>
+                            <p>Your Claude AI analyses will appear here once you start running them.</p>
+                        </div>
+                    `;
                 }
                 
             } catch (error) {
-                container.innerHTML = `<p style="color: red; margin-top: 10px;">Error loading history: ${error.message}</p>`;
-            } finally {
-                btn.disabled = false;
-                btn.innerHTML = '🔄 Load History';
+                content.innerHTML = `
+                    <div style="text-align: center; padding: 40px; color: #d32f2f;">
+                        <div style="font-size: 3em; margin-bottom: 20px;">⚠️</div>
+                        <h3>Error Loading History</h3>
+                        <p>${error.message}</p>
+                    </div>
+                `;
             }
         }
+
+        // Close analysis history modal
+        function closeAnalysisHistoryModal() {
+            document.getElementById('analysisHistoryModal').style.display = 'none';
+        }
+
+        // View individual analysis
+        async function viewAnalysis(analysisId) {
+            const modal = document.getElementById('analysisViewModal');
+            const content = document.getElementById('analysisViewContent');
+            const title = document.getElementById('analysisViewTitle');
+            
+            // Show modal
+            modal.style.display = 'block';
+            content.innerHTML = '<div style="text-align: center; padding: 20px;">🔄 Loading analysis...</div>';
+            
+            try {
+                // Find the analysis in the current data (could also fetch individually)
+                const historyResponse = await fetch('/plugins/signalk-parquet/api/analyze/history');
+                const historyData = await historyResponse.json();
+                
+                if (historyData.success && historyData.data) {
+                    const analysis = historyData.data.find(a => a.id === analysisId);
+                    if (analysis) {
+                        displayFullAnalysis(analysis);
+                    } else {
+                        content.innerHTML = '<div style="text-align: center; padding: 20px; color: #d32f2f;">Analysis not found.</div>';
+                    }
+                }
+            } catch (error) {
+                content.innerHTML = `<div style="text-align: center; padding: 20px; color: #d32f2f;">Error loading analysis: ${error.message}</div>`;
+            }
+        }
+
+        // Display full analysis in modal
+        function displayFullAnalysis(analysis) {
+            const content = document.getElementById('analysisViewContent');
+            const title = document.getElementById('analysisViewTitle');
+            
+            title.textContent = `🧠 ${analysis.metadata.analysisType || 'Analysis'} - ${new Date(analysis.timestamp).toLocaleDateString()}`;
+            
+            let html = `
+                <div style="margin-bottom: 20px; padding: 15px; background: #f8f9fa; border-radius: 8px; border-left: 4px solid #2196F3;">
+                    <h4 style="margin: 0 0 10px 0; color: #333;">Analysis Metadata</h4>
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; font-size: 0.9em;">
+                        <div><strong>Data Path:</strong> ${analysis.metadata.dataPath}</div>
+                        <div><strong>Analysis Type:</strong> ${analysis.metadata.analysisType || 'Custom'}</div>
+                        <div><strong>Date:</strong> ${new Date(analysis.timestamp).toLocaleString()}</div>
+                        <div><strong>Record Count:</strong> ${analysis.metadata.recordCount || 'N/A'}</div>
+                        <div><strong>Confidence:</strong> ${Math.round((analysis.confidence || 0) * 100)}%</div>
+                        <div><strong>Data Quality:</strong> ${analysis.dataQuality || 'N/A'}</div>
+                    </div>
+                </div>
+
+                <div style="margin-bottom: 20px;">
+                    <h4 style="color: #333; border-bottom: 2px solid #2196F3; padding-bottom: 5px;">🧠 Main Analysis</h4>
+                    <div style="background: white; padding: 20px; border-radius: 8px; border: 1px solid #ddd; line-height: 1.6; white-space: pre-wrap;">${analysis.analysis}</div>
+                </div>
+            `;
+            
+            if (analysis.insights && analysis.insights.length > 0) {
+                html += `
+                    <div style="margin-bottom: 20px;">
+                        <h4 style="color: #333; border-bottom: 2px solid #4CAF50; padding-bottom: 5px;">💡 Key Insights</h4>
+                        <ul style="background: white; padding: 20px; border-radius: 8px; border: 1px solid #ddd; line-height: 1.6;">
+                `;
+                analysis.insights.forEach(insight => {
+                    html += `<li style="margin-bottom: 8px;">${insight}</li>`;
+                });
+                html += `</ul></div>`;
+            }
+            
+            if (analysis.recommendations && analysis.recommendations.length > 0) {
+                html += `
+                    <div style="margin-bottom: 20px;">
+                        <h4 style="color: #333; border-bottom: 2px solid #FF9800; padding-bottom: 5px;">🎯 Recommendations</h4>
+                        <ul style="background: white; padding: 20px; border-radius: 8px; border: 1px solid #ddd; line-height: 1.6;">
+                `;
+                analysis.recommendations.forEach(rec => {
+                    html += `<li style="margin-bottom: 8px;">${rec}</li>`;
+                });
+                html += `</ul></div>`;
+            }
+            
+            if (analysis.anomalies && analysis.anomalies.length > 0) {
+                html += `
+                    <div style="margin-bottom: 20px;">
+                        <h4 style="color: #333; border-bottom: 2px solid #f44336; padding-bottom: 5px;">⚠️ Anomalies Detected</h4>
+                        <div style="background: white; padding: 20px; border-radius: 8px; border: 1px solid #ddd;">
+                `;
+                analysis.anomalies.forEach(anomaly => {
+                    html += `
+                        <div style="margin-bottom: 15px; padding: 10px; background: #fff3e0; border-left: 4px solid #ff9800; border-radius: 4px;">
+                            <div style="font-weight: bold; margin-bottom: 5px;">${new Date(anomaly.timestamp).toLocaleString()}</div>
+                            <div style="margin-bottom: 5px;"><strong>Value:</strong> ${anomaly.value} (Expected: ${anomaly.expectedRange.min} - ${anomaly.expectedRange.max})</div>
+                            <div style="margin-bottom: 5px;"><strong>Severity:</strong> ${anomaly.severity} (Confidence: ${Math.round(anomaly.confidence * 100)}%)</div>
+                            <div>${anomaly.description}</div>
+                        </div>
+                    `;
+                });
+                html += `</div></div>`;
+            }
+            
+            // Add copy button
+            html += `
+                <div style="text-align: center; margin-top: 20px; padding-top: 20px; border-top: 1px solid #ddd;">
+                    <button onclick="deleteAnalysis('${analysis.id}', true)" style="background: #f44336; color: white; border: none; padding: 12px 24px; border-radius: 6px; cursor: pointer;">
+                        🗑️ Delete Analysis
+                    </button>
+                </div>
+            `;
+            
+            content.innerHTML = html;
+        }
+
+        // Close analysis view modal
+        function closeAnalysisViewModal() {
+            document.getElementById('analysisViewModal').style.display = 'none';
+        }
+
+        // Delete analysis
+        async function deleteAnalysis(analysisId, isFullView = false) {
+            try {
+                if (!confirm('Are you sure you want to delete this analysis? This action cannot be undone.')) {
+                    return;
+                }
+
+                const response = await fetch(`/plugins/signalk-parquet/api/analyze/history/${analysisId}`, {
+                    method: 'DELETE'
+                });
+                const result = await response.json();
+                
+                if (result.success) {
+                    // Close modal if in full view
+                    if (isFullView) {
+                        closeAnalysisViewModal();
+                    }
+                    
+                    // Refresh the history list
+                    openAnalysisHistoryModal();
+                } else {
+                    alert(`Failed to delete analysis: ${result.error}`);
+                }
+            } catch (error) {
+                console.error('Failed to delete analysis:', error);
+                alert('Failed to delete analysis');
+            }
+        }
+
 
         // Analyze data from Data Paths tab
         async function analyzeDataPath(signalkPath, directory) {
@@ -2892,8 +3474,62 @@ Provide actionable insights based on what you observe in the data.`,
             document.getElementById('analysisTemplate').scrollIntoView({ behavior: 'smooth' });
         }
 
+        // Toggle between analysis modes
+        function toggleAnalysisMode() {
+            const checkbox = document.getElementById('enableDatabaseAccess');
+            const legacyDesc = document.getElementById('legacyModeDesc');
+            const databaseDesc = document.getElementById('databaseModeDesc');
+            const selectionSection = document.getElementById('selectionOptionsSection');
+            const selectionSubtext = document.getElementById('selectionToggleSubtext');
+            
+            if (checkbox.checked) {
+                // Show database mode description
+                legacyDesc.style.display = 'none';
+                databaseDesc.style.display = 'block';
+                
+                // Grey out selection options for database mode
+                selectionSection.style.opacity = '0.5';
+                selectionSection.style.pointerEvents = 'none';
+                selectionSubtext.textContent = '(Not needed for database access mode)';
+                
+                console.log('Switched to Direct Database Access mode');
+            } else {
+                // Show legacy mode description
+                legacyDesc.style.display = 'block';
+                databaseDesc.style.display = 'none';
+                
+                // Enable selection options for legacy mode
+                selectionSection.style.opacity = '1';
+                selectionSection.style.pointerEvents = 'auto';
+                selectionSubtext.textContent = '(Advanced options for legacy mode)';
+                
+                console.log('Switched to Legacy Data Sampling mode');
+            }
+        }
+
+        // Toggle selection options visibility
+        function toggleSelectionOptions() {
+            const container = document.getElementById('selectionOptionsContainer');
+            const icon = document.getElementById('selectionToggleIcon');
+            
+            if (container.style.display === 'none' || !container.style.display) {
+                // Show options
+                container.style.display = 'block';
+                icon.textContent = '▼';
+                console.log('Selection options expanded');
+            } else {
+                // Hide options
+                container.style.display = 'none';
+                icon.textContent = '▶';
+                console.log('Selection options collapsed');
+            }
+        }
+
         // Initialize AI Analysis tab when it becomes active
         function initializeAIAnalysisTab() {
+            // Load vessel context
+            loadVesselContext();
+            
             // Load available data paths for both cards and dropdown
             loadAvailableDataPaths();
             
@@ -2903,6 +3539,9 @@ Provide actionable insights based on what you observe in the data.`,
             
             document.getElementById('analysisEndDate').value = now.toISOString().slice(0, 16);
             document.getElementById('analysisStartDate').value = yesterday.toISOString().slice(0, 16);
+            
+            // Initialize UI state based on default checkbox state
+            toggleAnalysisMode();
         }
         
         // Load available data paths for analysis
@@ -2977,6 +3616,102 @@ Provide actionable insights based on what you observe in the data.`,
             }
         }
 
+        // Ask follow-up question to continue conversation
+        async function askFollowUpQuestion() {
+            const questionTextarea = document.getElementById('followUpQuestion');
+            const askButton = document.getElementById('askFollowUpBtn');
+            const question = questionTextarea.value.trim();
+            
+            if (!question) {
+                alert('Please enter a question.');
+                return;
+            }
+            
+            if (!currentAnalysisId) {
+                alert('No active conversation. Please run a database analysis first.');
+                return;
+            }
+            
+            // Disable UI during request
+            askButton.disabled = true;
+            askButton.textContent = '💬 Asking...';
+            questionTextarea.disabled = true;
+            
+            try {
+                const response = await fetch(`${getPluginPath()}/api/analyze/followup`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        conversationId: currentAnalysisId,
+                        question: question
+                    })
+                });
+                
+                const result = await response.json();
+                
+                if (result.success) {
+                    // Display the follow-up response in the analysis content area
+                    const content = document.getElementById('analysisContent');
+                    const followUpHtml = `
+                        <div style="border-left: 4px solid #1976d2; padding-left: 15px; margin-bottom: 20px; background: #f8fdff;">
+                            <h4 style="color: #1976d2; margin: 0 0 10px 0;">💬 Follow-up Question</h4>
+                            <div style="font-style: italic; color: #666; margin-bottom: 10px;">${question}</div>
+                            <div style="white-space: pre-wrap; line-height: 1.6;">${result.data.analysis}</div>
+                        </div>
+                    `;
+                    
+                    // Append to existing content
+                    content.innerHTML += followUpHtml;
+                    
+                    // Clear the question input
+                    questionTextarea.value = '';
+                    
+                    // Scroll to show the new response
+                    content.scrollIntoView({ behavior: 'smooth', block: 'end' });
+                } else {
+                    alert(`Error: ${result.error}`);
+                }
+            } catch (error) {
+                console.error('Follow-up question error:', error);
+                alert('Failed to ask follow-up question. Please try again.');
+            } finally {
+                // Re-enable UI
+                askButton.disabled = false;
+                askButton.textContent = '💬 Ask';
+                questionTextarea.disabled = false;
+                questionTextarea.focus();
+            }
+        }
+
     </script>
+
+    <!-- Analysis History Modal -->
+    <div id="analysisHistoryModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 1001; overflow-y: auto;">
+        <div style="max-width: 900px; margin: 30px auto; background: white; border-radius: 10px; max-height: 90vh; overflow-y: auto;">
+            <div style="display: flex; justify-content: space-between; align-items: center; padding: 20px; border-bottom: 1px solid #ddd; position: sticky; top: 0; background: white; border-radius: 10px 10px 0 0;">
+                <h3 style="margin: 0;">📈 Analysis History</h3>
+                <button onclick="closeAnalysisHistoryModal()" style="background: #f44336; color: white; padding: 5px 10px; border-radius: 3px; font-size: 16px;">&times;</button>
+            </div>
+            <div id="analysisHistoryModalContent" style="padding: 20px;">
+                <!-- Analysis history content will be loaded here -->
+            </div>
+        </div>
+    </div>
+
+    <!-- Individual Analysis View Modal -->
+    <div id="analysisViewModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 1002; overflow-y: auto;">
+        <div style="max-width: 1000px; margin: 20px auto; background: white; border-radius: 10px; max-height: 95vh; overflow-y: auto;">
+            <div style="display: flex; justify-content: space-between; align-items: center; padding: 20px; border-bottom: 1px solid #ddd; position: sticky; top: 0; background: white; border-radius: 10px 10px 0 0;">
+                <h3 style="margin: 0;" id="analysisViewTitle">🧠 Analysis Details</h3>
+                <button onclick="closeAnalysisViewModal()" style="background: #f44336; color: white; padding: 5px 10px; border-radius: 3px; font-size: 16px;">&times;</button>
+            </div>
+            <div id="analysisViewContent" style="padding: 20px;">
+                <!-- Individual analysis content will be loaded here -->
+            </div>
+        </div>
+    </div>
+
 </body>
 </html>

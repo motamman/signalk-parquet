@@ -1,8 +1,11 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { ServerAPI } from '@signalk/server-api';
 import { DataRecord } from './types';
+import { VesselContextManager } from './vessel-context';
+import { getAvailablePaths } from './utils/path-discovery';
 import * as fs from 'fs-extra';
 import * as path from 'path';
+import { DuckDBInstance } from '@duckdb/node-api';
 
 // Claude AI Integration Types
 export interface ClaudeAnalyzerConfig {
@@ -20,6 +23,12 @@ export interface AnalysisRequest {
   context?: Record<string, any>;
   aggregationMethod?: string;
   resolution?: string;
+  useDatabaseAccess?: boolean;
+}
+
+export interface FollowUpRequest {
+  conversationId: string;
+  question: string;
 }
 
 export interface AnomalyDetection {
@@ -45,6 +54,7 @@ export interface AnalysisResponse {
     analysisType: string;
     recordCount: number;
     timeRange?: { start: Date; end: Date };
+    useDatabaseAccess?: boolean;
   };
 }
 
@@ -85,11 +95,14 @@ export class ClaudeAnalyzer {
   private config: ClaudeAnalyzerConfig;
   private app?: ServerAPI;
   private dataDirectory?: string;
+  private vesselContextManager: VesselContextManager;
+  private activeConversations: Map<string, Array<any>> = new Map();
 
   constructor(config: ClaudeAnalyzerConfig, app?: ServerAPI, dataDirectory?: string) {
     this.config = config;
     this.app = app;
     this.dataDirectory = dataDirectory;
+    this.vesselContextManager = new VesselContextManager(app, dataDirectory);
     
     if (!config.apiKey) {
       throw new Error('Claude API key is required for analysis functionality');
@@ -105,9 +118,14 @@ export class ClaudeAnalyzer {
    */
   async analyzeData(request: AnalysisRequest): Promise<AnalysisResponse> {
     try {
-      this.app?.debug(`Starting Claude analysis: ${request.analysisType} for ${request.dataPath}`);
+      this.app?.debug(`Starting Claude analysis: ${request.analysisType} for ${request.dataPath}${request.useDatabaseAccess ? ' (DATABASE ACCESS MODE)' : ' (SAMPLING MODE)'}`);
       
-      // Prepare data for analysis
+      // Route to appropriate analysis system
+      if (request.useDatabaseAccess) {
+        return await this.analyzeWithDatabaseAccess(request);
+      }
+      
+      // Legacy system: Prepare data for analysis
       const data = await this.prepareDataForAnalysis(request);
       
       // Build analysis prompt with data structure guidance
@@ -179,8 +197,10 @@ export class ClaudeAnalyzer {
    */
   private async prepareDataForAnalysis(request: AnalysisRequest): Promise<any> {
     try {
-      // Load data from parquet files
-      const data = await this.loadDataFromPath(request.dataPath, request.timeRange, request.aggregationMethod, request.resolution);
+      let data: any[];
+      
+      // Load data from parquet files using existing method
+      data = await this.loadDataFromPath(request.dataPath, request.timeRange, request.aggregationMethod, request.resolution);
       
       // Generate statistical summary
       const summary = this.generateDataSummary(data);
@@ -545,8 +565,11 @@ export class ClaudeAnalyzer {
     const { summary, sampleData } = data;
     
     const dataStructureNote = this.analyzeDataStructure(sampleData);
+    const vesselContext = this.vesselContextManager.generateClaudeContext();
     
     let prompt = `You are an expert maritime data analyst. Analyze the following SignalK vessel data and provide insights.
+
+${vesselContext}
 
 DATA SUMMARY:
 - Path: ${request.dataPath}
@@ -636,6 +659,7 @@ Please provide detailed analysis addressing the specific request while consideri
 `;
         break;
 
+
       default:
         prompt += `
 ANALYSIS REQUEST: Analyze this maritime data and provide relevant insights for vessel operations.
@@ -712,7 +736,8 @@ Please structure your response as JSON with the following format:
           dataPath: request.dataPath,
           analysisType: request.analysisType,
           recordCount: data.originalCount || 0,
-          timeRange: request.timeRange
+          timeRange: request.timeRange,
+          useDatabaseAccess: request.useDatabaseAccess
         }
       };
 
@@ -744,8 +769,11 @@ Please structure your response as JSON with the following format:
    */
   private async saveAnalysisToHistory(analysis: AnalysisResponse): Promise<void> {
     try {
-      // Create history directory if it doesn't exist
-      const historyDir = path.join(process.cwd(), 'data', 'analysis-history');
+      // Create history directory in plugin's data directory
+      if (!this.dataDirectory) {
+        throw new Error('No data directory configured for plugin');
+      }
+      const historyDir = path.join(this.dataDirectory, 'analysis-history');
       await fs.ensureDir(historyDir);
 
       // Save analysis to file
@@ -766,7 +794,10 @@ Please structure your response as JSON with the following format:
    */
   async getAnalysisHistory(limit: number = 20): Promise<AnalysisResponse[]> {
     try {
-      const historyDir = path.join(process.cwd(), 'data', 'analysis-history');
+      if (!this.dataDirectory) {
+        return []; // No data directory configured, return empty history
+      }
+      const historyDir = path.join(this.dataDirectory, 'analysis-history');
       
       if (!await fs.pathExists(historyDir)) {
         return [];
@@ -794,6 +825,587 @@ Please structure your response as JSON with the following format:
   }
 
   /**
+   * Delete an analysis from history
+   */
+  async deleteAnalysis(analysisId: string): Promise<{ success: boolean; error?: string }> {
+    try {
+      if (!this.dataDirectory) {
+        return { success: false, error: 'No data directory configured for plugin' };
+      }
+      
+      const historyDir = path.join(this.dataDirectory, 'analysis-history');
+      const filename = `${analysisId}.json`;
+      const filePath = path.join(historyDir, filename);
+
+      if (!await fs.pathExists(filePath)) {
+        return { success: false, error: 'Analysis not found' };
+      }
+
+      await fs.remove(filePath);
+      this.app?.debug(`Deleted analysis: ${analysisId}`);
+      
+      return { success: true };
+
+    } catch (error) {
+      this.app?.error(`Failed to delete analysis: ${(error as Error).message}`);
+      return { success: false, error: (error as Error).message };
+    }
+  }
+
+
+  /**
+   * Tony's approach: Direct database access analysis
+   * Claude can query the database interactively during analysis
+   */
+  async analyzeWithDatabaseAccess(request: AnalysisRequest): Promise<AnalysisResponse> {
+    try {
+      this.app?.debug('🚀 Using Tony\'s direct database access approach');
+      
+      // Ensure vessel context is loaded before generating context for Claude
+      await this.vesselContextManager.refreshVesselInfo();
+      const vesselContext = this.vesselContextManager.generateClaudeContext();
+      this.app?.debug(`🛥️ Vessel context for Claude (${vesselContext.length} chars):\n${vesselContext.substring(0, 500)}${vesselContext.length > 500 ? '...' : ''}`);
+      const schemaInfo = this.getEnhancedSchemaForClaude();
+      
+      const initialPrompt = `You are an expert maritime data analyst with direct access to a comprehensive database.
+
+IMPORTANT: Please use the vessel context information provided below for all analysis and responses. This vessel information is critical for accurate maritime analysis.
+
+${vesselContext}
+
+${schemaInfo}
+
+ANALYSIS REQUEST: ${request.customPrompt || 'Analyze maritime data and provide insights'}
+
+You can query the database using the query_maritime_database function. Start by exploring the data to understand what's available, then provide comprehensive analysis.
+
+REMEMBER: Always refer to and use the vessel context provided above (vessel name, dimensions, operational details, etc.) when analyzing data and providing recommendations.
+
+Focus on:
+1. Current vessel status and recent activity
+2. Patterns in navigation, weather, and performance data  
+3. Safety considerations and operational insights
+4. Data quality and completeness assessment
+
+Begin your analysis by querying relevant data.`;
+
+      // Start conversation with Claude with function calling capability
+      let conversationMessages: Array<any> = [{
+        role: 'user',
+        content: initialPrompt
+      }];
+
+      let analysisResult = '';
+      let queryCount = 0;
+      const maxQueries = 10; // Prevent infinite loops
+
+      while (queryCount < maxQueries) {
+        const response = await this.callClaudeWithRetry({
+          model: this.config.model,
+          max_tokens: Math.max(this.config.maxTokens, 8000), // Increased for comprehensive analysis
+          temperature: this.config.temperature,
+          tools: [{
+            name: 'query_maritime_database',
+            description: 'Execute SQL queries against the maritime Parquet database to explore and analyze data',
+            input_schema: {
+              type: 'object',
+              properties: {
+                sql: {
+                  type: 'string',
+                  description: 'SQL query to execute against the Parquet database'
+                },
+                purpose: {
+                  type: 'string',
+                  description: 'Brief description of what this query is trying to discover'
+                }
+              },
+              required: ['sql', 'purpose']
+            }
+          }],
+          messages: conversationMessages
+        });
+
+        // Add Claude's response to conversation
+        conversationMessages.push({
+          role: 'assistant',
+          content: response.content
+        });
+
+        // Process each tool use in the response
+        const toolResults = [];
+        for (const contentBlock of response.content) {
+          if (contentBlock.type === 'text') {
+            const textContent = contentBlock.text;
+            this.app?.debug(`📝 Claude response text (${textContent.length} chars): ${textContent.substring(0, 200)}...`);
+            analysisResult += textContent + '\n\n';
+          } else if (contentBlock.type === 'tool_use') {
+            const toolCall = contentBlock;
+            if (toolCall.name === 'query_maritime_database') {
+              queryCount++;
+              const { sql, purpose } = toolCall.input as { sql: string; purpose: string };
+              
+              try {
+                // Execute the SQL query safely
+                const queryResult = await this.executeSQLQuery(sql, purpose);
+                
+                const resultSummary = `Query "${purpose}" returned ${queryResult.length} rows:\n\n${JSON.stringify(queryResult.slice(0, 5), null, 2)}${queryResult.length > 5 ? `\n\n... and ${queryResult.length - 5} more rows` : ''}`;
+                
+                toolResults.push({
+                  type: 'tool_result',
+                  tool_use_id: toolCall.id,
+                  content: resultSummary
+                });
+                
+                this.app?.debug(`✅ Query executed: ${purpose} - ${queryResult.length} rows returned`);
+                
+              } catch (queryError) {
+                toolResults.push({
+                  type: 'tool_result',
+                  tool_use_id: toolCall.id,
+                  content: `Query failed: ${(queryError as Error).message}`
+                });
+              }
+            }
+          }
+        }
+
+        // Add all tool results as a single user message
+        if (toolResults.length > 0) {
+          conversationMessages.push({
+            role: 'user',
+            content: toolResults
+          });
+        }
+
+        // If Claude didn't use any tools, we're done
+        const hasToolUse = response.content.some((block: any) => block.type === 'tool_use');
+        if (!hasToolUse) {
+          break;
+        }
+      }
+
+      const analysisId = `analysis_${Date.now()}_${Math.random().toString(36).substring(2, 11)}`;
+      
+      // Ensure we have a meaningful analysis result
+      const finalAnalysis = analysisResult.trim();
+      if (!finalAnalysis) {
+        throw new Error('Analysis completed but no results were generated. This may indicate a configuration issue.');
+      }
+
+      const analysisResponse = {
+        id: analysisId,
+        analysis: finalAnalysis,
+        insights: [
+          'Analysis completed using direct database access',
+          `Executed ${queryCount} database queries`,
+          'Comprehensive analysis of complete historical dataset'
+        ],
+        recommendations: [
+          'Review the detailed analysis above',
+          'Consider setting up automated monitoring for identified patterns',
+          'Database access enables deeper historical insights than sampling'
+        ],
+        anomalies: [],
+        confidence: 0.95,
+        dataQuality: `Dynamic assessment via ${queryCount} database queries`,
+        timestamp: new Date().toISOString(),
+        metadata: {
+          dataPath: request.dataPath || 'database_access_mode',
+          analysisType: request.analysisType,
+          recordCount: queryCount, // Number of queries executed
+          timeRange: request.timeRange,
+          useDatabaseAccess: true
+        }
+      };
+
+      // Store conversation for follow-up questions
+      this.activeConversations.set(analysisId, conversationMessages);
+      this.app?.debug(`💾 Stored conversation ${analysisId} with ${conversationMessages.length} messages`);
+
+      // Save analysis to history
+      await this.saveAnalysisToHistory(analysisResponse);
+      
+      return analysisResponse;
+
+    } catch (error) {
+      this.app?.error(`Database access analysis failed: ${(error as Error).message}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Call Claude API with retry logic for overload errors
+   */
+  private async callClaudeWithRetry(params: any, maxRetries: number = 3): Promise<any> {
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        return await this.client.messages.create(params);
+      } catch (error: any) {
+        const isOverloaded = error?.status === 529 || 
+                           (error?.message && error.message.includes('overloaded')) ||
+                           (error?.error?.type === 'overloaded_error');
+        
+        if (isOverloaded && attempt < maxRetries) {
+          const delayMs = Math.pow(2, attempt) * 1000; // 2s, 4s, 8s
+          this.app?.debug(`Claude overloaded (attempt ${attempt}/${maxRetries}), retrying in ${delayMs}ms...`);
+          await new Promise(resolve => setTimeout(resolve, delayMs));
+          continue;
+        }
+        throw error;
+      }
+    }
+  }
+
+  /**
+   * Continue conversation with follow-up question
+   */
+  async askFollowUp(request: FollowUpRequest): Promise<AnalysisResponse> {
+    try {
+      this.app?.debug(`🔄 Processing follow-up question for conversation: ${request.conversationId}`);
+
+      // Get the stored conversation
+      this.app?.debug(`🔍 Looking for conversation: ${request.conversationId}`);
+      this.app?.debug(`📚 Active conversations: ${Array.from(this.activeConversations.keys()).join(', ')}`);
+      
+      const conversationMessages = this.activeConversations.get(request.conversationId);
+      if (!conversationMessages) {
+        this.app?.error(`❌ Conversation ${request.conversationId} not found. Available: [${Array.from(this.activeConversations.keys()).join(', ')}]`);
+        throw new Error('Conversation not found. Please start a new analysis.');
+      }
+
+      // Add user's follow-up question
+      conversationMessages.push({
+        role: 'user',
+        content: request.question
+      });
+
+      let analysisResult = '';
+      let queryCount = 0;
+      const maxQueries = 5; // Fewer queries for follow-ups
+
+      // Continue the conversation with Claude
+      while (queryCount < maxQueries) {
+        const response = await this.callClaudeWithRetry({
+          model: this.config.model,
+          max_tokens: Math.max(this.config.maxTokens, 8000),
+          temperature: this.config.temperature,
+          tools: [{
+            name: 'query_maritime_database',
+            description: 'Execute SQL queries against the maritime Parquet database to explore and analyze data',
+            input_schema: {
+              type: 'object',
+              properties: {
+                sql: {
+                  type: 'string',
+                  description: 'SQL query to execute against the Parquet database'
+                },
+                purpose: {
+                  type: 'string',
+                  description: 'Brief description of what this query is trying to discover'
+                }
+              },
+              required: ['sql', 'purpose']
+            }
+          }],
+          messages: conversationMessages
+        });
+
+        // Add Claude's response to conversation
+        conversationMessages.push({
+          role: 'assistant',
+          content: response.content
+        });
+
+        // Process the response
+        const toolResults = [];
+        for (const contentBlock of response.content) {
+          if (contentBlock.type === 'text') {
+            const textContent = contentBlock.text;
+            this.app?.debug(`📝 Follow-up response text (${textContent.length} chars): ${textContent.substring(0, 200)}...`);
+            analysisResult += textContent + '\n\n';
+          } else if (contentBlock.type === 'tool_use') {
+            const toolCall = contentBlock;
+            if (toolCall.name === 'query_maritime_database') {
+              queryCount++;
+              const { sql, purpose } = toolCall.input as { sql: string; purpose: string };
+              
+              try {
+                const queryResult = await this.executeSQLQuery(sql, purpose);
+                const resultSummary = `Query "${purpose}" returned ${queryResult.length} rows:\n\n${JSON.stringify(queryResult.slice(0, 5), null, 2)}${queryResult.length > 5 ? `\n\n... and ${queryResult.length - 5} more rows` : ''}`;
+                
+                toolResults.push({
+                  type: 'tool_result',
+                  tool_use_id: toolCall.id,
+                  content: resultSummary
+                });
+                
+                this.app?.debug(`✅ Follow-up query executed: ${purpose} - ${queryResult.length} rows returned`);
+                
+              } catch (queryError) {
+                toolResults.push({
+                  type: 'tool_result',
+                  tool_use_id: toolCall.id,
+                  content: `Query failed: ${(queryError as Error).message}`
+                });
+              }
+            }
+          }
+        }
+
+        // Add tool results if any
+        if (toolResults.length > 0) {
+          conversationMessages.push({
+            role: 'user',
+            content: toolResults
+          });
+        }
+
+        // Check if Claude used tools - if not, we're done
+        const hasToolUse = response.content.some((block: any) => block.type === 'tool_use');
+        if (!hasToolUse) {
+          break;
+        }
+      }
+
+      // Update stored conversation
+      this.activeConversations.set(request.conversationId, conversationMessages);
+
+      const followUpResponse = {
+        id: request.conversationId, // Keep same conversation ID
+        analysis: analysisResult.trim() || 'Follow-up question answered.',
+        insights: [
+          'Follow-up question processed',
+          `Executed ${queryCount} additional database queries`,
+          'Conversation continued with database access'
+        ],
+        recommendations: [
+          'Ask more follow-up questions to explore deeper',
+          'Use specific questions for targeted analysis'
+        ],
+        anomalies: [],
+        confidence: 0.9,
+        dataQuality: `Follow-up with ${queryCount} additional queries`,
+        timestamp: new Date().toISOString(),
+        metadata: {
+          dataPath: 'follow_up_question',
+          analysisType: 'custom',
+          recordCount: queryCount,
+          timeRange: undefined
+        }
+      };
+
+      // Save follow-up response to history
+      await this.saveAnalysisToHistory(followUpResponse);
+
+      return followUpResponse;
+
+    } catch (error) {
+      this.app?.error(`Follow-up question failed: ${(error as Error).message}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Execute SQL query safely against Parquet database
+   */
+  private async executeSQLQuery(sql: string, purpose: string): Promise<any[]> {
+    // Validate query is read-only (starts with SELECT)
+    const trimmedSQL = sql.trim().toUpperCase();
+    if (!trimmedSQL.startsWith('SELECT')) {
+      throw new Error('Only SELECT queries are allowed for security');
+    }
+
+    // Additional safety checks
+    const dangerousKeywords = ['DROP', 'DELETE', 'UPDATE', 'INSERT', 'CREATE', 'ALTER', 'TRUNCATE'];
+    for (const keyword of dangerousKeywords) {
+      if (trimmedSQL.includes(keyword)) {
+        throw new Error(`Dangerous SQL keyword '${keyword}' is not allowed`);
+      }
+    }
+
+    const instance = await DuckDBInstance.create();
+    const connection = await instance.connect();
+    
+    try {
+      this.app?.debug(`🔍 Executing SQL query for: ${purpose}`);
+      this.app?.debug(`📝 Query: ${sql}`);
+      
+      const result = await connection.runAndReadAll(sql);
+      const data = result.getRowObjects();
+      
+      // Limit result size to prevent memory issues (max 10,000 rows)
+      const limitedData = data.slice(0, 10000);
+      
+      this.app?.debug(`✅ Query returned ${limitedData.length} rows`);
+      return limitedData;
+      
+    } catch (error) {
+      this.app?.error(`SQL query failed: ${(error as Error).message}`);
+      throw new Error(`Database query failed: ${(error as Error).message}`);
+    } finally {
+      // DuckDB connections close automatically when instance is destroyed
+    }
+  }
+
+  /**
+   * Scan a vessel directory for available SignalK paths
+   */
+  private scanVesselPaths(vesselDir: string): string[] {
+    const paths: string[] = [];
+    
+    function walkPaths(currentPath: string, relativePath: string = ''): void {
+      try {
+        const items = fs.readdirSync(currentPath);
+        items.forEach((item: string) => {
+          const fullPath = path.join(currentPath, item);
+          const stat = fs.statSync(fullPath);
+
+          if (stat.isDirectory() && item !== 'processed' && item !== 'failed') {
+            const newRelativePath = relativePath ? `${relativePath}.${item}` : item;
+
+            // Check if this directory has parquet files
+            const hasParquetFiles = fs.readdirSync(fullPath)
+              .some((file: string) => file.endsWith('.parquet'));
+
+            if (hasParquetFiles) {
+              paths.push(newRelativePath);
+            } else {
+              // Recurse into subdirectories
+              walkPaths(fullPath, newRelativePath);
+            }
+          }
+        });
+      } catch (error) {
+        // Skip directories that can't be read
+      }
+    }
+
+    if (fs.existsSync(vesselDir)) {
+      walkPaths(vesselDir);
+    }
+    
+    return paths;
+  }
+
+  /**
+   * Generate enhanced schema information for Claude
+   */
+  private getEnhancedSchemaForClaude(): string {
+    const dataDir = this.dataDirectory || '';
+    let selfContextPath = 'vessels/self';
+    if (this.app?.selfContext) {
+      selfContextPath = this.app.selfContext.replace(/\./g, '/').replace(/:/g, '_');
+    }
+    
+    // Get actual available paths from the filesystem  
+    let availablePathsInfo = '';
+    let otherVesselsInfo = '';
+    
+    // Get self context dynamically from SignalK
+    const selfContext = this.app?.selfContext || 'vessels.self';
+    const selfContextForFilter = selfContext.replace(/\./g, ':'); // Convert to context format for filtering
+    
+    try {
+      if (this.app && dataDir) {
+        // Get your vessel's paths
+        const paths = getAvailablePaths(dataDir, this.app);
+        availablePathsInfo = `
+AVAILABLE DATA PATHS (Your vessel):
+${paths.map(p => `- ${p.path} (${p.fileCount} files)`).join('\n')}`;
+
+        // Check for other vessels by scanning the vessels directory
+        const vesselsDir = path.join(dataDir, 'vessels');
+        if (fs.existsSync(vesselsDir)) {
+          const vesselDirs = fs.readdirSync(vesselsDir, { withFileTypes: true })
+            .filter(dirent => dirent.isDirectory())
+            .map(dirent => dirent.name)
+            .filter(name => name !== selfContextPath.split('/')[1]); // Exclude own vessel
+          
+          if (vesselDirs.length > 0) {
+            // Scan each other vessel's directory for their available paths
+            let otherVesselPaths: string[] = [];
+            
+            for (const vesselDir of vesselDirs) {
+              const vesselPath = path.join(vesselsDir, vesselDir);
+              try {
+                const vesselPaths = this.scanVesselPaths(vesselPath);
+                otherVesselPaths = otherVesselPaths.concat(vesselPaths.map(p => `${vesselDir}: ${p}`));
+              } catch (error) {
+                // Skip vessels that can't be scanned
+              }
+            }
+            
+            otherVesselsInfo = `
+OTHER VESSELS DETECTED:
+${vesselDirs.map(vesselId => `- vessels/${vesselId}`).join('\n')}
+
+OTHER VESSELS' AVAILABLE PATHS:
+${otherVesselPaths.length > 0 ? otherVesselPaths.map(p => `- ${p}`).join('\n') : '- (Unable to scan other vessel paths)'}
+
+TO QUERY OTHER VESSELS:
+- Find all vessels: SELECT DISTINCT context FROM 'data/vessels/*/navigation/position/*.parquet' WHERE context != '${selfContextForFilter}'
+- Specific vessel: SELECT * FROM 'data/vessels/${vesselDirs[0]}/navigation/position/*.parquet'
+- All vessels data: SELECT context, received_timestamp, value_latitude, value_longitude FROM 'data/vessels/*/navigation/position/*.parquet'`;
+          } else {
+            otherVesselsInfo = `
+OTHER VESSELS: None detected in this dataset`;
+          }
+        }
+      }
+    } catch (error) {
+      availablePathsInfo = '\nAVAILABLE DATA PATHS: Unable to scan filesystem';
+    }
+    
+    return `MARITIME DATABASE SCHEMA:
+Base Directory: ${dataDir}
+File Pattern: {contextPath}/{signalk_path}/{filename}.parquet
+
+VESSEL CONTEXTS:
+- Your vessel: ${selfContextPath}
+${availablePathsInfo}
+${otherVesselsInfo}
+
+COLUMN STRUCTURE:
+- context (VARCHAR): Vessel/source identifier (e.g., "${selfContext}")
+- meta (VARCHAR): Metadata (usually null)
+- path (VARCHAR): SignalK data path (e.g., "navigation.position", "environment.wind.speedTrue")
+- received_timestamp (VARCHAR): ISO timestamp when data was received (e.g., "YYYY-MM-DDTHH:MM:SS.sssZ")
+- signalk_timestamp (VARCHAR): ISO timestamp from SignalK data (e.g., "YYYY-MM-DDTHH:MM:SS.000Z")
+- source (VARCHAR): JSON string with source info (e.g., '{"sentence":"GLL","talker":"GN","type":"NMEA0183"}')
+- source_label (VARCHAR): Source device label (e.g., "maiana.GN")
+- source_pgn, source_src (VARCHAR): Usually null for NMEA0183
+- source_type (VARCHAR): Data source type (e.g., "NMEA0183")
+- value (VARCHAR): Simple numeric values (usually null for complex data)
+- value_json (VARCHAR): JSON representation of complex values (e.g., '{"longitude":-72.08,"latitude":41.32}')
+- value_latitude, value_longitude (DOUBLE): Extracted position coordinates
+
+QUERY EXAMPLES:
+- Recent position: SELECT received_timestamp, value_latitude, value_longitude FROM '${dataDir}/${selfContextPath}/navigation/position/*.parquet' ORDER BY received_timestamp DESC LIMIT 100
+- Speed analysis: SELECT AVG(CAST(value AS DOUBLE)) as avg_speed FROM '${dataDir}/${selfContextPath}/navigation/speedOverGround/*.parquet' WHERE received_timestamp >= '2024-01-01T00:00:00.000Z'
+- Wind patterns: SELECT DATE_TRUNC('hour', CAST(received_timestamp AS TIMESTAMP)) as hour, AVG(CAST(value AS DOUBLE)) FROM '${dataDir}/${selfContextPath}/environment/wind/speedTrue/*.parquet' GROUP BY hour ORDER BY hour
+- Time-based filtering: WHERE received_timestamp >= 'YYYY-MM-DDTHH:MM:SS.000Z' AND received_timestamp < 'YYYY-MM-DDTHH:MM:SS.000Z'
+
+MULTI-VESSEL QUERIES:
+- Find all vessels: SELECT DISTINCT context FROM 'data/vessels/*/navigation/position/*.parquet'
+- All vessels positions: SELECT context, received_timestamp, value_latitude, value_longitude FROM 'data/vessels/*/navigation/position/*.parquet' ORDER BY received_timestamp DESC
+- Specific vessel by MMSI: SELECT * FROM 'data/vessels/urn_mrn_imo_mmsi_123456789/navigation/position/*.parquet'
+- Vessel traffic analysis: SELECT context, COUNT(*) as message_count FROM 'data/vessels/*/navigation/position/*.parquet' GROUP BY context
+
+IMPORTANT NOTES:
+- All timestamps are ISO strings in VARCHAR format, not milliseconds
+- Use CAST(received_timestamp AS TIMESTAMP) for date functions
+- Use CAST(value AS DOUBLE) to convert string numbers to numeric
+- Position data: use value_latitude/value_longitude columns directly (they're already DOUBLE)
+- Complex data: parse value_json for structured data like wind direction/speed
+- Always use glob patterns like '*.parquet' for file matching
+- Path structure follows SignalK standard (navigation.position, environment.wind.speedTrue, etc.)
+
+DATA LIMITATIONS:
+- NO meta/*.parquet files exist - vessel metadata is provided in the vessel context above
+- For vessel names/specs, refer to the VESSEL CONTEXT section, not database queries`;
+  }
+
+  /**
    * Test Claude API connection
    */
   async testConnection(): Promise<{ success: boolean; error?: string }> {
@@ -816,6 +1428,26 @@ Please structure your response as JSON with the following format:
 
     } catch (error) {
       return { success: false, error: (error as Error).message };
+    }
+  }
+
+  /**
+   * Get vessel context manager
+   */
+  getVesselContextManager(): VesselContextManager {
+    return this.vesselContextManager;
+  }
+
+  /**
+   * Refresh vessel information from SignalK
+   */
+  async refreshVesselContext(): Promise<void> {
+    try {
+      await this.vesselContextManager.refreshVesselInfo();
+      this.app?.debug('Vessel context refreshed from SignalK data');
+    } catch (error) {
+      this.app?.error(`Failed to refresh vessel context: ${(error as Error).message}`);
+      throw error;
     }
   }
 }

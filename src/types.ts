@@ -51,6 +51,58 @@ export interface ClaudeIntegrationConfig {
   templates?: string[];
 }
 
+// Vessel Context Document for Claude AI Analysis
+export interface VesselContext {
+  vesselInfo: VesselInfo;
+  customContext: string;
+  lastUpdated: string;
+  autoExtracted: boolean;
+}
+
+export interface VesselInfo {
+  // Basic vessel identification
+  name?: string;
+  callsign?: string;
+  mmsi?: string;
+  
+  // Physical characteristics
+  length?: number;        // Length Overall (LOA) in meters
+  beam?: number;          // Beam in meters
+  draft?: number;         // Draft in meters
+  height?: number;        // Height/air draft in meters
+  displacement?: number;  // Weight/displacement in tons
+  
+  // Vessel classification
+  vesselType?: string;    // Type of vessel (sailboat, motorboat, cargo, etc.)
+  classification?: string; // Classification society info
+  flag?: string;          // Flag state
+  
+  // Technical specifications
+  grossTonnage?: number;
+  netTonnage?: number;
+  deadWeight?: number;
+  
+  // Build information
+  builder?: string;
+  buildYear?: number;
+  hullNumber?: string;
+  
+  // Contact information
+  ownerName?: string;
+  port?: string;          // Port of registry
+  
+  // Additional context
+  notes?: string;
+}
+
+export interface VesselContextExtraction {
+  path: string;
+  signalkPath: string;
+  displayName: string;
+  unit?: string;
+  category: 'identification' | 'physical' | 'classification' | 'technical' | 'build' | 'contact';
+}
+
 export interface PathConfig {
   path: Path;
   name?: string;
