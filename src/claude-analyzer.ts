@@ -877,9 +877,9 @@ Please structure your response as JSON with the following format:
       if (request.timeRange) {
         timeRangeGuidance = `
 
-TIME RANGE RESTRICTION: Focus your analysis on data between ${request.timeRange.start.toISOString()} and ${request.timeRange.end.toISOString()}.
+TIME RANGE RESTRICTION: Focus your analysis on data between ${request.timeRange.start.toISOString().replace('.000Z', 'Z')} and ${request.timeRange.end.toISOString().replace('.000Z', 'Z')}.
 IMPORTANT: Always include WHERE clauses in your SQL queries to limit results to this time range:
-WHERE received_timestamp >= '${request.timeRange.start.toISOString()}' AND received_timestamp <= '${request.timeRange.end.toISOString()}'`;
+WHERE signalk_timestamp >= '${request.timeRange.start.toISOString().replace('.000Z', 'Z')}' AND signalk_timestamp <= '${request.timeRange.end.toISOString().replace('.000Z', 'Z')}'`;
       } else {
         // Default to recent data if no time range specified
         const now = new Date();
@@ -888,7 +888,7 @@ WHERE received_timestamp >= '${request.timeRange.start.toISOString()}' AND recei
 
 TIME RANGE FOCUS: Since no specific time range was provided, focus on recent data (last 6 hours).
 IMPORTANT: Always include WHERE clauses to limit results to recent data:
-WHERE received_timestamp >= '${sixHoursAgo.toISOString()}'`;
+WHERE signalk_timestamp >= '${sixHoursAgo.toISOString().replace('.000Z', 'Z')}'`;
       }
 
       const initialPrompt = `You are an expert maritime data analyst with direct access to a comprehensive database.
@@ -910,6 +910,23 @@ REMEMBER:
 - CRITICAL: ONLY use the exact paths listed in the "AVAILABLE DATA PATHS" section. DO NOT make up or guess path names.
 - If a path you want to use is not in the available paths list, it does not exist - inform the user instead of guessing.
 
+CRITICAL FOR TOKEN EFFICIENCY: 
+- NEVER query raw individual records - ALWAYS use time bucketing and aggregation
+- MANDATORY SQL pattern for all data queries:
+  SELECT 
+    strftime(date_trunc('hour', signalk_timestamp::TIMESTAMP), '%Y-%m-%dT%H:%M:%SZ') as time_bucket,
+    AVG(CAST(value AS DOUBLE)) as avg_value,
+    MAX(CAST(value AS DOUBLE)) as max_value, 
+    MIN(CAST(value AS DOUBLE)) as min_value,
+    COUNT(*) as record_count
+  FROM 'path/*.parquet' 
+  WHERE signalk_timestamp >= 'start_time' AND signalk_timestamp <= 'end_time'
+    AND value IS NOT NULL
+  GROUP BY time_bucket 
+  ORDER BY time_bucket
+- Use date_trunc('minute', ...) for detailed analysis, date_trunc('hour', ...) for overviews
+- NEVER return more than 100 time buckets per query
+
 Focus on:
 1. Current vessel status and recent activity
 2. Patterns in navigation, weather, and performance data  
@@ -928,7 +945,7 @@ Begin your analysis by querying relevant data within the specified time range.`;
 
       let analysisResult = '';
       let queryCount = 0;
-      const maxQueries = 10; // Prevent infinite loops
+      const maxQueries = 5; // Reduced to prevent excessive API calls and token usage
 
       while (queryCount < maxQueries) {
         const response = await this.callClaudeWithRetry({
@@ -1274,9 +1291,20 @@ Begin your analysis by querying relevant data within the specified time range.`;
       const result = await connection.runAndReadAll(sql);
       const data = result.getRowObjects();
       
+      // Convert BigInt values to regular numbers to prevent serialization errors
+      const cleanedData = data.map(row => {
+        const cleanRow = { ...row };
+        for (const key in cleanRow) {
+          if (typeof cleanRow[key] === 'bigint') {
+            cleanRow[key] = Number(cleanRow[key]);
+          }
+        }
+        return cleanRow;
+      });
+      
       // Limit result size aggressively for production systems to prevent memory and token issues
-      const maxRows = data.length > 1000 ? 500 : 1000; // Smaller limits for large datasets
-      const limitedData = data.slice(0, maxRows);
+      const maxRows = cleanedData.length > 1000 ? 500 : 1000; // Smaller limits for large datasets
+      const limitedData = cleanedData.slice(0, maxRows);
       
       this.app?.debug(`✅ Query returned ${limitedData.length} rows`);
       return limitedData;
