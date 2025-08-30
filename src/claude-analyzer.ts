@@ -1004,30 +1004,60 @@ Begin your analysis by querying relevant data within the specified time range.`;
       const maxQueries = 5; // Reduced to prevent excessive API calls and token usage
       let totalTokenUsage = { input_tokens: 0, output_tokens: 0 };
 
+      // Check if user is requesting real-time data
+      const needsRealTimeData = this.checkForRealTimeKeywords(request.customPrompt || '', conversationMessages);
+      
+      // Build tools array - always include database access
+      const availableTools: any[] = [{
+        name: 'query_maritime_database',
+        description: 'Execute SQL queries against the maritime Parquet database to explore and analyze data',
+        input_schema: {
+          type: 'object',
+          properties: {
+            sql: {
+              type: 'string',
+              description: 'SQL query to execute against the Parquet database'
+            },
+            purpose: {
+              type: 'string',
+              description: 'Brief description of what this query is trying to discover'
+            }
+          },
+          required: ['sql', 'purpose']
+        }
+      }];
+
+      // Add real-time SignalK data tool if keywords detected
+      if (needsRealTimeData) {
+        availableTools.push({
+          name: 'get_current_signalk_data',
+          description: 'Get current real-time SignalK data values for specific paths or all available paths. Use this when user asks about "now", "current", "real-time" conditions.',
+          input_schema: {
+            type: 'object',
+            properties: {
+              paths: {
+                type: 'array',
+                items: { type: 'string' },
+                description: 'Array of SignalK paths to query (e.g., ["navigation.position", "navigation.speedOverGround"]). Leave empty to get all available current values.'
+              },
+              purpose: {
+                type: 'string',
+                description: 'Brief description of why you need this real-time data'
+              }
+            },
+            required: ['purpose']
+          }
+        });
+        this.app?.debug(`🕐 Real-time keywords detected, adding current SignalK data tool`);
+      }
+
       while (queryCount < maxQueries) {
         const response = await this.callClaudeWithRetry({
           model: this.config.model,
           max_tokens: Math.max(this.config.maxTokens, 8000), // Increased for comprehensive analysis
           temperature: this.config.temperature,
           system: systemContext,
-          tools: [{
-            name: 'query_maritime_database',
-            description: 'Execute SQL queries against the maritime Parquet database to explore and analyze data',
-            input_schema: {
-              type: 'object',
-              properties: {
-                sql: {
-                  type: 'string',
-                  description: 'SQL query to execute against the Parquet database'
-                },
-                purpose: {
-                  type: 'string',
-                  description: 'Brief description of what this query is trying to discover'
-                }
-              },
-              required: ['sql', 'purpose']
-            }
-          }],
+          tools: availableTools,
           messages: conversationMessages
         });
 
@@ -1076,6 +1106,30 @@ Begin your analysis by querying relevant data within the specified time range.`;
                   type: 'tool_result',
                   tool_use_id: toolCall.id,
                   content: `Query failed: ${(queryError as Error).message}`
+                });
+              }
+            } else if (toolCall.name === 'get_current_signalk_data') {
+              const { paths, purpose } = toolCall.input as { paths?: string[]; purpose: string };
+              
+              try {
+                // Get current real-time SignalK data
+                const currentData = this.getCurrentSignalKData(paths, purpose);
+                
+                const resultSummary = `Current SignalK data "${purpose}":\n\n${JSON.stringify(currentData, null, 2)}`;
+                
+                toolResults.push({
+                  type: 'tool_result',
+                  tool_use_id: toolCall.id,
+                  content: resultSummary
+                });
+                
+                this.app?.debug(`✅ Real-time data retrieved: ${purpose} - ${paths?.length || 'all'} paths`);
+                
+              } catch (realTimeError) {
+                toolResults.push({
+                  type: 'tool_result',
+                  tool_use_id: toolCall.id,
+                  content: `Real-time data retrieval failed: ${(realTimeError as Error).message}`
                 });
               }
             }
@@ -1212,30 +1266,60 @@ Begin your analysis by querying relevant data within the specified time range.`;
       const maxQueries = 5; // Fewer queries for follow-ups
       let totalTokenUsage = { input_tokens: 0, output_tokens: 0 };
 
+      // Check if follow-up question contains real-time keywords
+      const needsRealTimeData = this.checkForRealTimeKeywords(request.question, conversationMessages);
+      
+      // Build tools array - always include database access
+      const followUpTools: any[] = [{
+        name: 'query_maritime_database',
+        description: 'Execute SQL queries against the maritime Parquet database to explore and analyze data',
+        input_schema: {
+          type: 'object',
+          properties: {
+            sql: {
+              type: 'string',
+              description: 'SQL query to execute against the Parquet database'
+            },
+            purpose: {
+              type: 'string',
+              description: 'Brief description of what this query is trying to discover'
+            }
+          },
+          required: ['sql', 'purpose']
+        }
+      }];
+
+      // Add real-time SignalK data tool if keywords detected in follow-up
+      if (needsRealTimeData) {
+        followUpTools.push({
+          name: 'get_current_signalk_data',
+          description: 'Get current real-time SignalK data values for specific paths or all available paths. Use this when user asks about "now", "current", "real-time" conditions.',
+          input_schema: {
+            type: 'object',
+            properties: {
+              paths: {
+                type: 'array',
+                items: { type: 'string' },
+                description: 'Array of SignalK paths to query (e.g., ["navigation.position", "navigation.speedOverGround"]). Leave empty to get all available current values.'
+              },
+              purpose: {
+                type: 'string',
+                description: 'Brief description of why you need this real-time data'
+              }
+            },
+            required: ['purpose']
+          }
+        });
+        this.app?.debug(`🕐 Real-time keywords detected in follow-up, adding current SignalK data tool`);
+      }
+
       // Continue the conversation with Claude
       while (queryCount < maxQueries) {
         const response = await this.callClaudeWithRetry({
           model: this.config.model,
           max_tokens: Math.max(this.config.maxTokens, 8000),
           temperature: this.config.temperature,
-          tools: [{
-            name: 'query_maritime_database',
-            description: 'Execute SQL queries against the maritime Parquet database to explore and analyze data',
-            input_schema: {
-              type: 'object',
-              properties: {
-                sql: {
-                  type: 'string',
-                  description: 'SQL query to execute against the Parquet database'
-                },
-                purpose: {
-                  type: 'string',
-                  description: 'Brief description of what this query is trying to discover'
-                }
-              },
-              required: ['sql', 'purpose']
-            }
-          }],
+          tools: followUpTools,
           messages: conversationMessages
         });
 
@@ -1282,6 +1366,30 @@ Begin your analysis by querying relevant data within the specified time range.`;
                   type: 'tool_result',
                   tool_use_id: toolCall.id,
                   content: `Query failed: ${(queryError as Error).message}`
+                });
+              }
+            } else if (toolCall.name === 'get_current_signalk_data') {
+              const { paths, purpose } = toolCall.input as { paths?: string[]; purpose: string };
+              
+              try {
+                // Get current real-time SignalK data for follow-up
+                const currentData = this.getCurrentSignalKData(paths, purpose);
+                
+                const resultSummary = `Current SignalK data "${purpose}":\n\n${JSON.stringify(currentData, null, 2)}`;
+                
+                toolResults.push({
+                  type: 'tool_result',
+                  tool_use_id: toolCall.id,
+                  content: resultSummary
+                });
+                
+                this.app?.debug(`✅ Follow-up real-time data retrieved: ${purpose} - ${paths?.length || 'all'} paths`);
+                
+              } catch (realTimeError) {
+                toolResults.push({
+                  type: 'tool_result',
+                  tool_use_id: toolCall.id,
+                  content: `Real-time data retrieval failed: ${(realTimeError as Error).message}`
                 });
               }
             }
@@ -1342,6 +1450,130 @@ Begin your analysis by querying relevant data within the specified time range.`;
       this.app?.error(`Follow-up question failed: ${(error as Error).message}`);
       throw error;
     }
+  }
+
+  /**
+   * Get current real-time SignalK data values
+   */
+  private getCurrentSignalKData(paths?: string[], purpose?: string): any {
+    this.app?.debug(`🕐 Getting current SignalK data for: ${paths?.length ? paths.join(', ') : 'all paths'}. Purpose: ${purpose}`);
+    
+    try {
+      if (!paths || paths.length === 0) {
+        // Get all current vessel data
+        const vesselData = this.app?.getSelfPath('') || {};
+        
+        // Filter out functions and circular references, keep only data values
+        const cleanData = this.cleanSignalKData(vesselData);
+        
+        this.app?.debug(`📊 Retrieved ${Object.keys(cleanData).length} current SignalK data points`);
+        return {
+          timestamp: new Date().toISOString(),
+          source: 'real-time SignalK',
+          data: cleanData
+        };
+      } else {
+        // Get specific paths
+        const pathData: any = {};
+        
+        for (const path of paths) {
+          try {
+            const value = this.app?.getSelfPath(path);
+            if (value !== undefined) {
+              pathData[path] = value;
+            } else {
+              pathData[path] = null; // Explicitly show missing values
+            }
+          } catch (error) {
+            pathData[path] = `Error: ${(error as Error).message}`;
+          }
+        }
+        
+        this.app?.debug(`📊 Retrieved ${Object.keys(pathData).length} specific SignalK paths`);
+        return {
+          timestamp: new Date().toISOString(),
+          source: 'real-time SignalK',
+          requestedPaths: paths,
+          data: pathData
+        };
+      }
+    } catch (error) {
+      this.app?.error(`Failed to get current SignalK data: ${(error as Error).message}`);
+      return {
+        error: `Failed to retrieve SignalK data: ${(error as Error).message}`,
+        timestamp: new Date().toISOString()
+      };
+    }
+  }
+
+  /**
+   * Clean SignalK data by removing functions and circular references
+   */
+  private cleanSignalKData(obj: any, maxDepth: number = 3, currentDepth: number = 0): any {
+    if (currentDepth >= maxDepth || obj === null || obj === undefined) {
+      return obj;
+    }
+
+    if (typeof obj === 'function') {
+      return '[Function]';
+    }
+
+    if (typeof obj !== 'object') {
+      return obj;
+    }
+
+    if (obj instanceof Date) {
+      return obj.toISOString();
+    }
+
+    if (Array.isArray(obj)) {
+      return obj.map(item => this.cleanSignalKData(item, maxDepth, currentDepth + 1));
+    }
+
+    const cleaned: any = {};
+    for (const [key, value] of Object.entries(obj)) {
+      // Skip common SignalK metadata that's not useful for analysis
+      if (['_updateTimes', '_sources', 'meta'].includes(key)) {
+        continue;
+      }
+      
+      try {
+        cleaned[key] = this.cleanSignalKData(value, maxDepth, currentDepth + 1);
+      } catch (error) {
+        cleaned[key] = '[Circular Reference]';
+      }
+    }
+    
+    return cleaned;
+  }
+
+  /**
+   * Check if user request contains real-time keywords
+   */
+  private checkForRealTimeKeywords(customPrompt: string, conversationMessages: Array<any>): boolean {
+    const keywords = ['now', 'current', 'real-time', 'realtime', 'live', 'present', 'right now', 'at this moment'];
+    
+    // Check custom prompt
+    const promptLower = customPrompt.toLowerCase();
+    for (const keyword of keywords) {
+      if (promptLower.includes(keyword)) {
+        return true;
+      }
+    }
+    
+    // Check recent conversation messages
+    for (const message of conversationMessages.slice(-3)) { // Check last 3 messages
+      if (message.content && typeof message.content === 'string') {
+        const contentLower = message.content.toLowerCase();
+        for (const keyword of keywords) {
+          if (contentLower.includes(keyword)) {
+            return true;
+          }
+        }
+      }
+    }
+    
+    return false;
   }
 
   /**
