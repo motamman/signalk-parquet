@@ -275,6 +275,10 @@ export interface AnalysisApiResponse extends ApiResponse {
   analysis?: AnalysisResult;
   history?: AnalysisResult[];
   templates?: AnalysisTemplateInfo[];
+  usage?: {
+    input_tokens: number;
+    output_tokens: number;
+  };
 }
 
 export interface AnalysisResult {

@@ -3163,11 +3163,23 @@ Provide actionable insights based on what you observe in the data.`,
                 clearInterval(timerInterval);
                 const endTime = new Date();
                 const totalTime = (endTime - startTime) / 1000;
+                // Debug what we're actually getting
+                console.log('Full response data:', JSON.stringify(data, null, 2));
+                
+                // Get token usage if available
+                let tokenInfo = '';
+                if (data.usage) {
+                    const usage = data.usage;
+                    tokenInfo = `<br><strong>Tokens: ${usage.input_tokens || 0} in + ${usage.output_tokens || 0} out = ${(usage.input_tokens || 0) + (usage.output_tokens || 0)} total</strong>`;
+                } else {
+                    tokenInfo = `<br><small style="color: #666;">No token usage found in response</small>`;
+                }
+                
                 timerElement.innerHTML = `
                     <strong>⏱️ Analysis Complete</strong><br>
                     Started: ${startTime.toLocaleTimeString()}<br>
                     Completed: ${endTime.toLocaleTimeString()}<br>
-                    <strong>Total Time: ${totalTime.toFixed(1)}s</strong>
+                    <strong>Total Time: ${totalTime.toFixed(1)}s</strong>${tokenInfo}
                 `;
                 timerElement.style.background = data.success ? '#e8f5e8' : '#ffeaea';
                 timerElement.style.borderColor = data.success ? '#4caf50' : '#f44336';
@@ -3750,11 +3762,19 @@ Provide actionable insights based on what you observe in the data.`,
                 clearInterval(timerInterval);
                 const endTime = new Date();
                 const totalTime = (endTime - startTime) / 1000;
+                
+                // Get token usage if available
+                let tokenInfo = '';
+                if (result.usage) {
+                    const usage = result.usage;
+                    tokenInfo = `<br><strong>Tokens: ${usage.input_tokens || 0} in + ${usage.output_tokens || 0} out = ${(usage.input_tokens || 0) + (usage.output_tokens || 0)} total</strong>`;
+                }
+                
                 followUpTimerElement.innerHTML = `
                     <strong>⏱️ Follow-up Complete</strong><br>
                     Started: ${startTime.toLocaleTimeString()}<br>
                     Completed: ${endTime.toLocaleTimeString()}<br>
-                    <strong>Total Time: ${totalTime.toFixed(1)}s</strong>
+                    <strong>Total Time: ${totalTime.toFixed(1)}s</strong>${tokenInfo}
                 `;
                 followUpTimerElement.style.background = result.success ? '#e8f5e8' : '#ffeaea';
                 followUpTimerElement.style.borderColor = result.success ? '#4caf50' : '#f44336';
