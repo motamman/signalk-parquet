@@ -205,8 +205,8 @@ export class ClaudeAnalyzer {
       // Generate statistical summary
       const summary = this.generateDataSummary(data);
       
-      // Sample data if too large (Claude token limits)
-      const sampledData = this.sampleDataForAnalysis(data, 500);
+      // Sample data aggressively to reduce token usage
+      const sampledData = this.sampleDataForAnalysis(data, 50);
       
       return {
         summary,
@@ -459,19 +459,22 @@ export class ClaudeAnalyzer {
       return data;
     }
 
+    // Reduce max samples to limit token usage - be more aggressive
+    const tokenSafeMaxSamples = Math.min(maxSamples, 100);
+
     // Intelligent sampling - take some from beginning, middle, and end
-    const step = Math.floor(data.length / maxSamples);
+    const step = Math.floor(data.length / tokenSafeMaxSamples);
     const sampled: DataRecord[] = [];
     
-    for (let i = 0; i < data.length && sampled.length < maxSamples; i += step) {
+    for (let i = 0; i < data.length && sampled.length < tokenSafeMaxSamples; i += step) {
       sampled.push(data[i]);
     }
 
-    // Always include the most recent records
-    const recentCount = Math.min(50, maxSamples - sampled.length);
+    // Include fewer recent records to save tokens
+    const recentCount = Math.min(20, tokenSafeMaxSamples - sampled.length);
     const recentRecords = data.slice(-recentCount);
     
-    return [...sampled, ...recentRecords].slice(0, maxSamples);
+    return [...sampled, ...recentRecords].slice(0, tokenSafeMaxSamples);
   }
 
   /**
@@ -1034,20 +1037,30 @@ Begin your analysis by querying relevant data.`;
   }
 
   /**
-   * Call Claude API with retry logic for overload errors
+   * Call Claude API with retry logic for rate limit and overload errors
    */
-  private async callClaudeWithRetry(params: any, maxRetries: number = 3): Promise<any> {
+  private async callClaudeWithRetry(params: any, maxRetries: number = 5): Promise<any> {
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
         return await this.client.messages.create(params);
       } catch (error: any) {
+        const isRateLimited = error?.status === 429 || 
+                             (error?.message && error.message.includes('rate limit')) ||
+                             (error?.error?.type === 'rate_limit_error');
+                             
         const isOverloaded = error?.status === 529 || 
                            (error?.message && error.message.includes('overloaded')) ||
                            (error?.error?.type === 'overloaded_error');
         
-        if (isOverloaded && attempt < maxRetries) {
-          const delayMs = Math.pow(2, attempt) * 1000; // 2s, 4s, 8s
-          this.app?.debug(`Claude overloaded (attempt ${attempt}/${maxRetries}), retrying in ${delayMs}ms...`);
+        if ((isRateLimited || isOverloaded) && attempt < maxRetries) {
+          // Exponential backoff with jitter for rate limits
+          const baseDelay = isRateLimited ? 5000 : 2000; // 5s for rate limit, 2s for overload
+          const exponentialDelay = Math.pow(2, attempt - 1) * baseDelay;
+          const jitter = Math.random() * 1000; // Add random jitter
+          const delayMs = exponentialDelay + jitter;
+          
+          const errorType = isRateLimited ? 'rate limited' : 'overloaded';
+          this.app?.debug(`Claude ${errorType} (attempt ${attempt}/${maxRetries}), retrying in ${Math.round(delayMs)}ms...`);
           await new Promise(resolve => setTimeout(resolve, delayMs));
           continue;
         }
