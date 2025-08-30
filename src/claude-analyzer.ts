@@ -936,6 +936,12 @@ Focus on:
 Begin your analysis by querying relevant data within the specified time range.`;
 
       this.app?.debug(`📝 Full prompt for Claude (${initialPrompt.length} chars):\n${initialPrompt.substring(0, 2000)}${initialPrompt.length > 2000 ? '...[TRUNCATED]' : ''}`);
+      
+      // Save full prompt to file for debugging
+      const fs = require('fs');
+      const debugFile = `/tmp/claude-prompt-debug-${Date.now()}.txt`;
+      fs.writeFileSync(debugFile, `FULL CLAUDE PROMPT (${initialPrompt.length} chars):\n\n${initialPrompt}`);
+      this.app?.debug(`📄 Full prompt saved to: ${debugFile}`);
 
       // Start conversation with Claude with function calling capability
       let conversationMessages: Array<any> = [{
