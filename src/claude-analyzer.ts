@@ -870,6 +870,7 @@ Please structure your response as JSON with the following format:
       const vesselContext = this.vesselContextManager.generateClaudeContext();
       this.app?.debug(`🛥️ Vessel context for Claude (${vesselContext.length} chars):\n${vesselContext.substring(0, 500)}${vesselContext.length > 500 ? '...' : ''}`);
       const schemaInfo = this.getEnhancedSchemaForClaude();
+      this.app?.debug(`📊 Schema info for Claude (${schemaInfo.length} chars):\n${schemaInfo.substring(0, 1000)}${schemaInfo.length > 1000 ? '...' : ''}`);
       
       // Build time range guidance for Claude
       let timeRangeGuidance = '';
@@ -916,6 +917,8 @@ Focus on:
 4. Data quality and completeness assessment
 
 Begin your analysis by querying relevant data within the specified time range.`;
+
+      this.app?.debug(`📝 Full prompt for Claude (${initialPrompt.length} chars):\n${initialPrompt.substring(0, 2000)}${initialPrompt.length > 2000 ? '...[TRUNCATED]' : ''}`);
 
       // Start conversation with Claude with function calling capability
       let conversationMessages: Array<any> = [{
