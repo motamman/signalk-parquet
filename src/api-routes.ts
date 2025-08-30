@@ -1122,7 +1122,8 @@ export function registerApiRoutes(
             dataQuality: result.dataQuality,
             timestamp: result.timestamp,
             metadata: result.metadata
-          }
+          },
+          usage: result.usage
         });
 
       } catch (error) {
@@ -1172,7 +1173,8 @@ export function registerApiRoutes(
 
         return res.json({
           success: true,
-          data: analysisResult
+          data: analysisResult,
+          usage: analysisResult.usage
         });
 
       } catch (error) {

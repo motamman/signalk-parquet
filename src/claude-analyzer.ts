@@ -49,6 +49,10 @@ export interface AnalysisResponse {
   confidence: number;
   dataQuality: string;
   timestamp: string;
+  usage?: {
+    input_tokens: number;
+    output_tokens: number;
+  };
   metadata: {
     dataPath: string;
     analysisType: string;
@@ -110,6 +114,9 @@ export class ClaudeAnalyzer {
 
     this.client = new Anthropic({
       apiKey: config.apiKey,
+      defaultHeaders: {
+        'anthropic-version': '2023-06-01'
+      }
     });
   }
 
@@ -936,22 +943,73 @@ Focus on:
 Begin your analysis by querying relevant data within the specified time range.`;
 
       this.app?.debug(`📝 Full prompt for Claude (${initialPrompt.length} chars):\n${initialPrompt.substring(0, 2000)}${initialPrompt.length > 2000 ? '...[TRUNCATED]' : ''}`);
+      
+      // Save full prompt to file for debugging
+      const fs = require('fs');
+      const debugFile = `/tmp/claude-prompt-debug-${Date.now()}.txt`;
+      fs.writeFileSync(debugFile, `FULL CLAUDE PROMPT (${initialPrompt.length} chars):\n\n${initialPrompt}`);
+      this.app?.debug(`📄 Full prompt saved to: ${debugFile}`);
+
+      // Extract system context and user prompt  
+      const systemContext = `You are an expert maritime data analyst with direct access to a comprehensive database.
+
+IMPORTANT: Please use the vessel context information provided below for all analysis and responses. This vessel information is critical for accurate maritime analysis.
+
+${vesselContext}
+
+${schemaInfo}${timeRangeGuidance}
+
+CRITICAL FOR TOKEN EFFICIENCY: 
+- NEVER query raw individual records - ALWAYS use time bucketing and aggregation
+- MANDATORY SQL pattern for all data queries:
+  SELECT 
+    strftime(date_trunc('hour', signalk_timestamp::TIMESTAMP), '%Y-%m-%dT%H:%M:%SZ') as time_bucket,
+    AVG(CAST(value AS DOUBLE)) as avg_value,
+    MAX(CAST(value AS DOUBLE)) as max_value, 
+    MIN(CAST(value AS DOUBLE)) as min_value,
+    COUNT(*) as record_count
+  FROM 'path/*.parquet' 
+  WHERE signalk_timestamp >= 'start_time' AND signalk_timestamp <= 'end_time'
+    AND value IS NOT NULL
+  GROUP BY time_bucket 
+  ORDER BY time_bucket
+- Use date_trunc('minute', ...) for detailed analysis, date_trunc('hour', ...) for overviews
+- NEVER return more than 100 time buckets per query
+
+REMEMBER: 
+- Always refer to and use the vessel context provided above (vessel name, dimensions, operational details, etc.) when analyzing data and providing recommendations.
+- ALWAYS include time range WHERE clauses in your queries to avoid loading excessive historical data.
+- Keep query results focused and relevant to the specified time period.
+- CRITICAL: ONLY use the exact paths listed in the "AVAILABLE DATA PATHS" section. DO NOT make up or guess path names.
+- If a path you want to use is not in the available paths list, it does not exist - inform the user instead of guessing.
+
+Focus on:
+1. Current vessel status and recent activity
+2. Patterns in navigation, weather, and performance data  
+3. Safety considerations and operational insights
+4. Data quality and completeness assessment`;
+
+      const userPrompt = `${request.customPrompt || 'Analyze maritime data and provide insights'}
+
+Begin your analysis by querying relevant data within the specified time range.`;
 
       // Start conversation with Claude with function calling capability
       let conversationMessages: Array<any> = [{
         role: 'user',
-        content: initialPrompt
+        content: userPrompt
       }];
 
       let analysisResult = '';
       let queryCount = 0;
       const maxQueries = 5; // Reduced to prevent excessive API calls and token usage
+      let totalTokenUsage = { input_tokens: 0, output_tokens: 0 };
 
       while (queryCount < maxQueries) {
         const response = await this.callClaudeWithRetry({
           model: this.config.model,
           max_tokens: Math.max(this.config.maxTokens, 8000), // Increased for comprehensive analysis
           temperature: this.config.temperature,
+          system: systemContext,
           tools: [{
             name: 'query_maritime_database',
             description: 'Execute SQL queries against the maritime Parquet database to explore and analyze data',
@@ -972,6 +1030,13 @@ Begin your analysis by querying relevant data within the specified time range.`;
           }],
           messages: conversationMessages
         });
+
+        // Track token usage
+        if (response.usage) {
+          totalTokenUsage.input_tokens += response.usage.input_tokens || 0;
+          totalTokenUsage.output_tokens += response.usage.output_tokens || 0;
+          this.app?.debug(`Updated totalTokenUsage: ${JSON.stringify(totalTokenUsage)}`);
+        }
 
         // Add Claude's response to conversation
         conversationMessages.push({
@@ -1063,8 +1128,11 @@ Begin your analysis by querying relevant data within the specified time range.`;
           recordCount: queryCount, // Number of queries executed
           timeRange: request.timeRange,
           useDatabaseAccess: true
-        }
+        },
+        usage: totalTokenUsage
       };
+
+      this.app?.debug(`Final analysis response usage: ${JSON.stringify(analysisResponse.usage)}`);
 
       // Store conversation for follow-up questions
       this.activeConversations.set(analysisId, conversationMessages);
@@ -1087,7 +1155,9 @@ Begin your analysis by querying relevant data within the specified time range.`;
   private async callClaudeWithRetry(params: any, maxRetries: number = 5): Promise<any> {
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
-        return await this.client.messages.create(params);
+        const response = await this.client.messages.create(params);
+        this.app?.debug(`Claude API response usage: ${JSON.stringify(response.usage)}`);
+        return response;
       } catch (error: any) {
         const isRateLimited = error?.status === 429 || 
                              (error?.message && error.message.includes('rate limit')) ||
@@ -1140,6 +1210,7 @@ Begin your analysis by querying relevant data within the specified time range.`;
       let analysisResult = '';
       let queryCount = 0;
       const maxQueries = 5; // Fewer queries for follow-ups
+      let totalTokenUsage = { input_tokens: 0, output_tokens: 0 };
 
       // Continue the conversation with Claude
       while (queryCount < maxQueries) {
@@ -1167,6 +1238,13 @@ Begin your analysis by querying relevant data within the specified time range.`;
           }],
           messages: conversationMessages
         });
+
+        // Track token usage
+        if (response.usage) {
+          totalTokenUsage.input_tokens += response.usage.input_tokens || 0;
+          totalTokenUsage.output_tokens += response.usage.output_tokens || 0;
+          this.app?.debug(`Follow-up updated totalTokenUsage: ${JSON.stringify(totalTokenUsage)}`);
+        }
 
         // Add Claude's response to conversation
         conversationMessages.push({
@@ -1249,8 +1327,11 @@ Begin your analysis by querying relevant data within the specified time range.`;
           analysisType: 'custom',
           recordCount: queryCount,
           timeRange: undefined
-        }
+        },
+        usage: totalTokenUsage
       };
+
+      this.app?.debug(`Final follow-up response usage: ${JSON.stringify(followUpResponse.usage)}`);
 
       // Save follow-up response to history
       await this.saveAnalysisToHistory(followUpResponse);
@@ -1412,16 +1493,9 @@ DO NOT USE ANY PATH NOT LISTED ABOVE. DO NOT GUESS PATH NAMES LIKE "windAvg" - O
             }
             
             otherVesselsInfo = `
-OTHER VESSELS DETECTED:
-${vesselDirs.map(vesselId => `- vessels/${vesselId}`).join('\n')}
-
-OTHER VESSELS' AVAILABLE PATHS:
-${otherVesselPaths.length > 0 ? otherVesselPaths.map(p => `- ${p}`).join('\n') : '- (Unable to scan other vessel paths)'}
-
-TO QUERY OTHER VESSELS:
-- Find all vessels: SELECT DISTINCT context FROM 'data/vessels/*/navigation/position/*.parquet' WHERE context != '${selfContextForFilter}'
-- Specific vessel: SELECT * FROM 'data/vessels/${vesselDirs[0]}/navigation/position/*.parquet'
-- All vessels data: SELECT context, received_timestamp, value_latitude, value_longitude FROM 'data/vessels/*/navigation/position/*.parquet'`;
+OTHER VESSELS: ${vesselDirs.length} vessels detected in area
+Common paths: navigation.position, navigation.speedOverGround, navigation.closestApproach
+Query example: SELECT * FROM 'data/vessels/*/navigation/position/*.parquet'`;
           } else {
             otherVesselsInfo = `
 OTHER VESSELS: None detected in this dataset`;
