@@ -1418,16 +1418,9 @@ DO NOT USE ANY PATH NOT LISTED ABOVE. DO NOT GUESS PATH NAMES LIKE "windAvg" - O
             }
             
             otherVesselsInfo = `
-OTHER VESSELS DETECTED:
-${vesselDirs.map(vesselId => `- vessels/${vesselId}`).join('\n')}
-
-OTHER VESSELS' AVAILABLE PATHS:
-${otherVesselPaths.length > 0 ? otherVesselPaths.map(p => `- ${p}`).join('\n') : '- (Unable to scan other vessel paths)'}
-
-TO QUERY OTHER VESSELS:
-- Find all vessels: SELECT DISTINCT context FROM 'data/vessels/*/navigation/position/*.parquet' WHERE context != '${selfContextForFilter}'
-- Specific vessel: SELECT * FROM 'data/vessels/${vesselDirs[0]}/navigation/position/*.parquet'
-- All vessels data: SELECT context, received_timestamp, value_latitude, value_longitude FROM 'data/vessels/*/navigation/position/*.parquet'`;
+OTHER VESSELS: ${vesselDirs.length} vessels detected in area
+Common paths: navigation.position, navigation.speedOverGround, navigation.closestApproach
+Query example: SELECT * FROM 'data/vessels/*/navigation/position/*.parquet'`;
           } else {
             otherVesselsInfo = `
 OTHER VESSELS: None detected in this dataset`;
