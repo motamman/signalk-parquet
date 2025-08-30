@@ -906,6 +906,8 @@ REMEMBER:
 - Always refer to and use the vessel context provided above (vessel name, dimensions, operational details, etc.) when analyzing data and providing recommendations.
 - ALWAYS include time range WHERE clauses in your queries to avoid loading excessive historical data.
 - Keep query results focused and relevant to the specified time period.
+- CRITICAL: ONLY use the exact paths listed in the "AVAILABLE DATA PATHS" section. DO NOT make up or guess path names.
+- If a path you want to use is not in the available paths list, it does not exist - inform the user instead of guessing.
 
 Focus on:
 1. Current vessel status and recent activity
@@ -1346,9 +1348,15 @@ Begin your analysis by querying relevant data within the specified time range.`;
       if (this.app && dataDir) {
         // Get your vessel's paths
         const paths = getAvailablePaths(dataDir, this.app);
+        const pathList = paths.map(p => p.path).join('\n- ');
         availablePathsInfo = `
-AVAILABLE DATA PATHS (Your vessel):
-${paths.map(p => `- ${p.path} (${p.fileCount} files)`).join('\n')}`;
+CRITICAL: ONLY USE THESE EXACT PATHS - DO NOT MAKE UP OR GUESS PATH NAMES:
+- ${pathList}
+
+THESE ARE THE ONLY VALID PATHS (${paths.length} total paths):
+${paths.map(p => `- ${p.path} (${p.fileCount} files)`).join('\n')}
+
+DO NOT USE ANY PATH NOT LISTED ABOVE. DO NOT GUESS PATH NAMES LIKE "windAvg" - ONLY USE THE EXACT PATHS PROVIDED.`;
 
         // Check for other vessels by scanning the vessels directory
         const vesselsDir = path.join(dataDir, 'vessels');
