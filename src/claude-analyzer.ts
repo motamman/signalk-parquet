@@ -871,19 +871,41 @@ Please structure your response as JSON with the following format:
       this.app?.debug(`🛥️ Vessel context for Claude (${vesselContext.length} chars):\n${vesselContext.substring(0, 500)}${vesselContext.length > 500 ? '...' : ''}`);
       const schemaInfo = this.getEnhancedSchemaForClaude();
       
+      // Build time range guidance for Claude
+      let timeRangeGuidance = '';
+      if (request.timeRange) {
+        timeRangeGuidance = `
+
+TIME RANGE RESTRICTION: Focus your analysis on data between ${request.timeRange.start.toISOString()} and ${request.timeRange.end.toISOString()}.
+IMPORTANT: Always include WHERE clauses in your SQL queries to limit results to this time range:
+WHERE received_timestamp >= '${request.timeRange.start.toISOString()}' AND received_timestamp <= '${request.timeRange.end.toISOString()}'`;
+      } else {
+        // Default to recent data if no time range specified
+        const now = new Date();
+        const sixHoursAgo = new Date(now.getTime() - 6 * 60 * 60 * 1000);
+        timeRangeGuidance = `
+
+TIME RANGE FOCUS: Since no specific time range was provided, focus on recent data (last 6 hours).
+IMPORTANT: Always include WHERE clauses to limit results to recent data:
+WHERE received_timestamp >= '${sixHoursAgo.toISOString()}'`;
+      }
+
       const initialPrompt = `You are an expert maritime data analyst with direct access to a comprehensive database.
 
 IMPORTANT: Please use the vessel context information provided below for all analysis and responses. This vessel information is critical for accurate maritime analysis.
 
 ${vesselContext}
 
-${schemaInfo}
+${schemaInfo}${timeRangeGuidance}
 
 ANALYSIS REQUEST: ${request.customPrompt || 'Analyze maritime data and provide insights'}
 
 You can query the database using the query_maritime_database function. Start by exploring the data to understand what's available, then provide comprehensive analysis.
 
-REMEMBER: Always refer to and use the vessel context provided above (vessel name, dimensions, operational details, etc.) when analyzing data and providing recommendations.
+REMEMBER: 
+- Always refer to and use the vessel context provided above (vessel name, dimensions, operational details, etc.) when analyzing data and providing recommendations.
+- ALWAYS include time range WHERE clauses in your queries to avoid loading excessive historical data.
+- Keep query results focused and relevant to the specified time period.
 
 Focus on:
 1. Current vessel status and recent activity
@@ -891,7 +913,7 @@ Focus on:
 3. Safety considerations and operational insights
 4. Data quality and completeness assessment
 
-Begin your analysis by querying relevant data.`;
+Begin your analysis by querying relevant data within the specified time range.`;
 
       // Start conversation with Claude with function calling capability
       let conversationMessages: Array<any> = [{
