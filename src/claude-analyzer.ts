@@ -205,8 +205,9 @@ export class ClaudeAnalyzer {
       // Generate statistical summary
       const summary = this.generateDataSummary(data);
       
-      // Sample data aggressively to reduce token usage
-      const sampledData = this.sampleDataForAnalysis(data, 50);
+      // Sample data very aggressively for production systems with lots of data
+      const maxSamples = data.length > 10000 ? 20 : 50; // Ultra-aggressive for large datasets
+      const sampledData = this.sampleDataForAnalysis(data, maxSamples);
       
       return {
         summary,
@@ -459,8 +460,8 @@ export class ClaudeAnalyzer {
       return data;
     }
 
-    // Reduce max samples to limit token usage - be more aggressive
-    const tokenSafeMaxSamples = Math.min(maxSamples, 100);
+    // Reduce max samples to limit token usage - be very aggressive for production
+    const tokenSafeMaxSamples = Math.min(maxSamples, 30);
 
     // Intelligent sampling - take some from beginning, middle, and end
     const step = Math.floor(data.length / tokenSafeMaxSamples);
@@ -470,8 +471,8 @@ export class ClaudeAnalyzer {
       sampled.push(data[i]);
     }
 
-    // Include fewer recent records to save tokens
-    const recentCount = Math.min(20, tokenSafeMaxSamples - sampled.length);
+    // Include very few recent records to save tokens  
+    const recentCount = Math.min(5, tokenSafeMaxSamples - sampled.length);
     const recentRecords = data.slice(-recentCount);
     
     return [...sampled, ...recentRecords].slice(0, tokenSafeMaxSamples);
@@ -1246,8 +1247,9 @@ Begin your analysis by querying relevant data.`;
       const result = await connection.runAndReadAll(sql);
       const data = result.getRowObjects();
       
-      // Limit result size to prevent memory issues (max 10,000 rows)
-      const limitedData = data.slice(0, 10000);
+      // Limit result size aggressively for production systems to prevent memory and token issues
+      const maxRows = data.length > 1000 ? 500 : 1000; // Smaller limits for large datasets
+      const limitedData = data.slice(0, maxRows);
       
       this.app?.debug(`✅ Query returned ${limitedData.length} rows`);
       return limitedData;
