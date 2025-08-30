@@ -2,6 +2,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { ServerAPI } from '@signalk/server-api';
 import { DataRecord } from './types';
 import { VesselContextManager } from './vessel-context';
+import { getAvailablePaths } from './utils/path-discovery';
 import * as fs from 'fs-extra';
 import * as path from 'path';
 import { DuckDBInstance } from '@duckdb/node-api';
@@ -1247,6 +1248,46 @@ Begin your analysis by querying relevant data.`;
   }
 
   /**
+   * Scan a vessel directory for available SignalK paths
+   */
+  private scanVesselPaths(vesselDir: string): string[] {
+    const paths: string[] = [];
+    
+    function walkPaths(currentPath: string, relativePath: string = ''): void {
+      try {
+        const items = fs.readdirSync(currentPath);
+        items.forEach((item: string) => {
+          const fullPath = path.join(currentPath, item);
+          const stat = fs.statSync(fullPath);
+
+          if (stat.isDirectory() && item !== 'processed' && item !== 'failed') {
+            const newRelativePath = relativePath ? `${relativePath}.${item}` : item;
+
+            // Check if this directory has parquet files
+            const hasParquetFiles = fs.readdirSync(fullPath)
+              .some((file: string) => file.endsWith('.parquet'));
+
+            if (hasParquetFiles) {
+              paths.push(newRelativePath);
+            } else {
+              // Recurse into subdirectories
+              walkPaths(fullPath, newRelativePath);
+            }
+          }
+        });
+      } catch (error) {
+        // Skip directories that can't be read
+      }
+    }
+
+    if (fs.existsSync(vesselDir)) {
+      walkPaths(vesselDir);
+    }
+    
+    return paths;
+  }
+
+  /**
    * Generate enhanced schema information for Claude
    */
   private getEnhancedSchemaForClaude(): string {
@@ -1256,21 +1297,80 @@ Begin your analysis by querying relevant data.`;
       selfContextPath = this.app.selfContext.replace(/\./g, '/').replace(/:/g, '_');
     }
     
+    // Get actual available paths from the filesystem  
+    let availablePathsInfo = '';
+    let otherVesselsInfo = '';
+    
+    // Get self context dynamically from SignalK
+    const selfContext = this.app?.selfContext || 'vessels.self';
+    const selfContextForFilter = selfContext.replace(/\./g, ':'); // Convert to context format for filtering
+    
+    try {
+      if (this.app && dataDir) {
+        // Get your vessel's paths
+        const paths = getAvailablePaths(dataDir, this.app);
+        availablePathsInfo = `
+AVAILABLE DATA PATHS (Your vessel):
+${paths.map(p => `- ${p.path} (${p.fileCount} files)`).join('\n')}`;
+
+        // Check for other vessels by scanning the vessels directory
+        const vesselsDir = path.join(dataDir, 'vessels');
+        if (fs.existsSync(vesselsDir)) {
+          const vesselDirs = fs.readdirSync(vesselsDir, { withFileTypes: true })
+            .filter(dirent => dirent.isDirectory())
+            .map(dirent => dirent.name)
+            .filter(name => name !== selfContextPath.split('/')[1]); // Exclude own vessel
+          
+          if (vesselDirs.length > 0) {
+            // Scan each other vessel's directory for their available paths
+            let otherVesselPaths: string[] = [];
+            
+            for (const vesselDir of vesselDirs) {
+              const vesselPath = path.join(vesselsDir, vesselDir);
+              try {
+                const vesselPaths = this.scanVesselPaths(vesselPath);
+                otherVesselPaths = otherVesselPaths.concat(vesselPaths.map(p => `${vesselDir}: ${p}`));
+              } catch (error) {
+                // Skip vessels that can't be scanned
+              }
+            }
+            
+            otherVesselsInfo = `
+OTHER VESSELS DETECTED:
+${vesselDirs.map(vesselId => `- vessels/${vesselId}`).join('\n')}
+
+OTHER VESSELS' AVAILABLE PATHS:
+${otherVesselPaths.length > 0 ? otherVesselPaths.map(p => `- ${p}`).join('\n') : '- (Unable to scan other vessel paths)'}
+
+TO QUERY OTHER VESSELS:
+- Find all vessels: SELECT DISTINCT context FROM 'data/vessels/*/navigation/position/*.parquet' WHERE context != '${selfContextForFilter}'
+- Specific vessel: SELECT * FROM 'data/vessels/${vesselDirs[0]}/navigation/position/*.parquet'
+- All vessels data: SELECT context, received_timestamp, value_latitude, value_longitude FROM 'data/vessels/*/navigation/position/*.parquet'`;
+          } else {
+            otherVesselsInfo = `
+OTHER VESSELS: None detected in this dataset`;
+          }
+        }
+      }
+    } catch (error) {
+      availablePathsInfo = '\nAVAILABLE DATA PATHS: Unable to scan filesystem';
+    }
+    
     return `MARITIME DATABASE SCHEMA:
 Base Directory: ${dataDir}
 File Pattern: {contextPath}/{signalk_path}/{filename}.parquet
 
 VESSEL CONTEXTS:
 - Your vessel: ${selfContextPath}
-- Other vessels: vessels/{vessel_id}
-- Weather stations: meteo/{station_id}
+${availablePathsInfo}
+${otherVesselsInfo}
 
 COLUMN STRUCTURE:
-- context (VARCHAR): Vessel/source identifier (e.g., "vessels.urn:mrn:imo:mmsi:368396230")
+- context (VARCHAR): Vessel/source identifier (e.g., "${selfContext}")
 - meta (VARCHAR): Metadata (usually null)
 - path (VARCHAR): SignalK data path (e.g., "navigation.position", "environment.wind.speedTrue")
-- received_timestamp (VARCHAR): ISO timestamp when data was received (e.g., "2025-08-11T15:06:05.204Z")
-- signalk_timestamp (VARCHAR): ISO timestamp from SignalK data (e.g., "2025-08-11T15:06:04.000Z")
+- received_timestamp (VARCHAR): ISO timestamp when data was received (e.g., "YYYY-MM-DDTHH:MM:SS.sssZ")
+- signalk_timestamp (VARCHAR): ISO timestamp from SignalK data (e.g., "YYYY-MM-DDTHH:MM:SS.000Z")
 - source (VARCHAR): JSON string with source info (e.g., '{"sentence":"GLL","talker":"GN","type":"NMEA0183"}')
 - source_label (VARCHAR): Source device label (e.g., "maiana.GN")
 - source_pgn, source_src (VARCHAR): Usually null for NMEA0183
@@ -1281,9 +1381,15 @@ COLUMN STRUCTURE:
 
 QUERY EXAMPLES:
 - Recent position: SELECT received_timestamp, value_latitude, value_longitude FROM '${dataDir}/${selfContextPath}/navigation/position/*.parquet' ORDER BY received_timestamp DESC LIMIT 100
-- Speed analysis: SELECT AVG(CAST(value AS DOUBLE)) as avg_speed FROM '${dataDir}/${selfContextPath}/navigation/speedOverGround/*.parquet' WHERE received_timestamp >= '2025-08-01T00:00:00.000Z'
+- Speed analysis: SELECT AVG(CAST(value AS DOUBLE)) as avg_speed FROM '${dataDir}/${selfContextPath}/navigation/speedOverGround/*.parquet' WHERE received_timestamp >= '2024-01-01T00:00:00.000Z'
 - Wind patterns: SELECT DATE_TRUNC('hour', CAST(received_timestamp AS TIMESTAMP)) as hour, AVG(CAST(value AS DOUBLE)) FROM '${dataDir}/${selfContextPath}/environment/wind/speedTrue/*.parquet' GROUP BY hour ORDER BY hour
-- Time-based filtering: WHERE received_timestamp >= '2025-08-20T00:00:00.000Z' AND received_timestamp < '2025-08-21T00:00:00.000Z'
+- Time-based filtering: WHERE received_timestamp >= 'YYYY-MM-DDTHH:MM:SS.000Z' AND received_timestamp < 'YYYY-MM-DDTHH:MM:SS.000Z'
+
+MULTI-VESSEL QUERIES:
+- Find all vessels: SELECT DISTINCT context FROM 'data/vessels/*/navigation/position/*.parquet'
+- All vessels positions: SELECT context, received_timestamp, value_latitude, value_longitude FROM 'data/vessels/*/navigation/position/*.parquet' ORDER BY received_timestamp DESC
+- Specific vessel by MMSI: SELECT * FROM 'data/vessels/urn_mrn_imo_mmsi_123456789/navigation/position/*.parquet'
+- Vessel traffic analysis: SELECT context, COUNT(*) as message_count FROM 'data/vessels/*/navigation/position/*.parquet' GROUP BY context
 
 IMPORTANT NOTES:
 - All timestamps are ISO strings in VARCHAR format, not milliseconds
