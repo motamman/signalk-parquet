@@ -1210,6 +1210,7 @@ Begin your analysis by querying relevant data within the specified time range.`;
       let analysisResult = '';
       let queryCount = 0;
       const maxQueries = 5; // Fewer queries for follow-ups
+      let totalTokenUsage = { input_tokens: 0, output_tokens: 0 };
 
       // Continue the conversation with Claude
       while (queryCount < maxQueries) {
@@ -1237,6 +1238,13 @@ Begin your analysis by querying relevant data within the specified time range.`;
           }],
           messages: conversationMessages
         });
+
+        // Track token usage
+        if (response.usage) {
+          totalTokenUsage.input_tokens += response.usage.input_tokens || 0;
+          totalTokenUsage.output_tokens += response.usage.output_tokens || 0;
+          this.app?.debug(`Follow-up updated totalTokenUsage: ${JSON.stringify(totalTokenUsage)}`);
+        }
 
         // Add Claude's response to conversation
         conversationMessages.push({
@@ -1319,8 +1327,11 @@ Begin your analysis by querying relevant data within the specified time range.`;
           analysisType: 'custom',
           recordCount: queryCount,
           timeRange: undefined
-        }
+        },
+        usage: totalTokenUsage
       };
+
+      this.app?.debug(`Final follow-up response usage: ${JSON.stringify(followUpResponse.usage)}`);
 
       // Save follow-up response to history
       await this.saveAnalysisToHistory(followUpResponse);

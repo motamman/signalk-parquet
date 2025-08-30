@@ -3808,11 +3808,23 @@ Provide actionable insights based on what you observe in the data.`,
                 clearInterval(timerInterval);
                 const endTime = new Date();
                 const totalTime = (endTime - startTime) / 1000;
+                
+                // Try to get token usage even on error (in case it's a partial failure)
+                let tokenInfo = '';
+                try {
+                    if (error.response && error.response.usage) {
+                        const usage = error.response.usage;
+                        tokenInfo = `<br><strong>Tokens: ${usage.input_tokens || 0} in + ${usage.output_tokens || 0} out = ${(usage.input_tokens || 0) + (usage.output_tokens || 0)} total</strong>`;
+                    }
+                } catch (e) {
+                    // Ignore token parsing errors
+                }
+                
                 followUpTimerElement.innerHTML = `
                     <strong>⏱️ Follow-up Failed</strong><br>
                     Started: ${startTime.toLocaleTimeString()}<br>
                     Failed: ${endTime.toLocaleTimeString()}<br>
-                    <strong>Total Time: ${totalTime.toFixed(1)}s</strong>
+                    <strong>Total Time: ${totalTime.toFixed(1)}s</strong>${tokenInfo}
                 `;
                 followUpTimerElement.style.background = '#ffeaea';
                 followUpTimerElement.style.borderColor = '#f44336';
