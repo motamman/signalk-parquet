@@ -1083,6 +1083,9 @@ Begin your analysis by querying relevant data within the specified time range.`;
             analysisResult += textContent + '\n\n';
           } else if (contentBlock.type === 'tool_use') {
             const toolCall = contentBlock;
+            
+            // Ensure every tool_use gets a tool_result, even if processing fails
+            try {
             if (toolCall.name === 'query_maritime_database') {
               queryCount++;
               const { sql, purpose } = toolCall.input as { sql: string; purpose: string };
@@ -1132,6 +1135,24 @@ Begin your analysis by querying relevant data within the specified time range.`;
                   content: `Real-time data retrieval failed: ${(realTimeError as Error).message}`
                 });
               }
+            } else {
+              // Handle unknown tool calls to prevent conversation state errors
+              toolResults.push({
+                type: 'tool_result',
+                tool_use_id: toolCall.id,
+                content: `Unknown tool "${toolCall.name}" requested. Available tools: query_maritime_database, get_current_signalk_data`
+              });
+              this.app?.debug(`⚠️ Unknown tool called: ${toolCall.name}`);
+            }
+            
+            } catch (toolProcessingError) {
+              // Critical: Always provide a tool_result, even if tool processing fails completely
+              toolResults.push({
+                type: 'tool_result',
+                tool_use_id: toolCall.id,
+                content: `Tool processing failed: ${(toolProcessingError as Error).message}`
+              });
+              this.app?.error(`🚨 Tool processing error for ${toolCall.name}: ${(toolProcessingError as Error).message}`);
             }
           }
         }
@@ -1345,6 +1366,9 @@ Begin your analysis by querying relevant data within the specified time range.`;
             analysisResult += textContent + '\n\n';
           } else if (contentBlock.type === 'tool_use') {
             const toolCall = contentBlock;
+            
+            // Ensure every tool_use gets a tool_result, even if processing fails
+            try {
             if (toolCall.name === 'query_maritime_database') {
               queryCount++;
               const { sql, purpose } = toolCall.input as { sql: string; purpose: string };
@@ -1392,6 +1416,24 @@ Begin your analysis by querying relevant data within the specified time range.`;
                   content: `Real-time data retrieval failed: ${(realTimeError as Error).message}`
                 });
               }
+            } else {
+              // Handle unknown tool calls to prevent conversation state errors
+              toolResults.push({
+                type: 'tool_result',
+                tool_use_id: toolCall.id,
+                content: `Unknown tool "${toolCall.name}" requested. Available tools: query_maritime_database, get_current_signalk_data`
+              });
+              this.app?.debug(`⚠️ Follow-up unknown tool called: ${toolCall.name}`);
+            }
+            
+            } catch (toolProcessingError) {
+              // Critical: Always provide a tool_result, even if tool processing fails completely
+              toolResults.push({
+                type: 'tool_result',
+                tool_use_id: toolCall.id,
+                content: `Follow-up tool processing failed: ${(toolProcessingError as Error).message}`
+              });
+              this.app?.error(`🚨 Follow-up tool processing error for ${toolCall.name}: ${(toolProcessingError as Error).message}`);
             }
           }
         }
