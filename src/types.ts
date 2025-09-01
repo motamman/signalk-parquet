@@ -39,7 +39,7 @@ export interface PluginConfig {
 export interface ClaudeIntegrationConfig {
   enabled: boolean;
   apiKey?: string;
-  model?: 'claude-opus-4-1-20250805' | 'claude-opus-4-20250514' | 'claude-sonnet-4-20250514' | 'claude-3-7-sonnet-20250219' | 'claude-3-5-haiku-20241022' | 'claude-3-haiku-20240307';
+  model?: 'claude-opus-4-1-20250805' | 'claude-opus-4-20250514' | 'claude-sonnet-4-20250514';
   maxTokens?: number;
   temperature?: number;
   autoAnalysis?: {

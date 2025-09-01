@@ -69,12 +69,15 @@ let ListObjectsV2Command: any;
 
 // Helper function to migrate deprecated Claude model names
 function migrateClaudeModel(model?: string, app?: ServerAPI): string {
-  const currentModel = model || 'claude-3-7-sonnet-20250219';
+  const currentModel = model || 'claude-sonnet-4-20250514';
   
   // Migration mapping for deprecated models
   const migrations: Record<string, string> = {
-    'claude-3-sonnet-20240229': 'claude-3-7-sonnet-20250219',
-    'claude-3-5-sonnet-20241022': 'claude-3-7-sonnet-20250219',
+    'claude-3-sonnet-20240229': 'claude-sonnet-4-20250514',
+    'claude-3-5-sonnet-20241022': 'claude-sonnet-4-20250514',
+    'claude-3-7-sonnet-20250219': 'claude-sonnet-4-20250514',
+    'claude-3-5-haiku-20241022': 'claude-sonnet-4-20250514',
+    'claude-3-haiku-20240307': 'claude-sonnet-4-20250514',
   };
   
   if (migrations[currentModel]) {
@@ -87,16 +90,13 @@ function migrateClaudeModel(model?: string, app?: ServerAPI): string {
   const supportedModels = [
     'claude-opus-4-1-20250805',
     'claude-opus-4-20250514', 
-    'claude-sonnet-4-20250514',
-    'claude-3-7-sonnet-20250219',
-    'claude-3-5-haiku-20241022',
-    'claude-3-haiku-20240307'
+    'claude-sonnet-4-20250514'
   ];
 
   // If model is not in supported list, fall back to default
   if (!supportedModels.includes(currentModel)) {
     app?.debug(`Unknown Claude model ${currentModel}, falling back to default`);
-    return 'claude-3-7-sonnet-20250219';
+    return 'claude-sonnet-4-20250514';
   }
 
   return currentModel;

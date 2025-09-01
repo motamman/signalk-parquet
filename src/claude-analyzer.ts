@@ -10,7 +10,7 @@ import { DuckDBInstance } from '@duckdb/node-api';
 // Claude AI Integration Types
 export interface ClaudeAnalyzerConfig {
   apiKey: string;
-  model: 'claude-opus-4-1-20250805' | 'claude-opus-4-20250514' | 'claude-sonnet-4-20250514' | 'claude-3-7-sonnet-20250219' | 'claude-3-5-haiku-20241022' | 'claude-3-haiku-20240307';
+  model: 'claude-opus-4-1-20250805' | 'claude-opus-4-20250514' | 'claude-sonnet-4-20250514';
   maxTokens: number;
   temperature: number;
 }
@@ -959,6 +959,13 @@ Begin your analysis by querying relevant data within the specified time range.`;
       // Extract system context and user prompt  
       const systemContext = `You are an expert maritime data analyst with direct access to a comprehensive database.
 
+CRITICAL DATA INTEGRITY RULES:
+- NEVER fabricate, guess, or make up any data, coordinates, timestamps, or values
+- If a query returns no data, you MUST say "No data available" or "Query returned no results"  
+- NEVER invent plausible-sounding but false information
+- If you don't know something, explicitly state "I don't have this information"
+- Financial and navigational decisions depend on accurate data - false information causes real harm
+
 IMPORTANT: Please use the vessel context information provided below for all analysis and responses. This vessel information is critical for accurate maritime analysis.
 
 ${vesselContext}
@@ -1064,7 +1071,7 @@ Begin your analysis by querying relevant data within the specified time range.`;
         const response = await this.callClaudeWithRetry({
           model: this.config.model,
           max_tokens: Math.max(this.config.maxTokens, 8000), // Increased for comprehensive analysis
-          temperature: this.config.temperature,
+          temperature: 0.0,
           system: systemContext,
           tools: availableTools,
           messages: conversationMessages
@@ -1298,6 +1305,7 @@ Begin your analysis by querying relevant data within the specified time range.`;
 
       // Check if follow-up question contains real-time keywords
       const needsRealTimeData = this.checkForRealTimeKeywords(request.question, conversationMessages);
+      this.app?.debug(`🔍 Follow-up real-time check: "${request.question}" -> ${needsRealTimeData}`);
       
       // Build tools array - always include database access
       const followUpTools: any[] = [{
@@ -1348,7 +1356,7 @@ Begin your analysis by querying relevant data within the specified time range.`;
         const response = await this.callClaudeWithRetry({
           model: this.config.model,
           max_tokens: Math.max(this.config.maxTokens, 8000),
-          temperature: this.config.temperature,
+          temperature: 0.0,
           tools: followUpTools,
           messages: conversationMessages
         });
@@ -1606,8 +1614,10 @@ Begin your analysis by querying relevant data within the specified time range.`;
     
     // Check custom prompt
     const promptLower = customPrompt.toLowerCase();
+    this.app?.debug(`🔍 Checking prompt: "${customPrompt}" (${promptLower})`);
     for (const keyword of keywords) {
       if (promptLower.includes(keyword)) {
+        this.app?.debug(`✅ Found real-time keyword: "${keyword}"`);
         return true;
       }
     }
