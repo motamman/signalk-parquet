@@ -1829,7 +1829,8 @@ MANDATORY QUERY SYNTAX - USE EXACT FILE PATHS:
 - Time-based filtering: WHERE received_timestamp >= 'YYYY-MM-DDTHH:MM:SS.000Z' AND received_timestamp < 'YYYY-MM-DDTHH:MM:SS.000Z'
 
 CRITICAL: Your vessel's data is at: ${dataDir}/${selfContextPath}/
-Example: SELECT * FROM '${dataDir}/${selfContextPath}/navigation/position/*.parquet' LIMIT 5
+IMPORTANT: Use the vessel's MMSI from the VESSEL CONTEXT section above to filter data by context column.
+Example: SELECT * FROM '${dataDir}/${selfContextPath}/navigation/position/*.parquet' WHERE context LIKE '%[MMSI_FROM_VESSEL_CONTEXT]%' LIMIT 5
 
 MULTI-VESSEL QUERIES:
 - Find all vessels: SELECT DISTINCT context FROM '${dataDir}/vessels/*/navigation/position/*.parquet'
