@@ -1813,7 +1813,7 @@ COLUMN STRUCTURE:
 - meta (VARCHAR): Metadata (usually null)
 - path (VARCHAR): SignalK data path (e.g., "navigation.position", "environment.wind.speedTrue")
 - received_timestamp (VARCHAR): ISO timestamp when data was received (e.g., "YYYY-MM-DDTHH:MM:SS.sssZ")
-- signalk_timestamp (VARCHAR): ISO timestamp from SignalK data (e.g., "YYYY-MM-DDTHH:MM:SS.000Z")
+- signalk_timestamp (VARCHAR): ISO timestamp from SignalK data (e.g., "YYYY-MM-DDTHH:MM:SSZ")
 - source (VARCHAR): JSON string with source info (e.g., '{"sentence":"GLL","talker":"GN","type":"NMEA0183"}')
 - source_label (VARCHAR): Source device label (e.g., "maiana.GN")
 - source_pgn, source_src (VARCHAR): Usually null for NMEA0183
@@ -1824,9 +1824,9 @@ COLUMN STRUCTURE:
 
 MANDATORY QUERY SYNTAX - USE EXACT FILE PATHS:
 - Recent position: SELECT received_timestamp, value_latitude, value_longitude FROM '${dataDir}/${selfContextPath}/navigation/position/*.parquet' ORDER BY received_timestamp DESC LIMIT 100
-- Speed analysis: SELECT AVG(CAST(value AS DOUBLE)) as avg_speed FROM '${dataDir}/${selfContextPath}/navigation/speedOverGround/*.parquet' WHERE received_timestamp >= '2024-01-01T00:00:00.000Z'
+- Speed analysis: SELECT AVG(CAST(value AS DOUBLE)) as avg_speed FROM '${dataDir}/${selfContextPath}/navigation/speedOverGround/*.parquet' WHERE signalk_timestamp >= '2024-01-01T00:00:00Z'
 - Wind patterns: SELECT DATE_TRUNC('hour', CAST(received_timestamp AS TIMESTAMP)) as hour, AVG(CAST(value AS DOUBLE)) FROM '${dataDir}/${selfContextPath}/environment/wind/speedTrue/*.parquet' GROUP BY hour ORDER BY hour
-- Time-based filtering: WHERE received_timestamp >= 'YYYY-MM-DDTHH:MM:SS.000Z' AND received_timestamp < 'YYYY-MM-DDTHH:MM:SS.000Z'
+- Time-based filtering: WHERE signalk_timestamp >= 'YYYY-MM-DDTHH:MM:SSZ' AND signalk_timestamp <= 'YYYY-MM-DDTHH:MM:SSZ'
 
 CRITICAL: Your vessel's data is at: ${dataDir}/${selfContextPath}/
 IMPORTANT: Use the vessel's MMSI from the VESSEL CONTEXT section above to filter data by context column.
@@ -1840,8 +1840,9 @@ MULTI-VESSEL QUERIES:
 
 IMPORTANT NOTES:
 - All timestamps are ISO strings in VARCHAR format, not milliseconds
-- Use CAST(received_timestamp AS TIMESTAMP) for date functions
+- Use CAST(signalk_timestamp AS TIMESTAMP) for date functions  
 - Use CAST(value AS DOUBLE) to convert string numbers to numeric
+- Timestamps have NO milliseconds - format is always YYYY-MM-DDTHH:MM:SSZ
 - Position data: use value_latitude/value_longitude columns directly (they're already DOUBLE)
 - Complex data: parse value_json for structured data like wind direction/speed
 - Always use glob patterns like '*.parquet' for file matching
