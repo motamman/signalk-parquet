@@ -879,6 +879,12 @@ Please structure your response as JSON with the following format:
       const schemaInfo = this.getEnhancedSchemaForClaude();
       this.app?.debug(`📊 Schema info for Claude (${schemaInfo.length} chars):\n${schemaInfo.substring(0, 1000)}${schemaInfo.length > 1000 ? '...' : ''}`);
       
+      // Debug: Log if schema is empty or suspicious
+      if (!schemaInfo || schemaInfo.length < 100) {
+        this.app?.error(`❌ Schema info appears empty or too short! Length: ${schemaInfo?.length || 0}`);
+        this.app?.error(`Schema content: "${schemaInfo}"`);
+      }
+      
       // Build time range guidance for Claude
       let timeRangeGuidance = '';
       if (request.timeRange) {
@@ -988,6 +994,9 @@ Focus on:
 2. Patterns in navigation, weather, and performance data  
 3. Safety considerations and operational insights
 4. Data quality and completeness assessment`;
+
+      this.app?.debug(`🔧 Final system context (${systemContext.length} chars):`);
+      this.app?.debug(`📋 System context preview:\n${systemContext.substring(0, 2000)}${systemContext.length > 2000 ? '...' : ''}`);
 
       const userPrompt = `${request.customPrompt || 'Analyze maritime data and provide insights'}
 
@@ -1716,10 +1725,14 @@ Begin your analysis by querying relevant data within the specified time range.`;
    * Generate enhanced schema information for Claude
    */
   private getEnhancedSchemaForClaude(): string {
+    this.app?.debug('🔧 Getting enhanced schema for Claude...');
     const dataDir = this.dataDirectory || '';
+    this.app?.debug(`📂 Data directory: "${dataDir}"`);
+    
     let selfContextPath = 'vessels/self';
     if (this.app?.selfContext) {
       selfContextPath = this.app.selfContext.replace(/\./g, '/').replace(/:/g, '_');
+      this.app?.debug(`🛥️ Self context path: "${selfContextPath}"`);
     }
     
     // Get actual available paths from the filesystem  
@@ -1728,12 +1741,17 @@ Begin your analysis by querying relevant data within the specified time range.`;
     
     // Get self context dynamically from SignalK
     const selfContext = this.app?.selfContext || 'vessels.self';
-    const selfContextForFilter = selfContext.replace(/\./g, ':'); // Convert to context format for filtering
     
     try {
       if (this.app && dataDir) {
         // Get your vessel's paths
+        this.app?.debug('📊 Scanning available paths...');
+        this.app?.debug(`📍 App.selfContext: "${this.app?.selfContext}"`);
         const paths = getAvailablePaths(dataDir, this.app);
+        this.app?.debug(`📈 Found ${paths.length} available paths`);
+        if (paths.length === 0) {
+          this.app?.debug('⚠️ No available paths found - this could cause Claude to not see schema information');
+        }
         const pathList = paths.map(p => p.path).join('\n- ');
         availablePathsInfo = `
 CRITICAL: ONLY USE THESE EXACT PATHS - DO NOT MAKE UP OR GUESS PATH NAMES:
@@ -1777,10 +1795,11 @@ OTHER VESSELS: None detected in this dataset`;
         }
       }
     } catch (error) {
+      this.app?.error(`❌ Failed to scan filesystem for paths: ${(error as Error).message}`);
       availablePathsInfo = '\nAVAILABLE DATA PATHS: Unable to scan filesystem';
     }
     
-    return `MARITIME DATABASE SCHEMA:
+    const schemaResult = `MARITIME DATABASE SCHEMA:
 Base Directory: ${dataDir}
 File Pattern: {contextPath}/{signalk_path}/{filename}.parquet
 
@@ -1827,6 +1846,9 @@ IMPORTANT NOTES:
 DATA LIMITATIONS:
 - NO meta/*.parquet files exist - vessel metadata is provided in the vessel context above
 - For vessel names/specs, refer to the VESSEL CONTEXT section, not database queries`;
+
+    this.app?.debug(`✅ Generated schema result (${schemaResult.length} chars)`);
+    return schemaResult;
   }
 
   /**
