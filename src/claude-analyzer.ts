@@ -1822,17 +1822,20 @@ COLUMN STRUCTURE:
 - value_json (VARCHAR): JSON representation of complex values (e.g., '{"longitude":-72.08,"latitude":41.32}')
 - value_latitude, value_longitude (DOUBLE): Extracted position coordinates
 
-QUERY EXAMPLES:
+MANDATORY QUERY SYNTAX - USE EXACT FILE PATHS:
 - Recent position: SELECT received_timestamp, value_latitude, value_longitude FROM '${dataDir}/${selfContextPath}/navigation/position/*.parquet' ORDER BY received_timestamp DESC LIMIT 100
 - Speed analysis: SELECT AVG(CAST(value AS DOUBLE)) as avg_speed FROM '${dataDir}/${selfContextPath}/navigation/speedOverGround/*.parquet' WHERE received_timestamp >= '2024-01-01T00:00:00.000Z'
 - Wind patterns: SELECT DATE_TRUNC('hour', CAST(received_timestamp AS TIMESTAMP)) as hour, AVG(CAST(value AS DOUBLE)) FROM '${dataDir}/${selfContextPath}/environment/wind/speedTrue/*.parquet' GROUP BY hour ORDER BY hour
 - Time-based filtering: WHERE received_timestamp >= 'YYYY-MM-DDTHH:MM:SS.000Z' AND received_timestamp < 'YYYY-MM-DDTHH:MM:SS.000Z'
 
+CRITICAL: Your vessel's data is at: ${dataDir}/${selfContextPath}/
+Example: SELECT * FROM '${dataDir}/${selfContextPath}/navigation/position/*.parquet' LIMIT 5
+
 MULTI-VESSEL QUERIES:
-- Find all vessels: SELECT DISTINCT context FROM 'data/vessels/*/navigation/position/*.parquet'
-- All vessels positions: SELECT context, received_timestamp, value_latitude, value_longitude FROM 'data/vessels/*/navigation/position/*.parquet' ORDER BY received_timestamp DESC
-- Specific vessel by MMSI: SELECT * FROM 'data/vessels/urn_mrn_imo_mmsi_123456789/navigation/position/*.parquet'
-- Vessel traffic analysis: SELECT context, COUNT(*) as message_count FROM 'data/vessels/*/navigation/position/*.parquet' GROUP BY context
+- Find all vessels: SELECT DISTINCT context FROM '${dataDir}/vessels/*/navigation/position/*.parquet'
+- All vessels positions: SELECT context, received_timestamp, value_latitude, value_longitude FROM '${dataDir}/vessels/*/navigation/position/*.parquet' ORDER BY received_timestamp DESC
+- Specific vessel by MMSI: SELECT * FROM '${dataDir}/vessels/urn_mrn_imo_mmsi_123456789/navigation/position/*.parquet'
+- Vessel traffic analysis: SELECT context, COUNT(*) as message_count FROM '${dataDir}/vessels/*/navigation/position/*.parquet' GROUP BY context
 
 IMPORTANT NOTES:
 - All timestamps are ISO strings in VARCHAR format, not milliseconds
