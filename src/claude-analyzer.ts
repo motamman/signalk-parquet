@@ -1074,7 +1074,7 @@ Begin your analysis by querying relevant data within the specified time range.`;
       if (relevantRegimens.length > 0) {
         availableTools.push({
           name: 'find_regimen_episodes',
-          description: 'Find time periods when specific operational regimens were active using command state transitions',
+          description: 'REQUIRED for finding episodes/periods when regimens were active. Detects start/end boundaries from command state changes (false->true->false). Use this instead of query_maritime_database for episode detection.',
           input_schema: {
             type: 'object',
             properties: {
