@@ -2144,12 +2144,36 @@
             }
         }
 
+        async function loadVersionInfo() {
+            try {
+                const response = await fetch('/plugins/signalk-parquet/api/version');
+                if (response.ok) {
+                    const versionData = await response.json();
+                    const headerElement = document.querySelector('.header h1');
+                    if (headerElement) {
+                        const versionSpan = document.createElement('span');
+                        versionSpan.style.fontSize = '0.4em';
+                        versionSpan.style.color = '#666';
+                        versionSpan.style.fontWeight = 'normal';
+                        versionSpan.style.marginLeft = '10px';
+                        versionSpan.textContent = `v${versionData.version}`;
+                        headerElement.appendChild(versionSpan);
+                    }
+                }
+            } catch (error) {
+                console.log('Could not load version information:', error);
+            }
+        }
+
         async function refreshSignalKPaths() {
             await loadSignalKPaths();
         }
 
         // Initialize page when DOM is loaded
         document.addEventListener('DOMContentLoaded', async function() {
+            // Load and display version information
+            await loadVersionInfo();
+            
             // Load SignalK paths for the dropdown
             await loadSignalKPaths();
             

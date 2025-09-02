@@ -1469,6 +1469,21 @@ export function registerApiRoutes(
     });
   });
 
+  // Version endpoint
+  router.get('/api/version', (_: express.Request, res: express.Response) => {
+    const packagePath = path.join(__dirname, '..', 'package.json');
+    try {
+      const packageJson = JSON.parse(fs.readFileSync(packagePath, 'utf8'));
+      res.json({
+        name: packageJson.name,
+        version: packageJson.version,
+        description: packageJson.description,
+      });
+    } catch (error) {
+      res.status(500).json({ error: 'Failed to read version information' });
+    }
+  });
+
   // Historical streaming test endpoints - DISABLED
   // router.post('/api/historical/trigger/:path', (req: express.Request, res: express.Response) => {
   //   try {
