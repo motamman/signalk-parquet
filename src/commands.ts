@@ -332,7 +332,7 @@ export function registerCommand(
     appInstance.registerPutHandler(
       'vessels.self',
       commandPath,
-      putHandler as unknown as () => void, //FIXME server api registerPutHandler is incorrectly typed https://github.com/SignalK/signalk-server/pull/2043
+      putHandler as any, //FIXME server api registerPutHandler is incorrectly typed https://github.com/SignalK/signalk-server/pull/2043
       'zennora-parquet-commands'
     );
 
