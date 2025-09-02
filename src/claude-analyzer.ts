@@ -1734,9 +1734,14 @@ Begin your analysis by querying relevant data within the specified time range.`;
       
       try {
         const episodes = await this.findRegimenEpisodes(regimenName, timeRange, limit || 10);
-        const resultSummary = `Found ${episodes.length} episodes for regimen "${regimenName}":\n\n${JSON.stringify(episodes.slice(0, 3), null, 2)}${episodes.length > 3 ? `\n\n... and ${episodes.length - 3} more episodes` : ''}`;
         
-        this.app?.debug(`✅ Episode detection completed: ${regimenName} - ${episodes.length} episodes found`);
+        // Configure display limit based on total episodes found and request limit
+        const displayLimit = Math.min(limit || 10, episodes.length);
+        const showAll = limit && limit >= episodes.length;
+        
+        const resultSummary = `Found ${episodes.length} episodes for regimen "${regimenName}":\n\n${JSON.stringify(episodes.slice(0, displayLimit), null, 2)}${!showAll && episodes.length > displayLimit ? `\n\n... and ${episodes.length - displayLimit} more episodes` : ''}`;
+        
+        this.app?.debug(`✅ Episode detection completed: ${regimenName} - ${episodes.length} episodes found, showing ${displayLimit}`);
         
         return {
           type: 'tool_result',
