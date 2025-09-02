@@ -1061,7 +1061,7 @@ Begin your analysis by querying relevant data within the specified time range.`;
       if (needsRealTimeData) {
         availableTools.push({
           name: 'get_current_signalk_data',
-          description: 'Get current real-time SignalK data values for specific paths or all available paths. Use this when user asks about "now", "current", "real-time" conditions.',
+          description: 'Get current real-time SignalK data values for specific paths or all available paths from any vessel. Use this when user asks about "now", "current", "real-time" conditions.',
           input_schema: {
             type: 'object',
             properties: {
@@ -1073,6 +1073,10 @@ Begin your analysis by querying relevant data within the specified time range.`;
               purpose: {
                 type: 'string',
                 description: 'Brief description of why you need this real-time data'
+              },
+              vesselContext: {
+                type: 'string',
+                description: 'Vessel context to query (e.g., "vessels.self", "vessels.urn:mrn:imo:mmsi:123456789"). Defaults to vessels.self if not specified.'
               }
             },
             required: ['purpose']
@@ -1352,7 +1356,7 @@ Begin your analysis by querying relevant data within the specified time range.`;
       if (needsRealTimeData) {
         followUpTools.push({
           name: 'get_current_signalk_data',
-          description: 'Get current real-time SignalK data values for specific paths or all available paths. Use this when user asks about "now", "current", "real-time" conditions.',
+          description: 'Get current real-time SignalK data values for specific paths or all available paths from any vessel. Use this when user asks about "now", "current", "real-time" conditions.',
           input_schema: {
             type: 'object',
             properties: {
@@ -1364,6 +1368,10 @@ Begin your analysis by querying relevant data within the specified time range.`;
               purpose: {
                 type: 'string',
                 description: 'Brief description of why you need this real-time data'
+              },
+              vesselContext: {
+                type: 'string',
+                description: 'Vessel context to query (e.g., "vessels.self", "vessels.urn:mrn:imo:mmsi:123456789"). Defaults to vessels.self if not specified.'
               }
             },
             required: ['purpose']
@@ -1485,21 +1493,37 @@ Begin your analysis by querying relevant data within the specified time range.`;
   /**
    * Get current real-time SignalK data values
    */
-  private getCurrentSignalKData(paths?: string[], purpose?: string): any {
-    this.app?.debug(`🕐 Getting current SignalK data for: ${paths?.length ? paths.join(', ') : 'all paths'}. Purpose: ${purpose}`);
+  private getCurrentSignalKData(paths?: string[], purpose?: string, vesselContext?: string): any {
+    const contextToUse = vesselContext || 'vessels.self';
+    this.app?.debug(`🕐 Getting current SignalK data for ${contextToUse}: ${paths?.length ? paths.join(', ') : 'all paths'}. Purpose: ${purpose}`);
     
     try {
       if (!paths || paths.length === 0) {
         // Get all current vessel data
-        const vesselData = this.app?.getSelfPath('') || {};
+        let vesselData: any = {};
+        
+        if (contextToUse === 'vessels.self') {
+          vesselData = this.app?.getSelfPath('') || {};
+        } else {
+          // For other vessels, try to access via SignalK context
+          // Note: This requires the SignalK server to have data for the specified vessel
+          try {
+            vesselData = (this.app as any)?.streambundle?.getSelfStream()?.getBus()?.get(contextToUse) || {};
+          } catch (error) {
+            this.app?.debug(`⚠️ Could not access vessel data for ${contextToUse}, trying alternative method`);
+            // Alternative: try to get from available paths
+            vesselData = {};
+          }
+        }
         
         // Filter out functions and circular references, keep only data values
         const cleanData = this.cleanSignalKData(vesselData);
         
-        this.app?.debug(`📊 Retrieved ${Object.keys(cleanData).length} current SignalK data points`);
+        this.app?.debug(`📊 Retrieved ${Object.keys(cleanData).length} current SignalK data points for ${contextToUse}`);
         return {
           timestamp: new Date().toISOString(),
           source: 'real-time SignalK',
+          context: contextToUse,
           data: cleanData
         };
       } else {
@@ -1508,7 +1532,19 @@ Begin your analysis by querying relevant data within the specified time range.`;
         
         for (const path of paths) {
           try {
-            const value = this.app?.getSelfPath(path);
+            let value;
+            if (contextToUse === 'vessels.self') {
+              value = this.app?.getSelfPath(path);
+            } else {
+              // Try to get path data for other vessels
+              try {
+                const fullPath = `${contextToUse}.${path}`;
+                value = (this.app as any)?.streambundle?.getSelfStream()?.getBus()?.get(fullPath);
+              } catch {
+                value = undefined;
+              }
+            }
+            
             if (value !== undefined) {
               pathData[path] = value;
             } else {
@@ -1708,10 +1744,10 @@ Begin your analysis by querying relevant data within the specified time range.`;
         };
       }
     } else if (toolCall.name === 'get_current_signalk_data') {
-      const { paths, purpose } = toolCall.input as { paths?: string[]; purpose: string };
+      const { paths, purpose, vesselContext } = toolCall.input as { paths?: string[]; purpose: string; vesselContext?: string };
       
       try {
-        const currentData = this.getCurrentSignalKData(paths, purpose);
+        const currentData = this.getCurrentSignalKData(paths, purpose, vesselContext);
         const resultSummary = `Current SignalK data "${purpose}":\n\n${JSON.stringify(currentData, null, 2)}`;
         
         this.app?.debug(`✅ Real-time data retrieved: ${purpose} - ${paths?.length || 'all'} paths`);
