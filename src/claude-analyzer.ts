@@ -904,11 +904,22 @@ IMPORTANT: Always include WHERE clauses to limit results to recent data:
 WHERE signalk_timestamp >= '${sixHoursAgo.toISOString().replace('.000Z', 'Z')}'`;
       }
 
+      // Get system timezone for timestamp interpretation
+      const systemTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+      const now = new Date();
+      const timezoneOffset = -now.getTimezoneOffset() / 60; // Convert to hours from UTC
+      
       const initialPrompt = `You are an expert maritime data analyst with direct access to a comprehensive database.
 
 IMPORTANT: Please use the vessel context information provided below for all analysis and responses. This vessel information is critical for accurate maritime analysis.
 
 ${vesselContext}
+
+CRITICAL TIMESTAMP INFORMATION:
+- ALL SignalK timestamps in the database are in UTC (ending with 'Z')
+- System timezone: ${systemTimezone} (UTC${timezoneOffset >= 0 ? '+' : ''}${timezoneOffset})
+- When interpreting times for the user, convert UTC timestamps to local time (${systemTimezone})
+- Example: 2025-09-02T00:24:44Z (UTC) = ${new Date('2025-09-02T00:24:44Z').toLocaleString('en-US', {timeZone: systemTimezone, timeZoneName: 'short'})}
 
 ${schemaInfo}${timeRangeGuidance}
 
