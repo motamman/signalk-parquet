@@ -1144,88 +1144,12 @@ Begin your analysis by querying relevant data within the specified time range.`;
             
             // Ensure every tool_use gets a tool_result, even if processing fails
             try {
-            if (toolCall.name === 'query_maritime_database') {
-              queryCount++;
-              const { sql, purpose } = toolCall.input as { sql: string; purpose: string };
-              
-              try {
-                // Execute the SQL query safely
-                const queryResult = await this.executeSQLQuery(sql, purpose);
-                
-                const resultSummary = `Query "${purpose}" returned ${queryResult.length} rows:\n\n${JSON.stringify(queryResult.slice(0, 5), null, 2)}${queryResult.length > 5 ? `\n\n... and ${queryResult.length - 5} more rows` : ''}`;
-                
-                toolResults.push({
-                  type: 'tool_result',
-                  tool_use_id: toolCall.id,
-                  content: resultSummary
-                });
-                
-                this.app?.debug(`✅ Query executed: ${purpose} - ${queryResult.length} rows returned`);
-                
-              } catch (queryError) {
-                toolResults.push({
-                  type: 'tool_result',
-                  tool_use_id: toolCall.id,
-                  content: `Query failed: ${(queryError as Error).message}`
-                });
+              if (toolCall.name === 'query_maritime_database') {
+                queryCount++;
               }
-            } else if (toolCall.name === 'get_current_signalk_data') {
-              const { paths, purpose } = toolCall.input as { paths?: string[]; purpose: string };
               
-              try {
-                // Get current real-time SignalK data
-                const currentData = this.getCurrentSignalKData(paths, purpose);
-                
-                const resultSummary = `Current SignalK data "${purpose}":\n\n${JSON.stringify(currentData, null, 2)}`;
-                
-                toolResults.push({
-                  type: 'tool_result',
-                  tool_use_id: toolCall.id,
-                  content: resultSummary
-                });
-                
-                this.app?.debug(`✅ Real-time data retrieved: ${purpose} - ${paths?.length || 'all'} paths`);
-                
-              } catch (realTimeError) {
-                toolResults.push({
-                  type: 'tool_result',
-                  tool_use_id: toolCall.id,
-                  content: `Real-time data retrieval failed: ${(realTimeError as Error).message}`
-                });
-              }
-            } else if (toolCall.name === 'find_regimen_episodes') {
-              const { regimenName, timeRange, limit } = toolCall.input as { regimenName: string; timeRange?: any; limit?: number };
-              
-              try {
-                // Execute episode boundary detection query
-                const episodes = await this.findRegimenEpisodes(regimenName, timeRange, limit || 10);
-                
-                const resultSummary = `Found ${episodes.length} episodes for regimen "${regimenName}":\n\n${JSON.stringify(episodes.slice(0, 3), null, 2)}${episodes.length > 3 ? `\n\n... and ${episodes.length - 3} more episodes` : ''}`;
-                
-                toolResults.push({
-                  type: 'tool_result',
-                  tool_use_id: toolCall.id,
-                  content: resultSummary
-                });
-                
-                this.app?.debug(`✅ Episode detection completed: ${regimenName} - ${episodes.length} episodes found`);
-                
-              } catch (episodeError) {
-                toolResults.push({
-                  type: 'tool_result',
-                  tool_use_id: toolCall.id,
-                  content: `Episode detection failed: ${(episodeError as Error).message}`
-                });
-              }
-            } else {
-              // Handle unknown tool calls to prevent conversation state errors
-              toolResults.push({
-                type: 'tool_result',
-                tool_use_id: toolCall.id,
-                content: `Unknown tool "${toolCall.name}" requested. Available tools: query_maritime_database, get_current_signalk_data`
-              });
-              this.app?.debug(`⚠️ Unknown tool called: ${toolCall.name}`);
-            }
+              const toolResult = await this.processToolCall(toolCall);
+              toolResults.push(toolResult);
             
             } catch (toolProcessingError) {
               // Critical: Always provide a tool_result, even if tool processing fails completely
@@ -1483,62 +1407,12 @@ Begin your analysis by querying relevant data within the specified time range.`;
             
             // Ensure every tool_use gets a tool_result, even if processing fails
             try {
-            if (toolCall.name === 'query_maritime_database') {
-              queryCount++;
-              const { sql, purpose } = toolCall.input as { sql: string; purpose: string };
-              
-              try {
-                const queryResult = await this.executeSQLQuery(sql, purpose);
-                const resultSummary = `Query "${purpose}" returned ${queryResult.length} rows:\n\n${JSON.stringify(queryResult.slice(0, 5), null, 2)}${queryResult.length > 5 ? `\n\n... and ${queryResult.length - 5} more rows` : ''}`;
-                
-                toolResults.push({
-                  type: 'tool_result',
-                  tool_use_id: toolCall.id,
-                  content: resultSummary
-                });
-                
-                this.app?.debug(`✅ Follow-up query executed: ${purpose} - ${queryResult.length} rows returned`);
-                
-              } catch (queryError) {
-                toolResults.push({
-                  type: 'tool_result',
-                  tool_use_id: toolCall.id,
-                  content: `Query failed: ${(queryError as Error).message}`
-                });
+              if (toolCall.name === 'query_maritime_database') {
+                queryCount++;
               }
-            } else if (toolCall.name === 'get_current_signalk_data') {
-              const { paths, purpose } = toolCall.input as { paths?: string[]; purpose: string };
               
-              try {
-                // Get current real-time SignalK data for follow-up
-                const currentData = this.getCurrentSignalKData(paths, purpose);
-                
-                const resultSummary = `Current SignalK data "${purpose}":\n\n${JSON.stringify(currentData, null, 2)}`;
-                
-                toolResults.push({
-                  type: 'tool_result',
-                  tool_use_id: toolCall.id,
-                  content: resultSummary
-                });
-                
-                this.app?.debug(`✅ Follow-up real-time data retrieved: ${purpose} - ${paths?.length || 'all'} paths`);
-                
-              } catch (realTimeError) {
-                toolResults.push({
-                  type: 'tool_result',
-                  tool_use_id: toolCall.id,
-                  content: `Real-time data retrieval failed: ${(realTimeError as Error).message}`
-                });
-              }
-            } else {
-              // Handle unknown tool calls to prevent conversation state errors
-              toolResults.push({
-                type: 'tool_result',
-                tool_use_id: toolCall.id,
-                content: `Unknown tool "${toolCall.name}" requested. Available tools: query_maritime_database, get_current_signalk_data`
-              });
-              this.app?.debug(`⚠️ Follow-up unknown tool called: ${toolCall.name}`);
-            }
+              const toolResult = await this.processToolCall(toolCall);
+              toolResults.push(toolResult);
             
             } catch (toolProcessingError) {
               // Critical: Always provide a tool_result, even if tool processing fails completely
@@ -1805,6 +1679,87 @@ Begin your analysis by querying relevant data within the specified time range.`;
     }
     
     return false;
+  }
+
+  /**
+   * Process a single tool call and return the result
+   */
+  private async processToolCall(toolCall: any): Promise<any> {
+    if (toolCall.name === 'query_maritime_database') {
+      const { sql, purpose } = toolCall.input as { sql: string; purpose: string };
+      
+      try {
+        const queryResult = await this.executeSQLQuery(sql, purpose);
+        const resultSummary = `Query "${purpose}" returned ${queryResult.length} rows:\n\n${JSON.stringify(queryResult.slice(0, 5), null, 2)}${queryResult.length > 5 ? `\n\n... and ${queryResult.length - 5} more rows` : ''}`;
+        
+        this.app?.debug(`✅ Query executed: ${purpose} - ${queryResult.length} rows returned`);
+        
+        return {
+          type: 'tool_result',
+          tool_use_id: toolCall.id,
+          content: resultSummary
+        };
+        
+      } catch (queryError) {
+        return {
+          type: 'tool_result',
+          tool_use_id: toolCall.id,
+          content: `Query failed: ${(queryError as Error).message}`
+        };
+      }
+    } else if (toolCall.name === 'get_current_signalk_data') {
+      const { paths, purpose } = toolCall.input as { paths?: string[]; purpose: string };
+      
+      try {
+        const currentData = this.getCurrentSignalKData(paths, purpose);
+        const resultSummary = `Current SignalK data "${purpose}":\n\n${JSON.stringify(currentData, null, 2)}`;
+        
+        this.app?.debug(`✅ Real-time data retrieved: ${purpose} - ${paths?.length || 'all'} paths`);
+        
+        return {
+          type: 'tool_result',
+          tool_use_id: toolCall.id,
+          content: resultSummary
+        };
+        
+      } catch (realTimeError) {
+        return {
+          type: 'tool_result',
+          tool_use_id: toolCall.id,
+          content: `Real-time data retrieval failed: ${(realTimeError as Error).message}`
+        };
+      }
+    } else if (toolCall.name === 'find_regimen_episodes') {
+      const { regimenName, timeRange, limit } = toolCall.input as { regimenName: string; timeRange?: any; limit?: number };
+      
+      try {
+        const episodes = await this.findRegimenEpisodes(regimenName, timeRange, limit || 10);
+        const resultSummary = `Found ${episodes.length} episodes for regimen "${regimenName}":\n\n${JSON.stringify(episodes.slice(0, 3), null, 2)}${episodes.length > 3 ? `\n\n... and ${episodes.length - 3} more episodes` : ''}`;
+        
+        this.app?.debug(`✅ Episode detection completed: ${regimenName} - ${episodes.length} episodes found`);
+        
+        return {
+          type: 'tool_result',
+          tool_use_id: toolCall.id,
+          content: resultSummary
+        };
+        
+      } catch (episodeError) {
+        return {
+          type: 'tool_result',
+          tool_use_id: toolCall.id,
+          content: `Episode detection failed: ${(episodeError as Error).message}`
+        };
+      }
+    } else {
+      // Handle unknown tool calls
+      this.app?.debug(`⚠️ Unknown tool called: ${toolCall.name}`);
+      return {
+        type: 'tool_result',
+        tool_use_id: toolCall.id,
+        content: `Unknown tool "${toolCall.name}" requested. Available tools: query_maritime_database, get_current_signalk_data, find_regimen_episodes`
+      };
+    }
   }
 
   /**
