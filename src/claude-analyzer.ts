@@ -1023,6 +1023,9 @@ Begin your analysis by querying relevant data within the specified time range.`;
       // Check if user is requesting real-time data
       const needsRealTimeData = this.checkForRealTimeKeywords(request.customPrompt || '', conversationMessages);
       
+      // Identify relevant regimens based on keywords
+      const relevantRegimens = this.identifyRelevantRegimens(request.customPrompt || '');
+      
       // Build tools array - always include database access
       const availableTools: any[] = [{
         name: 'query_maritime_database',
@@ -1065,6 +1068,34 @@ Begin your analysis by querying relevant data within the specified time range.`;
           }
         });
         this.app?.debug(`🕐 Real-time keywords detected, adding current SignalK data tool`);
+      }
+
+      // Add episode boundary detection tool if regimens were identified
+      if (relevantRegimens.length > 0) {
+        availableTools.push({
+          name: 'find_regimen_episodes',
+          description: 'Find time periods when specific operational regimens were active using command state transitions',
+          input_schema: {
+            type: 'object',
+            properties: {
+              regimenName: {
+                type: 'string',
+                description: `Regimen to analyze. Available: ${relevantRegimens.join(', ')}`
+              },
+              timeRange: {
+                type: 'object',
+                description: 'Optional time range constraint (start/end ISO timestamps)'
+              },
+              limit: {
+                type: 'number', 
+                description: 'Maximum number of episodes to return (default: 10)'
+              }
+            },
+            required: ['regimenName']
+          }
+        });
+        
+        this.app?.debug(`🎬 Added episode detection tool for regimens: [${relevantRegimens.join(', ')}]`);
       }
 
       while (queryCount < maxQueries) {
@@ -1149,6 +1180,30 @@ Begin your analysis by querying relevant data within the specified time range.`;
                   type: 'tool_result',
                   tool_use_id: toolCall.id,
                   content: `Real-time data retrieval failed: ${(realTimeError as Error).message}`
+                });
+              }
+            } else if (toolCall.name === 'find_regimen_episodes') {
+              const { regimenName, timeRange, limit } = toolCall.input as { regimenName: string; timeRange?: any; limit?: number };
+              
+              try {
+                // Execute episode boundary detection query
+                const episodes = await this.findRegimenEpisodes(regimenName, timeRange, limit || 10);
+                
+                const resultSummary = `Found ${episodes.length} episodes for regimen "${regimenName}":\n\n${JSON.stringify(episodes.slice(0, 3), null, 2)}${episodes.length > 3 ? `\n\n... and ${episodes.length - 3} more episodes` : ''}`;
+                
+                toolResults.push({
+                  type: 'tool_result',
+                  tool_use_id: toolCall.id,
+                  content: resultSummary
+                });
+                
+                this.app?.debug(`✅ Episode detection completed: ${regimenName} - ${episodes.length} episodes found`);
+                
+              } catch (episodeError) {
+                toolResults.push({
+                  type: 'tool_result',
+                  tool_use_id: toolCall.id,
+                  content: `Episode detection failed: ${(episodeError as Error).message}`
                 });
               }
             } else {
@@ -1607,6 +1662,62 @@ Begin your analysis by querying relevant data within the specified time range.`;
   }
 
   /**
+   * Identify relevant regimens based on user query keywords
+   */
+  private identifyRelevantRegimens(userQuery: string): string[] {
+    try {
+      const { getCurrentCommands } = require('./commands');
+      const commands = getCurrentCommands();
+      const queryLower = userQuery.toLowerCase();
+      
+      this.app?.debug(`🔍 Analyzing query for regimen keywords: "${userQuery}"`);
+      
+      const relevantRegimens = commands.filter((cmd: any) => {
+        if (!cmd.keywords || cmd.keywords.length === 0) return false;
+        
+        const hasMatchingKeyword = cmd.keywords.some((keyword: string) => 
+          queryLower.includes(keyword.toLowerCase())
+        );
+        
+        if (hasMatchingKeyword) {
+          this.app?.debug(`✅ Found matching regimen: ${cmd.command} (keywords: ${cmd.keywords.join(', ')})`);
+        }
+        
+        return hasMatchingKeyword;
+      }).map((cmd: any) => cmd.command);
+      
+      this.app?.debug(`🎯 Identified ${relevantRegimens.length} relevant regimens: [${relevantRegimens.join(', ')}]`);
+      
+      return relevantRegimens;
+    } catch (error) {
+      this.app?.error(`Failed to identify relevant regimens: ${(error as Error).message}`);
+      return [];
+    }
+  }
+
+  /**
+   * Get paths associated with a regimen
+   */
+  private getPathsForRegimen(regimenName: string): string[] {
+    try {
+      const { loadWebAppConfig } = require('./commands');
+      const webAppConfig = loadWebAppConfig(this.app);
+      
+      // Find all paths where regimen matches the command name
+      const regimenPaths = webAppConfig.paths.filter((pathConfig: any) => 
+        pathConfig.regimen === regimenName
+      ).map((pathConfig: any) => pathConfig.path);
+      
+      this.app?.debug(`📊 Found ${regimenPaths.length} paths for regimen ${regimenName}: [${regimenPaths.join(', ')}]`);
+      
+      return regimenPaths;
+    } catch (error) {
+      this.app?.error(`Failed to get paths for regimen ${regimenName}: ${(error as Error).message}`);
+      return [];
+    }
+  }
+
+  /**
    * Check if user request contains real-time keywords
    */
   private checkForRealTimeKeywords(customPrompt: string, conversationMessages: Array<any>): boolean {
@@ -1638,13 +1749,153 @@ Begin your analysis by querying relevant data within the specified time range.`;
   }
 
   /**
+   * Find episodes for a specific regimen using command state transitions
+   */
+  private async findRegimenEpisodes(regimenName: string, timeRange?: any, limit: number = 10): Promise<any[]> {
+    // Build the episode boundary detection SQL
+    let timeConstraint = '';
+    if (timeRange?.start && timeRange?.end) {
+      timeConstraint = `WHERE signalk_timestamp >= '${timeRange.start}' AND signalk_timestamp <= '${timeRange.end}'`;
+    }
+    
+    const episodeSQL = `
+      WITH transitions AS (
+        SELECT
+          signalk_timestamp,
+          CAST(value AS BOOLEAN) as current_value,
+          LAG(CAST(value AS BOOLEAN)) OVER (ORDER BY signalk_timestamp) as previous_value
+        FROM '${this.dataDirectory}/vessels/*/commands/${regimenName}/*.parquet'
+        ${timeConstraint}
+        ORDER BY signalk_timestamp
+      ),
+      episode_boundaries AS (
+        SELECT
+          signalk_timestamp,
+          current_value,
+          CASE
+            WHEN current_value = true AND (previous_value = false OR previous_value IS NULL) THEN 'start'
+            WHEN current_value = false AND previous_value = true THEN 'end'
+            ELSE NULL
+          END as boundary_type
+        FROM transitions
+        WHERE current_value = true AND (previous_value = false OR previous_value IS NULL)
+           OR current_value = false AND previous_value = true
+      ),
+      episodes AS (
+        SELECT
+          starts.signalk_timestamp as start_time,
+          ends.signalk_timestamp as end_time,
+          CASE 
+            WHEN ends.signalk_timestamp IS NULL THEN 'active'
+            ELSE 'completed'
+          END as status
+        FROM 
+          (SELECT signalk_timestamp FROM episode_boundaries WHERE boundary_type = 'start') starts
+        LEFT JOIN 
+          (SELECT signalk_timestamp FROM episode_boundaries WHERE boundary_type = 'end') ends
+        ON ends.signalk_timestamp = (
+          SELECT MIN(signalk_timestamp) 
+          FROM episode_boundaries 
+          WHERE boundary_type = 'end' AND signalk_timestamp > starts.signalk_timestamp
+        )
+      )
+      SELECT 
+        start_time,
+        end_time,
+        status,
+        CASE 
+          WHEN end_time IS NOT NULL THEN 
+            (EXTRACT(EPOCH FROM (end_time::TIMESTAMP - start_time::TIMESTAMP)) * 1000)::BIGINT
+          ELSE NULL 
+        END as duration_ms
+      FROM episodes
+      ORDER BY start_time DESC
+      LIMIT ${limit}
+    `;
+    
+    this.app?.debug(`🎬 Executing episode detection SQL for ${regimenName}`);
+    
+    try {
+      const episodes = await this.executeSQLQuery(episodeSQL, `Episode boundary detection for ${regimenName}`);
+      
+      // Add regimen info and clean up the results
+      return episodes.map(episode => ({
+        regimen: regimenName,
+        startTime: episode.start_time,
+        endTime: episode.end_time,
+        status: episode.status,
+        durationMs: episode.duration_ms,
+        paths: this.getPathsForRegimen(regimenName) // Include associated paths
+      }));
+    } catch (error) {
+      this.app?.error(`Failed to find episodes for ${regimenName}: ${(error as Error).message}`);
+      throw error;
+    }
+  }
+
+
+  /**
+   * Determine the appropriate column to use based on SignalK path type
+   */
+  private getValueColumn(pathName: string): string {
+    // Position data and other complex objects use value_json
+    if (pathName.includes('position') || pathName.includes('attitude') || 
+        pathName.includes('coordinate') || pathName.includes('navigation.location')) {
+      return 'value_json';
+    }
+    
+    // Simple numeric/boolean values use value column
+    return 'value';
+  }
+
+  /**
+   * Auto-correct column usage in SQL queries based on SignalK path patterns
+   */
+  private correctColumnUsage(sql: string): string {
+    // Define path patterns that use value_json (complex objects)
+    const jsonPatterns = [
+      // File path patterns in FROM clauses
+      /FROM\s+['"]*[^'"]*\/position\/[^'"]*['"]/gi,
+      /FROM\s+['"]*[^'"]*\/attitude\/[^'"]*['"]/gi,
+      /FROM\s+['"]*[^'"]*\/coordinate\/[^'"]*['"]/gi,
+      /FROM\s+['"]*[^'"]*\/navigation\/position[^'"]*['"]/gi,
+      /FROM\s+['"]*[^'"]*\/navigation\/attitude[^'"]*['"]/gi,
+      
+      // Path column patterns in WHERE clauses
+      /WHERE.*path.*position/gi,
+      /WHERE.*path.*attitude/gi,
+      /WHERE.*path.*coordinate/gi,
+      
+      // Direct mention of position/attitude/coordinate paths
+      /navigation\.position/gi,
+      /navigation\.attitude/gi,
+      /navigation\.coordinate/gi
+    ];
+    
+    let correctedSQL = sql;
+    
+    // Check if query involves JSON object paths
+    const hasJsonPath = jsonPatterns.some(pattern => pattern.test(sql));
+    if (hasJsonPath) {
+      // Replace standalone 'value' references with 'value_json' for object queries
+      // Use negative lookbehind/lookahead to avoid replacing value_json, value_latitude, etc.
+      correctedSQL = correctedSQL.replace(/\bvalue\b(?!_|\w)/gi, 'value_json');
+    }
+    
+    return correctedSQL;
+  }
+
+  /**
    * Execute SQL query safely against Parquet database
    */
   private async executeSQLQuery(sql: string, purpose: string): Promise<any[]> {
-    // Validate query is read-only (starts with SELECT)
-    const trimmedSQL = sql.trim().toUpperCase();
-    if (!trimmedSQL.startsWith('SELECT')) {
-      throw new Error('Only SELECT queries are allowed for security');
+    // Auto-correct common column usage patterns
+    const correctedSQL = this.correctColumnUsage(sql);
+    
+    // Validate query is read-only (starts with SELECT or WITH for CTEs)
+    const trimmedSQL = correctedSQL.trim().toUpperCase();
+    if (!trimmedSQL.startsWith('SELECT') && !trimmedSQL.startsWith('WITH')) {
+      throw new Error('Only SELECT and WITH queries are allowed for security');
     }
 
     // Additional safety checks
@@ -1660,9 +1911,12 @@ Begin your analysis by querying relevant data within the specified time range.`;
     
     try {
       this.app?.debug(`🔍 Executing SQL query for: ${purpose}`);
-      this.app?.debug(`📝 Query: ${sql}`);
+      this.app?.debug(`📝 Original query: ${sql}`);
+      if (correctedSQL !== sql) {
+        this.app?.debug(`🔧 Corrected query: ${correctedSQL}`);
+      }
       
-      const result = await connection.runAndReadAll(sql);
+      const result = await connection.runAndReadAll(correctedSQL);
       const data = result.getRowObjects();
       
       // Convert BigInt values to regular numbers to prevent serialization errors

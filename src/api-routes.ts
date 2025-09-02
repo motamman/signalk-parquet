@@ -30,6 +30,7 @@ import {
   loadWebAppConfig,
   saveWebAppConfig,
   registerCommand,
+  updateCommand,
   unregisterCommand,
   executeCommand,
   getCurrentCommands,
@@ -636,7 +637,7 @@ export function registerApiRoutes(
       res: TypedResponse<CommandApiResponse>
     ) => {
       try {
-        const { command, description } = req.body;
+        const { command, description, keywords } = req.body;
 
         if (!command || !/^[a-zA-Z0-9_]+$/.test(command) || command.length === 0 || command.length > 50) {
           return res.status(400).json({
@@ -646,7 +647,7 @@ export function registerApiRoutes(
           });
         }
 
-        const result = registerCommand(command, description);
+        const result = registerCommand(command, description, keywords);
 
         if (result.state === 'COMPLETED') {
           // Update webapp config
@@ -748,6 +749,44 @@ export function registerApiRoutes(
         }
       } catch (error) {
         app.error(`Error unregistering command: ${error}`);
+        return res.status(500).json({
+          success: false,
+          error: 'Internal server error',
+        });
+      }
+    }
+  );
+
+  // Update command (PUT)
+  router.put(
+    '/api/commands/:command',
+    (
+      req: TypedRequest<{ description?: string; keywords?: string[] }>,
+      res: TypedResponse<CommandApiResponse>
+    ) => {
+      try {
+        const { command } = req.params;
+        const { description, keywords } = req.body;
+
+        const result = updateCommand(command, description, keywords);
+        if (result.state === 'COMPLETED') {
+          // Update webapp config
+          const webAppConfig = loadWebAppConfig(app);
+          const currentCommands = getCurrentCommands();
+          saveWebAppConfig(webAppConfig.paths, currentCommands, app);
+          
+          return res.json({
+            success: true,
+            message: result.message,
+          });
+        } else {
+          return res.status(result.statusCode || 400).json({
+            success: false,
+            error: result.message,
+          });
+        }
+      } catch (error) {
+        app.error(`Error updating command: ${error}`);
         return res.status(500).json({
           success: false,
           error: 'Internal server error',

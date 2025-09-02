@@ -119,6 +119,7 @@ export interface CommandConfig {
   path: string;
   registered: string;
   description?: string;
+  keywords?: string[];      // For Claude context matching
   active?: boolean;
   lastExecuted?: string;
 }
@@ -137,6 +138,7 @@ export interface CommandExecutionRequest {
 export interface CommandRegistrationRequest {
   command: string;
   description?: string;
+  keywords?: string[];
 }
 
 // Web App Configuration (stored separately from plugin config)
@@ -431,7 +433,7 @@ export interface CommandExecutionResult {
 
 export interface CommandHistoryEntry {
   command: string;
-  action: 'EXECUTE' | 'STOP' | 'REGISTER' | 'UNREGISTER';
+  action: 'EXECUTE' | 'STOP' | 'REGISTER' | 'UNREGISTER' | 'UPDATE';
   value?: boolean;
   timestamp: string;
   success: boolean;

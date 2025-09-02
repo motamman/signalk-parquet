@@ -507,9 +507,36 @@
                             <label for="commandDescription">Description (optional):</label>
                             <input type="text" id="commandDescription" placeholder="e.g., Start weather data capture">
                         </div>
+                        <div class="form-group">
+                            <label for="commandKeywords">Keywords (for Claude context matching):</label>
+                            <input type="text" id="commandKeywords" placeholder="e.g., anchor, anchoring, drag, swing">
+                            <small style="color: #666; font-size: 11px;">Separate multiple keywords with commas</small>
+                        </div>
                         <div style="margin-top: 20px; padding-top: 15px; border-top: 1px solid #ddd;">
                             <button onclick="registerCommand()">✅ Register Command</button>
                             <button class="btn-secondary" onclick="hideAddCommandForm()">❌ Cancel</button>
+                        </div>
+                    </div>
+                    
+                    <!-- Edit Command Form (hidden by default) -->
+                    <div id="editCommandForm" style="display: none; margin: 20px 0; padding: 20px; background: #fff3cd; border: 1px solid #ffeaa7; border-radius: 5px;">
+                        <h4>Edit Command</h4>
+                        <div class="form-group">
+                            <label for="editCommandName">Command Name:</label>
+                            <input type="text" id="editCommandName" readonly style="background: #f8f9fa;">
+                        </div>
+                        <div class="form-group">
+                            <label for="editCommandDescription">Description:</label>
+                            <input type="text" id="editCommandDescription" placeholder="e.g., Start weather data capture">
+                        </div>
+                        <div class="form-group">
+                            <label for="editCommandKeywords">Keywords (for Claude context matching):</label>
+                            <input type="text" id="editCommandKeywords" placeholder="e.g., anchor, anchoring, drag, swing">
+                            <small style="color: #666; font-size: 11px;">Separate multiple keywords with commas</small>
+                        </div>
+                        <div style="margin-top: 20px; padding-top: 15px; border-top: 1px solid #ddd;">
+                            <button onclick="updateCommand()">✅ Update Command</button>
+                            <button class="btn-secondary" onclick="hideEditCommandForm()">❌ Cancel</button>
                         </div>
                     </div>
                     
@@ -1625,21 +1652,24 @@
             }
             
             let html = '<div class="table-container"><table><thead><tr>';
-            html += '<th>Command</th><th>Path</th><th>Description</th><th>Status</th><th>Registered</th><th>Actions</th>';
+            html += '<th>Command</th><th>Path</th><th>Description</th><th>Keywords</th><th>Status</th><th>Registered</th><th>Actions</th>';
             html += '</tr></thead><tbody>';
             
             commands.forEach(command => {
                 const status = command.active ? '🟢 Active' : '🔴 Inactive';
                 const registeredDate = new Date(command.registered).toLocaleString();
+                const keywords = command.keywords ? command.keywords.join(', ') : '<em style="color: #999;">No keywords</em>';
                 html += `<tr>
                     <td><strong>${command.command}</strong></td>
                     <td><code>vessels.self.commands.${command.command}</code></td>
                     <td>${command.description || 'No description'}</td>
+                    <td>${keywords}</td>
                     <td>${status}</td>
                     <td>${registeredDate}</td>
                     <td>
                         <button onclick="executeCommand('${command.command}', true)" style="margin-right: 5px;">▶️ Start</button>
                         <button onclick="executeCommand('${command.command}', false)" style="margin-right: 5px;">⏹️ Stop</button>
+                        <button onclick="showEditCommandForm('${command.command}')" class="btn-secondary" style="margin-right: 5px;">✏️ Edit</button>
                         <button onclick="unregisterCommand('${command.command}')" class="btn-danger">❌ Remove</button>
                     </td>
                 </tr>`;
@@ -1661,17 +1691,86 @@
         function clearAddCommandForm() {
             document.getElementById('commandName').value = '';
             document.getElementById('commandDescription').value = '';
+            document.getElementById('commandKeywords').value = '';
+        }
+        
+        // Edit command functions
+        async function showEditCommandForm(commandName) {
+            try {
+                // Find the command in the current commands list
+                const response = await fetch('/plugins/signalk-parquet/api/commands').then(r => r.json());
+                const command = response.commands.find(cmd => cmd.command === commandName);
+                
+                if (!command) {
+                    alert('Command not found');
+                    return;
+                }
+                
+                // Populate the form
+                document.getElementById('editCommandName').value = command.command;
+                document.getElementById('editCommandDescription').value = command.description || '';
+                document.getElementById('editCommandKeywords').value = command.keywords ? command.keywords.join(', ') : '';
+                
+                // Show the form
+                document.getElementById('editCommandForm').style.display = 'block';
+                
+            } catch (error) {
+                alert('Failed to load command details: ' + error.message);
+            }
+        }
+        
+        function hideEditCommandForm() {
+            document.getElementById('editCommandForm').style.display = 'none';
+        }
+        
+        async function updateCommand() {
+            try {
+                const command = document.getElementById('editCommandName').value.trim();
+                const description = document.getElementById('editCommandDescription').value.trim();
+                const keywordsInput = document.getElementById('editCommandKeywords').value.trim();
+                
+                // Parse keywords from comma-separated string
+                const keywords = keywordsInput ? keywordsInput.split(',').map(k => k.trim()).filter(k => k.length > 0) : undefined;
+                
+                const response = await fetch(`/plugins/signalk-parquet/api/commands/${command}`, {
+                    method: 'PUT',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        description: description || undefined,
+                        keywords: keywords
+                    })
+                });
+                
+                const result = await response.json();
+                
+                if (result.success) {
+                    hideEditCommandForm();
+                    await loadCommands();
+                    alert('Command updated successfully!');
+                } else {
+                    alert('Failed to update command: ' + result.error);
+                }
+                
+            } catch (error) {
+                alert('Error updating command: ' + error.message);
+            }
         }
         
         async function registerCommand() {
             try {
                 const command = document.getElementById('commandName').value.trim();
                 const description = document.getElementById('commandDescription').value.trim();
+                const keywordsInput = document.getElementById('commandKeywords').value.trim();
                 
                 if (!command) {
                     alert('Command name is required');
                     return;
                 }
+                
+                // Parse keywords from comma-separated string
+                const keywords = keywordsInput ? keywordsInput.split(',').map(k => k.trim()).filter(k => k.length > 0) : undefined;
                 
                 const response = await fetch('/plugins/signalk-parquet/api/commands', {
                     method: 'POST',
@@ -1680,7 +1779,8 @@
                     },
                     body: JSON.stringify({
                         command: command,
-                        description: description || undefined
+                        description: description || undefined,
+                        keywords: keywords
                     })
                 });
                 

@@ -229,7 +229,8 @@ export function initializeCommandState(
   currentCommands.forEach((commandConfig: CommandConfig) => {
     const result = registerCommand(
       commandConfig.command,
-      commandConfig.description
+      commandConfig.description,
+      commandConfig.keywords
     );
     if (result.state === 'COMPLETED') {
     } else {
@@ -274,7 +275,8 @@ export function initializeCommandState(
 // Command registration with full type safety
 export function registerCommand(
   commandName: string,
-  description?: string
+  description?: string,
+  keywords?: string[]
 ): CommandExecutionResult {
   try {
     // Validate command name
@@ -307,6 +309,7 @@ export function registerCommand(
       path: fullPath,
       registered: new Date().toISOString(),
       description: description || `Command: ${commandName}`,
+      keywords: keywords || [],
       active: false,
       lastExecuted: undefined,
     };
@@ -362,6 +365,62 @@ export function registerCommand(
       state: 'FAILED',
       statusCode: 500,
       message: errorMessage,
+      timestamp: new Date().toISOString(),
+    };
+  }
+}
+
+// Command update (description and keywords only)
+export function updateCommand(
+  commandName: string,
+  description?: string,
+  keywords?: string[]
+): CommandExecutionResult {
+  try {
+    // Check if command exists
+    if (!commandState.registeredCommands.has(commandName)) {
+      return {
+        state: 'FAILED',
+        statusCode: 404,
+        message: `Command '${commandName}' not found`,
+        timestamp: new Date().toISOString(),
+      };
+    }
+
+    // Get existing command config
+    const existingCommand = commandState.registeredCommands.get(commandName)!;
+    
+    // Update only the fields that were provided
+    const updatedCommand: CommandConfig = {
+      ...existingCommand,
+      description: description !== undefined ? description : existingCommand.description,
+      keywords: keywords !== undefined ? keywords : existingCommand.keywords,
+    };
+
+    // Update the command in the registry
+    commandState.registeredCommands.set(commandName, updatedCommand);
+    
+    // Update current commands array
+    currentCommands = Array.from(commandState.registeredCommands.values());
+    
+    // Log the update
+    addCommandHistoryEntry(commandName, 'UPDATE', undefined, true);
+    
+    appInstance.debug(`✅ Updated command: ${commandName}`);
+    
+    return {
+      state: 'COMPLETED',
+      statusCode: 200,
+      message: `Command '${commandName}' updated successfully`,
+      timestamp: new Date().toISOString(),
+    };
+    
+  } catch (error) {
+    appInstance.error(`Failed to update command ${commandName}: ${(error as Error).message}`);
+    return {
+      state: 'FAILED',
+      statusCode: 500,
+      message: `Failed to update command: ${(error as Error).message}`,
       timestamp: new Date().toISOString(),
     };
   }
@@ -523,7 +582,7 @@ function initializeCommandValue(commandName: string, value: boolean): void {
 
 function addCommandHistoryEntry(
   command: string,
-  action: 'EXECUTE' | 'STOP' | 'REGISTER' | 'UNREGISTER',
+  action: 'EXECUTE' | 'STOP' | 'REGISTER' | 'UNREGISTER' | 'UPDATE',
   value?: boolean,
   success: boolean = true,
   error?: string
