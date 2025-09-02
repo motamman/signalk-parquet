@@ -10,7 +10,7 @@ import { DuckDBInstance } from '@duckdb/node-api';
 // Claude AI Integration Types
 export interface ClaudeAnalyzerConfig {
   apiKey: string;
-  model: 'claude-opus-4-1-20250805' | 'claude-opus-4-20250514' | 'claude-sonnet-4-20250514' | 'claude-3-7-sonnet-20250219' | 'claude-3-5-haiku-20241022' | 'claude-3-haiku-20240307';
+  model: 'claude-opus-4-1-20250805' | 'claude-opus-4-20250514' | 'claude-sonnet-4-20250514';
   maxTokens: number;
   temperature: number;
 }
@@ -879,6 +879,12 @@ Please structure your response as JSON with the following format:
       const schemaInfo = this.getEnhancedSchemaForClaude();
       this.app?.debug(`📊 Schema info for Claude (${schemaInfo.length} chars):\n${schemaInfo.substring(0, 1000)}${schemaInfo.length > 1000 ? '...' : ''}`);
       
+      // Debug: Log if schema is empty or suspicious
+      if (!schemaInfo || schemaInfo.length < 100) {
+        this.app?.error(`❌ Schema info appears empty or too short! Length: ${schemaInfo?.length || 0}`);
+        this.app?.error(`Schema content: "${schemaInfo}"`);
+      }
+      
       // Build time range guidance for Claude
       let timeRangeGuidance = '';
       if (request.timeRange) {
@@ -898,11 +904,22 @@ IMPORTANT: Always include WHERE clauses to limit results to recent data:
 WHERE signalk_timestamp >= '${sixHoursAgo.toISOString().replace('.000Z', 'Z')}'`;
       }
 
+      // Get system timezone for timestamp interpretation
+      const systemTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+      const now = new Date();
+      const timezoneOffset = -now.getTimezoneOffset() / 60; // Convert to hours from UTC
+      
       const initialPrompt = `You are an expert maritime data analyst with direct access to a comprehensive database.
 
 IMPORTANT: Please use the vessel context information provided below for all analysis and responses. This vessel information is critical for accurate maritime analysis.
 
 ${vesselContext}
+
+CRITICAL TIMESTAMP INFORMATION:
+- ALL SignalK timestamps in the database are in UTC (ending with 'Z')
+- System timezone: ${systemTimezone} (UTC${timezoneOffset >= 0 ? '+' : ''}${timezoneOffset})
+- When interpreting times for the user, convert UTC timestamps to local time (${systemTimezone})
+- Example: 2025-09-02T00:24:44Z (UTC) = ${new Date('2025-09-02T00:24:44Z').toLocaleString('en-US', {timeZone: systemTimezone, timeZoneName: 'short'})}
 
 ${schemaInfo}${timeRangeGuidance}
 
@@ -953,6 +970,13 @@ Begin your analysis by querying relevant data within the specified time range.`;
       // Extract system context and user prompt  
       const systemContext = `You are an expert maritime data analyst with direct access to a comprehensive database.
 
+CRITICAL DATA INTEGRITY RULES:
+- NEVER fabricate, guess, or make up any data, coordinates, timestamps, or values
+- If a query returns no data, you MUST say "No data available" or "Query returned no results"  
+- NEVER invent plausible-sounding but false information
+- If you don't know something, explicitly state "I don't have this information"
+- Financial and navigational decisions depend on accurate data - false information causes real harm
+
 IMPORTANT: Please use the vessel context information provided below for all analysis and responses. This vessel information is critical for accurate maritime analysis.
 
 ${vesselContext}
@@ -989,6 +1013,9 @@ Focus on:
 3. Safety considerations and operational insights
 4. Data quality and completeness assessment`;
 
+      this.app?.debug(`🔧 Final system context (${systemContext.length} chars):`);
+      this.app?.debug(`📋 System context preview:\n${systemContext.substring(0, 2000)}${systemContext.length > 2000 ? '...' : ''}`);
+
       const userPrompt = `${request.customPrompt || 'Analyze maritime data and provide insights'}
 
 Begin your analysis by querying relevant data within the specified time range.`;
@@ -1004,30 +1031,95 @@ Begin your analysis by querying relevant data within the specified time range.`;
       const maxQueries = 5; // Reduced to prevent excessive API calls and token usage
       let totalTokenUsage = { input_tokens: 0, output_tokens: 0 };
 
+      // Check if user is requesting real-time data
+      const needsRealTimeData = this.checkForRealTimeKeywords(request.customPrompt || '', conversationMessages);
+      
+      // Identify relevant regimens based on keywords
+      const relevantRegimens = this.identifyRelevantRegimens(request.customPrompt || '');
+      
+      // Build tools array - always include database access
+      const availableTools: any[] = [{
+        name: 'query_maritime_database',
+        description: 'Execute SQL queries against the maritime Parquet database to explore and analyze data',
+        input_schema: {
+          type: 'object',
+          properties: {
+            sql: {
+              type: 'string',
+              description: 'SQL query to execute against the Parquet database'
+            },
+            purpose: {
+              type: 'string',
+              description: 'Brief description of what this query is trying to discover'
+            }
+          },
+          required: ['sql', 'purpose']
+        }
+      }];
+
+      // Add real-time SignalK data tool if keywords detected
+      if (needsRealTimeData) {
+        availableTools.push({
+          name: 'get_current_signalk_data',
+          description: 'Get current real-time SignalK data values for specific paths or all available paths from any vessel. Use this when user asks about "now", "current", "real-time" conditions.',
+          input_schema: {
+            type: 'object',
+            properties: {
+              paths: {
+                type: 'array',
+                items: { type: 'string' },
+                description: 'Array of SignalK paths to query (e.g., ["navigation.position", "navigation.speedOverGround"]). Leave empty to get all available current values.'
+              },
+              purpose: {
+                type: 'string',
+                description: 'Brief description of why you need this real-time data'
+              },
+              vesselContext: {
+                type: 'string',
+                description: 'Vessel context to query (e.g., "vessels.self", "vessels.urn:mrn:imo:mmsi:123456789"). Defaults to vessels.self if not specified.'
+              }
+            },
+            required: ['purpose']
+          }
+        });
+        this.app?.debug(`🕐 Real-time keywords detected, adding current SignalK data tool`);
+      }
+
+      // Add episode boundary detection tool if regimens were identified
+      if (relevantRegimens.length > 0) {
+        availableTools.push({
+          name: 'find_regimen_episodes',
+          description: 'REQUIRED for finding episodes/periods when regimens were active. Detects start/end boundaries from command state changes (false->true->false). Use this instead of query_maritime_database for episode detection.',
+          input_schema: {
+            type: 'object',
+            properties: {
+              regimenName: {
+                type: 'string',
+                description: `Regimen to analyze. Available: ${relevantRegimens.join(', ')}`
+              },
+              timeRange: {
+                type: 'object',
+                description: 'Optional time range constraint (start/end ISO timestamps)'
+              },
+              limit: {
+                type: 'number', 
+                description: 'Maximum number of episodes to return (default: 10)'
+              }
+            },
+            required: ['regimenName']
+          }
+        });
+        
+        this.app?.debug(`🎬 Added episode detection tool for regimens: [${relevantRegimens.join(', ')}]`);
+      }
+
       while (queryCount < maxQueries) {
         const response = await this.callClaudeWithRetry({
           model: this.config.model,
           max_tokens: Math.max(this.config.maxTokens, 8000), // Increased for comprehensive analysis
-          temperature: this.config.temperature,
+          temperature: 0.0,
           system: systemContext,
-          tools: [{
-            name: 'query_maritime_database',
-            description: 'Execute SQL queries against the maritime Parquet database to explore and analyze data',
-            input_schema: {
-              type: 'object',
-              properties: {
-                sql: {
-                  type: 'string',
-                  description: 'SQL query to execute against the Parquet database'
-                },
-                purpose: {
-                  type: 'string',
-                  description: 'Brief description of what this query is trying to discover'
-                }
-              },
-              required: ['sql', 'purpose']
-            }
-          }],
+          tools: availableTools,
           messages: conversationMessages
         });
 
@@ -1053,31 +1145,24 @@ Begin your analysis by querying relevant data within the specified time range.`;
             analysisResult += textContent + '\n\n';
           } else if (contentBlock.type === 'tool_use') {
             const toolCall = contentBlock;
-            if (toolCall.name === 'query_maritime_database') {
-              queryCount++;
-              const { sql, purpose } = toolCall.input as { sql: string; purpose: string };
-              
-              try {
-                // Execute the SQL query safely
-                const queryResult = await this.executeSQLQuery(sql, purpose);
-                
-                const resultSummary = `Query "${purpose}" returned ${queryResult.length} rows:\n\n${JSON.stringify(queryResult.slice(0, 5), null, 2)}${queryResult.length > 5 ? `\n\n... and ${queryResult.length - 5} more rows` : ''}`;
-                
-                toolResults.push({
-                  type: 'tool_result',
-                  tool_use_id: toolCall.id,
-                  content: resultSummary
-                });
-                
-                this.app?.debug(`✅ Query executed: ${purpose} - ${queryResult.length} rows returned`);
-                
-              } catch (queryError) {
-                toolResults.push({
-                  type: 'tool_result',
-                  tool_use_id: toolCall.id,
-                  content: `Query failed: ${(queryError as Error).message}`
-                });
+            
+            // Ensure every tool_use gets a tool_result, even if processing fails
+            try {
+              if (toolCall.name === 'query_maritime_database') {
+                queryCount++;
               }
+              
+              const toolResult = await this.processToolCall(toolCall);
+              toolResults.push(toolResult);
+            
+            } catch (toolProcessingError) {
+              // Critical: Always provide a tool_result, even if tool processing fails completely
+              toolResults.push({
+                type: 'tool_result',
+                tool_use_id: toolCall.id,
+                content: `Tool processing failed: ${(toolProcessingError as Error).message}`
+              });
+              this.app?.error(`🚨 Tool processing error for ${toolCall.name}: ${(toolProcessingError as Error).message}`);
             }
           }
         }
@@ -1212,30 +1297,96 @@ Begin your analysis by querying relevant data within the specified time range.`;
       const maxQueries = 5; // Fewer queries for follow-ups
       let totalTokenUsage = { input_tokens: 0, output_tokens: 0 };
 
+      // Check if follow-up question contains real-time keywords
+      const needsRealTimeData = this.checkForRealTimeKeywords(request.question, conversationMessages);
+      this.app?.debug(`🔍 Follow-up real-time check: "${request.question}" -> ${needsRealTimeData}`);
+      
+      // Build tools array using same logic as initial analysis - identify regimens and build context-aware tools
+      const relevantRegimens = this.identifyRelevantRegimens(request.question, conversationMessages);
+      this.app?.debug(`🎯 Follow-up identified ${relevantRegimens.length} relevant regimens: [${relevantRegimens.join(', ')}]`);
+      
+      // Start with base database access tool
+      const followUpTools: any[] = [{
+        name: 'query_maritime_database',
+        description: 'Execute SQL queries against the maritime Parquet database to explore and analyze data',
+        input_schema: {
+          type: 'object',
+          properties: {
+            sql: {
+              type: 'string',
+              description: 'SQL query to execute against the Parquet database'
+            },
+            purpose: {
+              type: 'string',
+              description: 'Brief description of what this query is trying to discover'
+            }
+          },
+          required: ['sql', 'purpose']
+        }
+      }];
+
+      // Add episode boundary detection tool if regimens were identified
+      if (relevantRegimens.length > 0) {
+        followUpTools.push({
+          name: 'find_regimen_episodes',
+          description: 'REQUIRED for finding episodes/periods when regimens were active. Detects start/end boundaries from command state changes (false->true->false). Use this instead of query_maritime_database for episode detection.',
+          input_schema: {
+            type: 'object',
+            properties: {
+              regimenName: {
+                type: 'string',
+                description: `Regimen to analyze. Available: ${relevantRegimens.join(', ')}`
+              },
+              timeRange: {
+                type: 'object',
+                description: 'Optional time range constraint (start/end ISO timestamps)'
+              },
+              limit: {
+                type: 'number',
+                description: 'Maximum number of episodes to return (default 10)'
+              }
+            },
+            required: ['regimenName']
+          }
+        });
+        this.app?.debug(`🎬 Added episode detection tool for regimens: [${relevantRegimens.join(', ')}]`);
+      }
+
+      // Add real-time SignalK data tool if keywords detected in follow-up
+      if (needsRealTimeData) {
+        followUpTools.push({
+          name: 'get_current_signalk_data',
+          description: 'Get current real-time SignalK data values for specific paths or all available paths from any vessel. Use this when user asks about "now", "current", "real-time" conditions.',
+          input_schema: {
+            type: 'object',
+            properties: {
+              paths: {
+                type: 'array',
+                items: { type: 'string' },
+                description: 'Array of SignalK paths to query (e.g., ["navigation.position", "navigation.speedOverGround"]). Leave empty to get all available current values.'
+              },
+              purpose: {
+                type: 'string',
+                description: 'Brief description of why you need this real-time data'
+              },
+              vesselContext: {
+                type: 'string',
+                description: 'Vessel context to query (e.g., "vessels.self", "vessels.urn:mrn:imo:mmsi:123456789"). Defaults to vessels.self if not specified.'
+              }
+            },
+            required: ['purpose']
+          }
+        });
+        this.app?.debug(`🕐 Real-time keywords detected in follow-up, adding current SignalK data tool`);
+      }
+
       // Continue the conversation with Claude
       while (queryCount < maxQueries) {
         const response = await this.callClaudeWithRetry({
           model: this.config.model,
           max_tokens: Math.max(this.config.maxTokens, 8000),
-          temperature: this.config.temperature,
-          tools: [{
-            name: 'query_maritime_database',
-            description: 'Execute SQL queries against the maritime Parquet database to explore and analyze data',
-            input_schema: {
-              type: 'object',
-              properties: {
-                sql: {
-                  type: 'string',
-                  description: 'SQL query to execute against the Parquet database'
-                },
-                purpose: {
-                  type: 'string',
-                  description: 'Brief description of what this query is trying to discover'
-                }
-              },
-              required: ['sql', 'purpose']
-            }
-          }],
+          temperature: 0.0,
+          tools: followUpTools,
           messages: conversationMessages
         });
 
@@ -1261,29 +1412,24 @@ Begin your analysis by querying relevant data within the specified time range.`;
             analysisResult += textContent + '\n\n';
           } else if (contentBlock.type === 'tool_use') {
             const toolCall = contentBlock;
-            if (toolCall.name === 'query_maritime_database') {
-              queryCount++;
-              const { sql, purpose } = toolCall.input as { sql: string; purpose: string };
-              
-              try {
-                const queryResult = await this.executeSQLQuery(sql, purpose);
-                const resultSummary = `Query "${purpose}" returned ${queryResult.length} rows:\n\n${JSON.stringify(queryResult.slice(0, 5), null, 2)}${queryResult.length > 5 ? `\n\n... and ${queryResult.length - 5} more rows` : ''}`;
-                
-                toolResults.push({
-                  type: 'tool_result',
-                  tool_use_id: toolCall.id,
-                  content: resultSummary
-                });
-                
-                this.app?.debug(`✅ Follow-up query executed: ${purpose} - ${queryResult.length} rows returned`);
-                
-              } catch (queryError) {
-                toolResults.push({
-                  type: 'tool_result',
-                  tool_use_id: toolCall.id,
-                  content: `Query failed: ${(queryError as Error).message}`
-                });
+            
+            // Ensure every tool_use gets a tool_result, even if processing fails
+            try {
+              if (toolCall.name === 'query_maritime_database') {
+                queryCount++;
               }
+              
+              const toolResult = await this.processToolCall(toolCall);
+              toolResults.push(toolResult);
+            
+            } catch (toolProcessingError) {
+              // Critical: Always provide a tool_result, even if tool processing fails completely
+              toolResults.push({
+                type: 'tool_result',
+                tool_use_id: toolCall.id,
+                content: `Follow-up tool processing failed: ${(toolProcessingError as Error).message}`
+              });
+              this.app?.error(`🚨 Follow-up tool processing error for ${toolCall.name}: ${(toolProcessingError as Error).message}`);
             }
           }
         }
@@ -1345,13 +1491,466 @@ Begin your analysis by querying relevant data within the specified time range.`;
   }
 
   /**
+   * Get current real-time SignalK data values
+   */
+  private getCurrentSignalKData(paths?: string[], purpose?: string, vesselContext?: string): any {
+    const contextToUse = vesselContext || 'vessels.self';
+    this.app?.debug(`🕐 Getting current SignalK data for ${contextToUse}: ${paths?.length ? paths.join(', ') : 'all paths'}. Purpose: ${purpose}`);
+    
+    try {
+      if (!paths || paths.length === 0) {
+        // Get all current vessel data
+        let vesselData: any = {};
+        
+        if (contextToUse === 'vessels.self') {
+          vesselData = this.app?.getSelfPath('') || {};
+        } else {
+          // For other vessels, try to access via SignalK context
+          // Note: This requires the SignalK server to have data for the specified vessel
+          try {
+            vesselData = (this.app as any)?.streambundle?.getSelfStream()?.getBus()?.get(contextToUse) || {};
+          } catch (error) {
+            this.app?.debug(`⚠️ Could not access vessel data for ${contextToUse}, trying alternative method`);
+            // Alternative: try to get from available paths
+            vesselData = {};
+          }
+        }
+        
+        // Filter out functions and circular references, keep only data values
+        const cleanData = this.cleanSignalKData(vesselData);
+        
+        this.app?.debug(`📊 Retrieved ${Object.keys(cleanData).length} current SignalK data points for ${contextToUse}`);
+        return {
+          timestamp: new Date().toISOString(),
+          source: 'real-time SignalK',
+          context: contextToUse,
+          data: cleanData
+        };
+      } else {
+        // Get specific paths
+        const pathData: any = {};
+        
+        for (const path of paths) {
+          try {
+            let value;
+            if (contextToUse === 'vessels.self') {
+              value = this.app?.getSelfPath(path);
+            } else {
+              // Try to get path data for other vessels
+              try {
+                const fullPath = `${contextToUse}.${path}`;
+                value = (this.app as any)?.streambundle?.getSelfStream()?.getBus()?.get(fullPath);
+              } catch {
+                value = undefined;
+              }
+            }
+            
+            if (value !== undefined) {
+              pathData[path] = value;
+            } else {
+              pathData[path] = null; // Explicitly show missing values
+            }
+          } catch (error) {
+            pathData[path] = `Error: ${(error as Error).message}`;
+          }
+        }
+        
+        this.app?.debug(`📊 Retrieved ${Object.keys(pathData).length} specific SignalK paths`);
+        return {
+          timestamp: new Date().toISOString(),
+          source: 'real-time SignalK',
+          requestedPaths: paths,
+          data: pathData
+        };
+      }
+    } catch (error) {
+      this.app?.error(`Failed to get current SignalK data: ${(error as Error).message}`);
+      return {
+        error: `Failed to retrieve SignalK data: ${(error as Error).message}`,
+        timestamp: new Date().toISOString()
+      };
+    }
+  }
+
+  /**
+   * Clean SignalK data by removing functions and circular references
+   */
+  private cleanSignalKData(obj: any, maxDepth: number = 3, currentDepth: number = 0): any {
+    if (currentDepth >= maxDepth || obj === null || obj === undefined) {
+      return obj;
+    }
+
+    if (typeof obj === 'function') {
+      return '[Function]';
+    }
+
+    if (typeof obj !== 'object') {
+      return obj;
+    }
+
+    if (obj instanceof Date) {
+      return obj.toISOString();
+    }
+
+    if (Array.isArray(obj)) {
+      return obj.map(item => this.cleanSignalKData(item, maxDepth, currentDepth + 1));
+    }
+
+    const cleaned: any = {};
+    for (const [key, value] of Object.entries(obj)) {
+      // Skip common SignalK metadata that's not useful for analysis
+      if (['_updateTimes', '_sources', 'meta'].includes(key)) {
+        continue;
+      }
+      
+      try {
+        cleaned[key] = this.cleanSignalKData(value, maxDepth, currentDepth + 1);
+      } catch (error) {
+        cleaned[key] = '[Circular Reference]';
+      }
+    }
+    
+    return cleaned;
+  }
+
+  /**
+   * Identify relevant regimens based on user query keywords
+   */
+  private identifyRelevantRegimens(userQuery: string, conversationMessages?: Array<any>): string[] {
+    try {
+      const { getCurrentCommands } = require('./commands');
+      const commands = getCurrentCommands();
+      const queryLower = userQuery.toLowerCase();
+      
+      this.app?.debug(`🔍 Analyzing query for regimen keywords: "${userQuery}"`);
+      
+      const relevantRegimens = commands.filter((cmd: any) => {
+        if (!cmd.keywords || cmd.keywords.length === 0) return false;
+        
+        // Check current query
+        const hasMatchingKeyword = cmd.keywords.some((keyword: string) => 
+          queryLower.includes(keyword.toLowerCase())
+        );
+        
+        // If not found in current query, check conversation messages
+        if (!hasMatchingKeyword && conversationMessages) {
+          for (const message of conversationMessages.slice(-3)) { // Check last 3 messages
+            if (message.content && typeof message.content === 'string') {
+              const contentLower = message.content.toLowerCase();
+              const hasContextKeyword = cmd.keywords.some((keyword: string) => 
+                contentLower.includes(keyword.toLowerCase())
+              );
+              if (hasContextKeyword) {
+                this.app?.debug(`✅ Found matching regimen from conversation context: ${cmd.command} (keyword: ${cmd.keywords.join(', ')})`);
+                return true;
+              }
+            }
+          }
+        }
+        
+        if (hasMatchingKeyword) {
+          this.app?.debug(`✅ Found matching regimen: ${cmd.command} (keywords: ${cmd.keywords.join(', ')})`);
+        }
+        
+        return hasMatchingKeyword;
+      }).map((cmd: any) => cmd.command);
+      
+      this.app?.debug(`🎯 Identified ${relevantRegimens.length} relevant regimens: [${relevantRegimens.join(', ')}]`);
+      
+      return relevantRegimens;
+    } catch (error) {
+      this.app?.error(`Failed to identify relevant regimens: ${(error as Error).message}`);
+      return [];
+    }
+  }
+
+  /**
+   * Get paths associated with a regimen
+   */
+  private getPathsForRegimen(regimenName: string): string[] {
+    try {
+      const { loadWebAppConfig } = require('./commands');
+      const webAppConfig = loadWebAppConfig(this.app);
+      
+      // Find all paths where regimen matches the command name
+      const regimenPaths = webAppConfig.paths.filter((pathConfig: any) => 
+        pathConfig.regimen === regimenName
+      ).map((pathConfig: any) => pathConfig.path);
+      
+      this.app?.debug(`📊 Found ${regimenPaths.length} paths for regimen ${regimenName}: [${regimenPaths.join(', ')}]`);
+      
+      return regimenPaths;
+    } catch (error) {
+      this.app?.error(`Failed to get paths for regimen ${regimenName}: ${(error as Error).message}`);
+      return [];
+    }
+  }
+
+  /**
+   * Check if user request contains real-time keywords
+   */
+  private checkForRealTimeKeywords(customPrompt: string, conversationMessages: Array<any>): boolean {
+    const keywords = ['now', 'current', 'real-time', 'realtime', 'live', 'present', 'right now', 'at this moment'];
+    
+    // Check custom prompt
+    const promptLower = customPrompt.toLowerCase();
+    this.app?.debug(`🔍 Checking prompt: "${customPrompt}" (${promptLower})`);
+    for (const keyword of keywords) {
+      if (promptLower.includes(keyword)) {
+        this.app?.debug(`✅ Found real-time keyword: "${keyword}"`);
+        return true;
+      }
+    }
+    
+    // Check recent conversation messages
+    for (const message of conversationMessages.slice(-3)) { // Check last 3 messages
+      if (message.content && typeof message.content === 'string') {
+        const contentLower = message.content.toLowerCase();
+        for (const keyword of keywords) {
+          if (contentLower.includes(keyword)) {
+            return true;
+          }
+        }
+      }
+    }
+    
+    return false;
+  }
+
+  /**
+   * Process a single tool call and return the result
+   */
+  private async processToolCall(toolCall: any): Promise<any> {
+    if (toolCall.name === 'query_maritime_database') {
+      const { sql, purpose } = toolCall.input as { sql: string; purpose: string };
+      
+      try {
+        const queryResult = await this.executeSQLQuery(sql, purpose);
+        const resultSummary = `Query "${purpose}" returned ${queryResult.length} rows:\n\n${JSON.stringify(queryResult.slice(0, 5), null, 2)}${queryResult.length > 5 ? `\n\n... and ${queryResult.length - 5} more rows` : ''}`;
+        
+        this.app?.debug(`✅ Query executed: ${purpose} - ${queryResult.length} rows returned`);
+        
+        return {
+          type: 'tool_result',
+          tool_use_id: toolCall.id,
+          content: resultSummary
+        };
+        
+      } catch (queryError) {
+        return {
+          type: 'tool_result',
+          tool_use_id: toolCall.id,
+          content: `Query failed: ${(queryError as Error).message}`
+        };
+      }
+    } else if (toolCall.name === 'get_current_signalk_data') {
+      const { paths, purpose, vesselContext } = toolCall.input as { paths?: string[]; purpose: string; vesselContext?: string };
+      
+      try {
+        const currentData = this.getCurrentSignalKData(paths, purpose, vesselContext);
+        const resultSummary = `Current SignalK data "${purpose}":\n\n${JSON.stringify(currentData, null, 2)}`;
+        
+        this.app?.debug(`✅ Real-time data retrieved: ${purpose} - ${paths?.length || 'all'} paths`);
+        
+        return {
+          type: 'tool_result',
+          tool_use_id: toolCall.id,
+          content: resultSummary
+        };
+        
+      } catch (realTimeError) {
+        return {
+          type: 'tool_result',
+          tool_use_id: toolCall.id,
+          content: `Real-time data retrieval failed: ${(realTimeError as Error).message}`
+        };
+      }
+    } else if (toolCall.name === 'find_regimen_episodes') {
+      const { regimenName, timeRange, limit } = toolCall.input as { regimenName: string; timeRange?: any; limit?: number };
+      
+      try {
+        const episodes = await this.findRegimenEpisodes(regimenName, timeRange, limit || 10);
+        
+        // Configure display limit based on total episodes found and request limit
+        const displayLimit = Math.min(limit || 10, episodes.length);
+        const showAll = limit && limit >= episodes.length;
+        
+        const resultSummary = `Found ${episodes.length} episodes for regimen "${regimenName}":\n\n${JSON.stringify(episodes.slice(0, displayLimit), null, 2)}${!showAll && episodes.length > displayLimit ? `\n\n... and ${episodes.length - displayLimit} more episodes` : ''}`;
+        
+        this.app?.debug(`✅ Episode detection completed: ${regimenName} - ${episodes.length} episodes found, showing ${displayLimit}`);
+        
+        return {
+          type: 'tool_result',
+          tool_use_id: toolCall.id,
+          content: resultSummary
+        };
+        
+      } catch (episodeError) {
+        return {
+          type: 'tool_result',
+          tool_use_id: toolCall.id,
+          content: `Episode detection failed: ${(episodeError as Error).message}`
+        };
+      }
+    } else {
+      // Handle unknown tool calls
+      this.app?.debug(`⚠️ Unknown tool called: ${toolCall.name}`);
+      return {
+        type: 'tool_result',
+        tool_use_id: toolCall.id,
+        content: `Unknown tool "${toolCall.name}" requested. Available tools: query_maritime_database, get_current_signalk_data, find_regimen_episodes`
+      };
+    }
+  }
+
+  /**
+   * Find episodes for a specific regimen using command state transitions
+   */
+  private async findRegimenEpisodes(regimenName: string, timeRange?: any, limit: number = 10): Promise<any[]> {
+    // Build the episode boundary detection SQL
+    let timeConstraint = '';
+    if (timeRange?.start && timeRange?.end) {
+      timeConstraint = `WHERE signalk_timestamp >= '${timeRange.start}' AND signalk_timestamp <= '${timeRange.end}'`;
+    }
+    
+    const episodeSQL = `
+      WITH transitions AS (
+        SELECT
+          signalk_timestamp,
+          CAST(value AS BOOLEAN) as current_value,
+          LAG(CAST(value AS BOOLEAN)) OVER (ORDER BY signalk_timestamp) as previous_value
+        FROM '${this.dataDirectory}/vessels/*/commands/${regimenName}/*.parquet'
+        ${timeConstraint}
+        ORDER BY signalk_timestamp
+      ),
+      episode_boundaries AS (
+        SELECT
+          signalk_timestamp,
+          current_value,
+          CASE
+            WHEN current_value = true AND (previous_value = false OR previous_value IS NULL) THEN 'start'
+            WHEN current_value = false AND previous_value = true THEN 'end'
+            ELSE NULL
+          END as boundary_type
+        FROM transitions
+        WHERE current_value = true AND (previous_value = false OR previous_value IS NULL)
+           OR current_value = false AND previous_value = true
+      ),
+      episodes AS (
+        SELECT
+          starts.signalk_timestamp as start_time,
+          ends.signalk_timestamp as end_time,
+          CASE 
+            WHEN ends.signalk_timestamp IS NULL THEN 'active'
+            ELSE 'completed'
+          END as status
+        FROM 
+          (SELECT signalk_timestamp FROM episode_boundaries WHERE boundary_type = 'start') starts
+        LEFT JOIN 
+          (SELECT signalk_timestamp FROM episode_boundaries WHERE boundary_type = 'end') ends
+        ON ends.signalk_timestamp = (
+          SELECT MIN(signalk_timestamp) 
+          FROM episode_boundaries 
+          WHERE boundary_type = 'end' AND signalk_timestamp > starts.signalk_timestamp
+        )
+      )
+      SELECT 
+        start_time,
+        end_time,
+        status,
+        CASE 
+          WHEN end_time IS NOT NULL THEN 
+            (EXTRACT(EPOCH FROM (end_time::TIMESTAMP - start_time::TIMESTAMP)) * 1000)::BIGINT
+          ELSE NULL 
+        END as duration_ms
+      FROM episodes
+      ORDER BY start_time DESC
+      LIMIT ${limit}
+    `;
+    
+    this.app?.debug(`🎬 Executing episode detection SQL for ${regimenName}`);
+    
+    try {
+      const episodes = await this.executeSQLQuery(episodeSQL, `Episode boundary detection for ${regimenName}`);
+      
+      // Add regimen info and clean up the results
+      return episodes.map(episode => ({
+        regimen: regimenName,
+        startTime: episode.start_time,
+        endTime: episode.end_time,
+        status: episode.status,
+        durationMs: episode.duration_ms,
+        paths: this.getPathsForRegimen(regimenName) // Include associated paths
+      }));
+    } catch (error) {
+      this.app?.error(`Failed to find episodes for ${regimenName}: ${(error as Error).message}`);
+      throw error;
+    }
+  }
+
+
+  /**
+   * Determine the appropriate column to use based on SignalK path type
+   */
+  private getValueColumn(pathName: string): string {
+    // Position data and other complex objects use value_json
+    if (pathName.includes('position') || pathName.includes('attitude') || 
+        pathName.includes('coordinate') || pathName.includes('navigation.location')) {
+      return 'value_json';
+    }
+    
+    // Simple numeric/boolean values use value column
+    return 'value';
+  }
+
+  /**
+   * Auto-correct column usage in SQL queries based on SignalK path patterns
+   */
+  private correctColumnUsage(sql: string): string {
+    // Define path patterns that use value_json (complex objects)
+    const jsonPatterns = [
+      // File path patterns in FROM clauses
+      /FROM\s+['"]*[^'"]*\/position\/[^'"]*['"]/gi,
+      /FROM\s+['"]*[^'"]*\/attitude\/[^'"]*['"]/gi,
+      /FROM\s+['"]*[^'"]*\/coordinate\/[^'"]*['"]/gi,
+      /FROM\s+['"]*[^'"]*\/navigation\/position[^'"]*['"]/gi,
+      /FROM\s+['"]*[^'"]*\/navigation\/attitude[^'"]*['"]/gi,
+      
+      // Path column patterns in WHERE clauses
+      /WHERE.*path.*position/gi,
+      /WHERE.*path.*attitude/gi,
+      /WHERE.*path.*coordinate/gi,
+      
+      // Direct mention of position/attitude/coordinate paths
+      /navigation\.position/gi,
+      /navigation\.attitude/gi,
+      /navigation\.coordinate/gi
+    ];
+    
+    let correctedSQL = sql;
+    
+    // Check if query involves JSON object paths
+    const hasJsonPath = jsonPatterns.some(pattern => pattern.test(sql));
+    if (hasJsonPath) {
+      // Replace standalone 'value' references with 'value_json' for object queries
+      // Use negative lookbehind/lookahead to avoid replacing value_json, value_latitude, etc.
+      correctedSQL = correctedSQL.replace(/\bvalue\b(?!_|\w)/gi, 'value_json');
+    }
+    
+    return correctedSQL;
+  }
+
+  /**
    * Execute SQL query safely against Parquet database
    */
   private async executeSQLQuery(sql: string, purpose: string): Promise<any[]> {
-    // Validate query is read-only (starts with SELECT)
-    const trimmedSQL = sql.trim().toUpperCase();
-    if (!trimmedSQL.startsWith('SELECT')) {
-      throw new Error('Only SELECT queries are allowed for security');
+    // Auto-correct common column usage patterns
+    const correctedSQL = this.correctColumnUsage(sql);
+    
+    // Validate query is read-only (starts with SELECT or WITH for CTEs)
+    const trimmedSQL = correctedSQL.trim().toUpperCase();
+    if (!trimmedSQL.startsWith('SELECT') && !trimmedSQL.startsWith('WITH')) {
+      throw new Error('Only SELECT and WITH queries are allowed for security');
     }
 
     // Additional safety checks
@@ -1367,9 +1966,12 @@ Begin your analysis by querying relevant data within the specified time range.`;
     
     try {
       this.app?.debug(`🔍 Executing SQL query for: ${purpose}`);
-      this.app?.debug(`📝 Query: ${sql}`);
+      this.app?.debug(`📝 Original query: ${sql}`);
+      if (correctedSQL !== sql) {
+        this.app?.debug(`🔧 Corrected query: ${correctedSQL}`);
+      }
       
-      const result = await connection.runAndReadAll(sql);
+      const result = await connection.runAndReadAll(correctedSQL);
       const data = result.getRowObjects();
       
       // Convert BigInt values to regular numbers to prevent serialization errors
@@ -1442,10 +2044,14 @@ Begin your analysis by querying relevant data within the specified time range.`;
    * Generate enhanced schema information for Claude
    */
   private getEnhancedSchemaForClaude(): string {
+    this.app?.debug('🔧 Getting enhanced schema for Claude...');
     const dataDir = this.dataDirectory || '';
+    this.app?.debug(`📂 Data directory: "${dataDir}"`);
+    
     let selfContextPath = 'vessels/self';
     if (this.app?.selfContext) {
       selfContextPath = this.app.selfContext.replace(/\./g, '/').replace(/:/g, '_');
+      this.app?.debug(`🛥️ Self context path: "${selfContextPath}"`);
     }
     
     // Get actual available paths from the filesystem  
@@ -1454,12 +2060,17 @@ Begin your analysis by querying relevant data within the specified time range.`;
     
     // Get self context dynamically from SignalK
     const selfContext = this.app?.selfContext || 'vessels.self';
-    const selfContextForFilter = selfContext.replace(/\./g, ':'); // Convert to context format for filtering
     
     try {
       if (this.app && dataDir) {
         // Get your vessel's paths
+        this.app?.debug('📊 Scanning available paths...');
+        this.app?.debug(`📍 App.selfContext: "${this.app?.selfContext}"`);
         const paths = getAvailablePaths(dataDir, this.app);
+        this.app?.debug(`📈 Found ${paths.length} available paths`);
+        if (paths.length === 0) {
+          this.app?.debug('⚠️ No available paths found - this could cause Claude to not see schema information');
+        }
         const pathList = paths.map(p => p.path).join('\n- ');
         availablePathsInfo = `
 CRITICAL: ONLY USE THESE EXACT PATHS - DO NOT MAKE UP OR GUESS PATH NAMES:
@@ -1503,10 +2114,11 @@ OTHER VESSELS: None detected in this dataset`;
         }
       }
     } catch (error) {
+      this.app?.error(`❌ Failed to scan filesystem for paths: ${(error as Error).message}`);
       availablePathsInfo = '\nAVAILABLE DATA PATHS: Unable to scan filesystem';
     }
     
-    return `MARITIME DATABASE SCHEMA:
+    const schemaResult = `MARITIME DATABASE SCHEMA:
 Base Directory: ${dataDir}
 File Pattern: {contextPath}/{signalk_path}/{filename}.parquet
 
@@ -1520,7 +2132,7 @@ COLUMN STRUCTURE:
 - meta (VARCHAR): Metadata (usually null)
 - path (VARCHAR): SignalK data path (e.g., "navigation.position", "environment.wind.speedTrue")
 - received_timestamp (VARCHAR): ISO timestamp when data was received (e.g., "YYYY-MM-DDTHH:MM:SS.sssZ")
-- signalk_timestamp (VARCHAR): ISO timestamp from SignalK data (e.g., "YYYY-MM-DDTHH:MM:SS.000Z")
+- signalk_timestamp (VARCHAR): ISO timestamp from SignalK data (e.g., "YYYY-MM-DDTHH:MM:SSZ")
 - source (VARCHAR): JSON string with source info (e.g., '{"sentence":"GLL","talker":"GN","type":"NMEA0183"}')
 - source_label (VARCHAR): Source device label (e.g., "maiana.GN")
 - source_pgn, source_src (VARCHAR): Usually null for NMEA0183
@@ -1529,22 +2141,27 @@ COLUMN STRUCTURE:
 - value_json (VARCHAR): JSON representation of complex values (e.g., '{"longitude":-72.08,"latitude":41.32}')
 - value_latitude, value_longitude (DOUBLE): Extracted position coordinates
 
-QUERY EXAMPLES:
+MANDATORY QUERY SYNTAX - USE EXACT FILE PATHS:
 - Recent position: SELECT received_timestamp, value_latitude, value_longitude FROM '${dataDir}/${selfContextPath}/navigation/position/*.parquet' ORDER BY received_timestamp DESC LIMIT 100
-- Speed analysis: SELECT AVG(CAST(value AS DOUBLE)) as avg_speed FROM '${dataDir}/${selfContextPath}/navigation/speedOverGround/*.parquet' WHERE received_timestamp >= '2024-01-01T00:00:00.000Z'
+- Speed analysis: SELECT AVG(CAST(value AS DOUBLE)) as avg_speed FROM '${dataDir}/${selfContextPath}/navigation/speedOverGround/*.parquet' WHERE signalk_timestamp >= '2024-01-01T00:00:00Z'
 - Wind patterns: SELECT DATE_TRUNC('hour', CAST(received_timestamp AS TIMESTAMP)) as hour, AVG(CAST(value AS DOUBLE)) FROM '${dataDir}/${selfContextPath}/environment/wind/speedTrue/*.parquet' GROUP BY hour ORDER BY hour
-- Time-based filtering: WHERE received_timestamp >= 'YYYY-MM-DDTHH:MM:SS.000Z' AND received_timestamp < 'YYYY-MM-DDTHH:MM:SS.000Z'
+- Time-based filtering: WHERE signalk_timestamp >= 'YYYY-MM-DDTHH:MM:SSZ' AND signalk_timestamp <= 'YYYY-MM-DDTHH:MM:SSZ'
+
+CRITICAL: Your vessel's data is at: ${dataDir}/${selfContextPath}/
+IMPORTANT: Use the vessel's MMSI from the VESSEL CONTEXT section above to filter data by context column.
+Example: SELECT * FROM '${dataDir}/${selfContextPath}/navigation/position/*.parquet' WHERE context LIKE '%[MMSI_FROM_VESSEL_CONTEXT]%' LIMIT 5
 
 MULTI-VESSEL QUERIES:
-- Find all vessels: SELECT DISTINCT context FROM 'data/vessels/*/navigation/position/*.parquet'
-- All vessels positions: SELECT context, received_timestamp, value_latitude, value_longitude FROM 'data/vessels/*/navigation/position/*.parquet' ORDER BY received_timestamp DESC
-- Specific vessel by MMSI: SELECT * FROM 'data/vessels/urn_mrn_imo_mmsi_123456789/navigation/position/*.parquet'
-- Vessel traffic analysis: SELECT context, COUNT(*) as message_count FROM 'data/vessels/*/navigation/position/*.parquet' GROUP BY context
+- Find all vessels: SELECT DISTINCT context FROM '${dataDir}/vessels/*/navigation/position/*.parquet'
+- All vessels positions: SELECT context, received_timestamp, value_latitude, value_longitude FROM '${dataDir}/vessels/*/navigation/position/*.parquet' ORDER BY received_timestamp DESC
+- Specific vessel by MMSI: SELECT * FROM '${dataDir}/vessels/urn_mrn_imo_mmsi_123456789/navigation/position/*.parquet'
+- Vessel traffic analysis: SELECT context, COUNT(*) as message_count FROM '${dataDir}/vessels/*/navigation/position/*.parquet' GROUP BY context
 
 IMPORTANT NOTES:
 - All timestamps are ISO strings in VARCHAR format, not milliseconds
-- Use CAST(received_timestamp AS TIMESTAMP) for date functions
+- Use CAST(signalk_timestamp AS TIMESTAMP) for date functions  
 - Use CAST(value AS DOUBLE) to convert string numbers to numeric
+- Timestamps have NO milliseconds - format is always YYYY-MM-DDTHH:MM:SSZ
 - Position data: use value_latitude/value_longitude columns directly (they're already DOUBLE)
 - Complex data: parse value_json for structured data like wind direction/speed
 - Always use glob patterns like '*.parquet' for file matching
@@ -1553,6 +2170,9 @@ IMPORTANT NOTES:
 DATA LIMITATIONS:
 - NO meta/*.parquet files exist - vessel metadata is provided in the vessel context above
 - For vessel names/specs, refer to the VESSEL CONTEXT section, not database queries`;
+
+    this.app?.debug(`✅ Generated schema result (${schemaResult.length} chars)`);
+    return schemaResult;
   }
 
   /**

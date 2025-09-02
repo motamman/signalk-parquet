@@ -60,11 +60,11 @@
     "fs-extra": "^11.2.0",
     "glob": "^11.0.0",
     "typescript": "^5.0.0",
-    "ws": "^8.18.3"
+    "ws": "^8.18.3",
+    "@types/ws": "^8.18.1"
   },
   "devDependencies": {
     "@signalk/server-api": "^2.7.1",
-    "@types/ws": "^8.18.1",
     "@typescript-eslint/eslint-plugin": "^6.21.0",
     "@typescript-eslint/parser": "^6.21.0",
     "eslint": "^8.57.0",

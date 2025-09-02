@@ -39,7 +39,7 @@ export interface PluginConfig {
 export interface ClaudeIntegrationConfig {
   enabled: boolean;
   apiKey?: string;
-  model?: 'claude-opus-4-1-20250805' | 'claude-opus-4-20250514' | 'claude-sonnet-4-20250514' | 'claude-3-7-sonnet-20250219' | 'claude-3-5-haiku-20241022' | 'claude-3-haiku-20240307';
+  model?: 'claude-opus-4-1-20250805' | 'claude-opus-4-20250514' | 'claude-sonnet-4-20250514';
   maxTokens?: number;
   temperature?: number;
   autoAnalysis?: {
@@ -119,6 +119,7 @@ export interface CommandConfig {
   path: string;
   registered: string;
   description?: string;
+  keywords?: string[];      // For Claude context matching
   active?: boolean;
   lastExecuted?: string;
 }
@@ -137,6 +138,7 @@ export interface CommandExecutionRequest {
 export interface CommandRegistrationRequest {
   command: string;
   description?: string;
+  keywords?: string[];
 }
 
 // Web App Configuration (stored separately from plugin config)
@@ -431,7 +433,7 @@ export interface CommandExecutionResult {
 
 export interface CommandHistoryEntry {
   command: string;
-  action: 'EXECUTE' | 'STOP' | 'REGISTER' | 'UNREGISTER';
+  action: 'EXECUTE' | 'STOP' | 'REGISTER' | 'UNREGISTER' | 'UPDATE';
   value?: boolean;
   timestamp: string;
   success: boolean;

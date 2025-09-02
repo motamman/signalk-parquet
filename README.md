@@ -32,9 +32,22 @@ A comprehensive TypeScript-based SignalK plugin and webpp that saves marine data
 - **S3 Integration**: Upload files to Amazon S3 with configurable timing and conflict resolution
 - **Context Support**: Support for multiple vessel contexts with exclusion controls
 
+### Regimen System (Advanced)
+- **Operational Context Tracking**: Define regimens for operational states (mooring, anchoring, racing, passage-making)
+- **Command-Based Episodes**: Track state transitions using SignalK commands as regimen triggers
+- **Keyword Mapping**: Associate keywords with commands for intelligent Claude AI context matching
+- **Episode Boundary Detection**: Sophisticated SQL-based detection of operational periods using CTEs and window functions
+- **Contextual Data Collection**: Link SignalK paths to regimens for targeted data analysis during specific operations
+- **Web Interface Management**: Create, edit, and manage regimens and command keywords through the web UI
+
 ### Claude AI Integration
-- **AI-Powered Analysis**: Advanced maritime data analysis using Claude AI models
-- **Pre-built Templates**: Ready-to-use analysis templates for common maritime operations (TO COME)
+- **AI-Powered Analysis**: Advanced maritime data analysis using Claude AI models (Opus 4, Sonnet 4)
+- **Regimen-Based Analysis**: Context-aware episode detection for operational states (mooring, anchoring, sailing)
+- **Command Integration**: Keyword-based regimen matching with customizable command configurations
+- **Episode Detection**: Sophisticated boundary detection for operational transitions (false→true→false)
+- **Multi-Vessel Support**: Real-time data access from self vessel and other vessels via SignalK
+- **Conversation Continuity**: Follow-up questions with preserved context and specialized tools
+- **Timezone Intelligence**: Automatic UTC-to-local time conversion based on system timezone
 - **Custom Analysis**: Create custom analysis prompts for specific operational needs
 - **Anomaly Detection**: Intelligent detection of unusual patterns and safety concerns
 - **Performance Insights**: AI-generated insights for fuel efficiency and operational optimization
