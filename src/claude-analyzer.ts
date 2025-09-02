@@ -1373,7 +1373,11 @@ Begin your analysis by querying relevant data within the specified time range.`;
       const needsRealTimeData = this.checkForRealTimeKeywords(request.question, conversationMessages);
       this.app?.debug(`🔍 Follow-up real-time check: "${request.question}" -> ${needsRealTimeData}`);
       
-      // Build tools array - always include database access
+      // Build tools array using same logic as initial analysis - identify regimens and build context-aware tools
+      const relevantRegimens = this.identifyRelevantRegimens(request.question);
+      this.app?.debug(`🎯 Follow-up identified ${relevantRegimens.length} relevant regimens: [${relevantRegimens.join(', ')}]`);
+      
+      // Start with base database access tool
       const followUpTools: any[] = [{
         name: 'query_maritime_database',
         description: 'Execute SQL queries against the maritime Parquet database to explore and analyze data',
@@ -1392,6 +1396,33 @@ Begin your analysis by querying relevant data within the specified time range.`;
           required: ['sql', 'purpose']
         }
       }];
+
+      // Add episode boundary detection tool if regimens were identified
+      if (relevantRegimens.length > 0) {
+        followUpTools.push({
+          name: 'find_regimen_episodes',
+          description: 'REQUIRED for finding episodes/periods when regimens were active. Detects start/end boundaries from command state changes (false->true->false). Use this instead of query_maritime_database for episode detection.',
+          input_schema: {
+            type: 'object',
+            properties: {
+              regimenName: {
+                type: 'string',
+                description: `Regimen to analyze. Available: ${relevantRegimens.join(', ')}`
+              },
+              timeRange: {
+                type: 'object',
+                description: 'Optional time range constraint (start/end ISO timestamps)'
+              },
+              limit: {
+                type: 'number',
+                description: 'Maximum number of episodes to return (default 10)'
+              }
+            },
+            required: ['regimenName']
+          }
+        });
+        this.app?.debug(`🎬 Added episode detection tool for regimens: [${relevantRegimens.join(', ')}]`);
+      }
 
       // Add real-time SignalK data tool if keywords detected in follow-up
       if (needsRealTimeData) {
