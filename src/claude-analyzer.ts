@@ -1374,7 +1374,7 @@ Begin your analysis by querying relevant data within the specified time range.`;
       this.app?.debug(`🔍 Follow-up real-time check: "${request.question}" -> ${needsRealTimeData}`);
       
       // Build tools array using same logic as initial analysis - identify regimens and build context-aware tools
-      const relevantRegimens = this.identifyRelevantRegimens(request.question);
+      const relevantRegimens = this.identifyRelevantRegimens(request.question, conversationMessages);
       this.app?.debug(`🎯 Follow-up identified ${relevantRegimens.length} relevant regimens: [${relevantRegimens.join(', ')}]`);
       
       // Start with base database access tool
@@ -1706,7 +1706,7 @@ Begin your analysis by querying relevant data within the specified time range.`;
   /**
    * Identify relevant regimens based on user query keywords
    */
-  private identifyRelevantRegimens(userQuery: string): string[] {
+  private identifyRelevantRegimens(userQuery: string, conversationMessages?: Array<any>): string[] {
     try {
       const { getCurrentCommands } = require('./commands');
       const commands = getCurrentCommands();
@@ -1717,9 +1717,26 @@ Begin your analysis by querying relevant data within the specified time range.`;
       const relevantRegimens = commands.filter((cmd: any) => {
         if (!cmd.keywords || cmd.keywords.length === 0) return false;
         
+        // Check current query
         const hasMatchingKeyword = cmd.keywords.some((keyword: string) => 
           queryLower.includes(keyword.toLowerCase())
         );
+        
+        // If not found in current query, check conversation messages
+        if (!hasMatchingKeyword && conversationMessages) {
+          for (const message of conversationMessages.slice(-3)) { // Check last 3 messages
+            if (message.content && typeof message.content === 'string') {
+              const contentLower = message.content.toLowerCase();
+              const hasContextKeyword = cmd.keywords.some((keyword: string) => 
+                contentLower.includes(keyword.toLowerCase())
+              );
+              if (hasContextKeyword) {
+                this.app?.debug(`✅ Found matching regimen from conversation context: ${cmd.command} (keyword: ${cmd.keywords.join(', ')})`);
+                return true;
+              }
+            }
+          }
+        }
         
         if (hasMatchingKeyword) {
           this.app?.debug(`✅ Found matching regimen: ${cmd.command} (keywords: ${cmd.keywords.join(', ')})`);
