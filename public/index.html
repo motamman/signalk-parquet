@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>SignalK Parquet Data Interface</title>
     <link rel="icon" type="image/png" href="parquet.png">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
         * {
             margin: 0;
@@ -3340,6 +3341,42 @@ Provide actionable insights based on what you observe in the data.`,
             }
         }
 
+        // Convert MMSI numbers to MarineTraffic links
+        function convertMMSIToLinks(container) {
+            const mmsiRegex = /(MMSI:?\s?)(\d{8,9})/gi;
+            
+            // Function to recursively process text nodes
+            function processTextNodes(node) {
+                if (node.nodeType === Node.TEXT_NODE) {
+                    const text = node.textContent;
+                    if (mmsiRegex.test(text)) {
+                        const newText = text.replace(mmsiRegex, (match, prefix, mmsi) => {
+                            return `${prefix}<a href="https://www.marinetraffic.com/en/ais/details/ships/mmsi:${mmsi}" target="_blank" style="color: #1976d2; text-decoration: underline;" title="View ${mmsi} on MarineTraffic">${mmsi}</a>`;
+                        });
+                        
+                        // Replace text node with HTML
+                        const tempDiv = document.createElement('div');
+                        tempDiv.innerHTML = newText;
+                        
+                        // Replace the text node with new nodes
+                        const fragment = document.createDocumentFragment();
+                        while (tempDiv.firstChild) {
+                            fragment.appendChild(tempDiv.firstChild);
+                        }
+                        node.parentNode.replaceChild(fragment, node);
+                    }
+                } else if (node.nodeType === Node.ELEMENT_NODE) {
+                    // Process child nodes (but skip existing links)
+                    if (node.tagName.toLowerCase() !== 'a') {
+                        const children = Array.from(node.childNodes);
+                        children.forEach(child => processTextNodes(child));
+                    }
+                }
+            }
+            
+            processTextNodes(container);
+        }
+
         // Display analysis results
         function displayAnalysisResult(analysisResult) {
             const content = document.getElementById('analysisContent');
@@ -3416,8 +3453,14 @@ Provide actionable insights based on what you observe in the data.`,
                     }
                 });
                 content.appendChild(resultsDiv);
+                
+                // Convert MMSI numbers to MarineTraffic links in the new results
+                convertMMSIToLinks(resultsDiv);
             } else {
                 content.innerHTML = html;
+                
+                // Convert MMSI numbers to MarineTraffic links
+                convertMMSIToLinks(content);
             }
             
             // Show follow-up section for database access mode and store analysis ID
@@ -3628,6 +3671,9 @@ Provide actionable insights based on what you observe in the data.`,
             `;
             
             content.innerHTML = html;
+            
+            // Convert MMSI numbers to MarineTraffic links in the modal content
+            convertMMSIToLinks(content);
         }
 
         // Close analysis view modal
@@ -3913,6 +3959,9 @@ Provide actionable insights based on what you observe in the data.`,
                     
                     // Append to existing content
                     content.innerHTML += followUpHtml;
+                    
+                    // Convert MMSI numbers to MarineTraffic links in the new follow-up content
+                    convertMMSIToLinks(content);
                     
                     // Clear the question input
                     questionTextarea.value = '';
