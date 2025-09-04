@@ -876,7 +876,7 @@ Please structure your response as JSON with the following format:
       await this.vesselContextManager.refreshVesselInfo();
       const vesselContext = this.vesselContextManager.generateClaudeContext();
       this.app?.debug(`🛥️ Vessel context for Claude (${vesselContext.length} chars):\n${vesselContext.substring(0, 500)}${vesselContext.length > 500 ? '...' : ''}`);
-      const schemaInfo = this.getEnhancedSchemaForClaude();
+      const schemaInfo = await this.getEnhancedSchemaForClaude();
       this.app?.debug(`📊 Schema info for Claude (${schemaInfo.length} chars):\n${schemaInfo.substring(0, 1000)}${schemaInfo.length > 1000 ? '...' : ''}`);
       
       // Debug: Log if schema is empty or suspicious
@@ -2043,7 +2043,7 @@ Begin your analysis by querying relevant data within the specified time range.`;
   /**
    * Generate enhanced schema information for Claude
    */
-  private getEnhancedSchemaForClaude(): string {
+  private async getEnhancedSchemaForClaude(): Promise<string> {
     this.app?.debug('🔧 Getting enhanced schema for Claude...');
     const dataDir = this.dataDirectory || '';
     this.app?.debug(`📂 Data directory: "${dataDir}"`);
@@ -2105,7 +2105,21 @@ DO NOT USE ANY PATH NOT LISTED ABOVE. DO NOT GUESS PATH NAMES LIKE "windAvg" - O
             
             otherVesselsInfo = `
 OTHER VESSELS: ${vesselDirs.length} vessels detected in area
-Common paths: navigation.position, navigation.speedOverGround, navigation.closestApproach
+
+Distance and proximity data:
+- navigation.distanceToSelf: Distance from your vessel in meters
+- navigation.closestApproach: Contains distance (meters) and timeTo (seconds) 
+  Example: {"distance": 762.6940177184225, "timeTo": -30673.210651733683}
+
+Common vessel data paths (when available):
+- name: Vessel name (string)
+- mmsi: MMSI number (string)
+- navigation.position: GPS coordinates (latitude/longitude)
+- navigation.speedOverGround: Speed in meters per second
+- navigation.courseOverGroundTrue: Course direction in radians
+- navigation.closestApproach: Closest approach calculations
+- navigation.distanceToSelf: Distance from your vessel in meters
+
 Query example: SELECT * FROM 'data/vessels/*/navigation/position/*.parquet'`;
           } else {
             otherVesselsInfo = `
@@ -2172,6 +2186,25 @@ DATA LIMITATIONS:
 - For vessel names/specs, refer to the VESSEL CONTEXT section, not database queries`;
 
     this.app?.debug(`✅ Generated schema result (${schemaResult.length} chars)`);
+    
+    // Save the actual schema to a file for inspection
+    try {
+      if (this.dataDirectory) {
+        const schemaDir = path.join(this.dataDirectory, 'claude-schemas');
+        await fs.ensureDir(schemaDir);
+        
+        const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+        const filename = `claude-schema-${timestamp}.txt`;
+        const filepath = path.join(schemaDir, filename);
+        
+        await fs.writeFile(filepath, schemaResult, 'utf8');
+        this.app?.debug(`📄 Schema saved to: ${filepath}`);
+      }
+    } catch (error) {
+      this.app?.error(`Failed to save schema to file: ${(error as Error).message}`);
+      // Don't throw - this is not critical to the analysis
+    }
+    
     return schemaResult;
   }
 
