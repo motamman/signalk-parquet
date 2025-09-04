@@ -51,14 +51,14 @@ let sharedAnalyzer: ClaudeAnalyzer | null = null;
 /**
  * Get or create the shared Claude analyzer instance
  */
-function getSharedAnalyzer(config: any, app: ServerAPI, getDataDir: () => string): ClaudeAnalyzer {
+function getSharedAnalyzer(config: any, app: ServerAPI, getDataDir: () => string, state: PluginState): ClaudeAnalyzer {
   if (!sharedAnalyzer) {
     sharedAnalyzer = new ClaudeAnalyzer({
       apiKey: config.claudeIntegration.apiKey,
       model: migrateClaudeModel(config.claudeIntegration.model, app) as any,
       maxTokens: config.claudeIntegration.maxTokens || 4000,
       temperature: config.claudeIntegration.temperature || 0.3
-    }, app, getDataDir());
+    }, app, getDataDir(), state);
     app.debug('🔧 Created shared Claude analyzer instance');
   }
   return sharedAnalyzer;
@@ -1031,7 +1031,7 @@ export function registerApiRoutes(
           });
         }
 
-        const analyzer = getSharedAnalyzer(config, app, getDataDir);
+        const analyzer = getSharedAnalyzer(config, app, getDataDir, state);
 
         const startTime = Date.now();
         const testResult = await analyzer.testConnection();
@@ -1095,7 +1095,7 @@ export function registerApiRoutes(
         }
 
         // Use shared analyzer instance to maintain conversation state
-        const analyzer = getSharedAnalyzer(config, app, getDataDir);
+        const analyzer = getSharedAnalyzer(config, app, getDataDir, state);
 
         // Build analysis request
         let analysisRequest: AnalysisRequest;
@@ -1200,7 +1200,7 @@ export function registerApiRoutes(
         console.log(`🔄 FOLLOW-UP REQUEST: conversationId=${conversationId}, question=${question.substring(0, 100)}...`);
 
         // Use shared analyzer instance to access stored conversations
-        const analyzer = getSharedAnalyzer(config, app, getDataDir);
+        const analyzer = getSharedAnalyzer(config, app, getDataDir, state);
 
         // Process follow-up question
         const followUpRequest = {
@@ -1241,7 +1241,7 @@ export function registerApiRoutes(
 
         const limit = parseInt(req.query.limit || '20', 10);
         
-        const analyzer = getSharedAnalyzer(config, app, getDataDir);
+        const analyzer = getSharedAnalyzer(config, app, getDataDir, state);
 
         const history = await analyzer.getAnalysisHistory(limit);
         
@@ -1292,7 +1292,7 @@ export function registerApiRoutes(
 
         const analysisId = req.params.id;
         
-        const analyzer = getSharedAnalyzer(config, app, getDataDir);
+        const analyzer = getSharedAnalyzer(config, app, getDataDir, state);
 
         const result = await analyzer.deleteAnalysis(analysisId);
         

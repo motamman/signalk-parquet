@@ -1,6 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { ServerAPI } from '@signalk/server-api';
-import { DataRecord } from './types';
+import { DataRecord, PluginState } from './types';
 import { VesselContextManager } from './vessel-context';
 import { getAvailablePaths } from './utils/path-discovery';
 import * as fs from 'fs-extra';
@@ -101,11 +101,13 @@ export class ClaudeAnalyzer {
   private dataDirectory?: string;
   private vesselContextManager: VesselContextManager;
   private activeConversations: Map<string, Array<any>> = new Map();
+  private state?: PluginState;
 
-  constructor(config: ClaudeAnalyzerConfig, app?: ServerAPI, dataDirectory?: string) {
+  constructor(config: ClaudeAnalyzerConfig, app?: ServerAPI, dataDirectory?: string, state?: PluginState) {
     this.config = config;
     this.app = app;
     this.dataDirectory = dataDirectory;
+    this.state = state;
     this.vesselContextManager = new VesselContextManager(app, dataDirectory);
     
     if (!config.apiKey) {
@@ -1061,7 +1063,7 @@ Begin your analysis by querying relevant data within the specified time range.`;
       if (needsRealTimeData) {
         availableTools.push({
           name: 'get_current_signalk_data',
-          description: 'Get current real-time SignalK data values for specific paths or all available paths from any vessel. Use this when user asks about "now", "current", "real-time" conditions.',
+          description: 'Get current real-time SignalK data values for specific paths or all available paths from any vessel. Use this when user asks about "now", "current", "real-time" conditions. For queries about "all vessels" or "other vessels", use vesselContext="vessels.*".',
           input_schema: {
             type: 'object',
             properties: {
@@ -1076,7 +1078,7 @@ Begin your analysis by querying relevant data within the specified time range.`;
               },
               vesselContext: {
                 type: 'string',
-                description: 'Vessel context to query (e.g., "vessels.self", "vessels.urn:mrn:imo:mmsi:123456789"). Defaults to vessels.self if not specified.'
+                description: 'Vessel context to query. Use "vessels.*" for ALL vessels (recommended for multi-vessel queries), "vessels.self" for own vessel, or "vessels.urn:mrn:imo:mmsi:123456789" for specific vessel. Defaults to vessels.self if not specified.'
               }
             },
             required: ['purpose']
@@ -1356,7 +1358,7 @@ Begin your analysis by querying relevant data within the specified time range.`;
       if (needsRealTimeData) {
         followUpTools.push({
           name: 'get_current_signalk_data',
-          description: 'Get current real-time SignalK data values for specific paths or all available paths from any vessel. Use this when user asks about "now", "current", "real-time" conditions.',
+          description: 'Get current real-time SignalK data values for specific paths or all available paths from any vessel. Use this when user asks about "now", "current", "real-time" conditions. For queries about "all vessels" or "other vessels", use vesselContext="vessels.*".',
           input_schema: {
             type: 'object',
             properties: {
@@ -1371,7 +1373,7 @@ Begin your analysis by querying relevant data within the specified time range.`;
               },
               vesselContext: {
                 type: 'string',
-                description: 'Vessel context to query (e.g., "vessels.self", "vessels.urn:mrn:imo:mmsi:123456789"). Defaults to vessels.self if not specified.'
+                description: 'Vessel context to query. Use "vessels.*" for ALL vessels (recommended for multi-vessel queries), "vessels.self" for own vessel, or "vessels.urn:mrn:imo:mmsi:123456789" for specific vessel. Defaults to vessels.self if not specified.'
               }
             },
             required: ['purpose']
@@ -1499,59 +1501,82 @@ Begin your analysis by querying relevant data within the specified time range.`;
     
     try {
       if (!paths || paths.length === 0) {
-        // Get all current vessel data
-        let vesselData: any = {};
-        
+        // Get all current data for the specified context
         if (contextToUse === 'vessels.self') {
-          vesselData = this.app?.getSelfPath('') || {};
+          // Use getSelfPath for self vessel (keep existing working behavior)
+          const vesselData = this.app?.getSelfPath('') || {};
+          const cleanData = this.cleanSignalKData(vesselData);
+          this.app?.debug(`📊 Retrieved ${Object.keys(cleanData).length} current SignalK data points for ${contextToUse}`);
+          return {
+            timestamp: new Date().toISOString(),
+            source: 'real-time SignalK',
+            context: contextToUse,
+            data: cleanData
+          };
+        } else if (contextToUse === 'vessels.*') {
+          // Get all vessels using getPath
+          const allVessels = this.app?.getPath('vessels') || {};
+          const cleanData = this.cleanSignalKData(allVessels);
+          this.app?.debug(`📊 Retrieved data from all vessels (${Object.keys(cleanData).length} vessel contexts)`);
+          return {
+            timestamp: new Date().toISOString(),
+            source: 'real-time SignalK',
+            context: 'vessels.*',
+            data: cleanData
+          };
         } else {
-          // For other vessels, try to access via SignalK context
-          // Note: This requires the SignalK server to have data for the specified vessel
-          try {
-            vesselData = (this.app as any)?.streambundle?.getSelfStream()?.getBus()?.get(contextToUse) || {};
-          } catch (error) {
-            this.app?.debug(`⚠️ Could not access vessel data for ${contextToUse}, trying alternative method`);
-            // Alternative: try to get from available paths
-            vesselData = {};
-          }
+          // Get specific vessel data using getPath
+          const vesselData = this.app?.getPath(contextToUse) || {};
+          const cleanData = this.cleanSignalKData(vesselData);
+          this.app?.debug(`📊 Retrieved ${Object.keys(cleanData).length} current SignalK data points for ${contextToUse}`);
+          return {
+            timestamp: new Date().toISOString(),
+            source: 'real-time SignalK',
+            context: contextToUse,
+            data: cleanData
+          };
         }
-        
-        // Filter out functions and circular references, keep only data values
-        const cleanData = this.cleanSignalKData(vesselData);
-        
-        this.app?.debug(`📊 Retrieved ${Object.keys(cleanData).length} current SignalK data points for ${contextToUse}`);
-        return {
-          timestamp: new Date().toISOString(),
-          source: 'real-time SignalK',
-          context: contextToUse,
-          data: cleanData
-        };
       } else {
         // Get specific paths
         const pathData: any = {};
         
-        for (const path of paths) {
-          try {
-            let value;
-            if (contextToUse === 'vessels.self') {
-              value = this.app?.getSelfPath(path);
-            } else {
-              // Try to get path data for other vessels
+        if (contextToUse === 'vessels.*') {
+          // For wildcard, get paths from all vessels
+          const allVessels = this.app?.getPath('vessels') || {};
+          for (const vesselId in allVessels) {
+            if (vesselId === 'self') continue; // Skip self since it's handled separately
+            
+            for (const path of paths) {
               try {
-                const fullPath = `${contextToUse}.${path}`;
-                value = (this.app as any)?.streambundle?.getSelfStream()?.getBus()?.get(fullPath);
-              } catch {
-                value = undefined;
+                const fullPath = `vessels.${vesselId}.${path}`;
+                const value = this.app?.getPath(fullPath);
+                
+                if (value !== undefined && value !== null) {
+                  if (!pathData[path]) pathData[path] = {};
+                  pathData[path][vesselId] = value;
+                }
+              } catch (error) {
+                // Skip errors for individual vessels - some may not have all paths
               }
             }
-            
-            if (value !== undefined) {
-              pathData[path] = value;
-            } else {
-              pathData[path] = null; // Explicitly show missing values
+          }
+        } else {
+          // Handle single vessel (self or specific vessel)
+          for (const path of paths) {
+            try {
+              let value;
+              if (contextToUse === 'vessels.self') {
+                value = this.app?.getSelfPath(path);
+              } else {
+                // Get from specific vessel using getPath
+                const fullPath = `${contextToUse}.${path}`;
+                value = this.app?.getPath(fullPath);
+              }
+              
+              pathData[path] = value !== undefined ? value : null;
+            } catch (error) {
+              pathData[path] = `Error: ${(error as Error).message}`;
             }
-          } catch (error) {
-            pathData[path] = `Error: ${(error as Error).message}`;
           }
         }
         
@@ -1559,6 +1584,7 @@ Begin your analysis by querying relevant data within the specified time range.`;
         return {
           timestamp: new Date().toISOString(),
           source: 'real-time SignalK',
+          context: contextToUse,
           requestedPaths: paths,
           data: pathData
         };
@@ -1570,6 +1596,126 @@ Begin your analysis by querying relevant data within the specified time range.`;
         timestamp: new Date().toISOString()
       };
     }
+  }
+
+  /**
+   * Get current data from specific vessel buffers
+   */
+  private getCurrentDataFromBuffers(context: string, paths?: string[]): any {
+    if (!this.state) {
+      return {
+        timestamp: new Date().toISOString(),
+        source: 'real-time SignalK buffers',
+        context: context,
+        data: {},
+        error: 'Plugin state not available - cannot access data buffers'
+      };
+    }
+
+    // DEBUG: Log what's actually in the buffers
+    const totalBuffers = this.state.dataBuffers.size;
+    const bufferKeys = Array.from(this.state.dataBuffers.keys());
+    this.app?.debug(`🔍 DEBUG: Total buffers: ${totalBuffers}`);
+    this.app?.debug(`🔍 DEBUG: All buffer keys: ${JSON.stringify(bufferKeys)}`);
+    this.app?.debug(`🔍 DEBUG: Looking for context: "${context}"`);
+
+    const currentData: any = {};
+    let dataFound = false;
+    let matchingKeys: string[] = [];
+
+    // Iterate through data buffers to find matching context
+    this.state.dataBuffers.forEach((buffer, bufferKey) => {
+      if (bufferKey.startsWith(context + ':')) {
+        matchingKeys.push(bufferKey);
+        const path = bufferKey.split(':')[1];
+        
+        // If specific paths requested, only include those
+        if (!paths || paths.includes(path)) {
+          if (buffer.length > 0) {
+            // Get the latest value from the buffer
+            const latestRecord = buffer[buffer.length - 1];
+            currentData[path] = {
+              value: latestRecord.value,
+              timestamp: latestRecord.signalk_timestamp || latestRecord.received_timestamp,
+              source: latestRecord.source_label
+            };
+            dataFound = true;
+          }
+        }
+      }
+    });
+
+    this.app?.debug(`🔍 DEBUG: Matching keys for "${context}": ${JSON.stringify(matchingKeys.slice(0, 5))}${matchingKeys.length > 5 ? '...' : ''}`);
+    this.app?.debug(`📊 Retrieved ${Object.keys(currentData).length} current data points from buffers for ${context}`);
+    
+    return {
+      timestamp: new Date().toISOString(),
+      source: 'real-time SignalK buffers',
+      context: context,
+      requestedPaths: paths,
+      data: currentData,
+      dataFound: dataFound,
+      debug: {
+        totalBuffers: totalBuffers,
+        matchingKeys: matchingKeys.length,
+        sampleBufferKeys: bufferKeys.slice(0, 5)
+      }
+    };
+  }
+
+  /**
+   * Get current data from all vessel buffers
+   */
+  private getAllVesselsCurrentDataFromBuffers(): any {
+    if (!this.state) {
+      return {
+        timestamp: new Date().toISOString(),
+        source: 'real-time SignalK buffers',
+        context: 'vessels.*',
+        data: {},
+        error: 'Plugin state not available - cannot access data buffers'
+      };
+    }
+
+    const allVesselData: any = {};
+
+    // Group buffers by vessel context
+    this.state.dataBuffers.forEach((buffer, bufferKey) => {
+      if (bufferKey.includes(':')) {
+        const [context, path] = bufferKey.split(':', 2);
+        
+        // Only include vessel contexts
+        if (context.startsWith('vessels.')) {
+          if (!allVesselData[context]) {
+            allVesselData[context] = {};
+          }
+          
+          if (buffer.length > 0) {
+            // Get the latest value from the buffer
+            const latestRecord = buffer[buffer.length - 1];
+            allVesselData[context][path] = {
+              value: latestRecord.value,
+              timestamp: latestRecord.signalk_timestamp || latestRecord.received_timestamp,
+              source: latestRecord.source_label
+            };
+          }
+        }
+      }
+    });
+
+    const vesselCount = Object.keys(allVesselData).length;
+    const totalPaths = Object.values(allVesselData).reduce((sum: number, vesselData: any) => sum + Object.keys(vesselData).length, 0);
+    
+    this.app?.debug(`📊 Retrieved data from ${vesselCount} vessels with ${totalPaths} total data points from buffers`);
+    
+    return {
+      timestamp: new Date().toISOString(),
+      source: 'real-time SignalK buffers',
+      context: 'vessels.*',
+      data: allVesselData,
+      vesselCount: vesselCount,
+      totalDataPoints: totalPaths
+    };
   }
 
   /**
@@ -1747,10 +1893,12 @@ Begin your analysis by querying relevant data within the specified time range.`;
       const { paths, purpose, vesselContext } = toolCall.input as { paths?: string[]; purpose: string; vesselContext?: string };
       
       try {
-        const currentData = this.getCurrentSignalKData(paths, purpose, vesselContext);
+        // Ensure paths is always an array or undefined
+        const safePaths = paths ? (Array.isArray(paths) ? paths : [paths]) : undefined;
+        const currentData = this.getCurrentSignalKData(safePaths, purpose, vesselContext);
         const resultSummary = `Current SignalK data "${purpose}":\n\n${JSON.stringify(currentData, null, 2)}`;
         
-        this.app?.debug(`✅ Real-time data retrieved: ${purpose} - ${paths?.length || 'all'} paths`);
+        this.app?.debug(`✅ Real-time data retrieved: ${purpose} - ${safePaths?.length || 'all'} paths`);
         
         return {
           type: 'tool_result',
