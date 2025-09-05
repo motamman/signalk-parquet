@@ -1013,6 +1013,19 @@ When user specifies ANY time frame (72 hours, 3 days, 1 week, 7 days, etc.):
 3. NEVER modify, restrict, or reduce the time range for any reason
 4. Query the database with the full requested range - period, no exceptions
 
+CRITICAL: Before executing ANY query, you MUST:
+1. Extract the EXACT time range from user request
+2. Query the database to find the ACTUAL available data range
+3. Use ONLY the available data range - DO NOT default to 24 hours
+4. If requested range exceeds available data, use ALL available data and state the actual range used
+
+QUERY EXECUTION RULES:
+- For time-based requests, FIRST run: SELECT MIN(signalk_timestamp), MAX(signalk_timestamp) FROM relevant_table
+- Use the full available range, not arbitrary subsets
+- State actual data range used in response
+- If user asks for "7 days" but only 3 days exist, use all 3 days and explain
+- NEVER assume 24-hour periods. ALWAYS query for full available dataset first.
+
 FORBIDDEN ACTIONS - THESE WILL RESULT IN IMMEDIATE FAILURE:
 - Creating ASCII charts, text visualizations, or any fake visual representations
 - Using terms like "trending", "pattern", or "shows" without showing exact data points
