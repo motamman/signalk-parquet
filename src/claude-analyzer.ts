@@ -251,7 +251,7 @@ export class ClaudeAnalyzer {
       // Build query parameters for the history API (only valid parameters)
       const params = new URLSearchParams({
         paths: pathsWithAggregation,
-        from: timeRange ? timeRange.start.toISOString() : new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString(),
+        from: timeRange ? timeRange.start.toISOString() : new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString(),
         to: timeRange ? timeRange.end.toISOString() : new Date().toISOString()
       });
       
@@ -1215,6 +1215,46 @@ Begin your analysis by querying relevant data within the specified time range.`;
         this.app?.debug(`🎬 Added episode detection tool for regimens: [${relevantRegimens.join(', ')}]`);
       }
 
+      // Add wind analysis tool for detailed wind rose and analysis prompts
+      const windKeywords = ['wind', 'breeze', 'gust', 'rose', 'direction', 'beaufort'];
+      const hasWindKeywords = windKeywords.some(keyword => 
+        (request.customPrompt || '').toLowerCase().includes(keyword)
+      );
+      
+      if (hasWindKeywords) {
+        availableTools.push({
+          name: 'generate_wind_analysis',
+          description: 'Generate detailed wind analysis prompts with proper Beaufort scale categories and radar chart specifications for professional maritime wind analysis',
+          input_schema: {
+            type: 'object',
+            properties: {
+              timeFrame: {
+                type: 'string',
+                description: 'Time period for analysis (e.g., "24 hours", "3 days", "1 week")',
+                default: '48 hours'
+              },
+              chartType: {
+                type: 'string',
+                description: 'Type of wind chart to generate (e.g., "wind rose", "trend analysis", "directional frequency")',
+                default: 'wind rose'
+              },
+              windSpeedCategories: {
+                type: 'array',
+                items: { type: 'string' },
+                description: 'Custom wind speed categories (defaults to Beaufort scale if not specified)'
+              },
+              vesselName: {
+                type: 'string',
+                description: 'Name of vessel for analysis',
+                default: 'Zennora'
+              }
+            },
+            required: []
+          }
+        });
+        this.app?.debug(`🌬️ Wind analysis keywords detected, adding wind analysis tool`);
+      }
+
       while (queryCount < maxQueries) {
         const response = await this.callClaudeWithRetry({
           model: this.config.model,
@@ -2040,13 +2080,42 @@ Begin your analysis by querying relevant data within the specified time range.`;
           content: `Episode detection failed: ${(episodeError as Error).message}`
         };
       }
+    } else if (toolCall.name === 'generate_wind_analysis') {
+      const { timeFrame, windSpeedCategories, chartType, vesselName } = toolCall.input as { 
+        timeFrame?: string; 
+        windSpeedCategories?: string[];
+        chartType?: string;
+        vesselName?: string;
+      };
+      
+      const categories = windSpeedCategories || [
+        'Calm (0-1 knots)',
+        'Light Air (1-3 knots)', 
+        'Light Breeze (4-6 knots)',
+        'Gentle Breeze (7-10 knots)',
+        'Moderate Breeze (11-15 knots)',
+        'Fresh Breeze (16-21 knots)',
+        'Strong Breeze (22+ knots)'
+      ];
+      
+      const vessel = vesselName || 'Zennora';
+      const period = timeFrame || '48 hours';
+      const type = chartType || 'wind rose';
+      
+      const windAnalysisPrompt = `Query the wind direction and speed data for ${vessel} over the previous ${period}. Create a ${type} chart that shows wind direction frequency by compass sectors (N, NNE, NE, ENE, E, ESE, SE, SSE, S, SSW, SW, WSW, W, WNW, NW, NNW). Group the data into wind speed categories: ${categories.join(', ')}. For each compass direction, count how many hours of wind occurred in each speed category. Display this as a radar chart with ${categories.length} datasets - one for each wind speed range - using different colors (light blue, green, yellow, orange, red, dark red, purple for increasing intensities). The chart should show the frequency distribution of wind directions and intensities as a traditional ${type}.`;
+      
+      return {
+        type: 'tool_result',
+        tool_use_id: toolCall.id,
+        content: `Generated detailed wind analysis prompt:\n\n${windAnalysisPrompt}\n\nNow executing this analysis...`
+      };
     } else {
       // Handle unknown tool calls
       this.app?.debug(`⚠️ Unknown tool called: ${toolCall.name}`);
       return {
         type: 'tool_result',
         tool_use_id: toolCall.id,
-        content: `Unknown tool "${toolCall.name}" requested. Available tools: query_maritime_database, get_current_signalk_data, find_regimen_episodes`
+        content: `Unknown tool "${toolCall.name}" requested. Available tools: query_maritime_database, get_current_signalk_data, find_regimen_episodes, generate_wind_analysis`
       };
     }
   }
