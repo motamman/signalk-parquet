@@ -3389,8 +3389,9 @@ Provide actionable insights based on what you observe in the data.`,
             const fullMatches = [...fullText.matchAll(chartRegex)];
             console.log('Matches in full text:', fullMatches.length);
             
+            // Process all matches found in full text
+            let processedCharts = false;
             if (fullMatches.length > 0) {
-                // Process charts found in full text
                 let newHTML = fullText;
                 fullMatches.forEach((match, index) => {
                     try {
@@ -3410,6 +3411,7 @@ Provide actionable insights based on what you observe in the data.`,
                                 </div>
                             `;
                             newHTML = newHTML.replace(match[0], chartHTML);
+                            processedCharts = true;
                             
                             // Queue chart rendering for after DOM update
                             setTimeout(() => renderChart(chartId, chartSpec), 300);
@@ -3419,11 +3421,14 @@ Provide actionable insights based on what you observe in the data.`,
                     }
                 });
                 
-                if (newHTML !== fullText) {
+                if (processedCharts) {
                     container.innerHTML = newHTML;
-                    return;
                 }
             }
+            
+            // Always return after processing to prevent text node processing
+            // This prevents re-processing existing charts in the container
+            return;
             
             function processTextNodes(node) {
                 if (node.nodeType === Node.TEXT_NODE) {
@@ -4165,10 +4170,21 @@ Provide actionable insights based on what you observe in the data.`,
                     // Append to existing content
                     content.innerHTML += followUpHtml;
                     
-                    // Convert MMSI numbers to MarineTraffic links in the new follow-up content
-                    convertMMSIToLinks(content);
-                    // Process chart requests in the follow-up content
-                    processChartRequests(content);
+                    // Create a temporary container with just the new follow-up content
+                    const tempDiv = document.createElement('div');
+                    tempDiv.innerHTML = followUpHtml;
+                    
+                    // Process only the new follow-up content
+                    convertMMSIToLinks(tempDiv);
+                    processChartRequests(tempDiv);
+                    
+                    // If tempDiv was modified, replace the last follow-up section
+                    if (tempDiv.innerHTML !== followUpHtml) {
+                        const followUpSections = content.querySelectorAll('div[style*="border-left: 4px solid #1976d2"]');
+                        if (followUpSections.length > 0) {
+                            followUpSections[followUpSections.length - 1].outerHTML = tempDiv.innerHTML;
+                        }
+                    }
                     
                     // Clear the question input
                     questionTextarea.value = '';
