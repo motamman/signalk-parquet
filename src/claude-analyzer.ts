@@ -1935,7 +1935,7 @@ Begin your analysis by querying relevant data within the specified time range.`;
       
       try {
         const queryResult = await this.executeSQLQuery(sql, purpose);
-        const resultSummary = `Query "${purpose}" returned ${queryResult.length} rows:\n\n${JSON.stringify(queryResult.slice(0, 5), null, 2)}${queryResult.length > 5 ? `\n\n... and ${queryResult.length - 5} more rows` : ''}`;
+        const resultSummary = `Query "${purpose}" returned ${queryResult.length} rows:\n\n${JSON.stringify(queryResult, null, 2)}`;
         
         this.app?.debug(`✅ Query executed: ${purpose} - ${queryResult.length} rows returned`);
         
