@@ -995,7 +995,7 @@ MANDATORY TIME CALCULATION VALIDATION - NEVER USE DEFAULT TIME PERIODS:
 3. ALWAYS verify: "User requested [X hours/days], calculating [X hours/days] back from [current time]"
 4. ALWAYS state explicitly: "Time range calculated: [exact start timestamp] to [exact end timestamp]"
 5. If user says "72 hours", you MUST calculate 72 hours, not 24 hours or any other duration
-6. NEVER use mental shortcuts - always do the explicit arithmetic: 72 hours = 3 days, 168 hours = 7 days
+6. NEVER assume data might not be available - execute the exact request first, then report actual results
 
 FORBIDDEN ACTIONS - THESE WILL RESULT IN IMMEDIATE FAILURE:
 - Creating ASCII charts, text visualizations, or any fake visual representations
