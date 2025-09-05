@@ -3377,6 +3377,205 @@ Provide actionable insights based on what you observe in the data.`,
             processTextNodes(container);
         }
 
+        // Process and embed charts from Claude responses
+        function processChartRequests(container) {
+            console.log('Processing chart requests in container:', container);
+            // Look for JSON chart specifications in the text - improved pattern to handle nested objects
+            const chartRegex = /```json\s*([\s\S]*?"type":\s*"chart"[\s\S]*?)\s*```/gi;
+            
+            // First try processing the entire innerHTML
+            const fullText = container.innerHTML || container.textContent || '';
+            console.log('Full container text:', fullText.substring(0, 500));
+            const fullMatches = [...fullText.matchAll(chartRegex)];
+            console.log('Matches in full text:', fullMatches.length);
+            
+            if (fullMatches.length > 0) {
+                // Process charts found in full text
+                let newHTML = fullText;
+                fullMatches.forEach((match, index) => {
+                    try {
+                        let jsonString = match[1].trim();
+                        jsonString = jsonString.replace(/&quot;/g, '"').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>');
+                        
+                        console.log('Found chart JSON:', jsonString.substring(0, 200));
+                        const chartSpec = JSON.parse(jsonString);
+                        console.log('Parsed chart spec:', chartSpec);
+                        
+                        if (chartSpec.type === 'chart') {
+                            const chartId = `chart-${Date.now()}-${Math.random().toString(36).substr(2, 9)}-${index}`;
+                            const chartHTML = `
+                                <div style="margin: 20px 0; padding: 15px; background: #f8f9fa; border-radius: 8px; border-left: 4px solid #2196F3;">
+                                    <h4 style="margin: 0 0 15px 0; color: #333;">📊 ${chartSpec.title || 'Chart'}</h4>
+                                    <canvas id="${chartId}" style="max-height: 400px;"></canvas>
+                                </div>
+                            `;
+                            newHTML = newHTML.replace(match[0], chartHTML);
+                            
+                            // Queue chart rendering for after DOM update
+                            setTimeout(() => renderChart(chartId, chartSpec), 300);
+                        }
+                    } catch (e) {
+                        console.error('Failed to parse chart specification:', e);
+                    }
+                });
+                
+                if (newHTML !== fullText) {
+                    container.innerHTML = newHTML;
+                    return;
+                }
+            }
+            
+            function processTextNodes(node) {
+                if (node.nodeType === Node.TEXT_NODE) {
+                    const text = node.textContent;
+                    console.log('Processing text node:', text.substring(0, 200));
+                    const matches = [...text.matchAll(chartRegex)];
+                    console.log('Found matches:', matches.length);
+                    
+                    if (matches.length > 0) {
+                        let newHTML = text;
+                        
+                        matches.forEach((match, index) => {
+                            try {
+                                // Clean up the JSON string - handle HTML entities and whitespace
+                                let jsonString = match[1].trim();
+                                // Decode HTML entities if present
+                                jsonString = jsonString.replace(/&quot;/g, '"').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>');
+                                
+                                console.log('Found chart JSON:', jsonString);
+                                const chartSpec = JSON.parse(jsonString);
+                                console.log('Parsed chart spec:', chartSpec);
+                                
+                                if (chartSpec.type === 'chart') {
+                                    const chartId = `chart-${Date.now()}-${Math.random().toString(36).substr(2, 9)}-${index}`;
+                                    const chartHTML = `
+                                        <div style="margin: 20px 0; padding: 15px; background: #f8f9fa; border-radius: 8px; border-left: 4px solid #2196F3;">
+                                            <h4 style="margin: 0 0 15px 0; color: #333;">📊 ${chartSpec.title || 'Chart'}</h4>
+                                            <canvas id="${chartId}" style="max-height: 400px;"></canvas>
+                                        </div>
+                                    `;
+                                    newHTML = newHTML.replace(match[0], chartHTML);
+                                    
+                                    // Queue chart rendering for after DOM update
+                                    setTimeout(() => renderChart(chartId, chartSpec), 300);
+                                }
+                            } catch (e) {
+                                console.error('Failed to parse chart specification:', e);
+                            }
+                        });
+                        
+                        if (newHTML !== text) {
+                            // Replace text node with HTML
+                            const tempDiv = document.createElement('div');
+                            tempDiv.innerHTML = newHTML;
+                            const fragment = document.createDocumentFragment();
+                            while (tempDiv.firstChild) {
+                                fragment.appendChild(tempDiv.firstChild);
+                            }
+                            node.parentNode.replaceChild(fragment, node);
+                        }
+                    }
+                } else if (node.nodeType === Node.ELEMENT_NODE) {
+                    const children = Array.from(node.childNodes);
+                    children.forEach(child => processTextNodes(child));
+                }
+            }
+            
+            processTextNodes(container);
+        }
+
+        // Render chart using Chart.js
+        function renderChart(canvasId, chartSpec) {
+            console.log('Attempting to render chart:', canvasId, chartSpec);
+            
+            const canvas = document.getElementById(canvasId);
+            if (!canvas) {
+                console.error('Canvas not found:', canvasId);
+                return;
+            }
+            
+            console.log('Canvas found, dimensions:', canvas.width, canvas.height);
+            
+            const ctx = canvas.getContext('2d');
+            
+            // Check if there's already a chart on this canvas and destroy it
+            const existingChart = Chart.getChart(ctx);
+            if (existingChart) {
+                console.log('Destroying existing chart on canvas:', canvasId);
+                existingChart.destroy();
+            }
+            
+            // Validate chart data
+            if (!chartSpec.datasets || chartSpec.datasets.length === 0) {
+                console.error('No datasets provided for chart:', canvasId);
+                return;
+            }
+            
+            // Convert our chart spec to Chart.js format
+            const chartConfig = {
+                type: chartSpec.chartType || 'line',
+                data: {
+                    labels: chartSpec.labels || [],
+                    datasets: chartSpec.datasets || []
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    animation: {
+                        duration: 0 // Disable animations to prevent rendering issues
+                    },
+                    interaction: {
+                        intersect: false,
+                        mode: 'index'
+                    },
+                    plugins: {
+                        title: {
+                            display: !!chartSpec.title,
+                            text: chartSpec.title
+                        },
+                        legend: {
+                            display: true
+                        }
+                    },
+                    scales: {
+                        x: {
+                            title: {
+                                display: !!chartSpec.xAxisLabel,
+                                text: chartSpec.xAxisLabel
+                            }
+                        },
+                        y: {
+                            title: {
+                                display: !!chartSpec.yAxisLabel,
+                                text: chartSpec.yAxisLabel
+                            }
+                        }
+                    },
+                    // Merge any custom options
+                    ...chartSpec.options
+                }
+            };
+            
+            console.log('Creating chart with config:', chartConfig);
+            
+            try {
+                const chart = new Chart(ctx, chartConfig);
+                console.log('Chart created successfully:', canvasId, chart);
+                
+                // Force a resize to ensure proper rendering
+                setTimeout(() => {
+                    if (chart && !chart.destroyed) {
+                        chart.resize();
+                        console.log('Chart resized:', canvasId);
+                    }
+                }, 200);
+                
+                return chart;
+            } catch (error) {
+                console.error('Failed to create chart:', canvasId, error);
+            }
+        }
+
         // Display analysis results
         function displayAnalysisResult(analysisResult) {
             const content = document.getElementById('analysisContent');
@@ -3456,11 +3655,15 @@ Provide actionable insights based on what you observe in the data.`,
                 
                 // Convert MMSI numbers to MarineTraffic links in the new results
                 convertMMSIToLinks(resultsDiv);
+                // Process chart requests in the new results
+                processChartRequests(resultsDiv);
             } else {
                 content.innerHTML = html;
                 
                 // Convert MMSI numbers to MarineTraffic links
                 convertMMSIToLinks(content);
+                // Process chart requests
+                processChartRequests(content);
             }
             
             // Show follow-up section for database access mode and store analysis ID
@@ -3674,6 +3877,8 @@ Provide actionable insights based on what you observe in the data.`,
             
             // Convert MMSI numbers to MarineTraffic links in the modal content
             convertMMSIToLinks(content);
+            // Process chart requests in the modal content
+            processChartRequests(content);
         }
 
         // Close analysis view modal
@@ -3962,6 +4167,8 @@ Provide actionable insights based on what you observe in the data.`,
                     
                     // Convert MMSI numbers to MarineTraffic links in the new follow-up content
                     convertMMSIToLinks(content);
+                    // Process chart requests in the follow-up content
+                    processChartRequests(content);
                     
                     // Clear the question input
                     questionTextarea.value = '';

@@ -979,6 +979,28 @@ CRITICAL DATA INTEGRITY RULES:
 - If you don't know something, explicitly state "I don't have this information"
 - Financial and navigational decisions depend on accurate data - false information causes real harm
 
+CHART EMBEDDING CAPABILITIES:
+When you want to include charts in your response, add a JSON chart specification in a code block like this:
+\`\`\`json
+{
+  "type": "chart",
+  "chartType": "line",
+  "title": "Speed Over Ground Trend",
+  "xAxisLabel": "Time",
+  "yAxisLabel": "Speed (knots)",
+  "labels": ["12:00", "13:00", "14:00", "15:00"],
+  "datasets": [
+    {
+      "label": "Speed Over Ground",
+      "data": [5.2, 6.1, 5.8, 7.3],
+      "borderColor": "#1976d2",
+      "backgroundColor": "rgba(25, 118, 210, 0.1)"
+    }
+  ]
+}
+\`\`\`
+Supported chart types: line, bar, scatter, doughnut. Include this JSON when analysis would benefit from visualization.
+
 IMPORTANT: Please use the vessel context information provided below for all analysis and responses. This vessel information is critical for accurate maritime analysis.
 
 ${vesselContext}
