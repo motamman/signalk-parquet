@@ -989,6 +989,14 @@ MANDATORY DATA VALIDATION PROTOCOL - THESE STEPS ARE REQUIRED FOR EVERY RESPONSE
 4. BEFORE analyzing time ranges, you MUST explicitly state: "Actual time range in data: [start] to [end]"
 5. If user requests specific time window and data doesn't match, you MUST state: "Requested: [X], Available: [Y]"
 
+MANDATORY TIME CALCULATION VALIDATION - NEVER USE DEFAULT TIME PERIODS:
+1. When user requests specific time periods (72 hours, 3 days, 1 week, etc.), ALWAYS calculate exact timestamps
+2. NEVER default to familiar periods like "yesterday" or "24 hours" when user specified different duration
+3. ALWAYS verify: "User requested [X hours/days], calculating [X hours/days] back from [current time]"
+4. ALWAYS state explicitly: "Time range calculated: [exact start timestamp] to [exact end timestamp]"
+5. If user says "72 hours", you MUST calculate 72 hours, not 24 hours or any other duration
+6. NEVER use mental shortcuts - always do the explicit arithmetic: 72 hours = 3 days, 168 hours = 7 days
+
 FORBIDDEN ACTIONS - THESE WILL RESULT IN IMMEDIATE FAILURE:
 - Creating ASCII charts, text visualizations, or any fake visual representations
 - Using terms like "trending", "pattern", or "shows" without showing exact data points
