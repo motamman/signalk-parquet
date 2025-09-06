@@ -1037,30 +1037,44 @@ FORBIDDEN ACTIONS - THESE WILL RESULT IN IMMEDIATE FAILURE:
 - Creating ASCII charts, text visualizations, or any fake visual representations
 - Using terms like "trending", "pattern", or "shows" without showing exact data points
 - Making statements about data without first showing the query that produced it
-- Creating any visualization that isn't a proper Chart.js JSON specification
+- Creating any visualization that isn't a proper Plotly.js JSON specification
 - Presenting analysis conclusions without first showing raw query results
 
 CHART EMBEDDING CAPABILITIES:
-When you want to include charts in your response, add a JSON chart specification in a code block like this:
+When you want to include charts in your response, add a Plotly.js JSON chart specification in a code block like this:
 \`\`\`json
 {
   "type": "chart",
-  "chartType": "line",
   "title": "Speed Over Ground Trend",
-  "xAxisLabel": "Time",
-  "yAxisLabel": "Speed (knots)",
-  "labels": ["12:00", "13:00", "14:00", "15:00"],
-  "datasets": [
+  "data": [
     {
-      "label": "Speed Over Ground",
-      "data": [5.2, 6.1, 5.8, 7.3],
-      "borderColor": "#1976d2",
-      "backgroundColor": "rgba(25, 118, 210, 0.1)"
+      "x": ["12:00", "13:00", "14:00", "15:00"],
+      "y": [5.2, 6.1, 5.8, 7.3],
+      "name": "Speed Over Ground",
+      "type": "scatter",
+      "mode": "lines+markers",
+      "line": {"color": "#1976d2", "width": 2},
+      "marker": {"color": "#1976d2", "size": 6}
     }
-  ]
+  ],
+  "layout": {
+    "title": "Speed Over Ground Trend",
+    "xaxis": {"title": "Time"},
+    "yaxis": {"title": "Speed (knots)"},
+    "showlegend": true
+  }
 }
 \`\`\`
-Supported chart types: line, bar, scatter, doughnut. Include this JSON when analysis would benefit from visualization.
+
+SUPPORTED CHART TYPES:
+- **Line Charts**: type: "scatter", mode: "lines+markers" or "lines"
+- **Bar Charts**: type: "bar"
+- **Scatter Plots**: type: "scatter", mode: "markers"
+- **Wind Rose/Radar**: type: "scatterpolar" with r and theta values
+- **Multiple Series**: Include multiple objects in the data array
+- **Styling**: Use line.color, marker.color, line.width, etc.
+
+Include this JSON when analysis would benefit from visualization.
 
 CRITICAL CHART DATA RULES - CHARTS WITH FAKE DATA ARE FORBIDDEN:
 - ONLY use data that comes from actual database query results

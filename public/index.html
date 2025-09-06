@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>SignalK Parquet Data Interface</title>
     <link rel="icon" type="image/png" href="parquet.png">
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
     <style>
         * {
             margin: 0;
@@ -3407,7 +3407,7 @@ Provide actionable insights based on what you observe in the data.`,
                             const chartHTML = `
                                 <div style="margin: 20px 0; padding: 15px; background: #f8f9fa; border-radius: 8px; border-left: 4px solid #2196F3;">
                                     <h4 style="margin: 0 0 15px 0; color: #333;">📊 ${chartSpec.title || 'Chart'}</h4>
-                                    <canvas id="${chartId}" style="max-height: 400px;"></canvas>
+                                    <div id="${chartId}" style="width: 100%; height: 400px;"></div>
                                 </div>
                             `;
                             newHTML = newHTML.replace(match[0], chartHTML);
@@ -3418,6 +3418,7 @@ Provide actionable insights based on what you observe in the data.`,
                         }
                     } catch (e) {
                         console.error('Failed to parse chart specification:', e);
+                        console.error('Raw JSON that failed to parse:', jsonString);
                     }
                 });
                 
@@ -3466,6 +3467,7 @@ Provide actionable insights based on what you observe in the data.`,
                                 }
                             } catch (e) {
                                 console.error('Failed to parse chart specification:', e);
+                                console.error('Raw JSON that failed to parse:', jsonString);
                             }
                         });
                         
@@ -3489,95 +3491,95 @@ Provide actionable insights based on what you observe in the data.`,
             processTextNodes(container);
         }
 
-        // Render chart using Chart.js
-        function renderChart(canvasId, chartSpec) {
-            console.log('Attempting to render chart:', canvasId, chartSpec);
+        // Render chart using Plotly.js (native format)
+        function renderChart(chartId, chartSpec) {
+            console.log('Attempting to render Plotly chart:', chartId, chartSpec);
             
-            const canvas = document.getElementById(canvasId);
-            if (!canvas) {
-                console.error('Canvas not found:', canvasId);
+            const chartDiv = document.getElementById(chartId);
+            if (!chartDiv) {
+                console.error('Chart div not found:', chartId);
                 return;
             }
             
-            console.log('Canvas found, dimensions:', canvas.width, canvas.height);
+            console.log('Chart div found:', chartDiv);
             
-            const ctx = canvas.getContext('2d');
+            // Handle both new native Plotly format and legacy Chart.js format
+            let plotlyData, plotlyLayout, plotlyConfig;
             
-            // Check if there's already a chart on this canvas and destroy it
-            const existingChart = Chart.getChart(ctx);
-            if (existingChart) {
-                console.log('Destroying existing chart on canvas:', canvasId);
-                existingChart.destroy();
-            }
-            
-            // Validate chart data
-            if (!chartSpec.datasets || chartSpec.datasets.length === 0) {
-                console.error('No datasets provided for chart:', canvasId);
+            if (chartSpec.data && chartSpec.layout) {
+                // Native Plotly format - use directly
+                console.log('Using native Plotly format');
+                plotlyData = chartSpec.data;
+                plotlyLayout = chartSpec.layout;
+                plotlyConfig = chartSpec.config || {};
+            } else if (chartSpec.datasets) {
+                // Legacy Chart.js format - convert to Plotly
+                console.log('Converting Chart.js format to Plotly');
+                
+                plotlyData = chartSpec.datasets.map(dataset => ({
+                    x: chartSpec.labels || [],
+                    y: dataset.data || [],
+                    name: dataset.label || '',
+                    type: 'scatter',
+                    mode: dataset.borderDash ? 'lines' : 'lines+markers',
+                    line: {
+                        color: dataset.borderColor || dataset.backgroundColor || '#2196F3',
+                        width: dataset.borderWidth || 2,
+                        dash: dataset.borderDash ? 'dash' : 'solid'
+                    },
+                    marker: {
+                        size: 4,
+                        color: dataset.borderColor || dataset.backgroundColor || '#2196F3'
+                    },
+                    fill: dataset.fill ? 'tonexty' : 'none',
+                    fillcolor: dataset.backgroundColor || 'rgba(33, 150, 243, 0.1)'
+                }));
+                
+                plotlyLayout = {
+                    title: {
+                        text: chartSpec.title || '',
+                        font: { size: 16 }
+                    },
+                    xaxis: {
+                        title: chartSpec.xAxisLabel || '',
+                        showgrid: true,
+                        zeroline: false
+                    },
+                    yaxis: {
+                        title: chartSpec.yAxisLabel || '',
+                        showgrid: true,
+                        zeroline: false
+                    },
+                    showlegend: true,
+                    hovermode: 'x unified',
+                    margin: { l: 60, r: 30, t: 50, b: 50 },
+                    plot_bgcolor: 'rgba(0,0,0,0)',
+                    paper_bgcolor: 'rgba(0,0,0,0)'
+                };
+            } else {
+                console.error('Invalid chart specification - no data or datasets found:', chartSpec);
                 return;
             }
             
-            // Convert our chart spec to Chart.js format
-            const chartConfig = {
-                type: chartSpec.chartType || 'line',
-                data: {
-                    labels: chartSpec.labels || [],
-                    datasets: chartSpec.datasets || []
-                },
-                options: {
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    animation: {
-                        duration: 0 // Disable animations to prevent rendering issues
-                    },
-                    interaction: {
-                        intersect: false,
-                        mode: 'index'
-                    },
-                    plugins: {
-                        title: {
-                            display: !!chartSpec.title,
-                            text: chartSpec.title
-                        },
-                        legend: {
-                            display: true
-                        }
-                    },
-                    scales: {
-                        x: {
-                            title: {
-                                display: !!chartSpec.xAxisLabel,
-                                text: chartSpec.xAxisLabel
-                            }
-                        },
-                        y: {
-                            title: {
-                                display: !!chartSpec.yAxisLabel,
-                                text: chartSpec.yAxisLabel
-                            }
-                        }
-                    },
-                    // Merge any custom options
-                    ...chartSpec.options
-                }
+            // Default Plotly config
+            const defaultConfig = {
+                responsive: true,
+                displayModeBar: true,
+                modeBarButtonsToRemove: ['pan2d', 'select2d', 'lasso2d', 'resetScale2d'],
+                displaylogo: false
             };
             
-            console.log('Creating chart with config:', chartConfig);
+            plotlyConfig = { ...defaultConfig, ...plotlyConfig };
+            
+            console.log('Creating Plotly chart with data:', plotlyData, 'layout:', plotlyLayout);
             
             try {
-                const chart = new Chart(ctx, chartConfig);
-                console.log('Chart created successfully:', canvasId, chart);
+                Plotly.newPlot(chartId, plotlyData, plotlyLayout, plotlyConfig);
+                console.log('Plotly chart created successfully:', chartId);
                 
-                // Force a resize to ensure proper rendering
-                setTimeout(() => {
-                    if (chart && !chart.destroyed) {
-                        chart.resize();
-                        console.log('Chart resized:', canvasId);
-                    }
-                }, 200);
-                
-                return chart;
+                return true;
             } catch (error) {
-                console.error('Failed to create chart:', canvasId, error);
+                console.error('Failed to create Plotly chart:', chartId, error);
             }
         }
 
@@ -3650,10 +3652,11 @@ Provide actionable insights based on what you observe in the data.`,
             // Clear content but preserve timer and any existing charts
             const children = Array.from(content.children);
             children.forEach(child => {
-                // Preserve timer and any chart containers (divs containing canvas elements)
+                // Preserve timer and any Plotly chart containers
                 if (child.id === 'analysisTimer' || 
-                    child.querySelector('canvas') || 
-                    child.tagName === 'CANVAS') {
+                    child.querySelector('div[id^="chart-"]') || 
+                    (child.id && child.id.startsWith('chart-')) ||
+                    child.querySelector('.plotly-graph-div')) {
                     // Keep this element
                 } else {
                     child.remove();
