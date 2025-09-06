@@ -890,10 +890,17 @@ Please structure your response as JSON with the following format:
       // Build time range guidance for Claude
       let timeRangeGuidance = '';
       if (request.timeRange) {
+        console.log(`🔍 REQUEST TIME RANGE DEBUG:`, {
+          userRequested: request.customPrompt || request.analysisType,
+          actualStart: request.timeRange.start.toISOString(),
+          actualEnd: request.timeRange.end.toISOString(),
+          calculatedHours: (request.timeRange.end.getTime() - request.timeRange.start.getTime()) / (1000 * 60 * 60)
+        });
+        
         timeRangeGuidance = `
 
-TIME RANGE RESTRICTION: Focus your analysis on data between ${request.timeRange.start.toISOString().replace('.000Z', 'Z')} and ${request.timeRange.end.toISOString().replace('.000Z', 'Z')}.
-IMPORTANT: Always include WHERE clauses in your SQL queries to limit results to this time range:
+ANALYSIS SCOPE: Focus your analysis on data between ${request.timeRange.start.toISOString().replace('.000Z', 'Z')} and ${request.timeRange.end.toISOString().replace('.000Z', 'Z')}.
+IMPORTANT: Always include WHERE clauses in your SQL queries to filter results to this time range:
 WHERE signalk_timestamp >= '${request.timeRange.start.toISOString().replace('.000Z', 'Z')}' AND signalk_timestamp <= '${request.timeRange.end.toISOString().replace('.000Z', 'Z')}'`;
       } else {
         // Default to recent data if no time range specified
