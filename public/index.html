@@ -3398,8 +3398,57 @@ Provide actionable insights based on what you observe in the data.`,
                         let jsonString = match[1].trim();
                         jsonString = jsonString.replace(/&quot;/g, '"').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>');
                         
-                        console.log('Found chart JSON:', jsonString.substring(0, 200));
-                        const chartSpec = JSON.parse(jsonString);
+                        // Extract only valid JSON by finding the first complete JSON object
+                        let validJsonString = jsonString;
+                        try {
+                            // Find the end of the first complete JSON object
+                            let braceCount = 0;
+                            let inString = false;
+                            let escaped = false;
+                            let jsonEndIndex = -1;
+                            
+                            for (let i = 0; i < jsonString.length; i++) {
+                                const char = jsonString[i];
+                                
+                                if (escaped) {
+                                    escaped = false;
+                                    continue;
+                                }
+                                
+                                if (char === '\\' && inString) {
+                                    escaped = true;
+                                    continue;
+                                }
+                                
+                                if (char === '"' && !escaped) {
+                                    inString = !inString;
+                                    continue;
+                                }
+                                
+                                if (!inString) {
+                                    if (char === '{') {
+                                        braceCount++;
+                                    } else if (char === '}') {
+                                        braceCount--;
+                                        if (braceCount === 0) {
+                                            jsonEndIndex = i + 1;
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                            
+                            if (jsonEndIndex > 0) {
+                                validJsonString = jsonString.substring(0, jsonEndIndex);
+                                console.log('🔧 FRONTEND - Extracted valid JSON, length:', validJsonString.length, 'vs original:', jsonString.length);
+                            }
+                        } catch (extractError) {
+                            console.warn('🔧 JSON extraction failed, using original:', extractError);
+                        }
+                        
+                        console.log('🔍 FRONTEND - Processing JSON length:', validJsonString.length);
+                        
+                        const chartSpec = JSON.parse(validJsonString);
                         console.log('Parsed chart spec:', chartSpec);
                         
                         if (chartSpec.type === 'chart') {
@@ -3418,7 +3467,19 @@ Provide actionable insights based on what you observe in the data.`,
                         }
                     } catch (e) {
                         console.error('Failed to parse chart specification:', e);
-                        console.error('Raw JSON that failed to parse:', jsonString);
+                        console.error('Raw JSON that failed to parse:', validJsonString);
+                        
+                        // Show the problematic area around the error position
+                        if (e.message.includes('position')) {
+                            const match = e.message.match(/position (\d+)/);
+                            if (match) {
+                                const errorPos = parseInt(match[1]);
+                                const start = Math.max(0, errorPos - 100);
+                                const end = Math.min(validJsonString.length, errorPos + 100);
+                                console.error('🚨 PROBLEM AREA around position', errorPos, ':', validJsonString.substring(start, end));
+                                console.error('🚨 CHARACTER AT ERROR:', validJsonString[errorPos], 'ASCII:', validJsonString.charCodeAt(errorPos));
+                            }
+                        }
                     }
                 });
                 
@@ -3448,8 +3509,57 @@ Provide actionable insights based on what you observe in the data.`,
                                 // Decode HTML entities if present
                                 jsonString = jsonString.replace(/&quot;/g, '"').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>');
                                 
-                                console.log('Found chart JSON:', jsonString);
-                                const chartSpec = JSON.parse(jsonString);
+                                // Extract only valid JSON by finding the first complete JSON object
+                                let validJsonString = jsonString;
+                                try {
+                                    // Find the end of the first complete JSON object
+                                    let braceCount = 0;
+                                    let inString = false;
+                                    let escaped = false;
+                                    let jsonEndIndex = -1;
+                                    
+                                    for (let i = 0; i < jsonString.length; i++) {
+                                        const char = jsonString[i];
+                                        
+                                        if (escaped) {
+                                            escaped = false;
+                                            continue;
+                                        }
+                                        
+                                        if (char === '\\' && inString) {
+                                            escaped = true;
+                                            continue;
+                                        }
+                                        
+                                        if (char === '"' && !escaped) {
+                                            inString = !inString;
+                                            continue;
+                                        }
+                                        
+                                        if (!inString) {
+                                            if (char === '{') {
+                                                braceCount++;
+                                            } else if (char === '}') {
+                                                braceCount--;
+                                                if (braceCount === 0) {
+                                                    jsonEndIndex = i + 1;
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                    }
+                                    
+                                    if (jsonEndIndex > 0) {
+                                        validJsonString = jsonString.substring(0, jsonEndIndex);
+                                        console.log('🔧 FRONTEND (legacy) - Extracted valid JSON, length:', validJsonString.length, 'vs original:', jsonString.length);
+                                    }
+                                } catch (extractError) {
+                                    console.warn('🔧 JSON extraction (legacy) failed, using original:', extractError);
+                                }
+                                
+                                console.log('🔍 FRONTEND (legacy) - Processing JSON length:', validJsonString.length);
+                                
+                                const chartSpec = JSON.parse(validJsonString);
                                 console.log('Parsed chart spec:', chartSpec);
                                 
                                 if (chartSpec.type === 'chart') {
@@ -3467,7 +3577,7 @@ Provide actionable insights based on what you observe in the data.`,
                                 }
                             } catch (e) {
                                 console.error('Failed to parse chart specification:', e);
-                                console.error('Raw JSON that failed to parse:', jsonString);
+                                console.error('Raw JSON that failed to parse:', validJsonString);
                             }
                         });
                         
@@ -3664,10 +3774,10 @@ Provide actionable insights based on what you observe in the data.`,
             });
             content.appendChild(resultsDiv);
             
-            // Convert MMSI numbers to MarineTraffic links in the new results
-            convertMMSIToLinks(resultsDiv);
-            // Process chart requests in the new results only
+            // Process chart requests FIRST (before MMSI link conversion which would break JSON)
             processChartRequests(resultsDiv);
+            // Convert MMSI numbers to MarineTraffic links in the new results (after charts are processed)
+            convertMMSIToLinks(resultsDiv);
             
             // Show follow-up section for database access mode and store analysis ID
             if (analysisResult.metadata && analysisResult.metadata.useDatabaseAccess && analysisResult.id) {
@@ -3878,10 +3988,10 @@ Provide actionable insights based on what you observe in the data.`,
             
             content.innerHTML = html;
             
-            // Convert MMSI numbers to MarineTraffic links in the modal content
-            convertMMSIToLinks(content);
-            // Process chart requests in the modal content
+            // Process chart requests FIRST (before MMSI link conversion which would break JSON)
             processChartRequests(content);
+            // Convert MMSI numbers to MarineTraffic links in the modal content (after charts are processed)
+            convertMMSIToLinks(content);
         }
 
         // Close analysis view modal
@@ -4173,8 +4283,9 @@ Provide actionable insights based on what you observe in the data.`,
                     tempDiv.innerHTML = followUpHtml;
                     
                     // Process only the new follow-up content
-                    convertMMSIToLinks(tempDiv);
+                    // Process chart requests FIRST (before MMSI link conversion which would break JSON)
                     processChartRequests(tempDiv);
+                    convertMMSIToLinks(tempDiv);
                     
                     // If tempDiv was modified, replace the last follow-up section
                     if (tempDiv.innerHTML !== followUpHtml) {

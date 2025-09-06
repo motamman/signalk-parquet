@@ -1305,6 +1305,19 @@ Begin your analysis by querying relevant data within the specified time range.`;
           if (contentBlock.type === 'text') {
             const textContent = contentBlock.text;
             this.app?.debug(`📝 Claude response text (${textContent.length} chars): ${textContent.substring(0, 200)}...`);
+            
+            // Debug: Check for JSON chart specs in the response
+            const chartJsonMatches = textContent.match(/```json\s*([\s\S]*?)\s*```/gi);
+            if (chartJsonMatches) {
+              this.app?.debug(`🔍 FOUND ${chartJsonMatches.length} JSON BLOCKS IN CLAUDE RESPONSE`);
+              chartJsonMatches.forEach((match: string, index: number) => {
+                const jsonContent = match.replace(/```json\s*/, '').replace(/\s*```/, '');
+                this.app?.debug(`📊 JSON Block ${index + 1} - Length: ${jsonContent.length} chars`);
+                this.app?.debug(`📊 JSON Block ${index + 1} - Preview: ${jsonContent.substring(0, 100)}...`);
+                this.app?.debug(`📊 JSON Block ${index + 1} - Ending: ...${jsonContent.substring(Math.max(0, jsonContent.length - 100))}`);
+              });
+            }
+            
             analysisResult += textContent + '\n\n';
           } else if (contentBlock.type === 'tool_use') {
             const toolCall = contentBlock;
