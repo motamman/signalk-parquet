@@ -1086,6 +1086,7 @@ export function registerApiRoutes(
         const { dataPath, analysisType, templateId, customPrompt, timeRange, aggregationMethod, resolution, claudeModel, useDatabaseAccess } = req.body;
 
         console.log(`🧠 ANALYSIS REQUEST: dataPath=${dataPath}, templateId=${templateId}, analysisType=${analysisType}, aggregationMethod=${aggregationMethod}, model=${claudeModel || 'config-default'}`);
+        console.log(`🔍 CUSTOM PROMPT DEBUG: "${customPrompt}" (type: ${typeof customPrompt}, length: ${customPrompt?.length || 0})`);
 
         if (!dataPath) {
           return res.status(400).json({

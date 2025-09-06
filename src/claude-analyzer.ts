@@ -1137,7 +1137,7 @@ Begin your analysis by querying relevant data within the specified time range.`;
 
       let analysisResult = '';
       let queryCount = 0;
-      const maxQueries = 5; // Reduced to prevent excessive API calls and token usage
+      const maxQueries = 10; // Allow more queries for thorough analysis
       let totalTokenUsage = { input_tokens: 0, output_tokens: 0 };
 
       // Check if user is requesting real-time data
@@ -1443,7 +1443,7 @@ Begin your analysis by querying relevant data within the specified time range.`;
 
       let analysisResult = '';
       let queryCount = 0;
-      const maxQueries = 5; // Fewer queries for follow-ups
+      const maxQueries = 10; // Allow thorough follow-up analysis
       let totalTokenUsage = { input_tokens: 0, output_tokens: 0 };
 
       // Check if follow-up question contains real-time keywords

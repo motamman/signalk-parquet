@@ -3643,33 +3643,28 @@ Provide actionable insights based on what you observe in the data.`,
                 </div>
             `;
             
-            // Preserve the timer and append results after it
-            if (existingTimer) {
-                // Create a results container
-                const resultsDiv = document.createElement('div');
-                resultsDiv.innerHTML = html;
-                
-                // Clear content but keep timer, then append results
-                const children = Array.from(content.children);
-                children.forEach(child => {
-                    if (child.id !== 'analysisTimer') {
-                        child.remove();
-                    }
-                });
-                content.appendChild(resultsDiv);
-                
-                // Convert MMSI numbers to MarineTraffic links in the new results
-                convertMMSIToLinks(resultsDiv);
-                // Process chart requests in the new results
-                processChartRequests(resultsDiv);
-            } else {
-                content.innerHTML = html;
-                
-                // Convert MMSI numbers to MarineTraffic links
-                convertMMSIToLinks(content);
-                // Process chart requests
-                processChartRequests(content);
-            }
+            // Always preserve existing charts and timers, never use innerHTML = which destroys charts
+            const resultsDiv = document.createElement('div');
+            resultsDiv.innerHTML = html;
+            
+            // Clear content but preserve timer and any existing charts
+            const children = Array.from(content.children);
+            children.forEach(child => {
+                // Preserve timer and any chart containers (divs containing canvas elements)
+                if (child.id === 'analysisTimer' || 
+                    child.querySelector('canvas') || 
+                    child.tagName === 'CANVAS') {
+                    // Keep this element
+                } else {
+                    child.remove();
+                }
+            });
+            content.appendChild(resultsDiv);
+            
+            // Convert MMSI numbers to MarineTraffic links in the new results
+            convertMMSIToLinks(resultsDiv);
+            // Process chart requests in the new results only
+            processChartRequests(resultsDiv);
             
             // Show follow-up section for database access mode and store analysis ID
             if (analysisResult.metadata && analysisResult.metadata.useDatabaseAccess && analysisResult.id) {
