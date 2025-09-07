@@ -1677,16 +1677,27 @@ Begin your analysis by querying relevant data within the specified time range.`;
       if (!paths || paths.length === 0) {
         // Get all current data for the specified context
         if (contextToUse === 'vessels.self') {
-          // Use getPath for self vessel (consistent with working vessels.* approach)
-          const vesselData = this.app?.getPath('vessels.self') || {};
-          const cleanData = this.cleanSignalKData(vesselData);
-          this.app?.debug(`📊 Retrieved ${Object.keys(cleanData).length} current SignalK data points for ${contextToUse}`);
-          return {
-            timestamp: new Date().toISOString(),
-            source: 'real-time SignalK',
-            context: contextToUse,
-            data: cleanData
-          };
+          // Resolve 'self' to actual vessel ID and use getPath with full vessel identifier
+          const actualVesselId = this.app?.selfId;
+          if (actualVesselId) {
+            const vesselData = this.app?.getPath(`vessels.${actualVesselId}`) || {};
+            const cleanData = this.cleanSignalKData(vesselData);
+            this.app?.debug(`📊 Retrieved ${Object.keys(cleanData).length} current SignalK data points for vessels.${actualVesselId} (resolved from ${contextToUse})`);
+            return {
+              timestamp: new Date().toISOString(),
+              source: 'real-time SignalK',
+              context: `vessels.${actualVesselId}`,
+              data: cleanData
+            };
+          } else {
+            this.app?.debug(`⚠️ Could not resolve selfId for ${contextToUse}`);
+            return {
+              timestamp: new Date().toISOString(),
+              source: 'real-time SignalK',
+              context: contextToUse,
+              data: {}
+            };
+          }
         } else if (contextToUse === 'vessels.*') {
           // Get all vessels using getPath
           const allVessels = this.app?.getPath('vessels') || {};
@@ -1740,7 +1751,14 @@ Begin your analysis by querying relevant data within the specified time range.`;
             try {
               let value;
               if (contextToUse === 'vessels.self') {
-                value = this.app?.getSelfPath(path);
+                // Resolve 'self' to actual vessel ID and use getPath with full vessel identifier
+                const actualVesselId = this.app?.selfId;
+                if (actualVesselId) {
+                  const fullPath = `vessels.${actualVesselId}.${path}`;
+                  value = this.app?.getPath(fullPath);
+                } else {
+                  value = null;
+                }
               } else {
                 // Get from specific vessel using getPath
                 const fullPath = `${contextToUse}.${path}`;
