@@ -2088,7 +2088,13 @@ Begin your analysis by querying relevant data within the specified time range.`;
         // Ensure paths is always an array or undefined
         const safePaths = paths ? (Array.isArray(paths) ? paths : [paths]) : undefined;
         const currentData = this.getCurrentSignalKData(safePaths, purpose, vesselContext);
-        const resultSummary = `Current SignalK data "${purpose}":\n\n${JSON.stringify(currentData, null, 2)}`;
+        
+        // Debug: Log the actual data structure and size
+        const dataStr = JSON.stringify(currentData, null, 2);
+        console.log(`🔍 DATA SIZE: ${dataStr.length} characters`);
+        console.log(`🔍 DATA STRUCTURE:`, currentData);
+        
+        const resultSummary = `Current SignalK data "${purpose}":\n\n${dataStr}`;
         
         this.app?.debug(`✅ Real-time data retrieved: ${purpose} - ${safePaths?.length || 'all'} paths`);
         
