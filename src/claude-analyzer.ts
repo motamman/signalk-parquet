@@ -1,6 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { ServerAPI } from '@signalk/server-api';
-import { DataRecord } from './types';
+import { DataRecord, PluginState } from './types';
 import { VesselContextManager } from './vessel-context';
 import { getAvailablePaths } from './utils/path-discovery';
 import * as fs from 'fs-extra';
@@ -101,11 +101,13 @@ export class ClaudeAnalyzer {
   private dataDirectory?: string;
   private vesselContextManager: VesselContextManager;
   private activeConversations: Map<string, Array<any>> = new Map();
+  private state?: PluginState;
 
-  constructor(config: ClaudeAnalyzerConfig, app?: ServerAPI, dataDirectory?: string) {
+  constructor(config: ClaudeAnalyzerConfig, app?: ServerAPI, dataDirectory?: string, state?: PluginState) {
     this.config = config;
     this.app = app;
     this.dataDirectory = dataDirectory;
+    this.state = state;
     this.vesselContextManager = new VesselContextManager(app, dataDirectory);
     
     if (!config.apiKey) {
@@ -249,7 +251,7 @@ export class ClaudeAnalyzer {
       // Build query parameters for the history API (only valid parameters)
       const params = new URLSearchParams({
         paths: pathsWithAggregation,
-        from: timeRange ? timeRange.start.toISOString() : new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString(),
+        from: timeRange ? timeRange.start.toISOString() : new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString(),
         to: timeRange ? timeRange.end.toISOString() : new Date().toISOString()
       });
       
@@ -876,7 +878,7 @@ Please structure your response as JSON with the following format:
       await this.vesselContextManager.refreshVesselInfo();
       const vesselContext = this.vesselContextManager.generateClaudeContext();
       this.app?.debug(`🛥️ Vessel context for Claude (${vesselContext.length} chars):\n${vesselContext.substring(0, 500)}${vesselContext.length > 500 ? '...' : ''}`);
-      const schemaInfo = this.getEnhancedSchemaForClaude();
+      const schemaInfo = await this.getEnhancedSchemaForClaude();
       this.app?.debug(`📊 Schema info for Claude (${schemaInfo.length} chars):\n${schemaInfo.substring(0, 1000)}${schemaInfo.length > 1000 ? '...' : ''}`);
       
       // Debug: Log if schema is empty or suspicious
@@ -888,10 +890,17 @@ Please structure your response as JSON with the following format:
       // Build time range guidance for Claude
       let timeRangeGuidance = '';
       if (request.timeRange) {
+        console.log(`🔍 REQUEST TIME RANGE DEBUG:`, {
+          userRequested: request.customPrompt || request.analysisType,
+          actualStart: request.timeRange.start.toISOString(),
+          actualEnd: request.timeRange.end.toISOString(),
+          calculatedHours: (request.timeRange.end.getTime() - request.timeRange.start.getTime()) / (1000 * 60 * 60)
+        });
+        
         timeRangeGuidance = `
 
-TIME RANGE RESTRICTION: Focus your analysis on data between ${request.timeRange.start.toISOString().replace('.000Z', 'Z')} and ${request.timeRange.end.toISOString().replace('.000Z', 'Z')}.
-IMPORTANT: Always include WHERE clauses in your SQL queries to limit results to this time range:
+ANALYSIS SCOPE: Focus your analysis on data between ${request.timeRange.start.toISOString().replace('.000Z', 'Z')} and ${request.timeRange.end.toISOString().replace('.000Z', 'Z')}.
+IMPORTANT: Always include WHERE clauses in your SQL queries to filter results to this time range:
 WHERE signalk_timestamp >= '${request.timeRange.start.toISOString().replace('.000Z', 'Z')}' AND signalk_timestamp <= '${request.timeRange.end.toISOString().replace('.000Z', 'Z')}'`;
       } else {
         // Default to recent data if no time range specified
@@ -970,12 +979,126 @@ Begin your analysis by querying relevant data within the specified time range.`;
       // Extract system context and user prompt  
       const systemContext = `You are an expert maritime data analyst with direct access to a comprehensive database.
 
-CRITICAL DATA INTEGRITY RULES:
+CRITICAL DATA INTEGRITY RULES - VIOLATION OF THESE RULES IS UNACCEPTABLE:
 - NEVER fabricate, guess, or make up any data, coordinates, timestamps, or values
 - If a query returns no data, you MUST say "No data available" or "Query returned no results"  
 - NEVER invent plausible-sounding but false information
 - If you don't know something, explicitly state "I don't have this information"
 - Financial and navigational decisions depend on accurate data - false information causes real harm
+- NEVER create example data, sample values, or hypothetical scenarios when discussing real vessel data
+- ALWAYS reference the specific query that provided any data you present
+- If insufficient data exists for analysis, explicitly state this rather than creating synthetic data
+
+MANDATORY DATA VALIDATION PROTOCOL - THESE STEPS ARE REQUIRED FOR EVERY RESPONSE:
+1. BEFORE presenting ANY data, you MUST explicitly state: "Query executed: [exact SQL]"
+2. BEFORE presenting ANY data, you MUST explicitly state: "Rows returned: [exact count]"
+3. BEFORE creating ANY chart, you MUST explicitly state: "Data points for chart: [exact count from query]"
+4. BEFORE analyzing time ranges, you MUST explicitly state: "Actual time range in data: [start] to [end]"
+5. If user requests specific time window and data doesn't match, you MUST state: "Requested: [X], Available: [Y]"
+
+MANDATORY TIME CALCULATION VALIDATION - NEVER USE DEFAULT TIME PERIODS:
+1. When user requests specific time periods (72 hours, 3 days, 1 week, etc.), ALWAYS calculate exact timestamps
+2. NEVER default to familiar periods like "yesterday" or "24 hours" when user specified different duration
+3. ALWAYS verify: "User requested [X hours/days], calculating [X hours/days] back from [current time]"
+4. ALWAYS state explicitly: "Time range calculated: [exact start timestamp] to [exact end timestamp]"
+5. If user says "72 hours", you MUST calculate 72 hours, not 24 hours or any other duration
+6. NEVER assume data might not be available - execute the exact request first, then report actual results
+7. NEVER claim "database restrictions" or "time range restrictions" exist without first querying the requested range
+8. Execute the full requested query first - only report actual limitations found in the results
+9. CRITICAL: If user requests "7 days", you MUST query 7 days back from current time, not 1 day or 24 hours
+10. CRITICAL: If user requests "1 week", you MUST query 7 days back from current time, not 1 day or 24 hours
+11. NEVER say "this is the complete dataset" unless you actually queried the full requested time period
+12. ABSOLUTELY FORBIDDEN: Do not mention "database time range restrictions" - no such restrictions exist
+13. ABSOLUTELY FORBIDDEN: Do not say "I need to work within" any restrictions - query the full requested range
+14. THERE ARE NO DATABASE LIMITATIONS - the database contains weeks of historical data
+15. If user asks for 7 days, query FROM 7 days ago TO now - do not modify this range for any reason
+
+MANDATORY QUERY EXECUTION RULE - NO EXCEPTIONS:
+When user specifies ANY time frame (72 hours, 3 days, 1 week, 7 days, etc.):
+1. Calculate the EXACT start and end timestamps for that period
+2. Execute your database queries using those EXACT timestamps 
+3. NEVER modify, restrict, or reduce the time range for any reason
+4. Query the database with the full requested range - period, no exceptions
+
+CRITICAL: Before executing ANY query, you MUST:
+1. Extract the EXACT time range from user request
+2. Query the database to find the ACTUAL available data range
+3. Use ONLY the available data range - DO NOT default to 24 hours
+4. If requested range exceeds available data, use ALL available data and state the actual range used
+
+QUERY EXECUTION RULES:
+- For time-based requests, FIRST run: SELECT MIN(signalk_timestamp), MAX(signalk_timestamp) FROM relevant_table
+- Use the full available range, not arbitrary subsets
+- State actual data range used in response
+- If user asks for "7 days" but only 3 days exist, use all 3 days and explain
+- NEVER assume 24-hour periods. ALWAYS query for full available dataset first.
+
+FORBIDDEN ACTIONS - THESE WILL RESULT IN IMMEDIATE FAILURE:
+- Creating ASCII charts, text visualizations, or any fake visual representations
+- Using terms like "trending", "pattern", or "shows" without showing exact data points
+- Making statements about data without first showing the query that produced it
+- Creating any visualization that isn't a proper Plotly.js JSON specification
+- Presenting analysis conclusions without first showing raw query results
+
+CHART EMBEDDING CAPABILITIES:
+When you want to include charts in your response, add a Plotly.js JSON chart specification in a code block like this:
+\`\`\`json
+{
+  "type": "chart",
+  "title": "Speed Over Ground Trend",
+  "data": [
+    {
+      "x": ["12:00", "13:00", "14:00", "15:00"],
+      "y": [5.2, 6.1, 5.8, 7.3],
+      "name": "Speed Over Ground",
+      "type": "scatter",
+      "mode": "lines+markers",
+      "line": {"color": "#1976d2", "width": 2},
+      "marker": {"color": "#1976d2", "size": 6}
+    }
+  ],
+  "layout": {
+    "title": "Speed Over Ground Trend",
+    "xaxis": {"title": "Time"},
+    "yaxis": {"title": "Speed (knots)"},
+    "showlegend": true
+  }
+}
+\`\`\`
+
+SUPPORTED CHART TYPES:
+- **Line Charts**: type: "scatter", mode: "lines+markers" or "lines"
+- **Bar Charts**: type: "bar"
+- **Scatter Plots**: type: "scatter", mode: "markers"
+- **Wind Rose/Radar**: type: "scatterpolar" with r and theta values
+- **Multiple Series**: Include multiple objects in the data array
+- **Styling**: Use line.color, marker.color, line.width, etc.
+
+Include this JSON when analysis would benefit from visualization.
+
+CRITICAL CHART DATA RULES - CHARTS WITH FAKE DATA ARE FORBIDDEN:
+- ONLY use data that comes from actual database query results
+- NEVER fabricate, estimate, or interpolate data points
+- NEVER extend data beyond what the query returned
+- If you don't have enough data points for a meaningful chart, say so explicitly
+- All chart data must be traceable to specific query results you executed
+- Include a comment in your response explaining which query provided the chart data
+
+MANDATORY CHART VALIDATION - REQUIRED BEFORE ANY CHART:
+1. Count exact data points from query result
+2. State: "Creating chart with [N] actual data points from query"
+3. If query returns 5 rows, chart must have exactly 5 data points - NEVER MORE
+4. If user asks for 72-hour window but data spans 24 hours, explicitly state the mismatch
+5. NEVER fill gaps or extend trends - use only actual timestamps and values from database
+6. Show first 3 and last 3 actual data rows before creating chart
+7. Explicitly verify: "Chart data matches query results: [timestamp1: value1], [timestamp2: value2]..."
+
+RESPONSE STRUCTURE REQUIREMENTS:
+1. Always start with: "QUERY VALIDATION:"
+2. Show the exact SQL executed
+3. Show exact row count and time range
+4. If creating chart, show sample data points
+5. Only then provide analysis using that specific data
 
 IMPORTANT: Please use the vessel context information provided below for all analysis and responses. This vessel information is critical for accurate maritime analysis.
 
@@ -1028,7 +1151,7 @@ Begin your analysis by querying relevant data within the specified time range.`;
 
       let analysisResult = '';
       let queryCount = 0;
-      const maxQueries = 5; // Reduced to prevent excessive API calls and token usage
+      const maxQueries = 10; // Allow more queries for thorough analysis
       let totalTokenUsage = { input_tokens: 0, output_tokens: 0 };
 
       // Check if user is requesting real-time data
@@ -1061,7 +1184,7 @@ Begin your analysis by querying relevant data within the specified time range.`;
       if (needsRealTimeData) {
         availableTools.push({
           name: 'get_current_signalk_data',
-          description: 'Get current real-time SignalK data values for specific paths or all available paths from any vessel. Use this when user asks about "now", "current", "real-time" conditions.',
+          description: 'Get current real-time SignalK data values for specific paths or all available paths from any vessel. Use this when user asks about "now", "current", "real-time" conditions. For queries about "all vessels" or "other vessels", use vesselContext="vessels.*".',
           input_schema: {
             type: 'object',
             properties: {
@@ -1076,7 +1199,7 @@ Begin your analysis by querying relevant data within the specified time range.`;
               },
               vesselContext: {
                 type: 'string',
-                description: 'Vessel context to query (e.g., "vessels.self", "vessels.urn:mrn:imo:mmsi:123456789"). Defaults to vessels.self if not specified.'
+                description: 'Vessel context to query. Use "vessels.*" for ALL vessels (recommended for multi-vessel queries), "vessels.self" for own vessel, or "vessels.urn:mrn:imo:mmsi:123456789" for specific vessel. Defaults to vessels.self if not specified.'
               }
             },
             required: ['purpose']
@@ -1113,6 +1236,46 @@ Begin your analysis by querying relevant data within the specified time range.`;
         this.app?.debug(`🎬 Added episode detection tool for regimens: [${relevantRegimens.join(', ')}]`);
       }
 
+      // Add wind analysis tool for detailed wind rose and analysis prompts
+      const windKeywords = ['wind', 'breeze', 'gust', 'rose', 'direction', 'beaufort'];
+      const hasWindKeywords = windKeywords.some(keyword => 
+        (request.customPrompt || '').toLowerCase().includes(keyword)
+      );
+      
+      if (hasWindKeywords) {
+        availableTools.push({
+          name: 'generate_wind_analysis',
+          description: 'Generate detailed wind analysis prompts with proper Beaufort scale categories and radar chart specifications for professional maritime wind analysis',
+          input_schema: {
+            type: 'object',
+            properties: {
+              timeFrame: {
+                type: 'string',
+                description: 'Time period for analysis (e.g., "24 hours", "3 days", "1 week")',
+                default: '48 hours'
+              },
+              chartType: {
+                type: 'string',
+                description: 'Type of wind chart to generate (e.g., "wind rose", "trend analysis", "directional frequency")',
+                default: 'wind rose'
+              },
+              windSpeedCategories: {
+                type: 'array',
+                items: { type: 'string' },
+                description: 'Custom wind speed categories (defaults to Beaufort scale if not specified)'
+              },
+              vesselName: {
+                type: 'string',
+                description: 'Name of vessel for analysis',
+                default: 'Zennora'
+              }
+            },
+            required: []
+          }
+        });
+        this.app?.debug(`🌬️ Wind analysis keywords detected, adding wind analysis tool`);
+      }
+
       while (queryCount < maxQueries) {
         const response = await this.callClaudeWithRetry({
           model: this.config.model,
@@ -1142,6 +1305,19 @@ Begin your analysis by querying relevant data within the specified time range.`;
           if (contentBlock.type === 'text') {
             const textContent = contentBlock.text;
             this.app?.debug(`📝 Claude response text (${textContent.length} chars): ${textContent.substring(0, 200)}...`);
+            
+            // Debug: Check for JSON chart specs in the response
+            const chartJsonMatches = textContent.match(/```json\s*([\s\S]*?)\s*```/gi);
+            if (chartJsonMatches) {
+              this.app?.debug(`🔍 FOUND ${chartJsonMatches.length} JSON BLOCKS IN CLAUDE RESPONSE`);
+              chartJsonMatches.forEach((match: string, index: number) => {
+                const jsonContent = match.replace(/```json\s*/, '').replace(/\s*```/, '');
+                this.app?.debug(`📊 JSON Block ${index + 1} - Length: ${jsonContent.length} chars`);
+                this.app?.debug(`📊 JSON Block ${index + 1} - Preview: ${jsonContent.substring(0, 100)}...`);
+                this.app?.debug(`📊 JSON Block ${index + 1} - Ending: ...${jsonContent.substring(Math.max(0, jsonContent.length - 100))}`);
+              });
+            }
+            
             analysisResult += textContent + '\n\n';
           } else if (contentBlock.type === 'tool_use') {
             const toolCall = contentBlock;
@@ -1294,7 +1470,7 @@ Begin your analysis by querying relevant data within the specified time range.`;
 
       let analysisResult = '';
       let queryCount = 0;
-      const maxQueries = 5; // Fewer queries for follow-ups
+      const maxQueries = 10; // Allow thorough follow-up analysis
       let totalTokenUsage = { input_tokens: 0, output_tokens: 0 };
 
       // Check if follow-up question contains real-time keywords
@@ -1356,7 +1532,7 @@ Begin your analysis by querying relevant data within the specified time range.`;
       if (needsRealTimeData) {
         followUpTools.push({
           name: 'get_current_signalk_data',
-          description: 'Get current real-time SignalK data values for specific paths or all available paths from any vessel. Use this when user asks about "now", "current", "real-time" conditions.',
+          description: 'Get current real-time SignalK data values for specific paths or all available paths from any vessel. Use this when user asks about "now", "current", "real-time" conditions. For queries about "all vessels" or "other vessels", use vesselContext="vessels.*".',
           input_schema: {
             type: 'object',
             properties: {
@@ -1371,7 +1547,7 @@ Begin your analysis by querying relevant data within the specified time range.`;
               },
               vesselContext: {
                 type: 'string',
-                description: 'Vessel context to query (e.g., "vessels.self", "vessels.urn:mrn:imo:mmsi:123456789"). Defaults to vessels.self if not specified.'
+                description: 'Vessel context to query. Use "vessels.*" for ALL vessels (recommended for multi-vessel queries), "vessels.self" for own vessel, or "vessels.urn:mrn:imo:mmsi:123456789" for specific vessel. Defaults to vessels.self if not specified.'
               }
             },
             required: ['purpose']
@@ -1499,59 +1675,82 @@ Begin your analysis by querying relevant data within the specified time range.`;
     
     try {
       if (!paths || paths.length === 0) {
-        // Get all current vessel data
-        let vesselData: any = {};
-        
+        // Get all current data for the specified context
         if (contextToUse === 'vessels.self') {
-          vesselData = this.app?.getSelfPath('') || {};
+          // Use getSelfPath for self vessel (keep existing working behavior)
+          const vesselData = this.app?.getSelfPath('') || {};
+          const cleanData = this.cleanSignalKData(vesselData);
+          this.app?.debug(`📊 Retrieved ${Object.keys(cleanData).length} current SignalK data points for ${contextToUse}`);
+          return {
+            timestamp: new Date().toISOString(),
+            source: 'real-time SignalK',
+            context: contextToUse,
+            data: cleanData
+          };
+        } else if (contextToUse === 'vessels.*') {
+          // Get all vessels using getPath
+          const allVessels = this.app?.getPath('vessels') || {};
+          const cleanData = this.cleanSignalKData(allVessels);
+          this.app?.debug(`📊 Retrieved data from all vessels (${Object.keys(cleanData).length} vessel contexts)`);
+          return {
+            timestamp: new Date().toISOString(),
+            source: 'real-time SignalK',
+            context: 'vessels.*',
+            data: cleanData
+          };
         } else {
-          // For other vessels, try to access via SignalK context
-          // Note: This requires the SignalK server to have data for the specified vessel
-          try {
-            vesselData = (this.app as any)?.streambundle?.getSelfStream()?.getBus()?.get(contextToUse) || {};
-          } catch (error) {
-            this.app?.debug(`⚠️ Could not access vessel data for ${contextToUse}, trying alternative method`);
-            // Alternative: try to get from available paths
-            vesselData = {};
-          }
+          // Get specific vessel data using getPath
+          const vesselData = this.app?.getPath(contextToUse) || {};
+          const cleanData = this.cleanSignalKData(vesselData);
+          this.app?.debug(`📊 Retrieved ${Object.keys(cleanData).length} current SignalK data points for ${contextToUse}`);
+          return {
+            timestamp: new Date().toISOString(),
+            source: 'real-time SignalK',
+            context: contextToUse,
+            data: cleanData
+          };
         }
-        
-        // Filter out functions and circular references, keep only data values
-        const cleanData = this.cleanSignalKData(vesselData);
-        
-        this.app?.debug(`📊 Retrieved ${Object.keys(cleanData).length} current SignalK data points for ${contextToUse}`);
-        return {
-          timestamp: new Date().toISOString(),
-          source: 'real-time SignalK',
-          context: contextToUse,
-          data: cleanData
-        };
       } else {
         // Get specific paths
         const pathData: any = {};
         
-        for (const path of paths) {
-          try {
-            let value;
-            if (contextToUse === 'vessels.self') {
-              value = this.app?.getSelfPath(path);
-            } else {
-              // Try to get path data for other vessels
+        if (contextToUse === 'vessels.*') {
+          // For wildcard, get paths from all vessels
+          const allVessels = this.app?.getPath('vessels') || {};
+          for (const vesselId in allVessels) {
+            if (vesselId === 'self') continue; // Skip self since it's handled separately
+            
+            for (const path of paths) {
               try {
-                const fullPath = `${contextToUse}.${path}`;
-                value = (this.app as any)?.streambundle?.getSelfStream()?.getBus()?.get(fullPath);
-              } catch {
-                value = undefined;
+                const fullPath = `vessels.${vesselId}.${path}`;
+                const value = this.app?.getPath(fullPath);
+                
+                if (value !== undefined && value !== null) {
+                  if (!pathData[path]) pathData[path] = {};
+                  pathData[path][vesselId] = value;
+                }
+              } catch (error) {
+                // Skip errors for individual vessels - some may not have all paths
               }
             }
-            
-            if (value !== undefined) {
-              pathData[path] = value;
-            } else {
-              pathData[path] = null; // Explicitly show missing values
+          }
+        } else {
+          // Handle single vessel (self or specific vessel)
+          for (const path of paths) {
+            try {
+              let value;
+              if (contextToUse === 'vessels.self') {
+                value = this.app?.getSelfPath(path);
+              } else {
+                // Get from specific vessel using getPath
+                const fullPath = `${contextToUse}.${path}`;
+                value = this.app?.getPath(fullPath);
+              }
+              
+              pathData[path] = value !== undefined ? value : null;
+            } catch (error) {
+              pathData[path] = `Error: ${(error as Error).message}`;
             }
-          } catch (error) {
-            pathData[path] = `Error: ${(error as Error).message}`;
           }
         }
         
@@ -1559,6 +1758,7 @@ Begin your analysis by querying relevant data within the specified time range.`;
         return {
           timestamp: new Date().toISOString(),
           source: 'real-time SignalK',
+          context: contextToUse,
           requestedPaths: paths,
           data: pathData
         };
@@ -1570,6 +1770,126 @@ Begin your analysis by querying relevant data within the specified time range.`;
         timestamp: new Date().toISOString()
       };
     }
+  }
+
+  /**
+   * Get current data from specific vessel buffers
+   */
+  private getCurrentDataFromBuffers(context: string, paths?: string[]): any {
+    if (!this.state) {
+      return {
+        timestamp: new Date().toISOString(),
+        source: 'real-time SignalK buffers',
+        context: context,
+        data: {},
+        error: 'Plugin state not available - cannot access data buffers'
+      };
+    }
+
+    // DEBUG: Log what's actually in the buffers
+    const totalBuffers = this.state.dataBuffers.size;
+    const bufferKeys = Array.from(this.state.dataBuffers.keys());
+    this.app?.debug(`🔍 DEBUG: Total buffers: ${totalBuffers}`);
+    this.app?.debug(`🔍 DEBUG: All buffer keys: ${JSON.stringify(bufferKeys)}`);
+    this.app?.debug(`🔍 DEBUG: Looking for context: "${context}"`);
+
+    const currentData: any = {};
+    let dataFound = false;
+    let matchingKeys: string[] = [];
+
+    // Iterate through data buffers to find matching context
+    this.state.dataBuffers.forEach((buffer, bufferKey) => {
+      if (bufferKey.startsWith(context + ':')) {
+        matchingKeys.push(bufferKey);
+        const path = bufferKey.split(':')[1];
+        
+        // If specific paths requested, only include those
+        if (!paths || paths.includes(path)) {
+          if (buffer.length > 0) {
+            // Get the latest value from the buffer
+            const latestRecord = buffer[buffer.length - 1];
+            currentData[path] = {
+              value: latestRecord.value,
+              timestamp: latestRecord.signalk_timestamp || latestRecord.received_timestamp,
+              source: latestRecord.source_label
+            };
+            dataFound = true;
+          }
+        }
+      }
+    });
+
+    this.app?.debug(`🔍 DEBUG: Matching keys for "${context}": ${JSON.stringify(matchingKeys.slice(0, 5))}${matchingKeys.length > 5 ? '...' : ''}`);
+    this.app?.debug(`📊 Retrieved ${Object.keys(currentData).length} current data points from buffers for ${context}`);
+    
+    return {
+      timestamp: new Date().toISOString(),
+      source: 'real-time SignalK buffers',
+      context: context,
+      requestedPaths: paths,
+      data: currentData,
+      dataFound: dataFound,
+      debug: {
+        totalBuffers: totalBuffers,
+        matchingKeys: matchingKeys.length,
+        sampleBufferKeys: bufferKeys.slice(0, 5)
+      }
+    };
+  }
+
+  /**
+   * Get current data from all vessel buffers
+   */
+  private getAllVesselsCurrentDataFromBuffers(): any {
+    if (!this.state) {
+      return {
+        timestamp: new Date().toISOString(),
+        source: 'real-time SignalK buffers',
+        context: 'vessels.*',
+        data: {},
+        error: 'Plugin state not available - cannot access data buffers'
+      };
+    }
+
+    const allVesselData: any = {};
+
+    // Group buffers by vessel context
+    this.state.dataBuffers.forEach((buffer, bufferKey) => {
+      if (bufferKey.includes(':')) {
+        const [context, path] = bufferKey.split(':', 2);
+        
+        // Only include vessel contexts
+        if (context.startsWith('vessels.')) {
+          if (!allVesselData[context]) {
+            allVesselData[context] = {};
+          }
+          
+          if (buffer.length > 0) {
+            // Get the latest value from the buffer
+            const latestRecord = buffer[buffer.length - 1];
+            allVesselData[context][path] = {
+              value: latestRecord.value,
+              timestamp: latestRecord.signalk_timestamp || latestRecord.received_timestamp,
+              source: latestRecord.source_label
+            };
+          }
+        }
+      }
+    });
+
+    const vesselCount = Object.keys(allVesselData).length;
+    const totalPaths = Object.values(allVesselData).reduce((sum: number, vesselData: any) => sum + Object.keys(vesselData).length, 0);
+    
+    this.app?.debug(`📊 Retrieved data from ${vesselCount} vessels with ${totalPaths} total data points from buffers`);
+    
+    return {
+      timestamp: new Date().toISOString(),
+      source: 'real-time SignalK buffers',
+      context: 'vessels.*',
+      data: allVesselData,
+      vesselCount: vesselCount,
+      totalDataPoints: totalPaths
+    };
   }
 
   /**
@@ -1726,7 +2046,7 @@ Begin your analysis by querying relevant data within the specified time range.`;
       
       try {
         const queryResult = await this.executeSQLQuery(sql, purpose);
-        const resultSummary = `Query "${purpose}" returned ${queryResult.length} rows:\n\n${JSON.stringify(queryResult.slice(0, 5), null, 2)}${queryResult.length > 5 ? `\n\n... and ${queryResult.length - 5} more rows` : ''}`;
+        const resultSummary = `Query "${purpose}" returned ${queryResult.length} rows:\n\n${JSON.stringify(queryResult, null, 2)}`;
         
         this.app?.debug(`✅ Query executed: ${purpose} - ${queryResult.length} rows returned`);
         
@@ -1747,10 +2067,12 @@ Begin your analysis by querying relevant data within the specified time range.`;
       const { paths, purpose, vesselContext } = toolCall.input as { paths?: string[]; purpose: string; vesselContext?: string };
       
       try {
-        const currentData = this.getCurrentSignalKData(paths, purpose, vesselContext);
+        // Ensure paths is always an array or undefined
+        const safePaths = paths ? (Array.isArray(paths) ? paths : [paths]) : undefined;
+        const currentData = this.getCurrentSignalKData(safePaths, purpose, vesselContext);
         const resultSummary = `Current SignalK data "${purpose}":\n\n${JSON.stringify(currentData, null, 2)}`;
         
-        this.app?.debug(`✅ Real-time data retrieved: ${purpose} - ${paths?.length || 'all'} paths`);
+        this.app?.debug(`✅ Real-time data retrieved: ${purpose} - ${safePaths?.length || 'all'} paths`);
         
         return {
           type: 'tool_result',
@@ -1792,13 +2114,42 @@ Begin your analysis by querying relevant data within the specified time range.`;
           content: `Episode detection failed: ${(episodeError as Error).message}`
         };
       }
+    } else if (toolCall.name === 'generate_wind_analysis') {
+      const { timeFrame, windSpeedCategories, chartType, vesselName } = toolCall.input as { 
+        timeFrame?: string; 
+        windSpeedCategories?: string[];
+        chartType?: string;
+        vesselName?: string;
+      };
+      
+      const categories = windSpeedCategories || [
+        'Calm (0-1 knots)',
+        'Light Air (1-3 knots)', 
+        'Light Breeze (4-6 knots)',
+        'Gentle Breeze (7-10 knots)',
+        'Moderate Breeze (11-15 knots)',
+        'Fresh Breeze (16-21 knots)',
+        'Strong Breeze (22+ knots)'
+      ];
+      
+      const vessel = vesselName || 'Zennora';
+      const period = timeFrame || '48 hours';
+      const type = chartType || 'wind rose';
+      
+      const windAnalysisPrompt = `Query the wind direction and speed data for ${vessel} over the previous ${period}. Create a ${type} chart that shows wind direction frequency by compass sectors (N, NNE, NE, ENE, E, ESE, SE, SSE, S, SSW, SW, WSW, W, WNW, NW, NNW). Group the data into wind speed categories: ${categories.join(', ')}. For each compass direction, count how many hours of wind occurred in each speed category. Display this as a radar chart with ${categories.length} datasets - one for each wind speed range - using different colors (light blue, green, yellow, orange, red, dark red, purple for increasing intensities). The chart should show the frequency distribution of wind directions and intensities as a traditional ${type}.`;
+      
+      return {
+        type: 'tool_result',
+        tool_use_id: toolCall.id,
+        content: `Generated detailed wind analysis prompt:\n\n${windAnalysisPrompt}\n\nNow executing this analysis...`
+      };
     } else {
       // Handle unknown tool calls
       this.app?.debug(`⚠️ Unknown tool called: ${toolCall.name}`);
       return {
         type: 'tool_result',
         tool_use_id: toolCall.id,
-        content: `Unknown tool "${toolCall.name}" requested. Available tools: query_maritime_database, get_current_signalk_data, find_regimen_episodes`
+        content: `Unknown tool "${toolCall.name}" requested. Available tools: query_maritime_database, get_current_signalk_data, find_regimen_episodes, generate_wind_analysis`
       };
     }
   }
@@ -2043,7 +2394,7 @@ Begin your analysis by querying relevant data within the specified time range.`;
   /**
    * Generate enhanced schema information for Claude
    */
-  private getEnhancedSchemaForClaude(): string {
+  private async getEnhancedSchemaForClaude(): Promise<string> {
     this.app?.debug('🔧 Getting enhanced schema for Claude...');
     const dataDir = this.dataDirectory || '';
     this.app?.debug(`📂 Data directory: "${dataDir}"`);
@@ -2105,7 +2456,21 @@ DO NOT USE ANY PATH NOT LISTED ABOVE. DO NOT GUESS PATH NAMES LIKE "windAvg" - O
             
             otherVesselsInfo = `
 OTHER VESSELS: ${vesselDirs.length} vessels detected in area
-Common paths: navigation.position, navigation.speedOverGround, navigation.closestApproach
+
+Distance and proximity data:
+- navigation.distanceToSelf: Distance from your vessel in meters
+- navigation.closestApproach: Contains distance (meters) and timeTo (seconds) 
+  Example: {"distance": 762.6940177184225, "timeTo": -30673.210651733683}
+
+Common vessel data paths (when available):
+- name: Vessel name (string)
+- mmsi: MMSI number (string)
+- navigation.position: GPS coordinates (latitude/longitude)
+- navigation.speedOverGround: Speed in meters per second
+- navigation.courseOverGroundTrue: Course direction in radians
+- navigation.closestApproach: Closest approach calculations
+- navigation.distanceToSelf: Distance from your vessel in meters
+
 Query example: SELECT * FROM 'data/vessels/*/navigation/position/*.parquet'`;
           } else {
             otherVesselsInfo = `
@@ -2172,6 +2537,25 @@ DATA LIMITATIONS:
 - For vessel names/specs, refer to the VESSEL CONTEXT section, not database queries`;
 
     this.app?.debug(`✅ Generated schema result (${schemaResult.length} chars)`);
+    
+    // Save the actual schema to a file for inspection
+    try {
+      if (this.dataDirectory) {
+        const schemaDir = path.join(this.dataDirectory, 'claude-schemas');
+        await fs.ensureDir(schemaDir);
+        
+        const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+        const filename = `claude-schema-${timestamp}.txt`;
+        const filepath = path.join(schemaDir, filename);
+        
+        await fs.writeFile(filepath, schemaResult, 'utf8');
+        this.app?.debug(`📄 Schema saved to: ${filepath}`);
+      }
+    } catch (error) {
+      this.app?.error(`Failed to save schema to file: ${(error as Error).message}`);
+      // Don't throw - this is not critical to the analysis
+    }
+    
     return schemaResult;
   }
 

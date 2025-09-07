@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>SignalK Parquet Data Interface</title>
     <link rel="icon" type="image/png" href="parquet.png">
+    <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
     <style>
         * {
             margin: 0;
@@ -3340,6 +3341,358 @@ Provide actionable insights based on what you observe in the data.`,
             }
         }
 
+        // Convert MMSI numbers to MarineTraffic links
+        function convertMMSIToLinks(container) {
+            const mmsiRegex = /(MMSI:?\s?)(\d{8,9})/gi;
+            
+            // Function to recursively process text nodes
+            function processTextNodes(node) {
+                if (node.nodeType === Node.TEXT_NODE) {
+                    const text = node.textContent;
+                    if (mmsiRegex.test(text)) {
+                        const newText = text.replace(mmsiRegex, (match, prefix, mmsi) => {
+                            return `${prefix}<a href="https://www.marinetraffic.com/en/ais/details/ships/mmsi:${mmsi}" target="_blank" style="color: #1976d2; text-decoration: underline;" title="View ${mmsi} on MarineTraffic">${mmsi}</a>`;
+                        });
+                        
+                        // Replace text node with HTML
+                        const tempDiv = document.createElement('div');
+                        tempDiv.innerHTML = newText;
+                        
+                        // Replace the text node with new nodes
+                        const fragment = document.createDocumentFragment();
+                        while (tempDiv.firstChild) {
+                            fragment.appendChild(tempDiv.firstChild);
+                        }
+                        node.parentNode.replaceChild(fragment, node);
+                    }
+                } else if (node.nodeType === Node.ELEMENT_NODE) {
+                    // Process child nodes (but skip existing links)
+                    if (node.tagName.toLowerCase() !== 'a') {
+                        const children = Array.from(node.childNodes);
+                        children.forEach(child => processTextNodes(child));
+                    }
+                }
+            }
+            
+            processTextNodes(container);
+        }
+
+        // Process and embed charts from Claude responses
+        function processChartRequests(container) {
+            console.log('Processing chart requests in container:', container);
+            // Look for JSON chart specifications in the text - improved pattern to handle nested objects
+            const chartRegex = /```json\s*([\s\S]*?"type":\s*"chart"[\s\S]*?)\s*```/gi;
+            
+            // First try processing the entire innerHTML
+            const fullText = container.innerHTML || container.textContent || '';
+            console.log('Full container text:', fullText.substring(0, 500));
+            const fullMatches = [...fullText.matchAll(chartRegex)];
+            console.log('Matches in full text:', fullMatches.length);
+            
+            // Process all matches found in full text
+            let processedCharts = false;
+            if (fullMatches.length > 0) {
+                let newHTML = fullText;
+                fullMatches.forEach((match, index) => {
+                    try {
+                        let jsonString = match[1].trim();
+                        jsonString = jsonString.replace(/&quot;/g, '"').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>');
+                        
+                        // Extract only valid JSON by finding the first complete JSON object
+                        let validJsonString = jsonString;
+                        try {
+                            // Find the end of the first complete JSON object
+                            let braceCount = 0;
+                            let inString = false;
+                            let escaped = false;
+                            let jsonEndIndex = -1;
+                            
+                            for (let i = 0; i < jsonString.length; i++) {
+                                const char = jsonString[i];
+                                
+                                if (escaped) {
+                                    escaped = false;
+                                    continue;
+                                }
+                                
+                                if (char === '\\' && inString) {
+                                    escaped = true;
+                                    continue;
+                                }
+                                
+                                if (char === '"' && !escaped) {
+                                    inString = !inString;
+                                    continue;
+                                }
+                                
+                                if (!inString) {
+                                    if (char === '{') {
+                                        braceCount++;
+                                    } else if (char === '}') {
+                                        braceCount--;
+                                        if (braceCount === 0) {
+                                            jsonEndIndex = i + 1;
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                            
+                            if (jsonEndIndex > 0) {
+                                validJsonString = jsonString.substring(0, jsonEndIndex);
+                                console.log('🔧 FRONTEND - Extracted valid JSON, length:', validJsonString.length, 'vs original:', jsonString.length);
+                            }
+                        } catch (extractError) {
+                            console.warn('🔧 JSON extraction failed, using original:', extractError);
+                        }
+                        
+                        console.log('🔍 FRONTEND - Processing JSON length:', validJsonString.length);
+                        
+                        const chartSpec = JSON.parse(validJsonString);
+                        console.log('Parsed chart spec:', chartSpec);
+                        
+                        if (chartSpec.type === 'chart') {
+                            const chartId = `chart-${Date.now()}-${Math.random().toString(36).substr(2, 9)}-${index}`;
+                            const chartHTML = `
+                                <div style="margin: 20px 0; padding: 15px; background: #f8f9fa; border-radius: 8px; border-left: 4px solid #2196F3;">
+                                    <h4 style="margin: 0 0 15px 0; color: #333;">📊 ${chartSpec.title || 'Chart'}</h4>
+                                    <div id="${chartId}" style="width: 100%; height: 400px;"></div>
+                                </div>
+                            `;
+                            newHTML = newHTML.replace(match[0], chartHTML);
+                            processedCharts = true;
+                            
+                            // Queue chart rendering for after DOM update
+                            setTimeout(() => renderChart(chartId, chartSpec), 300);
+                        }
+                    } catch (e) {
+                        console.error('Failed to parse chart specification:', e);
+                        console.error('Raw JSON that failed to parse:', validJsonString);
+                        
+                        // Show the problematic area around the error position
+                        if (e.message.includes('position')) {
+                            const match = e.message.match(/position (\d+)/);
+                            if (match) {
+                                const errorPos = parseInt(match[1]);
+                                const start = Math.max(0, errorPos - 100);
+                                const end = Math.min(validJsonString.length, errorPos + 100);
+                                console.error('🚨 PROBLEM AREA around position', errorPos, ':', validJsonString.substring(start, end));
+                                console.error('🚨 CHARACTER AT ERROR:', validJsonString[errorPos], 'ASCII:', validJsonString.charCodeAt(errorPos));
+                            }
+                        }
+                    }
+                });
+                
+                if (processedCharts) {
+                    container.innerHTML = newHTML;
+                }
+            }
+            
+            // Always return after processing to prevent text node processing
+            // This prevents re-processing existing charts in the container
+            return;
+            
+            function processTextNodes(node) {
+                if (node.nodeType === Node.TEXT_NODE) {
+                    const text = node.textContent;
+                    console.log('Processing text node:', text.substring(0, 200));
+                    const matches = [...text.matchAll(chartRegex)];
+                    console.log('Found matches:', matches.length);
+                    
+                    if (matches.length > 0) {
+                        let newHTML = text;
+                        
+                        matches.forEach((match, index) => {
+                            try {
+                                // Clean up the JSON string - handle HTML entities and whitespace
+                                let jsonString = match[1].trim();
+                                // Decode HTML entities if present
+                                jsonString = jsonString.replace(/&quot;/g, '"').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>');
+                                
+                                // Extract only valid JSON by finding the first complete JSON object
+                                let validJsonString = jsonString;
+                                try {
+                                    // Find the end of the first complete JSON object
+                                    let braceCount = 0;
+                                    let inString = false;
+                                    let escaped = false;
+                                    let jsonEndIndex = -1;
+                                    
+                                    for (let i = 0; i < jsonString.length; i++) {
+                                        const char = jsonString[i];
+                                        
+                                        if (escaped) {
+                                            escaped = false;
+                                            continue;
+                                        }
+                                        
+                                        if (char === '\\' && inString) {
+                                            escaped = true;
+                                            continue;
+                                        }
+                                        
+                                        if (char === '"' && !escaped) {
+                                            inString = !inString;
+                                            continue;
+                                        }
+                                        
+                                        if (!inString) {
+                                            if (char === '{') {
+                                                braceCount++;
+                                            } else if (char === '}') {
+                                                braceCount--;
+                                                if (braceCount === 0) {
+                                                    jsonEndIndex = i + 1;
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                    }
+                                    
+                                    if (jsonEndIndex > 0) {
+                                        validJsonString = jsonString.substring(0, jsonEndIndex);
+                                        console.log('🔧 FRONTEND (legacy) - Extracted valid JSON, length:', validJsonString.length, 'vs original:', jsonString.length);
+                                    }
+                                } catch (extractError) {
+                                    console.warn('🔧 JSON extraction (legacy) failed, using original:', extractError);
+                                }
+                                
+                                console.log('🔍 FRONTEND (legacy) - Processing JSON length:', validJsonString.length);
+                                
+                                const chartSpec = JSON.parse(validJsonString);
+                                console.log('Parsed chart spec:', chartSpec);
+                                
+                                if (chartSpec.type === 'chart') {
+                                    const chartId = `chart-${Date.now()}-${Math.random().toString(36).substr(2, 9)}-${index}`;
+                                    const chartHTML = `
+                                        <div style="margin: 20px 0; padding: 15px; background: #f8f9fa; border-radius: 8px; border-left: 4px solid #2196F3;">
+                                            <h4 style="margin: 0 0 15px 0; color: #333;">📊 ${chartSpec.title || 'Chart'}</h4>
+                                            <canvas id="${chartId}" style="max-height: 400px;"></canvas>
+                                        </div>
+                                    `;
+                                    newHTML = newHTML.replace(match[0], chartHTML);
+                                    
+                                    // Queue chart rendering for after DOM update
+                                    setTimeout(() => renderChart(chartId, chartSpec), 300);
+                                }
+                            } catch (e) {
+                                console.error('Failed to parse chart specification:', e);
+                                console.error('Raw JSON that failed to parse:', validJsonString);
+                            }
+                        });
+                        
+                        if (newHTML !== text) {
+                            // Replace text node with HTML
+                            const tempDiv = document.createElement('div');
+                            tempDiv.innerHTML = newHTML;
+                            const fragment = document.createDocumentFragment();
+                            while (tempDiv.firstChild) {
+                                fragment.appendChild(tempDiv.firstChild);
+                            }
+                            node.parentNode.replaceChild(fragment, node);
+                        }
+                    }
+                } else if (node.nodeType === Node.ELEMENT_NODE) {
+                    const children = Array.from(node.childNodes);
+                    children.forEach(child => processTextNodes(child));
+                }
+            }
+            
+            processTextNodes(container);
+        }
+
+        // Render chart using Plotly.js (native format)
+        function renderChart(chartId, chartSpec) {
+            console.log('Attempting to render Plotly chart:', chartId, chartSpec);
+            
+            const chartDiv = document.getElementById(chartId);
+            if (!chartDiv) {
+                console.error('Chart div not found:', chartId);
+                return;
+            }
+            
+            console.log('Chart div found:', chartDiv);
+            
+            // Handle both new native Plotly format and legacy Chart.js format
+            let plotlyData, plotlyLayout, plotlyConfig;
+            
+            if (chartSpec.data && chartSpec.layout) {
+                // Native Plotly format - use directly
+                console.log('Using native Plotly format');
+                plotlyData = chartSpec.data;
+                plotlyLayout = chartSpec.layout;
+                plotlyConfig = chartSpec.config || {};
+            } else if (chartSpec.datasets) {
+                // Legacy Chart.js format - convert to Plotly
+                console.log('Converting Chart.js format to Plotly');
+                
+                plotlyData = chartSpec.datasets.map(dataset => ({
+                    x: chartSpec.labels || [],
+                    y: dataset.data || [],
+                    name: dataset.label || '',
+                    type: 'scatter',
+                    mode: dataset.borderDash ? 'lines' : 'lines+markers',
+                    line: {
+                        color: dataset.borderColor || dataset.backgroundColor || '#2196F3',
+                        width: dataset.borderWidth || 2,
+                        dash: dataset.borderDash ? 'dash' : 'solid'
+                    },
+                    marker: {
+                        size: 4,
+                        color: dataset.borderColor || dataset.backgroundColor || '#2196F3'
+                    },
+                    fill: dataset.fill ? 'tonexty' : 'none',
+                    fillcolor: dataset.backgroundColor || 'rgba(33, 150, 243, 0.1)'
+                }));
+                
+                plotlyLayout = {
+                    title: {
+                        text: chartSpec.title || '',
+                        font: { size: 16 }
+                    },
+                    xaxis: {
+                        title: chartSpec.xAxisLabel || '',
+                        showgrid: true,
+                        zeroline: false
+                    },
+                    yaxis: {
+                        title: chartSpec.yAxisLabel || '',
+                        showgrid: true,
+                        zeroline: false
+                    },
+                    showlegend: true,
+                    hovermode: 'x unified',
+                    margin: { l: 60, r: 30, t: 50, b: 50 },
+                    plot_bgcolor: 'rgba(0,0,0,0)',
+                    paper_bgcolor: 'rgba(0,0,0,0)'
+                };
+            } else {
+                console.error('Invalid chart specification - no data or datasets found:', chartSpec);
+                return;
+            }
+            
+            // Default Plotly config
+            const defaultConfig = {
+                responsive: true,
+                displayModeBar: true,
+                modeBarButtonsToRemove: ['pan2d', 'select2d', 'lasso2d', 'resetScale2d'],
+                displaylogo: false
+            };
+            
+            plotlyConfig = { ...defaultConfig, ...plotlyConfig };
+            
+            console.log('Creating Plotly chart with data:', plotlyData, 'layout:', plotlyLayout);
+            
+            try {
+                Plotly.newPlot(chartId, plotlyData, plotlyLayout, plotlyConfig);
+                console.log('Plotly chart created successfully:', chartId);
+                
+                return true;
+            } catch (error) {
+                console.error('Failed to create Plotly chart:', chartId, error);
+            }
+        }
+
         // Display analysis results
         function displayAnalysisResult(analysisResult) {
             const content = document.getElementById('analysisContent');
@@ -3402,23 +3755,29 @@ Provide actionable insights based on what you observe in the data.`,
                 </div>
             `;
             
-            // Preserve the timer and append results after it
-            if (existingTimer) {
-                // Create a results container
-                const resultsDiv = document.createElement('div');
-                resultsDiv.innerHTML = html;
-                
-                // Clear content but keep timer, then append results
-                const children = Array.from(content.children);
-                children.forEach(child => {
-                    if (child.id !== 'analysisTimer') {
-                        child.remove();
-                    }
-                });
-                content.appendChild(resultsDiv);
-            } else {
-                content.innerHTML = html;
-            }
+            // Always preserve existing charts and timers, never use innerHTML = which destroys charts
+            const resultsDiv = document.createElement('div');
+            resultsDiv.innerHTML = html;
+            
+            // Clear content but preserve timer and any existing charts
+            const children = Array.from(content.children);
+            children.forEach(child => {
+                // Preserve timer and any Plotly chart containers
+                if (child.id === 'analysisTimer' || 
+                    child.querySelector('div[id^="chart-"]') || 
+                    (child.id && child.id.startsWith('chart-')) ||
+                    child.querySelector('.plotly-graph-div')) {
+                    // Keep this element
+                } else {
+                    child.remove();
+                }
+            });
+            content.appendChild(resultsDiv);
+            
+            // Process chart requests FIRST (before MMSI link conversion which would break JSON)
+            processChartRequests(resultsDiv);
+            // Convert MMSI numbers to MarineTraffic links in the new results (after charts are processed)
+            convertMMSIToLinks(resultsDiv);
             
             // Show follow-up section for database access mode and store analysis ID
             if (analysisResult.metadata && analysisResult.metadata.useDatabaseAccess && analysisResult.id) {
@@ -3628,6 +3987,11 @@ Provide actionable insights based on what you observe in the data.`,
             `;
             
             content.innerHTML = html;
+            
+            // Process chart requests FIRST (before MMSI link conversion which would break JSON)
+            processChartRequests(content);
+            // Convert MMSI numbers to MarineTraffic links in the modal content (after charts are processed)
+            convertMMSIToLinks(content);
         }
 
         // Close analysis view modal
@@ -3913,6 +4277,23 @@ Provide actionable insights based on what you observe in the data.`,
                     
                     // Append to existing content
                     content.innerHTML += followUpHtml;
+                    
+                    // Create a temporary container with just the new follow-up content
+                    const tempDiv = document.createElement('div');
+                    tempDiv.innerHTML = followUpHtml;
+                    
+                    // Process only the new follow-up content
+                    // Process chart requests FIRST (before MMSI link conversion which would break JSON)
+                    processChartRequests(tempDiv);
+                    convertMMSIToLinks(tempDiv);
+                    
+                    // If tempDiv was modified, replace the last follow-up section
+                    if (tempDiv.innerHTML !== followUpHtml) {
+                        const followUpSections = content.querySelectorAll('div[style*="border-left: 4px solid #1976d2"]');
+                        if (followUpSections.length > 0) {
+                            followUpSections[followUpSections.length - 1].outerHTML = tempDiv.innerHTML;
+                        }
+                    }
                     
                     // Clear the question input
                     questionTextarea.value = '';
