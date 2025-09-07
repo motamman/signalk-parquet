@@ -1677,8 +1677,8 @@ Begin your analysis by querying relevant data within the specified time range.`;
       if (!paths || paths.length === 0) {
         // Get all current data for the specified context
         if (contextToUse === 'vessels.self') {
-          // Use getSelfPath for self vessel (keep existing working behavior)
-          const vesselData = this.app?.getSelfPath('') || {};
+          // Use getPath for self vessel (consistent with working vessels.* approach)
+          const vesselData = this.app?.getPath('vessels.self') || {};
           const cleanData = this.cleanSignalKData(vesselData);
           this.app?.debug(`📊 Retrieved ${Object.keys(cleanData).length} current SignalK data points for ${contextToUse}`);
           return {
