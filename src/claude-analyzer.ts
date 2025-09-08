@@ -1202,7 +1202,7 @@ Begin your analysis by querying relevant data within the specified time range.`;
       if (needsRealTimeData) {
         availableTools.push({
           name: 'get_current_signalk_data',
-          description: 'Get current real-time SignalK data values for specific paths or all available paths from any vessel. Use this when user asks about "now", "current", "real-time" conditions. For queries about "all vessels" or "other vessels", use vesselContext="vessels.*".',
+          description: 'Get current real-time SignalK data VALUES for specific known paths. Use this ONLY when you already know the specific paths and need their actual values. DO NOT use this for path discovery - use get_available_signalk_paths first to discover what paths exist.',
           input_schema: {
             type: 'object',
             properties: {
@@ -1227,7 +1227,7 @@ Begin your analysis by querying relevant data within the specified time range.`;
         // Also add path discovery tool for targeted queries
         availableTools.push({
           name: 'get_available_signalk_paths',
-          description: 'Get available real-time SignalK paths with filtering options. Use this to discover what data is currently available before making targeted get_current_signalk_data requests.',
+          description: 'DISCOVER what SignalK paths are currently available with filtering options. Use this for ALL path discovery queries like "list paths", "what data is available", "show available paths", etc. ALWAYS use this BEFORE get_current_signalk_data.',
           input_schema: {
             type: 'object',
             properties: {
@@ -1582,7 +1582,7 @@ Begin your analysis by querying relevant data within the specified time range.`;
       if (needsRealTimeData) {
         followUpTools.push({
           name: 'get_current_signalk_data',
-          description: 'Get current real-time SignalK data values for specific paths or all available paths from any vessel. Use this when user asks about "now", "current", "real-time" conditions. For queries about "all vessels" or "other vessels", use vesselContext="vessels.*".',
+          description: 'Get current real-time SignalK data VALUES for specific known paths. Use this ONLY when you already know the specific paths and need their actual values. DO NOT use this for path discovery - use get_available_signalk_paths first to discover what paths exist.',
           input_schema: {
             type: 'object',
             properties: {
@@ -1607,7 +1607,7 @@ Begin your analysis by querying relevant data within the specified time range.`;
         // Also add path discovery tool for targeted queries
         followUpTools.push({
           name: 'get_available_signalk_paths',
-          description: 'Get available real-time SignalK paths with filtering options. Use this to discover what data is currently available before making targeted get_current_signalk_data requests.',
+          description: 'DISCOVER what SignalK paths are currently available with filtering options. Use this for ALL path discovery queries like "list paths", "what data is available", "show available paths", etc. ALWAYS use this BEFORE get_current_signalk_data.',
           input_schema: {
             type: 'object',
             properties: {
