@@ -1862,8 +1862,6 @@ Begin your analysis by querying relevant data within the specified time range.`;
       maxDepth = 10
     } = filter;
 
-    this.app?.debug(`🔍 Getting available SignalK paths for ${vesselContext} with filters: ${JSON.stringify(filter)}`);
-    
     const availablePaths: AvailablePathInfo[] = [];
     const pathRegex = pathPattern ? new RegExp(pathPattern) : null;
 
@@ -1892,6 +1890,8 @@ Begin your analysis by querying relevant data within the specified time range.`;
         const actualVesselId = this.app?.selfId;
         if (actualVesselId) {
           const vesselData = this.app?.getPath(`vessels.${actualVesselId}`) || {};
+          const dataKeys = Object.keys(vesselData);
+          this.app?.debug(`DEBUG: selfId="${actualVesselId}", vessel data has keys: ${dataKeys.slice(0,10).join(',')}`);
           this.traverseSignalKPaths(
             vesselData, 
             '', 
@@ -1925,7 +1925,6 @@ Begin your analysis by querying relevant data within the specified time range.`;
         );
       }
 
-      this.app?.debug(`📋 Found ${availablePaths.length} available SignalK paths`);
       return availablePaths.sort((a, b) => a.path.localeCompare(b.path));
 
     } catch (error) {
@@ -2002,10 +2001,6 @@ Begin your analysis by querying relevant data within the specified time range.`;
           }
         }
 
-        // Debug source filtering
-        if (sourceFilter) {
-          this.app?.debug(`🔍 Path ${newPath}: sourceInfo="${sourceInfo}", sourceFilter="${sourceFilter}", hasMatchingSource=${hasMatchingSource}`);
-        }
 
         if (sourceFilter && !hasMatchingSource) {
           continue;
