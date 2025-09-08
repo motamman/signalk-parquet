@@ -1255,7 +1255,22 @@ Begin your analysis by querying relevant data within the specified time range.`;
           }
         });
 
-        this.app?.debug(`🕐 Real-time keywords detected, adding current SignalK data and path discovery tools`);
+        // Add source discovery tool for debugging
+        availableTools.push({
+          name: 'get_available_signalk_sources',
+          description: 'DEBUG: Get a list of all available SignalK data sources. Use this to discover what sources exist before filtering by source.',
+          input_schema: {
+            type: 'object',
+            properties: {
+              vesselContext: {
+                type: 'string',
+                description: 'Vessel context to query. Use "vessels.*" for ALL vessels, "vessels.self" for own vessel. Defaults to vessels.self.'
+              }
+            }
+          }
+        });
+
+        this.app?.debug(`🕐 Real-time keywords detected, adding current SignalK data, path discovery, and source discovery tools`);
       }
 
       // Add episode boundary detection tool if regimens were identified
@@ -1635,7 +1650,22 @@ Begin your analysis by querying relevant data within the specified time range.`;
           }
         });
 
-        this.app?.debug(`🕐 Real-time keywords detected in follow-up, adding current SignalK data and path discovery tools`);
+        // Add source discovery tool for debugging
+        followUpTools.push({
+          name: 'get_available_signalk_sources',
+          description: 'DEBUG: Get a list of all available SignalK data sources. Use this to discover what sources exist before filtering by source.',
+          input_schema: {
+            type: 'object',
+            properties: {
+              vesselContext: {
+                type: 'string',
+                description: 'Vessel context to query. Use "vessels.*" for ALL vessels, "vessels.self" for own vessel. Defaults to vessels.self.'
+              }
+            }
+          }
+        });
+
+        this.app?.debug(`🕐 Real-time keywords detected in follow-up, adding current SignalK data, path discovery, and source discovery tools`);
       }
 
       // Continue the conversation with Claude
@@ -1749,6 +1779,77 @@ Begin your analysis by querying relevant data within the specified time range.`;
   }
 
   /**
+   * Get all available SignalK sources (for debugging)
+   */
+  private getAvailableSignalKSources(vesselContext: string = 'vessels.self'): string[] {
+    this.app?.debug(`🔍 Getting all available SignalK sources for ${vesselContext}`);
+    
+    const sources = new Set<string>();
+    
+    try {
+      if (vesselContext === 'vessels.*') {
+        const allVessels = this.app?.getPath('vessels') || {};
+        for (const vesselId in allVessels) {
+          if (vesselId === 'self') continue;
+          this.collectSources(allVessels[vesselId], sources, '', 0, 10);
+        }
+      } else if (vesselContext === 'vessels.self') {
+        const actualVesselId = this.app?.selfId;
+        if (actualVesselId) {
+          const vesselData = this.app?.getPath(`vessels.${actualVesselId}`) || {};
+          this.collectSources(vesselData, sources, '', 0, 10);
+        }
+      } else {
+        const vesselData = this.app?.getPath(vesselContext) || {};
+        this.collectSources(vesselData, sources, '', 0, 10);
+      }
+
+      const sourceList = Array.from(sources).sort();
+      this.app?.debug(`📋 Found ${sourceList.length} unique sources: ${sourceList.join(', ')}`);
+      return sourceList;
+
+    } catch (error) {
+      this.app?.error(`Failed to get available SignalK sources: ${(error as Error).message}`);
+      return [];
+    }
+  }
+
+  /**
+   * Recursively collect unique sources from SignalK data
+   */
+  private collectSources(
+    obj: any, 
+    sources: Set<string>, 
+    currentPath: string, 
+    currentDepth: number, 
+    maxDepth: number
+  ): void {
+    if (currentDepth >= maxDepth || !obj || typeof obj !== 'object') {
+      return;
+    }
+
+    for (const [key, value] of Object.entries(obj)) {
+      if (typeof value === 'function') continue;
+
+      const newPath = currentPath ? `${currentPath}.${key}` : key;
+
+      // Check if this value has a $source
+      if (value && typeof value === 'object' && '$source' in value) {
+        const source = value.$source;
+        if (typeof source === 'string' && source.length > 0) {
+          sources.add(source);
+          this.app?.debug(`🔍 Found source "${source}" at path: ${newPath}`);
+        }
+      }
+
+      // Recurse into nested objects
+      if (typeof value === 'object' && value !== null) {
+        this.collectSources(value, sources, newPath, currentDepth + 1, maxDepth);
+      }
+    }
+  }
+
+  /**
    * Get available real-time SignalK paths with filtering options
    */
   private getAvailableSignalKPaths(filter: AvailablePathsFilter = {}): AvailablePathInfo[] {
@@ -1758,7 +1859,7 @@ Begin your analysis by querying relevant data within the specified time range.`;
       source,
       hasValue = false,
       includeMetadata = false,
-      maxDepth = 5
+      maxDepth = 10
     } = filter;
 
     this.app?.debug(`🔍 Getting available SignalK paths for ${vesselContext} with filters: ${JSON.stringify(filter)}`);
@@ -1847,7 +1948,7 @@ Begin your analysis by querying relevant data within the specified time range.`;
     hasValue: boolean = false,
     includeMetadata: boolean = false,
     currentDepth: number = 0,
-    maxDepth: number = 5
+    maxDepth: number = 10
   ): void {
     if (currentDepth >= maxDepth || !obj || typeof obj !== 'object') {
       return;
@@ -1886,14 +1987,13 @@ Begin your analysis by querying relevant data within the specified time range.`;
 
         // Check source filter
         let sourceInfo: string | undefined;
-        if (value && typeof value === 'object' && '_sources' in value) {
-          const sources = value._sources;
-          if (sources && typeof sources === 'object') {
-            const sourceKeys = Object.keys(sources);
-            if (sourceKeys.length > 0) {
-              sourceInfo = sourceKeys[0]; // Take first source
-            }
-          }
+        if (value && typeof value === 'object' && '$source' in value) {
+          sourceInfo = value.$source as string;
+        }
+
+        // Debug source filtering
+        if (sourceFilter) {
+          this.app?.debug(`🔍 Path ${newPath}: sourceInfo="${sourceInfo}", sourceFilter="${sourceFilter}", match=${sourceInfo && sourceInfo.includes(sourceFilter)}`);
         }
 
         if (sourceFilter && (!sourceInfo || !sourceInfo.includes(sourceFilter))) {
@@ -2421,6 +2521,30 @@ Begin your analysis by querying relevant data within the specified time range.`;
           content: `Path discovery failed: ${(pathDiscoveryError as Error).message}`
         };
       }
+    } else if (toolCall.name === 'get_available_signalk_sources') {
+      const { vesselContext } = toolCall.input as { vesselContext?: string };
+      
+      try {
+        const availableSources = this.getAvailableSignalKSources(vesselContext);
+        
+        const resultSummary = `Available SignalK sources (${availableSources.length} found):\n\n${availableSources.map(s => `- ${s}`).join('\n')}`;
+        
+        this.app?.debug(`📋 Source discovery completed: ${availableSources.length} sources found`);
+        
+        return {
+          type: 'tool_result',
+          tool_use_id: toolCall.id,
+          content: resultSummary
+        };
+      } catch (sourceDiscoveryError) {
+        this.app?.error(`Source discovery failed: ${(sourceDiscoveryError as Error).message}`);
+        
+        return {
+          type: 'tool_result',
+          tool_use_id: toolCall.id,
+          content: `Source discovery failed: ${(sourceDiscoveryError as Error).message}`
+        };
+      }
     } else if (toolCall.name === 'find_regimen_episodes') {
       const { regimenName, timeRange, limit } = toolCall.input as { regimenName: string; timeRange?: any; limit?: number };
       
@@ -2483,7 +2607,7 @@ Begin your analysis by querying relevant data within the specified time range.`;
       return {
         type: 'tool_result',
         tool_use_id: toolCall.id,
-        content: `Unknown tool "${toolCall.name}" requested. Available tools: query_maritime_database, get_current_signalk_data, get_available_signalk_paths, find_regimen_episodes, generate_wind_analysis`
+        content: `Unknown tool "${toolCall.name}" requested. Available tools: query_maritime_database, get_current_signalk_data, get_available_signalk_paths, get_available_signalk_sources, find_regimen_episodes, generate_wind_analysis`
       };
     }
   }
