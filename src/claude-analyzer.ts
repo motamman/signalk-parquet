@@ -890,7 +890,7 @@ Please structure your response as JSON with the following format:
    */
   async analyzeWithDatabaseAccess(request: AnalysisRequest): Promise<AnalysisResponse> {
     try {
-      this.app?.debug('🚀 Using Tony\'s direct database access approach');
+      this.app?.debug('🚀 Using direct database access');
       
       // Ensure vessel context is loaded before generating context for Claude
       await this.vesselContextManager.refreshVesselInfo();
