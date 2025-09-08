@@ -1862,6 +1862,24 @@ Begin your analysis by querying relevant data within the specified time range.`;
       maxDepth = 10
     } = filter;
 
+    // First try using StreamBundle.getAvailablePaths if available
+    if (this.app?.streambundle && typeof this.app.streambundle.getAvailablePaths === 'function') {
+      this.app?.debug(`🚀 Using StreamBundle.getAvailablePaths() method`);
+      try {
+        const streamPaths = this.app.streambundle.getAvailablePaths();
+        this.app?.debug(`📋 StreamBundle returned ${streamPaths.length} paths: ${streamPaths.slice(0,5).join(', ')}...`);
+        // TODO: Convert to AvailablePathInfo format and apply filters
+        return streamPaths.map((path: string) => ({
+          path,
+          fullPath: `${vesselContext}.${path}`,
+          vesselId: vesselContext.replace('vessels.', ''),
+          source: undefined // Would need to fetch source info separately
+        }));
+      } catch (streamError) {
+        this.app?.debug(`⚠️ StreamBundle.getAvailablePaths() failed: ${streamError}, falling back to manual traversal`);
+      }
+    }
+
     const availablePaths: AvailablePathInfo[] = [];
     const pathRegex = pathPattern ? new RegExp(pathPattern) : null;
 
@@ -2019,6 +2037,7 @@ Begin your analysis by querying relevant data within the specified time range.`;
           }
         }
 
+        this.app?.debug(`FOUND PATH: ${newPath} | source: ${sourceInfo} | hasValue: ${hasValue} | actualValue: ${JSON.stringify(actualValue)?.substring(0,50)}`);
         paths.push({
           path: newPath,
           fullPath: newFullPath,
