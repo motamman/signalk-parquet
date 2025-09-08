@@ -121,12 +121,11 @@ export class ParquetWriter {
       // Close the writer
       await writer.close();
 
-      // Validate the written file size
-      const stats = await fs.stat(filepath);
-
-      if (stats.size < 100) {
+      // Validate the written file
+      const isValid = await this.validateParquetFile(filepath);
+      if (!isValid) {
         throw new Error(
-          `Parquet file too small (${stats.size} bytes) - likely empty or corrupted`
+          `Parquet file failed validation after write: ${filepath}`
         );
       }
 
@@ -358,6 +357,45 @@ export class ParquetWriter {
     }
   }
 
+  // Validate parquet file for corruption
+  private async validateParquetFile(filepath: string): Promise<boolean> {
+    try {
+      if (!parquet || !(await fs.pathExists(filepath))) {
+        return false;
+      }
+
+      // Check file size (must be > 100 bytes as per existing logic)
+      const stats = await fs.stat(filepath);
+      const fileSize = stats.size;
+      
+      if (fileSize < 100) {
+        this.app?.debug(`❌ Parquet file too small: ${filepath} (${fileSize} bytes)`);
+        return false;
+      }
+
+      // Try to open and read the parquet file
+      try {
+        const reader = await parquet.ParquetReader.openFile(filepath);
+        const cursor = reader.getCursor();
+        
+        // Try to read first record to verify file structure
+        const firstRecord = await cursor.next();
+        await reader.close();
+        
+        // Log file size for debugging (matches your stat command format)
+        this.app?.debug(`✅ Valid parquet file: ${fileSize.toString().padStart(12, ' ')}  ${filepath}`);
+        
+        return firstRecord !== null;
+      } catch (readError) {
+        this.app?.debug(`❌ Parquet file read failed: ${filepath} - ${(readError as Error).message}`);
+        return false;
+      }
+    } catch (error) {
+      this.app?.debug(`❌ Parquet validation error: ${filepath} - ${(error as Error).message}`);
+      return false;
+    }
+  }
+
   // Daily file consolidation (matching Python behavior)
   async consolidateDaily(
     dataDir: string,
@@ -415,6 +453,18 @@ export class ParquetWriter {
         this.app?.debug(
           `Consolidated ${entry.sources.length} files into ${entry.target} (${recordCount} records)`
         );
+
+        // Validate consolidated parquet file
+        const isValid = await this.validateParquetFile(entry.target);
+        if (!isValid) {
+          // Move corrupt file to quarantine
+          const quarantineDir = path.join(path.dirname(entry.target), 'quarantine');
+          await fs.ensureDir(quarantineDir);
+          const quarantineFile = path.join(quarantineDir, path.basename(entry.target));
+          await fs.move(entry.target, quarantineFile);
+          this.app?.debug(`⚠️ Moved corrupt file to quarantine: ${quarantineFile}`);
+          continue; // Skip moving source files since consolidation failed
+        }
 
         // Move source files to processed folder
         const processedDir = path.join(path.dirname(entry.target), 'processed');

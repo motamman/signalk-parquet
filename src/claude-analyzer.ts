@@ -1876,11 +1876,17 @@ Begin your analysis by querying relevant data within the specified time range.`;
           source: undefined // Would need to fetch source info separately
         }));
       } catch (streamError) {
-        this.app?.debug(`⚠️ StreamBundle.getAvailablePaths() failed: ${streamError}, falling back to manual traversal`);
+        this.app?.debug(`⚠️ StreamBundle.getAvailablePaths() failed: ${streamError}, NOT falling back to manual traversal`);
+        return [];
       }
     }
 
+    // Manual traversal system disabled
+    this.app?.debug(`🚫 StreamBundle.getAvailablePaths() not available, manual traversal disabled`);
+    return [];
+
     const availablePaths: AvailablePathInfo[] = [];
+    // @ts-ignore - unreachable code
     const pathRegex = pathPattern ? new RegExp(pathPattern) : null;
 
     try {
@@ -1896,7 +1902,7 @@ Begin your analysis by querying relevant data within the specified time range.`;
             vesselId,
             availablePaths, 
             pathRegex, 
-            source, 
+            source || '', 
             hasValue, 
             includeMetadata, 
             0, 
@@ -1914,10 +1920,10 @@ Begin your analysis by querying relevant data within the specified time range.`;
             vesselData, 
             '', 
             `vessels.${actualVesselId}`, 
-            actualVesselId,
+            actualVesselId || '',
             availablePaths, 
             pathRegex, 
-            source, 
+            source || '', 
             hasValue, 
             includeMetadata, 
             0, 
