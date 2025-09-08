@@ -1987,16 +1987,27 @@ Begin your analysis by querying relevant data within the specified time range.`;
 
         // Check source filter
         let sourceInfo: string | undefined;
+        let hasMatchingSource = false;
+        
         if (value && typeof value === 'object' && '$source' in value) {
           sourceInfo = value.$source as string;
+          hasMatchingSource = !sourceFilter || !!(sourceInfo && sourceInfo.includes(sourceFilter));
+        }
+
+        // Also check the values object for multiple sources
+        if (!hasMatchingSource && sourceFilter && value && typeof value === 'object' && 'values' in value) {
+          const valuesObj = value.values as any;
+          if (valuesObj && typeof valuesObj === 'object') {
+            hasMatchingSource = Object.keys(valuesObj).some(key => key.includes(sourceFilter));
+          }
         }
 
         // Debug source filtering
         if (sourceFilter) {
-          this.app?.debug(`🔍 Path ${newPath}: sourceInfo="${sourceInfo}", sourceFilter="${sourceFilter}", match=${sourceInfo && sourceInfo.includes(sourceFilter)}`);
+          this.app?.debug(`🔍 Path ${newPath}: sourceInfo="${sourceInfo}", sourceFilter="${sourceFilter}", hasMatchingSource=${hasMatchingSource}`);
         }
 
-        if (sourceFilter && (!sourceInfo || !sourceInfo.includes(sourceFilter))) {
+        if (sourceFilter && !hasMatchingSource) {
           continue;
         }
 
