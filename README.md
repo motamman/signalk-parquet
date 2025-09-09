@@ -672,6 +672,40 @@ The History API returns time-aligned data in standard SignalK format:
 
 The plugin integrates Claude AI to provide intelligent analysis of maritime data, offering insights that would be difficult to extract through traditional querying methods.
 
+### Advanced Charting and Visualization
+
+Claude AI can generate interactive charts and visualizations directly from your data using Plotly.js specifications. Charts are automatically embedded in analysis responses when analysis would benefit from visualization.
+
+**Supported Chart Types:**
+- **Line Charts**: Time series trends for navigation, environmental, and performance data
+- **Bar Charts**: Categorical analysis and frequency distributions
+- **Scatter Plots**: Correlation analysis between different parameters
+- **Wind Roses/Radar Charts**: Professional wind direction and speed frequency analysis
+- **Multiple Series Charts**: Compare multiple data streams on the same chart
+- **Polar Charts**: Wind patterns, compass headings, and directional data
+
+**Marine-Specific Chart Features:**
+- **Wind Analysis**: Automated wind rose generation with Beaufort scale categories
+- **Navigation Plots**: Course over ground, speed trends, and position tracking  
+- **Environmental Monitoring**: Temperature, pressure, and weather pattern visualization
+- **Performance Analysis**: Fuel efficiency, battery usage, and system performance charts
+- **Multi-Vessel Comparisons**: Side-by-side analysis of multiple vessels
+
+**Chart Data Integrity:**
+- All chart data is sourced directly from database queries - no fabricated or estimated data
+- Charts display exact data points from query results with full traceability
+- Automatic validation ensures chart data matches query output
+- Time-aligned data from History API ensures accurate multi-parameter visualization
+
+**Example Chart Generation:**
+When you ask Claude to "analyze wind patterns over the last 48 hours", it will:
+1. Query your wind direction and speed data
+2. Generate a wind rose chart showing frequency by compass direction
+3. Color-code by wind speed categories (calm, light breeze, strong breeze, etc.)
+4. Display the chart as interactive Plotly.js visualization in the web interface
+
+Charts are automatically included when analysis benefits from visualization, or you can explicitly request specific chart types like "create a line chart" or "show me a wind rose".
+
 ### PLANNED Analysis Templates NB: NOT YET IMPLEMENTED
 
 EXAMPLES OF POSSIBLE Pre-built analysis templates provide ready-to-use analysis for common maritime operations:
@@ -1098,6 +1132,45 @@ For detailed testing procedures, see [TESTING.md](TESTING.md).
 6. Submit a pull request
 
 ## Changelog
+
+### Version 0.5.2-beta.4
+- **📊 Advanced Charting & Visualization**: Comprehensive chart generation capabilities with Claude AI
+  - Interactive Plotly.js chart embedding with marine-specific visualizations
+  - Automated wind rose generation with Beaufort scale categories and compass sectors
+  - Multiple chart types: line charts, bar charts, scatter plots, polar charts, radar charts
+  - Professional wind analysis tools with directional frequency distributions
+  - Chart data integrity validation ensuring all visualizations use real query data
+  - Time-aligned multi-parameter visualization support via History API
+- **🔍 Enhanced Path Discovery**: Improved SignalK path discovery and source filtering
+  - StreamBundle integration for efficient path enumeration
+  - Better source filtering with wildcard pattern support
+  - Enhanced debug logging for path discovery troubleshooting
+- **🛡️ Parquet File Validation**: Added comprehensive corruption detection and quarantine system
+  - Automatic validation after every parquet write operation
+  - Post-consolidation file integrity checking with structured logging
+  - Quarantine folder with detailed corruption logs including file sizes and timestamps
+  - Improved error handling and recovery for failed parquet operations
+
+### Version 0.5.2-beta.3
+- **🔧 Path Discovery Improvements**: Enhanced SignalK path discovery and source filtering
+
+### Version 0.5.2-beta.2
+- **🌊 Real-time Path Discovery**: Major improvements to live SignalK data access
+  - Enhanced `get_available_signalk_paths` tool with better source filtering
+  - Improved real-time data retrieval with proper source attribution
+- **🔍 Source Filtering**: Advanced filtering capabilities for SignalK sources
+  - Better handling of multi-source data structures with values objects
+  - Enhanced source discovery tools for Claude AI analysis
+
+### Version 0.5.2-beta.1
+- **🤖 Claude AI Model Updates**: Upgraded to latest Claude models
+  - Updated to Claude Sonnet 4 (claude-sonnet-4-20250514) for improved analysis
+  - Automatic model migration with deprecation handling
+  - Enhanced AI response quality and maritime domain knowledge
+- **🔧 Tool Improvements**: Enhanced Claude AI tool capabilities
+  - Better real-time SignalK data access with source information
+  - Improved path discovery tools with vessel context handling
+  - Enhanced debugging and logging for tool execution
 
 ### Version 0.5.1-beta.1
 - **🤖 Claude AI Integration**: Added comprehensive Claude AI integration with configurable options
