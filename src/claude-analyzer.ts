@@ -94,6 +94,24 @@ export interface DataQualityMetrics {
   accuracy: number;     // Estimated data accuracy
 }
 
+export interface AvailablePathsFilter {
+  vesselContext?: string;     // 'vessels.self', 'vessels.*', 'vessels.urn:mrn:...'
+  pathPattern?: string;       // regex pattern for path filtering
+  source?: string;           // filter by data source
+  hasValue?: boolean;        // only paths with current values
+  includeMetadata?: boolean; // include _sources, meta, etc.
+  maxDepth?: number;         // maximum depth to traverse
+}
+
+export interface AvailablePathInfo {
+  path: string;
+  fullPath: string;         // complete SignalK path including vessel context
+  vesselId?: string;        // vessel ID if applicable
+  currentValue?: any;       // current value if hasValue=true
+  source?: string;          // data source info
+  lastUpdate?: string;      // last update timestamp
+}
+
 export class ClaudeAnalyzer {
   private client: Anthropic;
   private config: ClaudeAnalyzerConfig;
@@ -872,7 +890,7 @@ Please structure your response as JSON with the following format:
    */
   async analyzeWithDatabaseAccess(request: AnalysisRequest): Promise<AnalysisResponse> {
     try {
-      this.app?.debug('🚀 Using Tony\'s direct database access approach');
+      this.app?.debug('🚀 Using direct database access');
       
       // Ensure vessel context is loaded before generating context for Claude
       await this.vesselContextManager.refreshVesselInfo();
@@ -1184,7 +1202,7 @@ Begin your analysis by querying relevant data within the specified time range.`;
       if (needsRealTimeData) {
         availableTools.push({
           name: 'get_current_signalk_data',
-          description: 'Get current real-time SignalK data values for specific paths or all available paths from any vessel. Use this when user asks about "now", "current", "real-time" conditions. For queries about "all vessels" or "other vessels", use vesselContext="vessels.*".',
+          description: 'Get current real-time SignalK data VALUES for specific known paths. Use this ONLY when you already know the specific paths and need their actual values. DO NOT use this for path discovery - use get_available_signalk_paths first to discover what paths exist.',
           input_schema: {
             type: 'object',
             properties: {
@@ -1205,7 +1223,54 @@ Begin your analysis by querying relevant data within the specified time range.`;
             required: ['purpose']
           }
         });
-        this.app?.debug(`🕐 Real-time keywords detected, adding current SignalK data tool`);
+
+        // Also add path discovery tool for targeted queries
+        availableTools.push({
+          name: 'get_available_signalk_paths',
+          description: 'DISCOVER what SignalK paths are currently available with filtering options. Use this for ALL path discovery queries like "list paths", "what data is available", "show available paths", etc. ALWAYS use this BEFORE get_current_signalk_data.',
+          input_schema: {
+            type: 'object',
+            properties: {
+              vesselContext: {
+                type: 'string',
+                description: 'Vessel context to query. Use "vessels.*" for ALL vessels, "vessels.self" for own vessel, or specific vessel ID. Defaults to vessels.self.'
+              },
+              pathPattern: {
+                type: 'string',
+                description: 'Regex pattern to filter paths (e.g., "navigation.*" for navigation data, "electrical.*" for electrical data)'
+              },
+              source: {
+                type: 'string',
+                description: 'Filter by data source (e.g., "GPS", "AIS", "NMEA")'
+              },
+              hasValue: {
+                type: 'boolean',
+                description: 'Only return paths that have current values. Defaults to false.'
+              },
+              maxDepth: {
+                type: 'number',
+                description: 'Maximum depth to traverse SignalK tree. Defaults to 5.'
+              }
+            }
+          }
+        });
+
+        // Add source discovery tool for debugging
+        availableTools.push({
+          name: 'get_available_signalk_sources',
+          description: 'DEBUG: Get a list of all available SignalK data sources. Use this to discover what sources exist before filtering by source.',
+          input_schema: {
+            type: 'object',
+            properties: {
+              vesselContext: {
+                type: 'string',
+                description: 'Vessel context to query. Use "vessels.*" for ALL vessels, "vessels.self" for own vessel. Defaults to vessels.self.'
+              }
+            }
+          }
+        });
+
+        this.app?.debug(`🕐 Real-time keywords detected, adding current SignalK data, path discovery, and source discovery tools`);
       }
 
       // Add episode boundary detection tool if regimens were identified
@@ -1532,7 +1597,7 @@ Begin your analysis by querying relevant data within the specified time range.`;
       if (needsRealTimeData) {
         followUpTools.push({
           name: 'get_current_signalk_data',
-          description: 'Get current real-time SignalK data values for specific paths or all available paths from any vessel. Use this when user asks about "now", "current", "real-time" conditions. For queries about "all vessels" or "other vessels", use vesselContext="vessels.*".',
+          description: 'Get current real-time SignalK data VALUES for specific known paths. Use this ONLY when you already know the specific paths and need their actual values. DO NOT use this for path discovery - use get_available_signalk_paths first to discover what paths exist.',
           input_schema: {
             type: 'object',
             properties: {
@@ -1553,7 +1618,54 @@ Begin your analysis by querying relevant data within the specified time range.`;
             required: ['purpose']
           }
         });
-        this.app?.debug(`🕐 Real-time keywords detected in follow-up, adding current SignalK data tool`);
+
+        // Also add path discovery tool for targeted queries
+        followUpTools.push({
+          name: 'get_available_signalk_paths',
+          description: 'DISCOVER what SignalK paths are currently available with filtering options. Use this for ALL path discovery queries like "list paths", "what data is available", "show available paths", etc. ALWAYS use this BEFORE get_current_signalk_data.',
+          input_schema: {
+            type: 'object',
+            properties: {
+              vesselContext: {
+                type: 'string',
+                description: 'Vessel context to query. Use "vessels.*" for ALL vessels, "vessels.self" for own vessel, or specific vessel ID. Defaults to vessels.self.'
+              },
+              pathPattern: {
+                type: 'string',
+                description: 'Regex pattern to filter paths (e.g., "navigation.*" for navigation data, "electrical.*" for electrical data)'
+              },
+              source: {
+                type: 'string',
+                description: 'Filter by data source (e.g., "GPS", "AIS", "NMEA")'
+              },
+              hasValue: {
+                type: 'boolean',
+                description: 'Only return paths that have current values. Defaults to false.'
+              },
+              maxDepth: {
+                type: 'number',
+                description: 'Maximum depth to traverse SignalK tree. Defaults to 5.'
+              }
+            }
+          }
+        });
+
+        // Add source discovery tool for debugging
+        followUpTools.push({
+          name: 'get_available_signalk_sources',
+          description: 'DEBUG: Get a list of all available SignalK data sources. Use this to discover what sources exist before filtering by source.',
+          input_schema: {
+            type: 'object',
+            properties: {
+              vesselContext: {
+                type: 'string',
+                description: 'Vessel context to query. Use "vessels.*" for ALL vessels, "vessels.self" for own vessel. Defaults to vessels.self.'
+              }
+            }
+          }
+        });
+
+        this.app?.debug(`🕐 Real-time keywords detected in follow-up, adding current SignalK data, path discovery, and source discovery tools`);
       }
 
       // Continue the conversation with Claude
@@ -1663,6 +1775,299 @@ Begin your analysis by querying relevant data within the specified time range.`;
     } catch (error) {
       this.app?.error(`Follow-up question failed: ${(error as Error).message}`);
       throw error;
+    }
+  }
+
+  /**
+   * Get all available SignalK sources (for debugging)
+   */
+  private getAvailableSignalKSources(vesselContext: string = 'vessels.self'): string[] {
+    this.app?.debug(`🔍 Getting all available SignalK sources for ${vesselContext}`);
+    
+    const sources = new Set<string>();
+    
+    try {
+      if (vesselContext === 'vessels.*') {
+        const allVessels = this.app?.getPath('vessels') || {};
+        for (const vesselId in allVessels) {
+          if (vesselId === 'self') continue;
+          this.collectSources(allVessels[vesselId], sources, '', 0, 10);
+        }
+      } else if (vesselContext === 'vessels.self') {
+        const actualVesselId = this.app?.selfId;
+        if (actualVesselId) {
+          const vesselData = this.app?.getPath(`vessels.${actualVesselId}`) || {};
+          this.collectSources(vesselData, sources, '', 0, 10);
+        }
+      } else {
+        const vesselData = this.app?.getPath(vesselContext) || {};
+        this.collectSources(vesselData, sources, '', 0, 10);
+      }
+
+      const sourceList = Array.from(sources).sort();
+      this.app?.debug(`📋 Found ${sourceList.length} unique sources: ${sourceList.join(', ')}`);
+      return sourceList;
+
+    } catch (error) {
+      this.app?.error(`Failed to get available SignalK sources: ${(error as Error).message}`);
+      return [];
+    }
+  }
+
+  /**
+   * Recursively collect unique sources from SignalK data
+   */
+  private collectSources(
+    obj: any, 
+    sources: Set<string>, 
+    currentPath: string, 
+    currentDepth: number, 
+    maxDepth: number
+  ): void {
+    if (currentDepth >= maxDepth || !obj || typeof obj !== 'object') {
+      return;
+    }
+
+    for (const [key, value] of Object.entries(obj)) {
+      if (typeof value === 'function') continue;
+
+      const newPath = currentPath ? `${currentPath}.${key}` : key;
+
+      // Check if this value has a $source
+      if (value && typeof value === 'object' && '$source' in value) {
+        const source = value.$source;
+        if (typeof source === 'string' && source.length > 0) {
+          sources.add(source);
+          this.app?.debug(`🔍 Found source "${source}" at path: ${newPath}`);
+        }
+      }
+
+      // Recurse into nested objects
+      if (typeof value === 'object' && value !== null) {
+        this.collectSources(value, sources, newPath, currentDepth + 1, maxDepth);
+      }
+    }
+  }
+
+  /**
+   * Get available real-time SignalK paths with filtering options
+   */
+  private getAvailableSignalKPaths(filter: AvailablePathsFilter = {}): AvailablePathInfo[] {
+    const {
+      vesselContext = 'vessels.self',
+      pathPattern,
+      source,
+      hasValue = false,
+      includeMetadata = false,
+      maxDepth = 10
+    } = filter;
+
+    // First try using StreamBundle.getAvailablePaths if available
+    if (this.app?.streambundle && typeof this.app.streambundle.getAvailablePaths === 'function') {
+      this.app?.debug(`🚀 Using StreamBundle.getAvailablePaths() method`);
+      try {
+        const streamPaths = this.app.streambundle.getAvailablePaths();
+        this.app?.debug(`📋 StreamBundle returned ${streamPaths.length} paths: ${streamPaths.slice(0,5).join(', ')}...`);
+        // TODO: Convert to AvailablePathInfo format and apply filters
+        return streamPaths.map((path: string) => ({
+          path,
+          fullPath: `${vesselContext}.${path}`,
+          vesselId: vesselContext.replace('vessels.', ''),
+          source: undefined // Would need to fetch source info separately
+        }));
+      } catch (streamError) {
+        this.app?.debug(`⚠️ StreamBundle.getAvailablePaths() failed: ${streamError}, NOT falling back to manual traversal`);
+        return [];
+      }
+    }
+
+    // Manual traversal system disabled
+    this.app?.debug(`🚫 StreamBundle.getAvailablePaths() not available, manual traversal disabled`);
+    return [];
+
+    const availablePaths: AvailablePathInfo[] = [];
+    // @ts-ignore - unreachable code
+    const pathRegex = pathPattern ? new RegExp(pathPattern) : null;
+
+    try {
+      if (vesselContext === 'vessels.*') {
+        // Get paths from all vessels
+        const allVessels = this.app?.getPath('vessels') || {};
+        for (const vesselId in allVessels) {
+          if (vesselId === 'self') continue; // Skip self since it's handled separately
+          this.traverseSignalKPaths(
+            allVessels[vesselId], 
+            '', 
+            `vessels.${vesselId}`, 
+            vesselId,
+            availablePaths, 
+            pathRegex, 
+            source || '', 
+            hasValue, 
+            includeMetadata, 
+            0, 
+            maxDepth
+          );
+        }
+      } else if (vesselContext === 'vessels.self') {
+        // Resolve self to actual vessel ID
+        const actualVesselId = this.app?.selfId;
+        if (actualVesselId) {
+          const vesselData = this.app?.getPath(`vessels.${actualVesselId}`) || {};
+          const dataKeys = Object.keys(vesselData);
+          this.app?.debug(`DEBUG: selfId="${actualVesselId}", vessel data has keys: ${dataKeys.slice(0,10).join(',')}`);
+          this.traverseSignalKPaths(
+            vesselData, 
+            '', 
+            `vessels.${actualVesselId}`, 
+            actualVesselId || '',
+            availablePaths, 
+            pathRegex, 
+            source || '', 
+            hasValue, 
+            includeMetadata, 
+            0, 
+            maxDepth
+          );
+        }
+      } else {
+        // Get specific vessel data
+        const vesselData = this.app?.getPath(vesselContext) || {};
+        const vesselId = vesselContext.replace('vessels.', '');
+        this.traverseSignalKPaths(
+          vesselData, 
+          '', 
+          vesselContext, 
+          vesselId,
+          availablePaths, 
+          pathRegex, 
+          source, 
+          hasValue, 
+          includeMetadata, 
+          0, 
+          maxDepth
+        );
+      }
+
+      return availablePaths.sort((a, b) => a.path.localeCompare(b.path));
+
+    } catch (error) {
+      this.app?.error(`Failed to get available SignalK paths: ${(error as Error).message}`);
+      return [];
+    }
+  }
+
+  /**
+   * Recursively traverse SignalK data structure to find available paths
+   */
+  private traverseSignalKPaths(
+    obj: any,
+    currentPath: string,
+    fullContextPath: string,
+    vesselId: string,
+    paths: AvailablePathInfo[],
+    pathRegex: RegExp | null,
+    sourceFilter?: string,
+    hasValue: boolean = false,
+    includeMetadata: boolean = false,
+    currentDepth: number = 0,
+    maxDepth: number = 10
+  ): void {
+    if (currentDepth >= maxDepth || !obj || typeof obj !== 'object') {
+      return;
+    }
+
+    for (const [key, value] of Object.entries(obj)) {
+      // Skip metadata unless explicitly requested
+      if (!includeMetadata && ['_updateTimes', '_sources', 'meta'].includes(key)) {
+        continue;
+      }
+
+      // Skip functions and circular references
+      if (typeof value === 'function') {
+        continue;
+      }
+
+      const newPath = currentPath ? `${currentPath}.${key}` : key;
+      const newFullPath = `${fullContextPath}.${newPath}`;
+
+      // Check if this is a leaf value (has 'value' property or is a primitive)
+      const isLeafValue = value && typeof value === 'object' && 'value' in value;
+      const isPrimitive = typeof value !== 'object' || value === null;
+      
+      if (isLeafValue || isPrimitive) {
+        // This is a data point
+        const actualValue = isLeafValue ? value.value : value;
+        
+        // Apply filters
+        if (pathRegex && !pathRegex.test(newPath)) {
+          continue;
+        }
+        
+        if (hasValue && (actualValue === null || actualValue === undefined)) {
+          continue;
+        }
+
+        // Check source filter
+        let sourceInfo: string | undefined;
+        let hasMatchingSource = false;
+        
+        if (value && typeof value === 'object' && '$source' in value) {
+          sourceInfo = value.$source as string;
+          hasMatchingSource = !sourceFilter || !!(sourceInfo && sourceInfo.includes(sourceFilter));
+        }
+
+        // Also check the values object for multiple sources
+        if (!hasMatchingSource && sourceFilter && value && typeof value === 'object' && 'values' in value) {
+          const valuesObj = value.values as any;
+          if (valuesObj && typeof valuesObj === 'object') {
+            hasMatchingSource = Object.keys(valuesObj).some(key => key.includes(sourceFilter));
+          }
+        }
+
+
+        if (sourceFilter && !hasMatchingSource) {
+          continue;
+        }
+
+        // Get last update time
+        let lastUpdate: string | undefined;
+        if (value && typeof value === 'object' && '_updateTimes' in value) {
+          const updateTimes = value._updateTimes;
+          if (updateTimes && typeof updateTimes === 'object') {
+            const timeKeys = Object.keys(updateTimes);
+            if (timeKeys.length > 0) {
+              const timestamp = (updateTimes as any)[timeKeys[0]];
+              lastUpdate = new Date(timestamp).toISOString();
+            }
+          }
+        }
+
+        this.app?.debug(`FOUND PATH: ${newPath} | source: ${sourceInfo} | hasValue: ${hasValue} | actualValue: ${JSON.stringify(actualValue)?.substring(0,50)}`);
+        paths.push({
+          path: newPath,
+          fullPath: newFullPath,
+          vesselId,
+          currentValue: hasValue ? actualValue : undefined,
+          source: sourceInfo,
+          lastUpdate
+        });
+      } else if (typeof value === 'object' && value !== null) {
+        // Recurse into nested objects
+        this.traverseSignalKPaths(
+          value,
+          newPath,
+          fullContextPath,
+          vesselId,
+          paths,
+          pathRegex,
+          sourceFilter,
+          hasValue,
+          includeMetadata,
+          currentDepth + 1,
+          maxDepth
+        );
+      }
     }
   }
 
@@ -2111,6 +2516,66 @@ Begin your analysis by querying relevant data within the specified time range.`;
           content: `Real-time data retrieval failed: ${(realTimeError as Error).message}`
         };
       }
+    } else if (toolCall.name === 'get_available_signalk_paths') {
+      const { vesselContext, pathPattern, source, hasValue, maxDepth } = toolCall.input as { 
+        vesselContext?: string; 
+        pathPattern?: string; 
+        source?: string; 
+        hasValue?: boolean; 
+        maxDepth?: number; 
+      };
+      
+      try {
+        const availablePaths = this.getAvailableSignalKPaths({
+          vesselContext,
+          pathPattern,
+          source,
+          hasValue,
+          maxDepth
+        });
+        
+        const resultSummary = `Available SignalK paths (${availablePaths.length} found):\n\n${JSON.stringify(availablePaths, null, 2)}`;
+        
+        this.app?.debug(`📋 Path discovery completed: ${availablePaths.length} paths found with filters: ${JSON.stringify({ vesselContext, pathPattern, source, hasValue })}`);
+        
+        return {
+          type: 'tool_result',
+          tool_use_id: toolCall.id,
+          content: resultSummary
+        };
+      } catch (pathDiscoveryError) {
+        this.app?.error(`Path discovery failed: ${(pathDiscoveryError as Error).message}`);
+        
+        return {
+          type: 'tool_result',
+          tool_use_id: toolCall.id,
+          content: `Path discovery failed: ${(pathDiscoveryError as Error).message}`
+        };
+      }
+    } else if (toolCall.name === 'get_available_signalk_sources') {
+      const { vesselContext } = toolCall.input as { vesselContext?: string };
+      
+      try {
+        const availableSources = this.getAvailableSignalKSources(vesselContext);
+        
+        const resultSummary = `Available SignalK sources (${availableSources.length} found):\n\n${availableSources.map(s => `- ${s}`).join('\n')}`;
+        
+        this.app?.debug(`📋 Source discovery completed: ${availableSources.length} sources found`);
+        
+        return {
+          type: 'tool_result',
+          tool_use_id: toolCall.id,
+          content: resultSummary
+        };
+      } catch (sourceDiscoveryError) {
+        this.app?.error(`Source discovery failed: ${(sourceDiscoveryError as Error).message}`);
+        
+        return {
+          type: 'tool_result',
+          tool_use_id: toolCall.id,
+          content: `Source discovery failed: ${(sourceDiscoveryError as Error).message}`
+        };
+      }
     } else if (toolCall.name === 'find_regimen_episodes') {
       const { regimenName, timeRange, limit } = toolCall.input as { regimenName: string; timeRange?: any; limit?: number };
       
@@ -2173,7 +2638,7 @@ Begin your analysis by querying relevant data within the specified time range.`;
       return {
         type: 'tool_result',
         tool_use_id: toolCall.id,
-        content: `Unknown tool "${toolCall.name}" requested. Available tools: query_maritime_database, get_current_signalk_data, find_regimen_episodes, generate_wind_analysis`
+        content: `Unknown tool "${toolCall.name}" requested. Available tools: query_maritime_database, get_current_signalk_data, get_available_signalk_paths, get_available_signalk_sources, find_regimen_episodes, generate_wind_analysis`
       };
     }
   }

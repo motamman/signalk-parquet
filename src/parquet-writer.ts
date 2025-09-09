@@ -121,12 +121,19 @@ export class ParquetWriter {
       // Close the writer
       await writer.close();
 
-      // Validate the written file size
-      const stats = await fs.stat(filepath);
-
-      if (stats.size < 100) {
+      // Validate the written file
+      const isValid = await this.validateParquetFile(filepath);
+      if (!isValid) {
+        // Move invalid file to quarantine and log
+        const quarantineDir = path.join(path.dirname(filepath), 'quarantine');
+        await fs.ensureDir(quarantineDir);
+        const quarantineFile = path.join(quarantineDir, path.basename(filepath));
+        await fs.move(filepath, quarantineFile);
+        
+        await this.logQuarantine(quarantineFile, 'write', 'File failed validation after write');
+        
         throw new Error(
-          `Parquet file too small (${stats.size} bytes) - likely empty or corrupted`
+          `Parquet file failed validation after write, moved to quarantine: ${quarantineFile}`
         );
       }
 
@@ -358,6 +365,71 @@ export class ParquetWriter {
     }
   }
 
+  // Validate parquet file for corruption
+  private async validateParquetFile(filepath: string): Promise<boolean> {
+    try {
+      if (!parquet || !(await fs.pathExists(filepath))) {
+        return false;
+      }
+
+      // Check file size (must be > 100 bytes as per existing logic)
+      const stats = await fs.stat(filepath);
+      const fileSize = stats.size;
+      
+      if (fileSize < 100) {
+        this.app?.debug(`❌ Parquet file too small: ${filepath} (${fileSize} bytes)`);
+        return false;
+      }
+
+      // Try to open and read the parquet file
+      try {
+        const reader = await parquet.ParquetReader.openFile(filepath);
+        const cursor = reader.getCursor();
+        
+        // Try to read first record to verify file structure
+        const firstRecord = await cursor.next();
+        await reader.close();
+        
+        // Log file size for debugging (matches your stat command format)
+        this.app?.debug(`✅ Valid parquet file: ${fileSize.toString().padStart(12, ' ')}  ${filepath}`);
+        
+        return firstRecord !== null;
+      } catch (readError) {
+        this.app?.debug(`❌ Parquet file read failed: ${filepath} - ${(readError as Error).message}`);
+        return false;
+      }
+    } catch (error) {
+      this.app?.debug(`❌ Parquet validation error: ${filepath} - ${(error as Error).message}`);
+      return false;
+    }
+  }
+
+  // Log quarantined files
+  private async logQuarantine(filepath: string, operation: string, reason: string): Promise<void> {
+    try {
+      const stats = await fs.stat(filepath);
+      const logEntry = {
+        timestamp: new Date().toISOString(),
+        filepath,
+        fileSize: stats.size,
+        operation,
+        reason,
+        formattedSize: `${stats.size.toString().padStart(12, ' ')}  ${filepath}`
+      };
+
+      const quarantineDir = path.dirname(filepath);
+      const logFile = path.join(quarantineDir, 'quarantine.log');
+      
+      // Append to log file
+      const logLine = `${logEntry.timestamp} | ${logEntry.operation} | ${logEntry.fileSize} bytes | ${logEntry.reason} | ${filepath}\n`;
+      await fs.appendFile(logFile, logLine);
+      
+      this.app?.debug(`📋 Quarantine logged: ${logEntry.formattedSize}`);
+    } catch (error) {
+      this.app?.debug(`Failed to log quarantine entry: ${(error as Error).message}`);
+    }
+  }
+
   // Daily file consolidation (matching Python behavior)
   async consolidateDaily(
     dataDir: string,
@@ -415,6 +487,22 @@ export class ParquetWriter {
         this.app?.debug(
           `Consolidated ${entry.sources.length} files into ${entry.target} (${recordCount} records)`
         );
+
+        // Validate consolidated parquet file
+        const isValid = await this.validateParquetFile(entry.target);
+        if (!isValid) {
+          // Move corrupt file to quarantine
+          const quarantineDir = path.join(path.dirname(entry.target), 'quarantine');
+          await fs.ensureDir(quarantineDir);
+          const quarantineFile = path.join(quarantineDir, path.basename(entry.target));
+          await fs.move(entry.target, quarantineFile);
+          
+          // Log to quarantine log
+          await this.logQuarantine(quarantineFile, 'consolidation', 'File failed validation after consolidation');
+          
+          this.app?.debug(`⚠️ Moved corrupt file to quarantine: ${quarantineFile}`);
+          continue; // Skip moving source files since consolidation failed
+        }
 
         // Move source files to processed folder
         const processedDir = path.join(path.dirname(entry.target), 'processed');
