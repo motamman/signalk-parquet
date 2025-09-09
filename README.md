@@ -1,6 +1,6 @@
 # SignalK Parquet Data Store
 
-**Version 0.5.2-beta.1**
+**Version 0.5.3-beta.1**
 
 A comprehensive TypeScript-based SignalK plugin and webpp that saves marine data directly to Parquet files with regimen-based control and advanced querying features, including a REST API built on the SignalK History API and Claude AI history data analysis. 
 
@@ -1133,12 +1133,12 @@ For detailed testing procedures, see [TESTING.md](TESTING.md).
 
 ## Changelog
 
-### Version 0.5.2-beta.4
+### Version 0.5.3-beta.1
 - **📊 Advanced Charting & Visualization**: Comprehensive chart generation capabilities with Claude AI
   - Interactive Plotly.js chart embedding with marine-specific visualizations
   - Automated wind rose generation with Beaufort scale categories and compass sectors
   - Multiple chart types: line charts, bar charts, scatter plots, polar charts, radar charts
-  - Professional wind analysis tools with directional frequency distributions
+  - Wind analysis tools with directional frequency distributions
   - Chart data integrity validation ensuring all visualizations use real query data
   - Time-aligned multi-parameter visualization support via History API
 - **🔍 Enhanced Path Discovery**: Improved SignalK path discovery and source filtering
