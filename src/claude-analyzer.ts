@@ -1058,6 +1058,12 @@ FORBIDDEN ACTIONS - THESE WILL RESULT IN IMMEDIATE FAILURE:
 - Creating any visualization that isn't a proper Plotly.js JSON specification
 - Presenting analysis conclusions without first showing raw query results
 
+COMMON FAILURE MODES TO AVOID:
+- Do NOT assume continuous movement without querying position data
+- Do NOT create timeline narratives without confirming actual timestamps
+- Do NOT infer vessel behavior without showing supporting data
+- Do NOT make up plausible-sounding explanations
+
 CHART EMBEDDING CAPABILITIES:
 When you want to include charts in your response, add a Plotly.js JSON chart specification in a code block like this:
 \`\`\`json
