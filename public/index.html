@@ -427,8 +427,7 @@
             <button class="tab-button active" onclick="showTab('pathConfig')">⚙️ Path Configuration</button>
             <button class="tab-button" onclick="showTab('commandManager')">🎮 Command Manager</button>
             <button class="tab-button" onclick="showTab('liveConnections')" style="display: none;">🔴 Live Connections</button>
-            <button class="tab-button" onclick="showTab('dataPaths')">📁 Available Data Paths</button>
-            <button class="tab-button" onclick="showTab('customQuery')">🔍 Custom Query</button>
+            <button class="tab-button" onclick="showTab('dataPaths')">🗄️ Query Database</button>
             <button class="tab-button" onclick="showTab('aiAnalysis')">🧠 AI Analysis<br><small>EXPERIMENTAL</small></button>
             <button class="tab-button" onclick="showTab('s3Config')">☁️ Cloud Status</button>
         </div>
@@ -944,7 +943,7 @@
 
                             <div style="margin-bottom: 15px;">
                                 <label for="customPrompt">Custom Analysis Request (optional):</label>
-                                <textarea id="customPrompt" placeholder="What specific insights are you looking for? Leave blank for general analysis..." style="width: 100%; padding: 8px; margin-top: 5px; min-height: 60px; resize: vertical;"></textarea>
+                                <textarea id="customPrompt" placeholder="What specific insights are you looking for? Leave blank for general analysis..." style="width: 100%; padding: 8px; margin-top: 5px; min-height: 180px; resize: vertical;"></textarea>
                             </div>
 
                             <button onclick="runCustomAnalysis()" style="padding: 12px 25px; margin-top: 15px;">🚀 Run Custom Analysis</button>
@@ -1005,7 +1004,7 @@
             <!-- Data Paths Tab -->
             <div id="dataPaths" class="tab-panel">
                 <div class="section">
-                    <h2>📁 Available Data Paths</h2>
+                    <h2>🗄️ Query Database</h2>
                 <p>Available SignalK data paths with Parquet files:</p>
                     <div id="availablePaths">
                         <div class="loading">Loading available paths...</div>
@@ -1028,30 +1027,6 @@
                 </div>
             </div>
 
-            <!-- Custom Query Tab -->
-            <div id="customQuery" class="tab-panel">
-                <div class="section">
-                    <h2>🔍 Custom Query</h2>
-                <div class="form-group">
-                    <label for="queryInput">DuckDB SQL Query:</label>
-                    <textarea id="queryInput" placeholder="SELECT * FROM 'path/to/file.parquet' LIMIT 10"></textarea>
-                </div>
-                <button onclick="executeQuery()">▶️ Execute Query</button>
-                <button class="btn-secondary" onclick="clearQuery()">🗑️ Clear</button>
-                
-                <div class="query-examples">
-                    <h4>📝 Example Queries (click to use):</h4>
-                    <ul id="queryExamples">
-                            <li><div class="loading">Loading example queries...</div></li>
-                        </ul>
-                    </div>
-                    
-                    <!-- Query Results Section -->
-                    <div id="customQueryResultsContainer" class="results">
-                        <p>Run a query to see results here...</p>
-                    </div>
-                </div>
-            </div>
         </div>
     </div>
 
@@ -1104,26 +1079,78 @@
 
         function displayAvailablePaths() {
             const container = document.getElementById('availablePaths');
-            
+
             if (availablePaths.length === 0) {
                 container.innerHTML = '<p>No Parquet data files found. Start collecting data first.</p>';
                 return;
             }
 
-            let html = '<div class="path-list">';
-            availablePaths.forEach(pathInfo => {
-                html += `
-                    <div class="path-item">
-                        <h4>${pathInfo.path}</h4>
-                        <p>${pathInfo.fileCount} files</p>
-                        <button onclick="generateQueryForPath('${pathInfo.path}', '${pathInfo.directory}')">📋 Generate Query</button>
-                        <button onclick="analyzeDataPath('${pathInfo.path}', '${pathInfo.directory}')" style="margin-left: 10px; background: #667eea; color: white; border: none; padding: 8px 12px; border-radius: 4px; cursor: pointer;">🧠 Analyze</button>
-                    </div>
-                `;
+            let html = `
+                <div class="path-dropdown-container">
+                    <div style="margin-bottom: 15px;">
+                        <label for="pathDropdown" style="display: block; margin-bottom: 5px; font-weight: 500;">Select Data Path:</label>
+                        <select id="pathDropdown" style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px;" onchange="updateSelectedPath()">
+                            <option value="">-- Select a data path --</option>
+            `;
+
+            availablePaths.forEach((pathInfo, index) => {
+                html += `<option value="${index}">${pathInfo.path} (${pathInfo.fileCount} files)</option>`;
             });
-            html += '</div>';
-            
+
+            html += `
+                        </select>
+                    </div>
+
+                    <div id="pathActions" style="display: none; margin-top: 15px; padding: 15px; background: #f8f9fa; border-radius: 6px; border: 1px solid #e9ecef;">
+                        <div style="margin-bottom: 10px;">
+                            <strong id="selectedPathName"></strong>
+                            <span id="selectedPathFiles" style="color: #666; margin-left: 10px;"></span>
+                        </div>
+                        <button id="generateQueryBtn" onclick="generateQueryForSelectedPath()" style="background: #28a745; color: white; border: none; padding: 10px 15px; border-radius: 4px; cursor: pointer; margin-right: 10px;">📋 Generate Query</button>
+                        <button id="analyzeBtn" onclick="analyzeSelectedPath()" style="background: #667eea; color: white; border: none; padding: 10px 15px; border-radius: 4px; cursor: pointer;">🧠 Analyze</button>
+                    </div>
+                </div>
+            `;
+
             container.innerHTML = html;
+        }
+
+        // Dropdown-related functions
+        function updateSelectedPath() {
+            const dropdown = document.getElementById('pathDropdown');
+            const actionsDiv = document.getElementById('pathActions');
+            const pathNameSpan = document.getElementById('selectedPathName');
+            const pathFilesSpan = document.getElementById('selectedPathFiles');
+
+            if (dropdown.value === '') {
+                actionsDiv.style.display = 'none';
+                return;
+            }
+
+            const selectedIndex = parseInt(dropdown.value);
+            const pathInfo = availablePaths[selectedIndex];
+
+            pathNameSpan.textContent = pathInfo.path;
+            pathFilesSpan.textContent = `(${pathInfo.fileCount} files)`;
+            actionsDiv.style.display = 'block';
+        }
+
+        function generateQueryForSelectedPath() {
+            const dropdown = document.getElementById('pathDropdown');
+            if (dropdown.value === '') return;
+
+            const selectedIndex = parseInt(dropdown.value);
+            const pathInfo = availablePaths[selectedIndex];
+            generateQueryForPath(pathInfo.path, pathInfo.directory);
+        }
+
+        function analyzeSelectedPath() {
+            const dropdown = document.getElementById('pathDropdown');
+            if (dropdown.value === '') return;
+
+            const selectedIndex = parseInt(dropdown.value);
+            const pathInfo = availablePaths[selectedIndex];
+            analyzeDataPath(pathInfo.path, pathInfo.directory);
         }
 
         function generateQueryForPath(signalkPath, directory) {
@@ -4033,8 +4060,8 @@ Provide actionable insights based on what you observe in the data.`,
         async function analyzeDataPath(signalkPath, directory) {
             // Switch to AI Analysis tab
             showTab('aiAnalysis');
-            
-            // Select the checkbox for this path in the custom analysis form
+
+            // First select the path checkbox (before enabling database mode)
             const checkboxId = `path_${signalkPath.replace(/[^a-zA-Z0-9]/g, '_')}`;
             const checkbox = document.getElementById(checkboxId);
             if (checkbox) {
@@ -4044,9 +4071,41 @@ Provide actionable insights based on what you observe in the data.`,
                 checkbox.checked = true;
                 updateSelectedPathCount();
             }
-            
-            // Scroll to custom analysis section
-            document.getElementById('analysisTemplate').scrollIntoView({ behavior: 'smooth' });
+
+            // Enable database access mode for path-specific analysis
+            const databaseCheckbox = document.getElementById('enableDatabaseAccess');
+            if (databaseCheckbox && !databaseCheckbox.checked) {
+                databaseCheckbox.checked = true;
+                toggleAnalysisMode(); // Update UI to show database mode
+            }
+
+            // Set path-specific analysis prompt
+            const promptField = document.getElementById('customPrompt');
+            if (promptField) {
+                promptField.value = `Analyze the data for path: ${signalkPath}
+
+Please provide insights about:
+1. Recent data patterns and trends
+2. Any anomalies or unusual readings
+3. Data quality and consistency
+4. Key statistics and ranges
+5. Notable changes over time
+
+Focus specifically on the ${signalkPath} sensor data and provide actionable insights.`;
+            }
+
+            // Set recent time range for quick analysis
+            const startDateField = document.getElementById('analysisStartDate');
+            const endDateField = document.getElementById('analysisEndDate');
+            if (startDateField && endDateField) {
+                const now = new Date();
+                const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+                endDateField.value = now.toISOString().slice(0, 16);
+                startDateField.value = yesterday.toISOString().slice(0, 16);
+            }
+
+            // Auto-trigger the analysis immediately
+            runCustomAnalysis();
         }
 
         // Toggle between analysis modes
