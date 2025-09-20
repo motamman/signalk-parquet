@@ -449,7 +449,7 @@ export class ParquetWriter {
           const itemPath = path.join(dir, item);
           const stat = await fs.stat(itemPath);
 
-          if (stat.isDirectory() && item !== 'processed') {
+          if (stat.isDirectory() && item !== 'processed' && item !== 'claude-schemas') {
             await walkDir(itemPath);
           } else if (
             item.includes(dateStr) &&
