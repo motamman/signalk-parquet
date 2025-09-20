@@ -726,6 +726,8 @@ export async function consolidateMissedDays(config: PluginConfig, state: PluginS
     } else {
     }
   } catch (error) {
+    app.error(`Failed to consolidate missed days: ${(error as Error).message}`);
+    app.debug(`Consolidation error stack: ${(error as Error).stack}`);
   }
 }
 
@@ -753,6 +755,8 @@ export async function consolidateYesterday(config: PluginConfig, state: PluginSt
       }
     }
   } catch (error) {
+    app.error(`Failed to consolidate yesterday's files: ${(error as Error).message}`);
+    app.debug(`Consolidation error stack: ${(error as Error).stack}`);
   }
 }
 
