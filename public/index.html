@@ -1795,11 +1795,6 @@
                 return;
             }
 
-            if (selectedRegimens.length === 0) {
-                alert('At least one regimen must be selected');
-                return;
-            }
-
             try {
                 const response = await fetch('/plugins/signalk-parquet/api/config/paths', {
                     method: 'POST',
