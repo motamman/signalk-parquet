@@ -427,11 +427,11 @@ This provides better compression, faster queries, and proper type safety for dat
 | `/api/test-s3` | POST | Test S3 connection |
 | `/api/health` | GET | Health check |
 | **Claude AI Analysis API** | | |
-| `/api/claude/analyze` | POST | Perform AI analysis on data |
-| `/api/claude/templates` | GET | Get available analysis templates |
-| `/api/claude/quick-analysis` | POST | Quick analysis using templates |
-| `/api/claude/history` | GET | Get analysis history |
-| `/api/claude/test` | GET | Test Claude API connection |
+| `/api/analyze` | POST | Perform AI analysis on data |
+| `/api/analyze/templates` | GET | Get available analysis templates |
+| `/api/analyze/followup` | POST | Follow-up analysis questions |
+| `/api/analyze/history` | GET | Get analysis history |
+| `/api/analyze/test-connection` | POST | Test Claude API connection |
 | **SignalK History API** | | |
 | `/signalk/v1/history/values` | GET | SignalK History API - Get historical values |
 | `/signalk/v1/history/contexts` | GET | SignalK History API - Get available contexts |
@@ -742,35 +742,21 @@ EXAMPLES OF POSSIBLE Pre-built analysis templates provide ready-to-use analysis 
 
 **Test Claude Connection:**
 ```bash
-curl http://localhost:3000/plugins/signalk-parquet/api/claude/test
+curl -X POST http://localhost:3000/plugins/signalk-parquet/api/analyze/test-connection
 ```
 
 **Get Available Templates:**
 ```bash
-curl http://localhost:3000/plugins/signalk-parquet/api/claude/templates
-```
-
-**Quick Template-based Analysis:**
-```bash
-curl -X POST http://localhost:3000/plugins/signalk-parquet/api/claude/quick-analysis \
-  -H "Content-Type: application/json" \
-  -d '{
-    "dataPath": "navigation.position",
-    "templateId": "navigation-summary",
-    "timeRange": {
-      "start": "2025-01-01T00:00:00Z",
-      "end": "2025-01-02T00:00:00Z"
-    }
-  }'
+curl http://localhost:3000/plugins/signalk-parquet/api/analyze/templates
 ```
 
 **Custom Analysis:**
 ```bash
-curl -X POST http://localhost:3000/plugins/signalk-parquet/api/claude/analyze \
+curl -X POST http://localhost:3000/plugins/signalk-parquet/api/analyze \
   -H "Content-Type: application/json" \
   -d '{
     "dataPath": "environment.wind.speedTrue,navigation.speedOverGround",
-    "analysisType": "correlation",
+    "analysisType": "custom",
     "customPrompt": "Analyze the relationship between wind speed and vessel speed. Identify optimal wind conditions for best performance.",
     "timeRange": {
       "start": "2025-01-01T00:00:00Z",
@@ -829,7 +815,7 @@ All Claude AI analyses are automatically saved and can be retrieved:
 
 **Get Analysis History:**
 ```bash
-curl http://localhost:3000/plugins/signalk-parquet/api/claude/history?limit=10
+curl http://localhost:3000/plugins/signalk-parquet/api/analyze/history?limit=10
 ```
 
 History files are stored in: `data/analysis-history/analysis_*.json`
@@ -854,7 +840,7 @@ History files are stored in: `data/analysis-history/analysis_*.json`
 **Debug Claude Integration:**
 ```bash
 # Test API connection
-curl http://localhost:3000/plugins/signalk-parquet/api/claude/test
+curl -X POST http://localhost:3000/plugins/signalk-parquet/api/analyze/test-connection
 
 # Check plugin logs for Claude-specific messages
 journalctl -u signalk -f | grep -i claude
