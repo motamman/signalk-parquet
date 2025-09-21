@@ -1,7 +1,5 @@
 # SignalK Parquet Data Store
 
-**Version 0.5.3-beta.1**
-
 A comprehensive TypeScript-based SignalK plugin and webpp that saves marine data directly to Parquet files with regimen-based control and advanced querying features, including a REST API built on the SignalK History API and Claude AI history data analysis. 
 
 ## Features
@@ -1133,6 +1131,31 @@ For detailed testing procedures, see [TESTING.md](TESTING.md).
 
 ## Changelog
 
+### Version 0.5.3-beta.2 (Latest)
+- **🎨 Enhanced User Interface**: Major improvements to path configuration and form usability
+  - Intelligent SignalK path dropdowns with real-time data population
+  - Radio button filters to distinguish self vessel vs other vessel paths
+  - Dynamic regimen selection with checkbox interfaces replacing text inputs
+  - Auto-populated regimens from defined commands API with dynamic updates
+  - Improved form layout with proper label/checkbox alignment and spacing
+  - Support for both pre-defined and custom regimen selection
+- **🎮 Regimen/Commands Manager Enhancements**: Streamlined command management experience
+  - Renamed "Command Manager" to "Regimen/Commands Manager" for clarity
+  - Auto-refresh functionality when selecting the tab (eliminates manual refresh)
+  - Removed redundant manual refresh button for cleaner interface
+  - Dynamic regimen filtering excludes command paths from path dropdowns
+- **🧠 AI Analysis Improvements**: Enhanced analysis experience and cancellation controls
+  - Analysis button shows "Running Analysis (click to cancel)" during processing
+  - Visual feedback with color changes during analysis execution
+  - Dual cancellation options: button click or separate cancel button
+  - Improved error handling distinguishing between cancelled vs failed analyses
+  - Better prevention of double-clicking issues with clear visual states
+- **⚙️ Configuration Management**: More flexible path and regimen configuration
+  - Removed regimen requirement validation from edit forms (optional regimens)
+  - Enhanced dropdown population excludes already configured command paths
+  - Better alignment of UI elements with consistent styling patterns
+  - Tab labels consolidated to single lines for cleaner navigation
+
 ### Version 0.5.3-beta.1
 - **📊 Advanced Charting & Visualization**: Comprehensive chart generation capabilities with Claude AI
   - Interactive Plotly.js chart embedding with marine-specific visualizations
@@ -1183,8 +1206,6 @@ For detailed testing procedures, see [TESTING.md](TESTING.md).
   - Live data entries now include EMA and SMA calculations for real-time analytics
   - Improved deduplication of data points in historical streaming service
 - **🔧 Streaming Optimization**: Disabled streaming functionality to improve performance and reliability
-  - Better resource management and reduced memory usage
-  - More stable data processing pipeline
 
 ### Version 0.5.0-beta.8
 - **🔧 Fixed History API Time Bucketing**: Resolved SQL type casting errors in time bucketing queries
