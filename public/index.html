@@ -425,11 +425,10 @@
         <!-- Tab Navigation -->
         <div class="tab-navigation">
             <button class="tab-button active" onclick="showTab('pathConfig')">⚙️ Path Configuration</button>
-            <button class="tab-button" onclick="showTab('commandManager')">🎮 Command Manager</button>
+            <button class="tab-button" onclick="showTab('commandManager')">🎮 Regimen/Commands Manager</button>
             <button class="tab-button" onclick="showTab('liveConnections')" style="display: none;">🔴 Live Connections</button>
-            <button class="tab-button" onclick="showTab('dataPaths')">📁 Available Data Paths</button>
-            <button class="tab-button" onclick="showTab('customQuery')">🔍 Custom Query</button>
-            <button class="tab-button" onclick="showTab('aiAnalysis')">🧠 AI Analysis<br><small>EXPERIMENTAL</small></button>
+            <button class="tab-button" onclick="showTab('dataPaths')">🗄️ Query Database</button>
+            <button class="tab-button" onclick="showTab('aiAnalysis')">🧠 AI Analysis <small>(EXPERIMENTAL)</small></button>
             <button class="tab-button" onclick="showTab('s3Config')">☁️ Cloud Status</button>
         </div>
 
@@ -449,7 +448,21 @@
                     <h4>Add New Path Configuration</h4>
                     <div class="form-group">
                         <label for="pathSignalK">SignalK Path:</label>
-                        <input type="text" id="pathSignalK" placeholder="e.g., navigation.position">
+                        <div style="margin-bottom: 8px; display: flex; align-items: center; gap: 15px;">
+                            <label style="display: flex; align-items: center; font-weight: normal; cursor: pointer; white-space: nowrap;">
+                                <span style="margin-right: 5px;">🏠 Self paths</span>
+                                <input type="radio" id="pathFilterSelf" name="pathFilter" value="self" checked onchange="updatePathFilter()">
+                            </label>
+                            <label style="display: flex; align-items: center; font-weight: normal; cursor: pointer; white-space: nowrap;">
+                                <span style="margin-right: 5px;">🚢 Other vessel paths</span>
+                                <input type="radio" id="pathFilterOthers" name="pathFilter" value="others" onchange="updatePathFilter()">
+                            </label>
+                        </div>
+                        <select id="pathSignalK" style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px;">
+                            <option value="">-- Select SignalK Path --</option>
+                            <option value="custom">🖊️ Enter Custom Path</option>
+                        </select>
+                        <input type="text" id="pathSignalKCustom" placeholder="Enter custom SignalK path (e.g., navigation.position)" style="width: 100%; padding: 8px; margin-top: 5px; border: 1px solid #ddd; border-radius: 4px; display: none;">
                     </div>
                     <div class="form-group">
                         <label for="pathEnabled" style="display: inline !important; margin-bottom: 0 !important;">Always Enabled:</label>
@@ -457,7 +470,16 @@
                     </div>
                     <div class="form-group">
                         <label for="pathRegimen">Regimen Control:</label>
-                        <input type="text" id="pathRegimen" placeholder="e.g., captureWeather, capturePassage">
+                        <div style="border: 1px solid #ddd; border-radius: 4px; padding: 10px; max-height: 150px; overflow-y: auto; background: white;">
+                            <div id="regimenCheckboxes">
+                                <!-- Regimen checkboxes will be populated here -->
+                            </div>
+                            <div style="margin-top: 10px; padding-top: 10px; border-top: 1px solid #eee;">
+                                <label for="customRegimen" style="font-size: 0.9em; color: #666;">Custom Regimen:</label>
+                                <input type="text" id="customRegimen" placeholder="Enter custom regimen name" style="width: 100%; padding: 6px; margin-top: 5px; border: 1px solid #ddd; border-radius: 3px;">
+                                <button type="button" onclick="addCustomRegimen()" style="margin-top: 5px; padding: 4px 8px; background: #28a745; color: white; border: none; border-radius: 3px; font-size: 0.8em;">➕ Add</button>
+                            </div>
+                        </div>
                     </div>
                     <div class="form-group">
                         <label for="pathContext">Context:</label>
@@ -492,9 +514,8 @@
             <!-- Command Manager Tab -->
             <div id="commandManager" class="tab-panel">
                 <div class="section">
-                    <h2>🎮 Command Manager</h2>
+                    <h2>🎮 Regimen/Commands Manager</h2>
                     <p>Register and manage SignalK commands for remote control:</p>
-                    <button onclick="loadCommands()">🔄 Refresh Commands</button>
                     <button onclick="showAddCommandForm()">➕ Add New Command</button>
                     
                     <!-- Add Command Form (hidden by default) -->
@@ -944,7 +965,7 @@
 
                             <div style="margin-bottom: 15px;">
                                 <label for="customPrompt">Custom Analysis Request (optional):</label>
-                                <textarea id="customPrompt" placeholder="What specific insights are you looking for? Leave blank for general analysis..." style="width: 100%; padding: 8px; margin-top: 5px; min-height: 60px; resize: vertical;"></textarea>
+                                <textarea id="customPrompt" placeholder="What specific insights are you looking for? Leave blank for general analysis..." style="width: 100%; padding: 8px; margin-top: 5px; min-height: 180px; resize: vertical;"></textarea>
                             </div>
 
                             <button onclick="runCustomAnalysis()" style="padding: 12px 25px; margin-top: 15px;">🚀 Run Custom Analysis</button>
@@ -1005,7 +1026,7 @@
             <!-- Data Paths Tab -->
             <div id="dataPaths" class="tab-panel">
                 <div class="section">
-                    <h2>📁 Available Data Paths</h2>
+                    <h2>🗄️ Query Database</h2>
                 <p>Available SignalK data paths with Parquet files:</p>
                     <div id="availablePaths">
                         <div class="loading">Loading available paths...</div>
@@ -1028,30 +1049,6 @@
                 </div>
             </div>
 
-            <!-- Custom Query Tab -->
-            <div id="customQuery" class="tab-panel">
-                <div class="section">
-                    <h2>🔍 Custom Query</h2>
-                <div class="form-group">
-                    <label for="queryInput">DuckDB SQL Query:</label>
-                    <textarea id="queryInput" placeholder="SELECT * FROM 'path/to/file.parquet' LIMIT 10"></textarea>
-                </div>
-                <button onclick="executeQuery()">▶️ Execute Query</button>
-                <button class="btn-secondary" onclick="clearQuery()">🗑️ Clear</button>
-                
-                <div class="query-examples">
-                    <h4>📝 Example Queries (click to use):</h4>
-                    <ul id="queryExamples">
-                            <li><div class="loading">Loading example queries...</div></li>
-                        </ul>
-                    </div>
-                    
-                    <!-- Query Results Section -->
-                    <div id="customQueryResultsContainer" class="results">
-                        <p>Run a query to see results here...</p>
-                    </div>
-                </div>
-            </div>
         </div>
     </div>
 
@@ -1104,26 +1101,78 @@
 
         function displayAvailablePaths() {
             const container = document.getElementById('availablePaths');
-            
+
             if (availablePaths.length === 0) {
                 container.innerHTML = '<p>No Parquet data files found. Start collecting data first.</p>';
                 return;
             }
 
-            let html = '<div class="path-list">';
-            availablePaths.forEach(pathInfo => {
-                html += `
-                    <div class="path-item">
-                        <h4>${pathInfo.path}</h4>
-                        <p>${pathInfo.fileCount} files</p>
-                        <button onclick="generateQueryForPath('${pathInfo.path}', '${pathInfo.directory}')">📋 Generate Query</button>
-                        <button onclick="analyzeDataPath('${pathInfo.path}', '${pathInfo.directory}')" style="margin-left: 10px; background: #667eea; color: white; border: none; padding: 8px 12px; border-radius: 4px; cursor: pointer;">🧠 Analyze</button>
-                    </div>
-                `;
+            let html = `
+                <div class="path-dropdown-container">
+                    <div style="margin-bottom: 15px;">
+                        <label for="pathDropdown" style="display: block; margin-bottom: 5px; font-weight: 500;">Select Data Path:</label>
+                        <select id="pathDropdown" style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px;" onchange="updateSelectedPath()">
+                            <option value="">-- Select a data path --</option>
+            `;
+
+            availablePaths.forEach((pathInfo, index) => {
+                html += `<option value="${index}">${pathInfo.path} (${pathInfo.fileCount} files)</option>`;
             });
-            html += '</div>';
-            
+
+            html += `
+                        </select>
+                    </div>
+
+                    <div id="pathActions" style="display: none; margin-top: 15px; padding: 15px; background: #f8f9fa; border-radius: 6px; border: 1px solid #e9ecef;">
+                        <div style="margin-bottom: 10px;">
+                            <strong id="selectedPathName"></strong>
+                            <span id="selectedPathFiles" style="color: #666; margin-left: 10px;"></span>
+                        </div>
+                        <button id="generateQueryBtn" onclick="generateQueryForSelectedPath()" style="background: #28a745; color: white; border: none; padding: 10px 15px; border-radius: 4px; cursor: pointer; margin-right: 10px;">📋 Generate Query</button>
+                        <button id="analyzeBtn" onclick="analyzeSelectedPath()" style="background: #667eea; color: white; border: none; padding: 10px 15px; border-radius: 4px; cursor: pointer;">🧠 Analyze</button>
+                    </div>
+                </div>
+            `;
+
             container.innerHTML = html;
+        }
+
+        // Dropdown-related functions
+        function updateSelectedPath() {
+            const dropdown = document.getElementById('pathDropdown');
+            const actionsDiv = document.getElementById('pathActions');
+            const pathNameSpan = document.getElementById('selectedPathName');
+            const pathFilesSpan = document.getElementById('selectedPathFiles');
+
+            if (dropdown.value === '') {
+                actionsDiv.style.display = 'none';
+                return;
+            }
+
+            const selectedIndex = parseInt(dropdown.value);
+            const pathInfo = availablePaths[selectedIndex];
+
+            pathNameSpan.textContent = pathInfo.path;
+            pathFilesSpan.textContent = `(${pathInfo.fileCount} files)`;
+            actionsDiv.style.display = 'block';
+        }
+
+        function generateQueryForSelectedPath() {
+            const dropdown = document.getElementById('pathDropdown');
+            if (dropdown.value === '') return;
+
+            const selectedIndex = parseInt(dropdown.value);
+            const pathInfo = availablePaths[selectedIndex];
+            generateQueryForPath(pathInfo.path, pathInfo.directory);
+        }
+
+        function analyzeSelectedPath() {
+            const dropdown = document.getElementById('pathDropdown');
+            if (dropdown.value === '') return;
+
+            const selectedIndex = parseInt(dropdown.value);
+            const pathInfo = availablePaths[selectedIndex];
+            analyzeDataPath(pathInfo.path, pathInfo.directory);
         }
 
         function generateQueryForPath(signalkPath, directory) {
@@ -1317,6 +1366,11 @@
             if (tabId === 'aiAnalysis') {
                 initializeAIAnalysisTab();
             }
+
+            // Auto-refresh commands when Command Manager tab becomes active
+            if (tabId === 'commandManager') {
+                loadCommands();
+            }
         }
 
         async function testS3Connection() {
@@ -1460,8 +1514,10 @@
             loadPathConfigurations();
         }
 
-        function showAddPathForm() {
+        async function showAddPathForm() {
             document.getElementById('addPathForm').style.display = 'block';
+            populateSignalKPaths();
+            await populateAvailableRegimens();
         }
 
         function hideAddPathForm() {
@@ -1471,21 +1527,264 @@
 
         function clearAddPathForm() {
             document.getElementById('pathSignalK').value = '';
+            document.getElementById('pathSignalKCustom').value = '';
+            document.getElementById('pathSignalKCustom').style.display = 'none';
             document.getElementById('pathEnabled').checked = false;
-            document.getElementById('pathRegimen').value = '';
             document.getElementById('pathSource').value = '';
             document.getElementById('pathContext').value = 'vessels.self';
             document.getElementById('pathExcludeMMSI').value = '';
+            document.getElementById('customRegimen').value = '';
+
+            // Clear regimen checkboxes
+            const checkboxes = document.querySelectorAll('#regimenCheckboxes input[type="checkbox"]');
+            checkboxes.forEach(checkbox => checkbox.checked = false);
+        }
+
+        // Populate SignalK paths dropdown
+        async function populateSignalKPaths() {
+            const dropdown = document.getElementById('pathSignalK');
+            const filterType = document.querySelector('input[name="pathFilter"]:checked')?.value || 'self';
+
+            try {
+                const response = await fetch('/signalk/v1/api/');
+                const data = await response.json();
+
+                // Extract paths from SignalK API with filter
+                const allPaths = extractPathsFromSignalK(data, filterType);
+
+                // Get defined commands to exclude
+                const commandsResponse = await fetch('/plugins/signalk-parquet/api/commands');
+                const commandsData = await commandsResponse.json();
+
+                const definedCommands = new Set();
+                if (commandsData.success && commandsData.commands) {
+                    commandsData.commands.forEach(cmd => {
+                        definedCommands.add(`commands.${cmd.command}`);
+                    });
+                }
+
+                // Filter out defined command paths
+                const availablePaths = allPaths.filter(path => !definedCommands.has(path));
+
+                // Clear existing options (except default ones)
+                while (dropdown.children.length > 2) {
+                    dropdown.removeChild(dropdown.lastChild);
+                }
+
+                // Add available paths
+                availablePaths.forEach(path => {
+                    const option = document.createElement('option');
+                    option.value = path;
+                    option.textContent = path;
+                    dropdown.appendChild(option);
+                });
+
+            } catch (error) {
+                console.log('Could not load real-time SignalK paths:', error);
+            }
+        }
+
+        // Update path filter
+        function updatePathFilter() {
+            populateSignalKPaths();
+        }
+
+        // Extract distinct paths from SignalK data, separating self vs non-self
+        function extractPathsFromSignalK(obj, filterType = 'self') {
+            const selfPaths = new Set();
+            const nonSelfPaths = new Set();
+
+            function extractRecursive(obj, prefix = '') {
+                if (!obj || typeof obj !== 'object') return;
+
+                for (const key in obj) {
+                    if (key === 'meta' || key === 'timestamp' || key === 'source') continue;
+
+                    const currentPath = prefix ? `${prefix}.${key}` : key;
+
+                    if (obj[key] && typeof obj[key] === 'object') {
+                        if (obj[key].value !== undefined) {
+                            // This is a data path with a value
+                            selfPaths.add(currentPath);
+                        } else {
+                            extractRecursive(obj[key], currentPath);
+                        }
+                    }
+                }
+            }
+
+            // Get the self vessel ID to distinguish self from other vessels
+            const selfVesselId = obj.self;
+            // Remove 'vessels.' prefix if present to get the actual vessel ID
+            const actualSelfId = selfVesselId && selfVesselId.startsWith('vessels.') ?
+                selfVesselId.replace('vessels.', '') : selfVesselId;
+
+            // Process vessels if they exist
+            if (obj.vessels) {
+                // Process self vessel
+                if (actualSelfId && obj.vessels[actualSelfId]) {
+                    extractRecursive(obj.vessels[actualSelfId], '');
+                }
+
+                // Process other vessels and extract generic paths
+                for (const vesselId in obj.vessels) {
+                    if (vesselId !== actualSelfId) {
+                        const tempPaths = new Set();
+                        function extractOtherVessel(obj, prefix = '') {
+                            if (!obj || typeof obj !== 'object') return;
+                            for (const key in obj) {
+                                if (key === 'meta' || key === 'timestamp' || key === 'source') continue;
+                                const currentPath = prefix ? `${prefix}.${key}` : key;
+                                if (obj[key] && typeof obj[key] === 'object') {
+                                    if (obj[key].value !== undefined) {
+                                        tempPaths.add(currentPath);
+                                    } else {
+                                        extractOtherVessel(obj[key], currentPath);
+                                    }
+                                }
+                            }
+                        }
+                        extractOtherVessel(obj.vessels[vesselId], '');
+                        tempPaths.forEach(path => nonSelfPaths.add(path));
+                    }
+                }
+            }
+
+            // Process top-level paths (non-vessel specific data like environment)
+            for (const key in obj) {
+                if (key !== 'vessels' && key !== 'self' && key !== 'version' && key !== 'sources' && key !== 'meta' && key !== 'timestamp') {
+                    extractRecursive(obj[key], key);
+                }
+            }
+
+
+            // Return the appropriate set based on filter
+            const targetPaths = filterType === 'self' ? selfPaths : nonSelfPaths;
+            return Array.from(targetPaths).sort();
+        }
+
+        // Populate available regimens
+        async function populateAvailableRegimens() {
+            const container = document.getElementById('regimenCheckboxes');
+
+            try {
+                // Get defined commands to use as regimens
+                const commandsResponse = await fetch('/plugins/signalk-parquet/api/commands');
+                const commandsData = await commandsResponse.json();
+
+                const availableRegimens = [];
+                if (commandsData.success && commandsData.commands) {
+                    commandsData.commands.forEach(cmd => {
+                        availableRegimens.push(cmd.command);
+                    });
+                }
+
+                container.innerHTML = '';
+
+                availableRegimens.forEach(regimen => {
+                    const label = document.createElement('label');
+                    label.style.display = 'flex';
+                    label.style.alignItems = 'center';
+                    label.style.marginBottom = '5px';
+                    label.style.cursor = 'pointer';
+                    label.style.fontSize = '0.9em';
+
+                    const span = document.createElement('span');
+                    span.textContent = regimen;
+                    span.style.flex = '1';
+                    span.style.marginRight = '8px';
+
+                    const checkbox = document.createElement('input');
+                    checkbox.type = 'checkbox';
+                    checkbox.id = `regimen_${regimen}`;
+                    checkbox.value = regimen;
+                    checkbox.style.width = '16px';
+                    checkbox.style.height = '16px';
+
+                    label.appendChild(span);
+                    label.appendChild(checkbox);
+                    container.appendChild(label);
+                });
+            } catch (error) {
+                console.log('Could not load regimens:', error);
+            }
+        }
+
+        // Handle SignalK path dropdown change
+        document.addEventListener('DOMContentLoaded', function() {
+            document.addEventListener('change', function(e) {
+                if (e.target.id === 'pathSignalK') {
+                    const customInput = document.getElementById('pathSignalKCustom');
+                    if (e.target.value === 'custom') {
+                        customInput.style.display = 'block';
+                        customInput.focus();
+                    } else {
+                        customInput.style.display = 'none';
+                    }
+                }
+            });
+        });
+
+        // Add custom regimen
+        function addCustomRegimen() {
+            const customInput = document.getElementById('customRegimen');
+            const regimenName = customInput.value.trim();
+
+            if (!regimenName) {
+                alert('Please enter a regimen name');
+                return;
+            }
+
+            // Check if already exists
+            if (document.getElementById(`regimen_${regimenName}`)) {
+                alert('This regimen already exists');
+                return;
+            }
+
+            const container = document.getElementById('regimenCheckboxes');
+            const div = document.createElement('div');
+            div.style.marginBottom = '5px';
+
+            const checkbox = document.createElement('input');
+            checkbox.type = 'checkbox';
+            checkbox.id = `regimen_${regimenName}`;
+            checkbox.value = regimenName;
+            checkbox.checked = true; // Auto-select custom regimens
+            checkbox.style.marginRight = '8px';
+
+            const label = document.createElement('label');
+            label.htmlFor = `regimen_${regimenName}`;
+            label.textContent = `${regimenName} (custom)`;
+            label.style.fontSize = '0.9em';
+            label.style.fontStyle = 'italic';
+
+            div.appendChild(checkbox);
+            div.appendChild(label);
+            container.appendChild(div);
+
+            customInput.value = '';
         }
 
         async function addPathConfiguration() {
             const excludeMMSIInput = document.getElementById('pathExcludeMMSI').value.trim();
             const excludeMMSI = excludeMMSIInput ? excludeMMSIInput.split(',').map(mmsi => mmsi.trim()).filter(mmsi => mmsi) : [];
-            
+
+            // Get path value (either from dropdown or custom input)
+            const pathDropdown = document.getElementById('pathSignalK');
+            const pathCustom = document.getElementById('pathSignalKCustom');
+            const selectedPath = pathDropdown.value === 'custom' ? pathCustom.value.trim() : pathDropdown.value.trim();
+
+            // Get selected regimens
+            const selectedRegimens = [];
+            const checkboxes = document.querySelectorAll('#regimenCheckboxes input[type="checkbox"]:checked');
+            checkboxes.forEach(checkbox => {
+                selectedRegimens.push(checkbox.value);
+            });
+
             const pathConfig = {
-                path: document.getElementById('pathSignalK').value.trim(),
+                path: selectedPath,
                 enabled: document.getElementById('pathEnabled').checked,
-                regimen: document.getElementById('pathRegimen').value.trim(),
+                regimen: selectedRegimens.join(','), // Join multiple regimens with comma
                 source: document.getElementById('pathSource').value.trim() || undefined,
                 context: document.getElementById('pathContext').value.trim() || 'vessels.self',
                 excludeMMSI: excludeMMSI.length > 0 ? excludeMMSI : undefined
@@ -1567,10 +1866,34 @@
             const row = document.querySelector(`tr[data-index="${index}"]`);
             if (row) {
                 const excludeMMSIValue = path.excludeMMSI && path.excludeMMSI.length > 0 ? path.excludeMMSI.join(', ') : '';
+                const currentRegimens = path.regimen ? path.regimen.split(',').map(r => r.trim()) : [];
+
                 row.innerHTML = `
-                    <td><input type="text" id="editPath${index}" value="${path.path || ''}" style="width: 100%;"></td>
+                    <td>
+                        <div style="margin-bottom: 4px; font-size: 0.8em; display: flex; align-items: center; gap: 10px;">
+                            <label style="display: flex; align-items: center; font-weight: normal; cursor: pointer; white-space: nowrap;">
+                                <span style="margin-right: 3px;">🏠 Self</span>
+                                <input type="radio" id="editPathFilterSelf${index}" name="editPathFilter${index}" value="self" checked onchange="updateEditPathFilter(${index})">
+                            </label>
+                            <label style="display: flex; align-items: center; font-weight: normal; cursor: pointer; white-space: nowrap;">
+                                <span style="margin-right: 3px;">🚢 Others</span>
+                                <input type="radio" id="editPathFilterOthers${index}" name="editPathFilter${index}" value="others" onchange="updateEditPathFilter(${index})">
+                            </label>
+                        </div>
+                        <select id="editPath${index}" style="width: 100%; padding: 4px;">
+                            <option value="">-- Select SignalK Path --</option>
+                            <option value="custom">🖊️ Enter Custom Path</option>
+                        </select>
+                        <input type="text" id="editPathCustom${index}" placeholder="Enter custom SignalK path" style="width: 100%; padding: 4px; margin-top: 2px; display: none;">
+                    </td>
                     <td><input type="checkbox" id="editEnabled${index}" ${path.enabled ? 'checked' : ''}></td>
-                    <td><input type="text" id="editRegimen${index}" value="${path.regimen || ''}" style="width: 100%;"></td>
+                    <td>
+                        <div style="max-height: 120px; overflow-y: auto; border: 1px solid #ddd; padding: 5px; background: white;">
+                            <div id="editRegimenCheckboxes${index}">
+                                <!-- Regimen checkboxes will be populated here -->
+                            </div>
+                        </div>
+                    </td>
                     <td><input type="text" id="editSource${index}" value="${path.source || ''}" style="width: 100%;" placeholder="e.g., mqtt-weatherflow-udp"></td>
                     <td><input type="text" id="editContext${index}" value="${path.context || 'vessels.self'}" style="width: 100%;"></td>
                     <td><input type="text" id="editExcludeMMSI${index}" value="${excludeMMSIValue}" style="width: 100%;" placeholder="123456789, 987654321"></td>
@@ -1579,17 +1902,217 @@
                         <button onclick="cancelEdit()" style="padding: 5px 10px; font-size: 12px; background: #6c757d;">❌ Cancel</button>
                     </td>
                 `;
+
+                // Populate the edit form with enhanced dropdowns
+                populateEditSignalKPaths(index, path.path);
+                await populateEditRegimens(index, currentRegimens);
+            }
+        }
+
+        // Populate SignalK paths dropdown for edit form
+        async function populateEditSignalKPaths(index, currentPath) {
+            const dropdown = document.getElementById(`editPath${index}`);
+            const customInput = document.getElementById(`editPathCustom${index}`);
+            const filterType = document.querySelector(`input[name="editPathFilter${index}"]:checked`)?.value || 'self';
+
+            try {
+                const response = await fetch('/signalk/v1/api/');
+                const data = await response.json();
+
+                const allPaths = extractPathsFromSignalK(data, filterType);
+
+                // Get defined commands to exclude
+                const commandsResponse = await fetch('/plugins/signalk-parquet/api/commands');
+                const commandsData = await commandsResponse.json();
+
+                const definedCommands = new Set();
+                if (commandsData.success && commandsData.commands) {
+                    commandsData.commands.forEach(cmd => {
+                        definedCommands.add(`commands.${cmd.command}`);
+                    });
+                }
+
+                // Filter out defined command paths
+                const availablePaths = allPaths.filter(path => !definedCommands.has(path));
+
+                // Clear existing options (except default ones)
+                while (dropdown.children.length > 2) {
+                    dropdown.removeChild(dropdown.lastChild);
+                }
+
+                // Add available paths
+                availablePaths.forEach(path => {
+                    const option = document.createElement('option');
+                    option.value = path;
+                    option.textContent = path;
+                    dropdown.appendChild(option);
+                });
+
+                // Set current value and determine appropriate filter
+                if (currentPath) {
+                    // Determine if current path is self or other vessel path
+                    const isSelfPath = !currentPath.includes('vessels.') || currentPath.startsWith('vessels.self.');
+                    const targetFilter = isSelfPath ? 'self' : 'others';
+
+                    // Set appropriate radio button
+                    const selfRadio = document.getElementById(`editPathFilterSelf${index}`);
+                    const othersRadio = document.getElementById(`editPathFilterOthers${index}`);
+                    if (targetFilter === 'self') {
+                        selfRadio.checked = true;
+                    } else {
+                        othersRadio.checked = true;
+                    }
+
+                    // Clean path for comparison (remove vessels.self. prefix if present)
+                    const cleanCurrentPath = currentPath.replace('vessels.self.', '');
+
+                    // Refresh paths with correct filter if needed
+                    if (targetFilter !== filterType) {
+                        updateEditPathFilter(index);
+                        return;
+                    }
+
+                    if (paths.includes(cleanCurrentPath)) {
+                        dropdown.value = cleanCurrentPath;
+                    } else if (paths.includes(currentPath)) {
+                        dropdown.value = currentPath;
+                    } else {
+                        dropdown.value = 'custom';
+                        customInput.style.display = 'block';
+                        customInput.value = currentPath;
+                    }
+                }
+
+                // Add change listener
+                dropdown.addEventListener('change', function() {
+                    if (this.value === 'custom') {
+                        customInput.style.display = 'block';
+                        customInput.focus();
+                    } else {
+                        customInput.style.display = 'none';
+                    }
+                });
+
+            } catch (error) {
+                console.log('Could not load real-time SignalK paths for edit:', error);
+                // Fallback to custom input
+                dropdown.value = 'custom';
+                customInput.style.display = 'block';
+                customInput.value = currentPath || '';
+            }
+        }
+
+        // Update path filter for edit form
+        function updateEditPathFilter(index) {
+            const dropdown = document.getElementById(`editPath${index}`);
+            const currentValue = dropdown.value;
+
+            // Get current path from either dropdown or custom input
+            const customInput = document.getElementById(`editPathCustom${index}`);
+            const currentPath = currentValue === 'custom' ? customInput.value : currentValue;
+
+            populateEditSignalKPaths(index, currentPath);
+        }
+
+        // Populate regimens for edit form
+        async function populateEditRegimens(index, currentRegimens) {
+            const container = document.getElementById(`editRegimenCheckboxes${index}`);
+
+            try {
+                // Get defined commands to use as regimens
+                const commandsResponse = await fetch('/plugins/signalk-parquet/api/commands');
+                const commandsData = await commandsResponse.json();
+
+                const availableRegimens = [];
+                if (commandsData.success && commandsData.commands) {
+                    commandsData.commands.forEach(cmd => {
+                        availableRegimens.push(cmd.command);
+                    });
+                }
+
+            container.innerHTML = '';
+
+                // Add available regimens
+                availableRegimens.forEach(regimen => {
+                    const label = document.createElement('label');
+                    label.style.display = 'flex';
+                    label.style.alignItems = 'center';
+                    label.style.marginBottom = '3px';
+                    label.style.cursor = 'pointer';
+                    label.style.fontSize = '0.8em';
+
+                    const span = document.createElement('span');
+                    span.textContent = regimen;
+                    span.style.flex = '1';
+                    span.style.marginRight = '6px';
+
+                    const checkbox = document.createElement('input');
+                    checkbox.type = 'checkbox';
+                    checkbox.id = `editRegimen_${index}_${regimen}`;
+                    checkbox.value = regimen;
+                    checkbox.checked = currentRegimens.includes(regimen);
+                    checkbox.style.width = '14px';
+                    checkbox.style.height = '14px';
+
+                    label.appendChild(span);
+                    label.appendChild(checkbox);
+                    container.appendChild(label);
+                });
+
+                // Add custom regimens that aren't in the available list
+                currentRegimens.forEach(regimen => {
+                    if (!availableRegimens.includes(regimen)) {
+                        const label = document.createElement('label');
+                        label.style.display = 'flex';
+                        label.style.alignItems = 'center';
+                        label.style.marginBottom = '3px';
+                        label.style.cursor = 'pointer';
+                        label.style.fontSize = '0.8em';
+                        label.style.fontStyle = 'italic';
+
+                        const span = document.createElement('span');
+                        span.textContent = `${regimen} (custom)`;
+                        span.style.flex = '1';
+                        span.style.marginRight = '6px';
+
+                        const checkbox = document.createElement('input');
+                        checkbox.type = 'checkbox';
+                        checkbox.id = `editRegimen_${index}_${regimen}`;
+                        checkbox.value = regimen;
+                        checkbox.checked = true;
+                        checkbox.style.width = '14px';
+                        checkbox.style.height = '14px';
+
+                        label.appendChild(span);
+                        label.appendChild(checkbox);
+                        container.appendChild(label);
+                    }
+                });
+            } catch (error) {
+                console.log('Could not load regimens for edit:', error);
             }
         }
 
         async function saveEdit(index) {
             const excludeMMSIInput = document.getElementById(`editExcludeMMSI${index}`).value.trim();
             const excludeMMSI = excludeMMSIInput ? excludeMMSIInput.split(',').map(mmsi => mmsi.trim()).filter(mmsi => mmsi) : [];
-            
+
+            // Get path value (either from dropdown or custom input)
+            const pathDropdown = document.getElementById(`editPath${index}`);
+            const pathCustom = document.getElementById(`editPathCustom${index}`);
+            const selectedPath = pathDropdown.value === 'custom' ? pathCustom.value.trim() : pathDropdown.value.trim();
+
+            // Get selected regimens
+            const selectedRegimens = [];
+            const checkboxes = document.querySelectorAll(`#editRegimenCheckboxes${index} input[type="checkbox"]:checked`);
+            checkboxes.forEach(checkbox => {
+                selectedRegimens.push(checkbox.value);
+            });
+
             const updatedPath = {
-                path: document.getElementById(`editPath${index}`).value.trim(),
+                path: selectedPath,
                 enabled: document.getElementById(`editEnabled${index}`).checked,
-                regimen: document.getElementById(`editRegimen${index}`).value.trim(),
+                regimen: selectedRegimens.join(','), // Join multiple regimens with comma
                 source: document.getElementById(`editSource${index}`).value.trim() || undefined,
                 context: document.getElementById(`editContext${index}`).value.trim() || 'vessels.self',
                 excludeMMSI: excludeMMSI.length > 0 ? excludeMMSI : undefined
@@ -4033,8 +4556,8 @@ Provide actionable insights based on what you observe in the data.`,
         async function analyzeDataPath(signalkPath, directory) {
             // Switch to AI Analysis tab
             showTab('aiAnalysis');
-            
-            // Select the checkbox for this path in the custom analysis form
+
+            // First select the path checkbox (before enabling database mode)
             const checkboxId = `path_${signalkPath.replace(/[^a-zA-Z0-9]/g, '_')}`;
             const checkbox = document.getElementById(checkboxId);
             if (checkbox) {
@@ -4044,9 +4567,41 @@ Provide actionable insights based on what you observe in the data.`,
                 checkbox.checked = true;
                 updateSelectedPathCount();
             }
-            
-            // Scroll to custom analysis section
-            document.getElementById('analysisTemplate').scrollIntoView({ behavior: 'smooth' });
+
+            // Enable database access mode for path-specific analysis
+            const databaseCheckbox = document.getElementById('enableDatabaseAccess');
+            if (databaseCheckbox && !databaseCheckbox.checked) {
+                databaseCheckbox.checked = true;
+                toggleAnalysisMode(); // Update UI to show database mode
+            }
+
+            // Set path-specific analysis prompt
+            const promptField = document.getElementById('customPrompt');
+            if (promptField) {
+                promptField.value = `Analyze the data for path: ${signalkPath}
+
+Please provide insights about:
+1. Recent data patterns and trends
+2. Any anomalies or unusual readings
+3. Data quality and consistency
+4. Key statistics and ranges
+5. Notable changes over time
+
+Focus specifically on the ${signalkPath} sensor data and provide actionable insights.`;
+            }
+
+            // Set recent time range for quick analysis
+            const startDateField = document.getElementById('analysisStartDate');
+            const endDateField = document.getElementById('analysisEndDate');
+            if (startDateField && endDateField) {
+                const now = new Date();
+                const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+                endDateField.value = now.toISOString().slice(0, 16);
+                startDateField.value = yesterday.toISOString().slice(0, 16);
+            }
+
+            // Auto-trigger the analysis immediately
+            runCustomAnalysis();
         }
 
         // Toggle between analysis modes
