@@ -27,7 +27,13 @@ export function getAvailablePaths(dataDir: string, app: ServerAPI): PathInfo[] {
         const fullPath = path.join(currentPath, item);
         const stat = fs.statSync(fullPath);
 
-        if (stat.isDirectory() && item !== 'processed' && item !== 'failed' && item !== 'quarantine' && item !== 'claude-schemas') {
+        if (
+          stat.isDirectory() &&
+          item !== 'processed' &&
+          item !== 'failed' &&
+          item !== 'quarantine' &&
+          item !== 'claude-schemas'
+        ) {
           const newRelativePath = relativePath
             ? `${relativePath}.${item}`
             : item;
