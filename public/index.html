@@ -3727,8 +3727,26 @@ Provide actionable insights based on what you observe in the data.`,
             updateSelectedPathCount();
         }
 
+        // Global variable to track current analysis request
+        let currentAnalysisController = null;
+
+        // Cancel current analysis
+        function cancelAnalysis() {
+            if (currentAnalysisController) {
+                currentAnalysisController.abort();
+                currentAnalysisController = null;
+            }
+        }
+
         // Run custom analysis
         async function runCustomAnalysis() {
+            const runButton = document.getElementById('runAnalysisBtn') || document.querySelector('button[onclick="runCustomAnalysis()"]');
+
+            // If already running, cancel the current analysis
+            if (currentAnalysisController) {
+                cancelAnalysis();
+                return;
+            }
             const selectedPaths = getSelectedDataPaths();
             const customPrompt = document.getElementById('customPrompt').value;
             const startDate = document.getElementById('analysisStartDate').value;
@@ -3760,7 +3778,10 @@ Provide actionable insights based on what you observe in the data.`,
             
             const loadingElement = document.createElement('div');
             loadingElement.style.cssText = 'text-align: center; padding: 20px;';
-            loadingElement.innerHTML = '🔄 Running custom analysis...';
+            loadingElement.innerHTML = `
+                🔄 Running custom analysis...<br><br>
+                <button onclick="cancelAnalysis()" style="padding: 8px 16px; background: #dc3545; color: white; border: none; border-radius: 4px; cursor: pointer;">❌ Cancel Analysis</button>
+            `;
             content.appendChild(loadingElement);
             
             // Update timer every 100ms
@@ -3773,13 +3794,21 @@ Provide actionable insights based on what you observe in the data.`,
                 `;
             }, 100);
             
+            // Update button to show running state
+            const originalButtonText = runButton.textContent;
+            runButton.textContent = '⏸️ Running Analysis (click to cancel)';
+            runButton.style.background = '#ffc107';
+
             try {
+                // Create abort controller for cancellation
+                currentAnalysisController = new AbortController();
+
                 const analysisRequest = {
                     dataPath: enableDatabaseAccess ? 'database_access_mode' : selectedPaths.join(','), // REST API supports comma-separated paths
                     analysisType: 'custom',
                     customPrompt: customPrompt || `Analyze this maritime sensor data and provide insights. Focus on:
 1. Data patterns and trends over time
-2. Any anomalies or unusual readings  
+2. Any anomalies or unusual readings
 3. Statistical summary of the data
 4. Practical insights for maritime operations
 5. Data quality assessment
@@ -3794,13 +3823,14 @@ Provide actionable insights based on what you observe in the data.`,
                     claudeModel: claudeModel || 'claude-sonnet-4-20250514',
                     useDatabaseAccess: enableDatabaseAccess,
                 };
-                
+
                 console.log(`🚀 Running custom analysis for paths: ${selectedPaths.join(', ')}`);
-                
+
                 const response = await fetch('/plugins/signalk-parquet/api/analyze', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(analysisRequest)
+                    body: JSON.stringify(analysisRequest),
+                    signal: currentAnalysisController.signal
                 });
                 
                 const data = await response.json();
@@ -3830,9 +3860,14 @@ Provide actionable insights based on what you observe in the data.`,
                 timerElement.style.background = data.success ? '#e8f5e8' : '#ffeaea';
                 timerElement.style.borderColor = data.success ? '#4caf50' : '#f44336';
                 
-                // Remove loading message
+                // Remove loading message and clear controller
                 loadingElement.remove();
-                
+                currentAnalysisController = null;
+
+                // Restore button
+                runButton.textContent = originalButtonText;
+                runButton.style.background = '';
+
                 if (data.success && data.data) {
                     displayAnalysisResult(data.data);
                 } else {
@@ -3847,16 +3882,35 @@ Provide actionable insights based on what you observe in the data.`,
                 clearInterval(timerInterval);
                 const endTime = new Date();
                 const totalTime = (endTime - startTime) / 1000;
-                timerElement.innerHTML = `
-                    <strong>⏱️ Analysis Failed</strong><br>
-                    Started: ${startTime.toLocaleTimeString()}<br>
-                    Failed: ${endTime.toLocaleTimeString()}<br>
-                    <strong>Total Time: ${totalTime.toFixed(1)}s</strong>
-                `;
-                timerElement.style.background = '#ffeaea';
-                timerElement.style.borderColor = '#f44336';
-                
+
+                // Check if it was cancelled
+                if (error.name === 'AbortError') {
+                    timerElement.innerHTML = `
+                        <strong>❌ Analysis Cancelled</strong><br>
+                        Started: ${startTime.toLocaleTimeString()}<br>
+                        Cancelled: ${endTime.toLocaleTimeString()}<br>
+                        <strong>Time: ${totalTime.toFixed(1)}s</strong>
+                    `;
+                    timerElement.style.background = '#fff3cd';
+                    timerElement.style.borderColor = '#ffc107';
+                } else {
+                    timerElement.innerHTML = `
+                        <strong>⏱️ Analysis Failed</strong><br>
+                        Started: ${startTime.toLocaleTimeString()}<br>
+                        Failed: ${endTime.toLocaleTimeString()}<br>
+                        <strong>Total Time: ${totalTime.toFixed(1)}s</strong>
+                    `;
+                    timerElement.style.background = '#ffeaea';
+                    timerElement.style.borderColor = '#f44336';
+                }
+
                 loadingElement.remove();
+                currentAnalysisController = null;
+
+                // Restore button
+                runButton.textContent = originalButtonText;
+                runButton.style.background = '';
+
                 const errorElement = document.createElement('div');
                 errorElement.style.color = 'red';
                 errorElement.innerHTML = `❌ Error: ${error.message}`;
