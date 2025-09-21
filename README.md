@@ -62,6 +62,8 @@ npm install signalk-parquet
 
 # Or install from GitHub
 npm install motamman/signalk-parquet
+cd ~/.signalk/node_modules/signalk-parquet
+npm run build
 
 # Restart SignalK
 sudo systemctl restart signalk
@@ -180,11 +182,8 @@ Configure Claude AI integration in the plugin configuration for advanced data an
 | Model | Description | Use Case |
 |-------|-------------|----------|
 | `claude-opus-4-1-20250805` | Latest Opus model - highest intelligence | Complex analysis, detailed insights |
-| `claude-opus-4-20250514` | Opus model - very high intelligence | Advanced maritime analysis |
-| `claude-sonnet-4-20250514` | Sonnet model - balanced performance | General analysis tasks |
-| `claude-3-7-sonnet-20250219` | Updated Sonnet - good performance | **Recommended default** |
-| `claude-3-5-haiku-20241022` | Haiku model - fast responses | Quick analysis, simple tasks |
-| `claude-3-haiku-20240307` | Original Haiku - fastest | Basic analysis |
+| `claude-opus-4-20250514` | Opus model - very high intelligence | Advanced analysis |
+| `claude-sonnet-4-20250514` | Sonnet model - balanced performance | **Recommended default**  |
 
 #### Getting a Claude API Key
 
