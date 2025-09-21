@@ -1,6 +1,6 @@
 {
   "name": "signalk-parquet",
-  "version": "0.5.3-beta.1",
+  "version": "0.5.3-beta.2",
   "description": "SignalK plugin to save marine data directly to Parquet files with regimen-based control",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -23,13 +23,22 @@
     "signalk-category-utility",
     "signalk-category-ais",
     "signalk-category-cloud",
+    "signalk-category-claude",
+    "signalk-category-data",
+    "signalk-category-storage",
+    "signalk-category-s3",
+    "signalk-category-ai",
     "parquet",
     "data-collection",
     "marine-data",
     "typescript",
     "duckdb",
     "s3",
-    "aws"
+    "aws",
+    "claude",
+    "anthropic",
+    "history"
+
   ],
   "author": "Maurice Tamman",
   "license": "MIT",
