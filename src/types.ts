@@ -169,8 +169,8 @@ export interface SignalKSubscription {
 
 // Data Record Structure
 export interface DataRecord {
-  received_timestamp: string;
-  signalk_timestamp: string;
+  received_timestamp: string | Date;
+  signalk_timestamp: string | Date;
   context: string;
   path: string;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any

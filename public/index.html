@@ -829,6 +829,52 @@
                             </div>
                         </div>
 
+                        <!-- Type Migration Progress Modal -->
+                        <div id="typeMigrationModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 1000;">
+                            <div style="max-width: 600px; margin: 100px auto; background: white; border-radius: 10px; padding: 30px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
+                                <div style="display: flex; align-items: center; margin-bottom: 20px;">
+                                    <div style="font-size: 24px; margin-right: 15px;">🔧</div>
+                                    <h3 style="margin: 0;">Checking & Fixing Data Types</h3>
+                                </div>
+
+                                <div id="typeMigrationPath" style="background: #f8f9fa; padding: 10px; border-radius: 5px; margin-bottom: 20px; font-family: monospace; border: 1px solid #e9ecef;"></div>
+
+                                <div style="margin-bottom: 20px;">
+                                    <div style="display: flex; justify-content: space-between; margin-bottom: 10px;">
+                                        <span>Progress:</span>
+                                        <span id="typeMigrationProgress">Starting...</span>
+                                    </div>
+                                    <div style="background: #e9ecef; border-radius: 10px; height: 20px; overflow: hidden;">
+                                        <div id="typeMigrationProgressBar" style="background: linear-gradient(90deg, #28a745, #20c997); height: 100%; width: 0%; transition: width 0.3s ease;"></div>
+                                    </div>
+                                </div>
+
+                                <div id="typeMigrationStats" style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 15px; margin-bottom: 20px;">
+                                    <div style="text-align: center; padding: 10px; background: #f8f9fa; border-radius: 5px;">
+                                        <div style="font-size: 20px; font-weight: bold; color: #007bff;" id="checkedCount">0</div>
+                                        <div style="font-size: 12px; color: #666;">Checked</div>
+                                    </div>
+                                    <div style="text-align: center; padding: 10px; background: #f8f9fa; border-radius: 5px;">
+                                        <div style="font-size: 20px; font-weight: bold; color: #28a745;" id="migratedCount">0</div>
+                                        <div style="font-size: 12px; color: #666;">Fixed</div>
+                                    </div>
+                                    <div style="text-align: center; padding: 10px; background: #f8f9fa; border-radius: 5px;">
+                                        <div style="font-size: 20px; font-weight: bold; color: #6c757d;" id="skippedCount">0</div>
+                                        <div style="font-size: 12px; color: #666;">Already OK</div>
+                                    </div>
+                                </div>
+
+                                <div id="typeMigrationStatus" style="padding: 10px; background: #e3f2fd; border-radius: 5px; margin-bottom: 20px; font-size: 14px; min-height: 20px;">
+                                    Initializing type check and fix operation...
+                                </div>
+
+                                <div id="typeMigrationActions" style="text-align: center;">
+                                    <button id="typeMigrationCancel" onclick="cancelTypeMigration()" style="padding: 8px 16px; background: #dc3545; color: white; border-radius: 5px; font-size: 14px;">Cancel</button>
+                                    <button id="typeMigrationClose" onclick="closeTypeMigrationModal()" style="display: none; padding: 8px 16px; background: #28a745; color: white; border-radius: 5px; font-size: 14px;">Close</button>
+                                </div>
+                            </div>
+                        </div>
+
                         </div>
                     </div>
                     
@@ -1483,6 +1529,7 @@
                     <td>${excludeMMSI}</td>
                     <td>
                         <button onclick="editPathConfiguration(${originalIndex})" style="padding: 5px 10px; font-size: 12px;">✏️ Edit</button>
+                        <button onclick="checkAndFixPathFiles('${path.path}')" style="padding: 5px 10px; font-size: 12px; background: #28a745;">🔧 Check & Fix</button>
                         <button onclick="removePathConfiguration(${originalIndex})" style="padding: 5px 10px; font-size: 12px; background: #dc3545;">🗑️ Remove</button>
                     </td>
                 </tr>`;
@@ -1839,6 +1886,138 @@
             } catch (error) {
                 alert(`Network error: ${error.message}`);
             }
+        }
+
+        let migrationController = null;
+
+        async function checkAndFixPathFiles(pathPattern) {
+            if (!confirm(`Check and fix data types for files matching "${pathPattern}"?\n\nThis will:\n• Check all parquet files for incorrect VARCHAR types\n• Convert numbers to DOUBLE and timestamps to TIMESTAMP\n• Create backup files before making changes\n\nContinue?`)) {
+                return;
+            }
+
+            // Show modal and initialize
+            showTypeMigrationModal(pathPattern);
+
+            try {
+                // Create abort controller for cancellation
+                migrationController = new AbortController();
+
+                const response = await fetch('/plugins/signalk-parquet/api/check-fix-types', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ pathPattern }),
+                    signal: migrationController.signal
+                });
+
+                const result = await response.json();
+
+                if (result.success) {
+                    updateTypeMigrationProgress(100, 'Completed',
+                        `Operation completed successfully! Files checked: ${result.totalFiles || 0}, Fixed: ${result.migratedFiles || 0}, Already OK: ${result.skippedFiles || 0}`);
+
+                    updateTypeMigrationStats(result.totalFiles || 0, result.migratedFiles || 0, result.skippedFiles || 0);
+
+                    if (result.errors && result.errors.length > 0) {
+                        updateTypeMigrationStatus(`⚠️ Completed with ${result.errors.length} errors. See console for details.`);
+                        console.warn('Migration errors:', result.errors);
+                    } else {
+                        updateTypeMigrationStatus('✅ All files processed successfully!');
+                    }
+
+                    showTypeMigrationComplete();
+                } else {
+                    updateTypeMigrationStatus(`❌ Error: ${result.error}`);
+                    showTypeMigrationComplete();
+                }
+            } catch (error) {
+                if (error.name === 'AbortError') {
+                    updateTypeMigrationStatus('🚫 Operation cancelled by user');
+                } else {
+                    updateTypeMigrationStatus(`❌ Network error: ${error.message}`);
+                }
+                showTypeMigrationComplete();
+            }
+        }
+
+        function showTypeMigrationModal(pathPattern) {
+            // Reset modal state
+            document.getElementById('typeMigrationPath').textContent = pathPattern;
+            updateTypeMigrationProgress(0, 'Initializing...');
+            updateTypeMigrationStats(0, 0, 0);
+            updateTypeMigrationStatus('Starting type check and fix operation...');
+
+            // Show cancel button, hide close button
+            document.getElementById('typeMigrationCancel').style.display = 'inline-block';
+            document.getElementById('typeMigrationClose').style.display = 'none';
+
+            // Show modal
+            document.getElementById('typeMigrationModal').style.display = 'block';
+
+            // Simulate progress for better UX since our API doesn't stream progress
+            simulateProgress();
+        }
+
+        function simulateProgress() {
+            let progress = 0;
+            const progressInterval = setInterval(() => {
+                if (migrationController && migrationController.signal.aborted) {
+                    clearInterval(progressInterval);
+                    return;
+                }
+
+                progress += Math.random() * 15; // Random progress increments
+                if (progress > 90) progress = 90; // Don't complete until real response
+
+                updateTypeMigrationProgress(progress, 'Processing files...');
+            }, 500);
+
+            // Store interval for cleanup
+            window.typeMigrationProgressInterval = progressInterval;
+        }
+
+        function updateTypeMigrationProgress(percent, status) {
+            document.getElementById('typeMigrationProgressBar').style.width = `${Math.min(percent, 100)}%`;
+            document.getElementById('typeMigrationProgress').textContent = status;
+        }
+
+        function updateTypeMigrationStats(checked, migrated, skipped) {
+            document.getElementById('checkedCount').textContent = checked;
+            document.getElementById('migratedCount').textContent = migrated;
+            document.getElementById('skippedCount').textContent = skipped;
+        }
+
+        function updateTypeMigrationStatus(message) {
+            document.getElementById('typeMigrationStatus').textContent = message;
+        }
+
+        function showTypeMigrationComplete() {
+            // Clear progress simulation
+            if (window.typeMigrationProgressInterval) {
+                clearInterval(window.typeMigrationProgressInterval);
+            }
+
+            // Show close button, hide cancel button
+            document.getElementById('typeMigrationCancel').style.display = 'none';
+            document.getElementById('typeMigrationClose').style.display = 'inline-block';
+        }
+
+        function cancelTypeMigration() {
+            if (migrationController) {
+                migrationController.abort();
+            }
+            closeTypeMigrationModal();
+        }
+
+        function closeTypeMigrationModal() {
+            // Clear progress simulation
+            if (window.typeMigrationProgressInterval) {
+                clearInterval(window.typeMigrationProgressInterval);
+            }
+
+            document.getElementById('typeMigrationModal').style.display = 'none';
+            migrationController = null;
         }
 
         let editingIndex = -1;
@@ -3515,13 +3694,19 @@
             const contextModal = document.getElementById('contextPreviewModal');
             const historyModal = document.getElementById('analysisHistoryModal');
             const viewModal = document.getElementById('analysisViewModal');
-            
+            const migrationModal = document.getElementById('typeMigrationModal');
+
             if (event.target === contextModal) {
                 contextModal.style.display = 'none';
             } else if (event.target === historyModal) {
                 historyModal.style.display = 'none';
             } else if (event.target === viewModal) {
                 viewModal.style.display = 'none';
+            } else if (event.target === migrationModal) {
+                // Only allow closing if operation is complete (close button is visible)
+                if (document.getElementById('typeMigrationClose').style.display !== 'none') {
+                    closeTypeMigrationModal();
+                }
             }
         }
 

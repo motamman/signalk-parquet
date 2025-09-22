@@ -7,6 +7,7 @@ import {
   FileFormat,
 } from './types';
 import { ServerAPI } from '@signalk/server-api';
+import { TypeMigrator } from './type-migrator';
 
 // Try to import ParquetJS, fall back if not available
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -199,21 +200,31 @@ export class ParquetWriter {
         return;
       }
 
+      // Special handling for timestamp columns
+      if (colName === 'received_timestamp' || colName === 'signalk_timestamp') {
+        schemaFields[colName] = { type: 'TIMESTAMP', optional: true };
+        return;
+      }
+
       const hasNumbers = values.some(v => typeof v === 'number');
       const hasStrings = values.some(v => typeof v === 'string');
       const hasBooleans = values.some(v => typeof v === 'boolean');
       const hasBigInts = values.some(v => typeof v === 'bigint');
+      const hasDates = values.some(v => v instanceof Date);
 
       // Only log details for the value column that we care about
       if (colName === 'value') {
       }
 
-      if (hasBigInts && !hasNumbers && !hasStrings && !hasBooleans) {
+      if (hasDates && !hasNumbers && !hasStrings && !hasBooleans && !hasBigInts) {
+        // All Date objects - use TIMESTAMP
+        schemaFields[colName] = { type: 'TIMESTAMP', optional: true };
+      } else if (hasBigInts && !hasNumbers && !hasStrings && !hasBooleans && !hasDates) {
         // All BigInts - use UTF8 to be safe
         schemaFields[colName] = { type: 'UTF8', optional: true };
         if (colName === 'value') {
         }
-      } else if (hasNumbers && !hasStrings && !hasBooleans && !hasBigInts) {
+      } else if (hasNumbers && !hasStrings && !hasBooleans && !hasBigInts && !hasDates) {
         // All numbers - check if integers or floats
         const allIntegers = values.every(v => Number.isInteger(v));
         schemaFields[colName] = {
@@ -222,7 +233,7 @@ export class ParquetWriter {
         };
         if (colName === 'value') {
         }
-      } else if (hasBooleans && !hasNumbers && !hasStrings && !hasBigInts) {
+      } else if (hasBooleans && !hasNumbers && !hasStrings && !hasBigInts && !hasDates) {
         schemaFields[colName] = { type: 'BOOLEAN', optional: true };
       } else {
         // Mixed types or strings - use UTF8
@@ -296,6 +307,15 @@ export class ParquetWriter {
             cleanRecord[fieldName] =
               typeof value === 'boolean' ? value : Boolean(value);
             break;
+          case 'TIMESTAMP':
+            if (value instanceof Date) {
+              cleanRecord[fieldName] = value;
+            } else if (typeof value === 'string') {
+              cleanRecord[fieldName] = new Date(value);
+            } else {
+              cleanRecord[fieldName] = new Date(value);
+            }
+            break;
           case 'UTF8':
           default:
             if (typeof value === 'object') {
@@ -352,7 +372,12 @@ export class ParquetWriter {
         allRecords.sort((a, b) => {
           const timeA = a.received_timestamp || a.signalk_timestamp || '';
           const timeB = b.received_timestamp || b.signalk_timestamp || '';
-          return timeA.localeCompare(timeB);
+
+          // Handle Date objects and strings
+          const dateA = timeA instanceof Date ? timeA : new Date(timeA);
+          const dateB = timeB instanceof Date ? timeB : new Date(timeB);
+
+          return dateA.getTime() - dateB.getTime();
         });
 
         await this.writeRecords(targetFile, allRecords);
@@ -481,12 +506,42 @@ export class ParquetWriter {
 
       await walkDir(dataDir);
 
+      // Get migrator instance once
+      const migrator = TypeMigrator.getInstance();
+
       // Consolidate each topic's files
       for (const entry of consolidatedFiles) {
+        // Check and fix data types in source files before merging
+        let sourcesFixed = 0;
+
+        for (const sourceFile of entry.sources) {
+          if (sourceFile.endsWith('.parquet')) {
+            const migrationResult = await migrator.migrateFileTypesIfNeeded(sourceFile);
+            if (migrationResult.wasMigrated) {
+              sourcesFixed++;
+            } else if (migrationResult.error) {
+              this.app?.debug(`⚠️ Type migration failed for source ${path.basename(sourceFile)}: ${migrationResult.error}`);
+            }
+          }
+        }
+
+        if (sourcesFixed > 0) {
+          this.app?.debug(`✓ Fixed data types in ${sourcesFixed} source files for ${path.basename(entry.target)}`);
+        }
+
         const recordCount = await this.mergeFiles(entry.sources, entry.target);
         this.app?.debug(
           `Consolidated ${entry.sources.length} files into ${entry.target} (${recordCount} records)`
         );
+
+        // Check and fix data types in the consolidated file
+        const consolidatedMigrationResult = await migrator.migrateFileTypesIfNeeded(entry.target);
+
+        if (consolidatedMigrationResult.wasMigrated) {
+          this.app?.debug(`✓ Fixed data types in consolidated file: ${path.basename(entry.target)}`);
+        } else if (consolidatedMigrationResult.error) {
+          this.app?.debug(`⚠️ Type migration failed for ${path.basename(entry.target)}: ${consolidatedMigrationResult.error}`);
+        }
 
         // Validate consolidated parquet file
         const isValid = await this.validateParquetFile(entry.target);
@@ -496,10 +551,10 @@ export class ParquetWriter {
           await fs.ensureDir(quarantineDir);
           const quarantineFile = path.join(quarantineDir, path.basename(entry.target));
           await fs.move(entry.target, quarantineFile);
-          
+
           // Log to quarantine log
           await this.logQuarantine(quarantineFile, 'consolidation', 'File failed validation after consolidation');
-          
+
           this.app?.debug(`⚠️ Moved corrupt file to quarantine: ${quarantineFile}`);
           continue; // Skip moving source files since consolidation failed
         }

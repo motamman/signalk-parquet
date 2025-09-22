@@ -379,6 +379,116 @@ export function registerApiRoutes(
     }
   );
 
+  // Check and fix data types for path pattern
+  router.post(
+    '/api/check-fix-types',
+    async (req: TypedRequest<{ pathPattern: string }>, res: TypedResponse<{
+      success: boolean;
+      totalFiles?: number;
+      migratedFiles?: number;
+      skippedFiles?: number;
+      errors?: string[];
+      error?: string;
+    }>) => {
+      try {
+        const { pathPattern } = req.body;
+
+        if (!pathPattern) {
+          return res.status(400).json({
+            success: false,
+            error: 'Path pattern is required'
+          });
+        }
+
+        // Convert SignalK path pattern to file system path
+        const dataDir = getDataDir();
+        const pathSegments = pathPattern.split('.');
+        let searchPath = dataDir;
+
+        // Handle vessels.* pattern or specific vessel paths
+        if (pathSegments[0] === 'vessels') {
+          searchPath = path.join(dataDir, 'vessels');
+
+          // If pattern is like "vessels.urn:mrn:imo:mmsi:123456.navigation.position"
+          if (pathSegments.length > 1 && pathSegments[1] !== '*') {
+            const vesselId = pathSegments[1].replace(/:/g, '_');
+            searchPath = path.join(searchPath, vesselId);
+
+            // Add remaining path segments (navigation.position -> navigation/position)
+            if (pathSegments.length > 2) {
+              const remainingPath = pathSegments.slice(2).join('/');
+              searchPath = path.join(searchPath, remainingPath);
+            }
+          }
+        } else {
+          // For non-vessel paths, convert dots to forward slashes
+          const remainingPath = pathSegments.join('/');
+          searchPath = path.join(searchPath, remainingPath);
+        }
+
+        let totalFiles = 0;
+        let migratedFiles = 0;
+        let skippedFiles = 0;
+        const errors: string[] = [];
+
+        const { TypeMigrator } = await import('./type-migrator');
+        const migrator = TypeMigrator.getInstance();
+
+        // Recursively process directory
+        const processDirectory = async (dir: string): Promise<void> => {
+          try {
+            if (!await fs.pathExists(dir)) {
+              return;
+            }
+
+            const items = await fs.readdir(dir);
+
+            for (const item of items) {
+              const itemPath = path.join(dir, item);
+              const stat = await fs.stat(itemPath);
+
+              if (stat.isDirectory() && !item.startsWith('.') &&
+                  item !== 'processed' && item !== 'quarantine' && item !== 'failed') {
+                await processDirectory(itemPath);
+              } else if (item.endsWith('.parquet') &&
+                        !item.includes('.backup') && !item.includes('.migrating')) {
+                totalFiles++;
+
+                const result = await migrator.migrateFileTypesIfNeeded(itemPath);
+
+                if (result.wasMigrated) {
+                  migratedFiles++;
+                } else if (result.error) {
+                  errors.push(`${path.relative(dataDir, itemPath)}: ${result.error}`);
+                } else {
+                  skippedFiles++;
+                }
+              }
+            }
+          } catch (error) {
+            errors.push(`Directory ${dir}: ${(error as Error).message}`);
+          }
+        };
+
+        await processDirectory(searchPath);
+
+        return res.json({
+          success: true,
+          totalFiles,
+          migratedFiles,
+          skippedFiles,
+          errors: errors.length > 0 ? errors : undefined
+        });
+
+      } catch (error) {
+        return res.status(500).json({
+          success: false,
+          error: (error as Error).message,
+        });
+      }
+    }
+  );
+
   // Test S3 connection
   router.post(
     '/api/test-s3',

@@ -9,6 +9,31 @@ import {
   NormalizedDelta,
 } from './types';
 import { extractCommandName } from './commands';
+
+// Helper function to convert values to proper types for Parquet
+function convertValueToProperType(value: any): any {
+  if (value === null || value === undefined) {
+    return value;
+  }
+
+  // If it's a string that looks like a number, convert it
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    // Check if it's a valid number (including decimals)
+    if (/^-?\d+(\.\d+)?$/.test(trimmed)) {
+      const num = parseFloat(trimmed);
+      if (!isNaN(num)) {
+        return num;
+      }
+    }
+    // Check if it's a boolean string
+    if (trimmed.toLowerCase() === 'true') return true;
+    if (trimmed.toLowerCase() === 'false') return false;
+  }
+
+  return value;
+}
+
 import {
   Context,
   Delta,
@@ -177,11 +202,11 @@ function handleCommandMessage(
       bufferData(
         bufferKey,
         {
-          received_timestamp: new Date().toISOString(),
-          signalk_timestamp: update.timestamp || new Date().toISOString(),
+          received_timestamp: new Date(),
+          signalk_timestamp: update.timestamp ? new Date(update.timestamp) : new Date(),
           context: 'vessels.self',
           path: valueUpdate.path,
-          value: valueUpdate.value,
+          value: convertValueToProperType(valueUpdate.value),
           source: update.source ? JSON.stringify(update.source) : undefined,
           source_label:
             update.$source ||
@@ -431,9 +456,8 @@ function handleStreamData(
     }
 
     const record: DataRecord = {
-      received_timestamp: new Date().toISOString(),
-      signalk_timestamp:
-        normalizedDelta.timestamp || new Date().toISOString(),
+      received_timestamp: new Date(),
+      signalk_timestamp: normalizedDelta.timestamp ? new Date(normalizedDelta.timestamp) : new Date(),
       context:
         normalizedDelta.context || pathConfig.context || 'vessels.self',
       path: normalizedDelta.path,
@@ -473,7 +497,7 @@ function handleStreamData(
         }
       });
     } else {
-      record.value = normalizedDelta.value;
+      record.value = convertValueToProperType(normalizedDelta.value);
     }
 
     // Use actual context + path as buffer key to separate data from different vessels
