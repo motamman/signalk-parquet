@@ -1842,137 +1842,6 @@
             }
         }
 
-        let migrationController = null;
-
-        async function checkAndFixPathFiles(pathPattern) {
-            if (!confirm(`Check and fix data types for files matching "${pathPattern}"?\n\nThis will:\n• Check all parquet files for incorrect VARCHAR types\n• Convert numbers to DOUBLE and timestamps to TIMESTAMP\n• Create backup files before making changes\n\nContinue?`)) {
-                return;
-            }
-
-            // Show modal and initialize
-            showTypeMigrationModal(pathPattern);
-
-            try {
-                // Create abort controller for cancellation
-                migrationController = new AbortController();
-
-                const response = await fetch('/plugins/signalk-parquet/api/check-fix-types', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify({ pathPattern }),
-                    signal: migrationController.signal
-                });
-
-                const result = await response.json();
-
-                if (result.success) {
-                    updateTypeMigrationProgress(100, 'Completed',
-                        `Operation completed successfully! Files checked: ${result.totalFiles || 0}, Fixed: ${result.migratedFiles || 0}, Already OK: ${result.skippedFiles || 0}`);
-
-                    updateTypeMigrationStats(result.totalFiles || 0, result.migratedFiles || 0, result.skippedFiles || 0);
-
-                    if (result.errors && result.errors.length > 0) {
-                        updateTypeMigrationStatus(`⚠️ Completed with ${result.errors.length} errors. See console for details.`);
-                        console.warn('Migration errors:', result.errors);
-                    } else {
-                        updateTypeMigrationStatus('✅ All files processed successfully!');
-                    }
-
-                    showTypeMigrationComplete();
-                } else {
-                    updateTypeMigrationStatus(`❌ Error: ${result.error}`);
-                    showTypeMigrationComplete();
-                }
-            } catch (error) {
-                if (error.name === 'AbortError') {
-                    updateTypeMigrationStatus('🚫 Operation cancelled by user');
-                } else {
-                    updateTypeMigrationStatus(`❌ Network error: ${error.message}`);
-                }
-                showTypeMigrationComplete();
-            }
-        }
-
-        function showTypeMigrationModal(pathPattern) {
-            // Reset modal state
-            document.getElementById('typeMigrationPath').textContent = pathPattern;
-            updateTypeMigrationProgress(0, 'Initializing...');
-            updateTypeMigrationStats(0, 0, 0);
-            updateTypeMigrationStatus('Starting type check and fix operation...');
-
-            // Show cancel button, hide close button
-            document.getElementById('typeMigrationCancel').style.display = 'inline-block';
-            document.getElementById('typeMigrationClose').style.display = 'none';
-
-            // Show modal
-            document.getElementById('typeMigrationModal').style.display = 'block';
-
-            // Simulate progress for better UX since our API doesn't stream progress
-            simulateProgress();
-        }
-
-        function simulateProgress() {
-            let progress = 0;
-            const progressInterval = setInterval(() => {
-                if (migrationController && migrationController.signal.aborted) {
-                    clearInterval(progressInterval);
-                    return;
-                }
-
-                progress += Math.random() * 15; // Random progress increments
-                if (progress > 90) progress = 90; // Don't complete until real response
-
-                updateTypeMigrationProgress(progress, 'Processing files...');
-            }, 500);
-
-            // Store interval for cleanup
-            window.typeMigrationProgressInterval = progressInterval;
-        }
-
-        function updateTypeMigrationProgress(percent, status) {
-            document.getElementById('typeMigrationProgressBar').style.width = `${Math.min(percent, 100)}%`;
-            document.getElementById('typeMigrationProgress').textContent = status;
-        }
-
-        function updateTypeMigrationStats(checked, migrated, skipped) {
-            document.getElementById('checkedCount').textContent = checked;
-            document.getElementById('migratedCount').textContent = migrated;
-            document.getElementById('skippedCount').textContent = skipped;
-        }
-
-        function updateTypeMigrationStatus(message) {
-            document.getElementById('typeMigrationStatus').textContent = message;
-        }
-
-        function showTypeMigrationComplete() {
-            // Clear progress simulation
-            if (window.typeMigrationProgressInterval) {
-                clearInterval(window.typeMigrationProgressInterval);
-            }
-
-            // Show close button, hide cancel button
-            document.getElementById('typeMigrationCancel').style.display = 'none';
-            document.getElementById('typeMigrationClose').style.display = 'inline-block';
-        }
-
-        function cancelTypeMigration() {
-            if (migrationController) {
-                migrationController.abort();
-            }
-            closeTypeMigrationModal();
-        }
-
-        function closeTypeMigrationModal() {
-            // Clear progress simulation
-            if (window.typeMigrationProgressInterval) {
-                clearInterval(window.typeMigrationProgressInterval);
-            }
-
-            document.getElementById('typeMigrationModal').style.display = 'none';
-            migrationController = null;
-        }
 
         let editingIndex = -1;
 
@@ -3648,7 +3517,6 @@
             const contextModal = document.getElementById('contextPreviewModal');
             const historyModal = document.getElementById('analysisHistoryModal');
             const viewModal = document.getElementById('analysisViewModal');
-            const migrationModal = document.getElementById('typeMigrationModal');
 
             if (event.target === contextModal) {
                 contextModal.style.display = 'none';
@@ -3656,11 +3524,6 @@
                 historyModal.style.display = 'none';
             } else if (event.target === viewModal) {
                 viewModal.style.display = 'none';
-            } else if (event.target === migrationModal) {
-                // Only allow closing if operation is complete (close button is visible)
-                if (document.getElementById('typeMigrationClose').style.display !== 'none') {
-                    closeTypeMigrationModal();
-                }
             }
         }
 
