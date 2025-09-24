@@ -272,6 +272,15 @@ export interface S3TestApiResponse extends ApiResponse {
   keyPrefix?: string;
 }
 
+export interface ValidationApiResponse extends ApiResponse {
+  totalFiles?: number;
+  totalVessels?: number;
+  correctSchemas?: number;
+  violations?: number;
+  violationDetails?: string[];
+  debugMessages?: string[];
+}
+
 // Claude Analysis API Response Types
 export interface AnalysisApiResponse extends ApiResponse {
   analysis?: AnalysisResult;

@@ -25,6 +25,7 @@ import {
   PathConfig,
   AnalysisApiResponse,
   ClaudeConnectionTestResponse,
+  ValidationApiResponse,
 } from './types';
 import {
   loadWebAppConfig,
@@ -1858,5 +1859,182 @@ export function registerApiRoutes(
   //     });
   //   }
   // });
+
+  // ===========================================
+  // SCHEMA VALIDATION API ROUTES
+  // ===========================================
+
+  // Validate parquet schemas
+  router.post(
+    '/api/validate-schemas',
+    async (_: TypedRequest, res: TypedResponse<ValidationApiResponse>) => {
+      try {
+        app.debug('🔍 Starting schema validation...');
+
+        // Import required modules for parquet reading
+        const parquet = require('@dsnp/parquetjs');
+        const glob = require('glob');
+        const path = require('path');
+
+        // Get the data directory from plugin config
+        const dataDir = state.currentConfig?.outputDirectory || app.getDataDirPath();
+
+        let totalFiles = 0;
+        let schemasFound = 0;
+        let correctSchemas = 0;
+        let violationSchemas = 0;
+        const vessels = new Set<string>();
+        const violationDetails: string[] = [];
+        const debugMessages: string[] = [];
+
+        // Helper function to add debug messages
+        const addDebug = (message: string) => {
+          debugMessages.push(message);
+          app.debug(message);
+        };
+
+        // Search for all parquet files
+        const searchPattern = path.join(dataDir, 'vessels', '**', '*.parquet');
+        addDebug(`🔍 Data directory: ${dataDir}`);
+        addDebug(`🔍 Searching pattern: ${searchPattern}`);
+
+        const files = glob.sync(searchPattern);
+        addDebug(`📄 Found ${files.length} parquet files`);
+
+        // Process each file
+        for (const filePath of files) {
+          // Skip quarantined files
+          if (path.basename(filePath).includes('quarantine') || path.basename(filePath).includes('corrupted')) {
+            continue;
+          }
+
+          // Extract vessel from path (vessels/[vessel]/)
+          const pathParts = filePath.split(path.sep);
+          const vesselsIndex = pathParts.findIndex((part: string) => part === 'vessels');
+          if (vesselsIndex !== -1 && vesselsIndex + 1 < pathParts.length) {
+            vessels.add(pathParts[vesselsIndex + 1]);
+          }
+
+          totalFiles++;
+
+          try {
+            const reader = await parquet.ParquetReader.openFile(filePath);
+            const cursor = reader.getCursor();
+            const schema = cursor.schema;
+
+            if (schema && schema.schema) {
+              schemasFound++;
+              const fields = schema.schema;
+
+              // Check timestamps
+              const receivedTimestamp = fields.received_timestamp ? fields.received_timestamp.type : 'MISSING';
+              const signalkTimestamp = fields.signalk_timestamp ? fields.signalk_timestamp.type : 'MISSING';
+
+              // Find all value fields
+              const valueFields: { [key: string]: string } = {};
+              Object.keys(fields).forEach(fieldName => {
+                if (fieldName.startsWith('value_') || fieldName === 'value') {
+                  valueFields[fieldName] = fields[fieldName].type;
+                }
+              });
+
+              // Extract SignalK path for metadata lookup
+              const relativePath = path.relative(dataDir, filePath);
+              const pathMatch = relativePath.match(/vessels\/[^/]+\/(.+?)\/[^/]*\.parquet$/);
+              const signalkPath = pathMatch ? pathMatch[1].replace(/\//g, '.') : '';
+
+              // Check for schema violations
+              let hasViolations = false;
+              const violations: string[] = [];
+
+              // Rule 1: Timestamps should be UTF8/VARCHAR
+              if (receivedTimestamp !== 'UTF8' && receivedTimestamp !== 'MISSING') {
+                violations.push(`received_timestamp should be UTF8, got ${receivedTimestamp}`);
+                hasViolations = true;
+              }
+              if (signalkTimestamp !== 'UTF8' && signalkTimestamp !== 'MISSING') {
+                violations.push(`signalk_timestamp should be UTF8, got ${signalkTimestamp}`);
+                hasViolations = true;
+              }
+
+              // Rule 2: Check value fields against SignalK metadata
+              for (const [fieldName, fieldType] of Object.entries(valueFields)) {
+                if (fieldType === 'UTF8' || fieldType === 'VARCHAR') {
+                  let shouldBeNumeric = false;
+
+                  // Check SignalK metadata if we have a path
+                  if (signalkPath && (app as any).getMetadata) {
+                    try {
+                      const metadata = (app as any).getMetadata(signalkPath);
+                      if (metadata && metadata.units &&
+                          (metadata.units === 'm' || metadata.units === 'deg' || metadata.units === 'm/s' ||
+                           metadata.units === 'rad' || metadata.units === 'K' || metadata.units === 'Pa' ||
+                           metadata.units === 'V' || metadata.units === 'A' || metadata.units === 'Hz' ||
+                           metadata.units === 'ratio' || metadata.units === 'kg' || metadata.units === 'J')) {
+                        shouldBeNumeric = true;
+                        violations.push(`${fieldName} has numeric units (${metadata.units}) but is ${fieldType}, should be DOUBLE`);
+                        hasViolations = true;
+                      }
+                    } catch (metadataError) {
+                      // Fallback to field name pattern matching if metadata lookup fails
+                    }
+                  }
+
+                  // Fallback: Basic field name pattern matching for known numeric fields
+                  if (!shouldBeNumeric) {
+                    if (fieldName.includes('latitude') || fieldName.includes('longitude') ||
+                        fieldName.includes('speed') || fieldName.includes('heading') ||
+                        fieldName.includes('depth') || fieldName.includes('temperature') ||
+                        fieldName.includes('pressure') || fieldName.includes('angle') ||
+                        fieldName.includes('voltage') || fieldName.includes('current') ||
+                        fieldName.includes('distance') || fieldName.includes('bearing')) {
+                      violations.push(`${fieldName} appears numeric but is ${fieldType}, should likely be DOUBLE`);
+                      hasViolations = true;
+                    }
+                  }
+                }
+              }
+
+              if (hasViolations) {
+                violationSchemas++;
+                const shortPath = path.relative(dataDir, filePath);
+                violationDetails.push(`${shortPath}: ${violations.join(', ')}`);
+              } else {
+                correctSchemas++;
+              }
+
+              if (typeof reader.close === 'function') reader.close();
+            }
+
+          } catch (error) {
+            app.debug(`Error processing ${filePath}: ${(error as Error).message}`);
+            // Count as violation since we couldn't read the schema
+            violationSchemas++;
+            const shortPath = path.relative(dataDir, filePath);
+            violationDetails.push(`${shortPath}: ERROR - ${(error as Error).message}`);
+          }
+        }
+
+        addDebug(`📊 Validation completed: ${totalFiles} files, ${vessels.size} vessels, ${correctSchemas} correct, ${violationSchemas} violations`);
+
+        res.json({
+          success: true,
+          totalFiles,
+          totalVessels: vessels.size,
+          correctSchemas,
+          violations: violationSchemas,
+          violationDetails,
+          debugMessages
+        });
+
+      } catch (error) {
+        app.error(`Error during schema validation: ${error}`);
+        res.status(500).json({
+          success: false,
+          error: (error as Error).message
+        });
+      }
+    }
+  );
 
 }

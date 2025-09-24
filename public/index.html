@@ -429,6 +429,7 @@
             <button class="tab-button" onclick="showTab('liveConnections')" style="display: none;">🔴 Live Connections</button>
             <button class="tab-button" onclick="showTab('dataPaths')">🗄️ Query Database</button>
             <button class="tab-button" onclick="showTab('aiAnalysis')">🧠 AI Analysis <small>(EXPERIMENTAL)</small></button>
+            <button class="tab-button" onclick="showTab('dataValidation')">🔍 Data Validation</button>
             <button class="tab-button" onclick="showTab('s3Config')">☁️ Cloud Status</button>
         </div>
 
@@ -1002,6 +1003,27 @@
                 </div>
             </div>
 
+            <!-- Data Validation Tab -->
+            <div id="dataValidation" class="tab-panel">
+                <div class="section">
+                    <h2>🔍 Data Validation</h2>
+                    <p>Validate parquet file schemas against SignalK metadata and schema guidelines:</p>
+                    <button onclick="runDataValidation()" id="validateBtn">🔍 Run Schema Validation</button>
+                    <div id="validationStatus" style="margin-top: 10px;"></div>
+
+                    <div id="validationResults" style="margin-top: 15px; display: none;">
+                        <h3>Validation Summary</h3>
+                        <div id="validationSummary" style="margin-bottom: 15px; padding: 10px; background: #f8f9fa; border-radius: 5px;"></div>
+
+                        <h3>Debug Information</h3>
+                        <div id="validationDebug" style="margin-bottom: 15px; max-height: 200px; overflow-y: auto; border: 1px solid #ddd; padding: 10px; background: #f8f8f8; font-family: monospace; font-size: 11px;"></div>
+
+                        <h3>Schema Violations</h3>
+                        <div id="validationDetails" style="max-height: 400px; overflow-y: auto; border: 1px solid #ddd; padding: 10px; background: white; font-family: monospace; font-size: 12px;"></div>
+                    </div>
+                </div>
+            </div>
+
             <!-- S3 Configuration Tab -->
             <div id="s3Config" class="tab-panel">
                 <div class="section">
@@ -1370,6 +1392,73 @@
             // Auto-refresh commands when Command Manager tab becomes active
             if (tabId === 'commandManager') {
                 loadCommands();
+            }
+        }
+
+        async function runDataValidation() {
+            const statusDiv = document.getElementById('validationStatus');
+            const resultsDiv = document.getElementById('validationResults');
+            const summaryDiv = document.getElementById('validationSummary');
+            const debugDiv = document.getElementById('validationDebug');
+            const detailsDiv = document.getElementById('validationDetails');
+            const button = document.getElementById('validateBtn');
+
+            // Show loading state
+            button.disabled = true;
+            button.textContent = '🔄 Running Validation...';
+            statusDiv.innerHTML = '<div class="loading">Validating parquet schemas...</div>';
+            resultsDiv.style.display = 'none';
+
+            try {
+                const response = await fetch('/plugins/signalk-parquet/api/validate-schemas', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    }
+                });
+
+                const result = await response.json();
+
+                if (!response.ok) {
+                    throw new Error(result.message || 'Validation failed');
+                }
+
+                // Show success status
+                statusDiv.innerHTML = `<div class="success">✅ Validation completed successfully</div>`;
+
+                // Show summary
+                summaryDiv.innerHTML = `
+                    <strong>Summary:</strong><br>
+                    📁 Total files: ${result.totalFiles}<br>
+                    🚢 Total vessels: ${result.totalVessels}<br>
+                    ✅ Correct schemas: ${result.correctSchemas}<br>
+                    ❌ Schema violations: ${result.violations}<br>
+                    📊 Success rate: ${((result.correctSchemas / result.totalFiles) * 100).toFixed(1)}%
+                `;
+
+                // Show debug information
+                if (result.debugMessages && result.debugMessages.length > 0) {
+                    debugDiv.innerHTML = result.debugMessages.join('\n');
+                } else {
+                    debugDiv.innerHTML = 'No debug information available';
+                }
+
+                // Show detailed violations
+                if (result.violationDetails && result.violationDetails.length > 0) {
+                    detailsDiv.innerHTML = result.violationDetails.join('\n');
+                } else {
+                    detailsDiv.innerHTML = 'No schema violations found! 🎉';
+                }
+
+                resultsDiv.style.display = 'block';
+
+            } catch (error) {
+                statusDiv.innerHTML = `<div class="error">❌ Error: ${error.message}</div>`;
+                console.error('Validation error:', error);
+            } finally {
+                // Reset button
+                button.disabled = false;
+                button.textContent = '🔍 Run Schema Validation';
             }
         }
 
