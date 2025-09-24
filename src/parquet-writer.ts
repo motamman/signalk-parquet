@@ -116,7 +116,7 @@ export class ParquetWriter {
       }
 
       // Use intelligent schema detection for optimal data types
-      const schema = this.createParquetSchema(records, currentPath, outputDirectory, filenamePrefix);
+      const schema = await this.createParquetSchema(records, currentPath, outputDirectory, filenamePrefix);
 
       // Create Parquet writer
       const writer = await parquet.ParquetWriter.openFile(schema, filepath);
@@ -184,7 +184,7 @@ export class ParquetWriter {
 
   // Create Parquet schema based on sample records
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  createParquetSchema(records: DataRecord[], currentPath?: string, outputDirectory?: string, filenamePrefix?: string): any {
+  async createParquetSchema(records: DataRecord[], currentPath?: string, outputDirectory?: string, filenamePrefix?: string): Promise<any> {
 
     if (!parquet || records.length === 0) {
       this.app?.debug(
@@ -231,7 +231,7 @@ export class ParquetWriter {
       if (values.length === 0) {
         // Guideline 3: Handle empty values with intelligent fallback
         this.app?.debug(`  🔍 ${colName}: All null values, using intelligent fallback`);
-        const fallbackType = this.getTypeForEmptyColumn(colName, currentPath, outputDirectory, metadataCache, filenamePrefix);
+        const fallbackType = await this.getTypeForEmptyColumn(colName, currentPath, outputDirectory, metadataCache, filenamePrefix);
         this.app?.debug(`  ✅ ${colName}: ${fallbackType} (from intelligent fallback)`);
         schemaFields[colName] = { type: fallbackType, optional: true };
         continue;
@@ -284,13 +284,13 @@ export class ParquetWriter {
   }
 
   // Guideline 3: Get type for empty columns using SignalK metadata and other files
-  private getTypeForEmptyColumn(
+  private async getTypeForEmptyColumn(
     colName: string,
     currentPath?: string,
     outputDirectory?: string,
     metadataCache?: Map<string, any>,
     filenamePrefix?: string
-  ): string {
+  ): Promise<string> {
     this.app?.debug(`    🔍 Empty column fallback for: ${colName} (path: ${currentPath || 'unknown'})`);
 
     // For non-value columns, default to UTF8
@@ -305,8 +305,21 @@ export class ParquetWriter {
 
       if (!metadataCache.has(currentPath)) {
         try {
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const metadata = (this.app as any).getMetadata?.(currentPath);
+          this.app?.debug(`    🔍 Trying HTTP metadata lookup for path: "${currentPath}"`);
+
+          // Use HTTP REST API to get metadata since getMetadata() returns undefined
+          let metadata = null;
+          try {
+            const response = await fetch(`http://localhost:3000/signalk/v1/api/vessels/self/${currentPath.replace(/\./g, '/')}/meta`);
+            if (response.ok) {
+              metadata = await response.json();
+              this.app?.debug(`    📡 HTTP metadata result: ${JSON.stringify(metadata)}`);
+            } else {
+              this.app?.debug(`    ❌ HTTP metadata request failed: ${response.status} ${response.statusText}`);
+            }
+          } catch (error) {
+            this.app?.debug(`    ❌ HTTP metadata request error: ${(error as Error).message}`);
+          }
           metadataCache.set(currentPath, metadata);
           this.app?.debug(`    📡 Retrieved metadata: ${metadata ? JSON.stringify(metadata) : 'null'}`);
         } catch (error) {

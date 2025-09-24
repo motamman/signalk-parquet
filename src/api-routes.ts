@@ -1876,8 +1876,11 @@ export function registerApiRoutes(
         const glob = require('glob');
         const path = require('path');
 
-        // Get the data directory from plugin config
-        const dataDir = state.currentConfig?.outputDirectory || app.getDataDirPath();
+        // Get the data directory from plugin config - use SignalK's main data dir, not plugin config dir
+        const configOutputDir = state.currentConfig?.outputDirectory || 'data';
+        const pluginDataPath = app.getDataDirPath(); // /Users/.../plugin-config-data/signalk-parquet
+        const signalkDataDir = path.dirname(path.dirname(pluginDataPath)); // Go up 2 levels to get to .signalk
+        const dataDir = path.join(signalkDataDir, configOutputDir);
 
         let totalFiles = 0;
         let schemasFound = 0;
@@ -1903,8 +1906,8 @@ export function registerApiRoutes(
 
         // Process each file
         for (const filePath of files) {
-          // Skip quarantined files
-          if (path.basename(filePath).includes('quarantine') || path.basename(filePath).includes('corrupted')) {
+          // Skip quarantined files and processed directories
+          if (path.basename(filePath).includes('quarantine') || path.basename(filePath).includes('corrupted') || filePath.includes('/processed/')) {
             continue;
           }
 
@@ -1962,21 +1965,29 @@ export function registerApiRoutes(
                 if (fieldType === 'UTF8' || fieldType === 'VARCHAR') {
                   let shouldBeNumeric = false;
 
-                  // Check SignalK metadata if we have a path
-                  if (signalkPath && (app as any).getMetadata) {
+                  // Check SignalK metadata if we have a path using HTTP API
+                  if (signalkPath) {
                     try {
-                      const metadata = (app as any).getMetadata(signalkPath);
-                      if (metadata && metadata.units &&
-                          (metadata.units === 'm' || metadata.units === 'deg' || metadata.units === 'm/s' ||
-                           metadata.units === 'rad' || metadata.units === 'K' || metadata.units === 'Pa' ||
-                           metadata.units === 'V' || metadata.units === 'A' || metadata.units === 'Hz' ||
-                           metadata.units === 'ratio' || metadata.units === 'kg' || metadata.units === 'J')) {
-                        shouldBeNumeric = true;
-                        violations.push(`${fieldName} has numeric units (${metadata.units}) but is ${fieldType}, should be DOUBLE`);
-                        hasViolations = true;
+                      const response = await fetch(`http://localhost:3000/signalk/v1/api/vessels/self/${signalkPath.replace(/\./g, '/')}/meta`);
+                      if (response.ok) {
+                        const metadata = await response.json() as any;
+                        if (metadata && metadata.units &&
+                            (metadata.units === 'm' || metadata.units === 'deg' || metadata.units === 'm/s' ||
+                             metadata.units === 'rad' || metadata.units === 'K' || metadata.units === 'Pa' ||
+                             metadata.units === 'V' || metadata.units === 'A' || metadata.units === 'Hz' ||
+                             metadata.units === 'ratio' || metadata.units === 'kg' || metadata.units === 'J')) {
+                          shouldBeNumeric = true;
+                          violations.push(`${fieldName} has numeric units (${metadata.units}) but is ${fieldType}, should be DOUBLE`);
+                          hasViolations = true;
+                          addDebug(`🔍 HTTP metadata found for ${signalkPath}: units=${metadata.units}, flagged as violation`);
+                        } else {
+                          addDebug(`🔍 HTTP metadata found for ${signalkPath} but no numeric units: ${JSON.stringify(metadata)}`);
+                        }
+                      } else {
+                        addDebug(`🔍 HTTP metadata request failed for ${signalkPath}: ${response.status}`);
                       }
                     } catch (metadataError) {
-                      // Fallback to field name pattern matching if metadata lookup fails
+                      addDebug(`🔍 HTTP metadata error for ${signalkPath}: ${(metadataError as Error).message}`);
                     }
                   }
 
@@ -1998,7 +2009,7 @@ export function registerApiRoutes(
               if (hasViolations) {
                 violationSchemas++;
                 const shortPath = path.relative(dataDir, filePath);
-                violationDetails.push(`${shortPath}: ${violations.join(', ')}`);
+                violationDetails.push(`[${totalFiles}] ${shortPath}: ${violations.join(', ')}`);
               } else {
                 correctSchemas++;
               }
@@ -2011,7 +2022,7 @@ export function registerApiRoutes(
             // Count as violation since we couldn't read the schema
             violationSchemas++;
             const shortPath = path.relative(dataDir, filePath);
-            violationDetails.push(`${shortPath}: ERROR - ${(error as Error).message}`);
+            violationDetails.push(`[${totalFiles}] ${shortPath}: ERROR - ${(error as Error).message}`);
           }
         }
 
