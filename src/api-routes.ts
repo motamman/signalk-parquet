@@ -1901,13 +1901,21 @@ export function registerApiRoutes(
         addDebug(`🔍 Data directory: ${dataDir}`);
         addDebug(`🔍 Searching pattern: ${searchPattern}`);
 
-        const files = glob.sync(searchPattern);
+        const files = glob.sync(searchPattern, {
+          ignore: [
+            `${dataDir}/**/processed/**`,
+            `${dataDir}/**/repaired/**`,
+            `${dataDir}/**/quarantine/**`,
+            `${dataDir}/**/claude-schemas/**`,
+            `${dataDir}/**/failed/**`
+          ]
+        });
         addDebug(`📄 Found ${files.length} parquet files`);
 
         // Process each file
         for (const filePath of files) {
           // Skip quarantined files and processed directories
-          if (path.basename(filePath).includes('quarantine') || path.basename(filePath).includes('corrupted') || filePath.includes('/processed/')) {
+          if (path.basename(filePath).includes('quarantine') || path.basename(filePath).includes('corrupted') || filePath.includes('/processed/') || filePath.includes('/repaired/')) {
             continue;
           }
 
@@ -1960,47 +1968,110 @@ export function registerApiRoutes(
                 hasViolations = true;
               }
 
-              // Rule 2: Check value fields against SignalK metadata
+              // Rule 2: Check value fields using TWO-STEP PROCESS (matches repair logic)
+              // Determine if this is an exploded file
+              const isExplodedFile = Object.keys(valueFields).some(fieldName =>
+                fieldName.startsWith('value_') && fieldName !== 'value' && fieldName !== 'value_json'
+              );
+              addDebug(`🔍 Validation: isExplodedFile = ${isExplodedFile}`);
+
+              // Read sample data for content analysis (STEP 1)
+              let sampleRecords = [];
+              try {
+                if (!parquet) {
+                  throw new Error('ParquetJS not available');
+                }
+                const reader = await parquet.ParquetReader.openFile(filePath);
+                const cursor = reader.getCursor();
+                let record: any;
+                let count = 0;
+                while ((record = await cursor.next()) && count < 100) {
+                  sampleRecords.push(record);
+                  count++;
+                }
+                await reader.close();
+              } catch (error) {
+                addDebug(`⚠️ Could not read sample data for validation: ${(error as Error).message}`);
+                sampleRecords = [];
+              }
+
               for (const [fieldName, fieldType] of Object.entries(valueFields)) {
+                // Always skip value_json (matches repair logic)
+                if (fieldName === 'value_json') {
+                  addDebug(`⏭️ ${fieldName}: Skipped entirely (always ignored)`);
+                  continue;
+                }
+
+                // Skip value field in exploded files (matches repair logic)
+                if (isExplodedFile && fieldName === 'value') {
+                  addDebug(`⏭️ ${fieldName}: Skipped in exploded file (always empty)`);
+                  continue;
+                }
+
                 if (fieldType === 'UTF8' || fieldType === 'VARCHAR') {
                   let shouldBeNumeric = false;
 
-                  // Check SignalK metadata if we have a path using HTTP API
-                  if (signalkPath) {
-                    try {
-                      const response = await fetch(`http://localhost:3000/signalk/v1/api/vessels/self/${signalkPath.replace(/\./g, '/')}/meta`);
-                      if (response.ok) {
-                        const metadata = await response.json() as any;
-                        if (metadata && metadata.units &&
-                            (metadata.units === 'm' || metadata.units === 'deg' || metadata.units === 'm/s' ||
-                             metadata.units === 'rad' || metadata.units === 'K' || metadata.units === 'Pa' ||
-                             metadata.units === 'V' || metadata.units === 'A' || metadata.units === 'Hz' ||
-                             metadata.units === 'ratio' || metadata.units === 'kg' || metadata.units === 'J')) {
-                          shouldBeNumeric = true;
-                          violations.push(`${fieldName} has numeric units (${metadata.units}) but is ${fieldType}, should be DOUBLE`);
-                          hasViolations = true;
-                          addDebug(`🔍 HTTP metadata found for ${signalkPath}: units=${metadata.units}, flagged as violation`);
+                  // STEP 1: LOOK AT THE STRING AND SEE WHAT IT IS (matches repair logic)
+                  if (sampleRecords.length > 0) {
+                    const values = sampleRecords
+                      .map(r => r[fieldName])
+                      .filter(v => v !== null && v !== undefined);
+
+                    if (values.length > 0) {
+                      let allNumeric = true;
+                      let allBoolean = true;
+
+                      for (const value of values) {
+                        const str = String(value).trim();
+                        if (str === 'true' || str === 'false') {
+                          allNumeric = false;
+                        } else if (!isNaN(Number(str)) && str !== '') {
+                          allBoolean = false;
                         } else {
-                          addDebug(`🔍 HTTP metadata found for ${signalkPath} but no numeric units: ${JSON.stringify(metadata)}`);
+                          allNumeric = false;
+                          allBoolean = false;
+                          break;
                         }
-                      } else {
-                        addDebug(`🔍 HTTP metadata request failed for ${signalkPath}: ${response.status}`);
                       }
-                    } catch (metadataError) {
-                      addDebug(`🔍 HTTP metadata error for ${signalkPath}: ${(metadataError as Error).message}`);
+
+                      if (allNumeric && values.length > 0) {
+                        shouldBeNumeric = true;
+                        violations.push(`${fieldName} contains numbers but is ${fieldType}, should be DOUBLE`);
+                        hasViolations = true;
+                        addDebug(`🔍 ${fieldName}: VARCHAR contains numbers, flagged as violation`);
+                      } else if (allBoolean && values.length > 0) {
+                        violations.push(`${fieldName} contains booleans but is ${fieldType}, should be BOOLEAN`);
+                        hasViolations = true;
+                        addDebug(`🔍 ${fieldName}: VARCHAR contains booleans, flagged as violation`);
+                      }
                     }
                   }
 
-                  // Fallback: Basic field name pattern matching for known numeric fields
-                  if (!shouldBeNumeric) {
-                    if (fieldName.includes('latitude') || fieldName.includes('longitude') ||
-                        fieldName.includes('speed') || fieldName.includes('heading') ||
-                        fieldName.includes('depth') || fieldName.includes('temperature') ||
-                        fieldName.includes('pressure') || fieldName.includes('angle') ||
-                        fieldName.includes('voltage') || fieldName.includes('current') ||
-                        fieldName.includes('distance') || fieldName.includes('bearing')) {
-                      violations.push(`${fieldName} appears numeric but is ${fieldType}, should likely be DOUBLE`);
-                      hasViolations = true;
+                  // STEP 2: LOOK AT METADATA (SKIP IF EXPLODED) - only if step 1 can't determine (matches repair logic)
+                  if (!shouldBeNumeric && sampleRecords.length === 0) {
+                    const isExplodedField = fieldName.startsWith('value_');
+
+                    if (!isExplodedField && signalkPath) {
+                      addDebug(`🔍 ${fieldName}: Using metadata fallback (matches repair logic)`);
+                      try {
+                        const response = await fetch(`http://localhost:3000/signalk/v1/api/vessels/self/${signalkPath.replace(/\./g, '/')}/meta`);
+                        if (response.ok) {
+                          const metadata = await response.json() as any;
+                          if (metadata && metadata.units &&
+                              (metadata.units === 'm' || metadata.units === 'deg' || metadata.units === 'm/s' ||
+                               metadata.units === 'rad' || metadata.units === 'K' || metadata.units === 'Pa' ||
+                               metadata.units === 'V' || metadata.units === 'A' || metadata.units === 'Hz' ||
+                               metadata.units === 'ratio' || metadata.units === 'kg' || metadata.units === 'J')) {
+                            violations.push(`${fieldName} has numeric units (${metadata.units}) but is ${fieldType}, should be DOUBLE`);
+                            hasViolations = true;
+                            addDebug(`🔍 ${fieldName}: Metadata indicates numeric (${metadata.units}), flagged as violation`);
+                          }
+                        }
+                      } catch (metadataError) {
+                        addDebug(`🔍 ${fieldName}: Metadata lookup failed, no violation flagged`);
+                      }
+                    } else {
+                      addDebug(`🔍 ${fieldName}: Exploded field or no path, skipping metadata (matches repair logic)`);
                     }
                   }
                 }
@@ -2043,6 +2114,343 @@ export function registerApiRoutes(
         res.status(500).json({
           success: false,
           error: (error as Error).message
+        });
+      }
+    }
+  );
+
+  // Repair schema violations endpoint
+  router.post(
+    '/api/repair-schemas',
+    async (_: TypedRequest, res: any) => {
+      try {
+        app.debug('🔧 Starting schema repair...');
+
+        // Import required modules
+        const parquet = require('@dsnp/parquetjs');
+        const glob = require('glob');
+        const path = require('path');
+        // fs-extra already imported at top of file
+
+        // Get the data directory
+        const configOutputDir = state.currentConfig?.outputDirectory || 'data';
+        const pluginDataPath = app.getDataDirPath();
+        const signalkDataDir = path.dirname(path.dirname(pluginDataPath));
+        const dataDir = path.join(signalkDataDir, configOutputDir);
+
+        let repairedFiles = 0;
+        let backedUpFiles = 0;
+
+        app.debug(`🔧 Starting repair process in ${dataDir}`);
+
+        // Find all parquet files using the configured filename prefix
+        const filenamePrefix = state.currentConfig?.filenamePrefix || 'signalk_data';
+        const parquetFiles = glob.sync(`${dataDir}/vessels/**/${filenamePrefix}_*.parquet`, {
+          ignore: [
+            `${dataDir}/vessels/**/processed/**`,
+            `${dataDir}/vessels/**/repaired/**`,
+            `${dataDir}/vessels/**/quarantine/**`,
+            `${dataDir}/vessels/**/claude-schemas/**`,
+            `${dataDir}/vessels/**/failed/**`
+          ]
+        });
+
+        app.debug(`🔧 Found ${parquetFiles.length} parquet files to check`);
+
+        for (let i = 0; i < parquetFiles.length; i++) {
+          const filePath = parquetFiles[i];
+          app.debug(`🔧 Processing file ${i + 1}/${parquetFiles.length}: ${path.basename(filePath)}`);
+
+          // Check file size and move corrupted files to quarantine
+          try {
+            const stats = await fs.stat(filePath);
+            if (stats.size < 100) {
+              app.debug(`❌ File too small (${stats.size} bytes), moving to quarantine: ${path.basename(filePath)}`);
+
+              // Move to quarantine
+              const quarantineDir = path.join(path.dirname(filePath), 'quarantine');
+              await fs.ensureDir(quarantineDir);
+              const quarantineFile = path.join(quarantineDir, path.basename(filePath));
+              await fs.move(filePath, quarantineFile);
+
+              // Log quarantine entry
+              const logFile = path.join(quarantineDir, 'quarantine.log');
+              const logEntry = `${new Date().toISOString()} | repair | ${stats.size} bytes | File too small (corrupted) | ${filePath}\n`;
+              await fs.appendFile(logFile, logEntry);
+
+              app.debug(`📋 Quarantined: ${stats.size.toString().padStart(12, ' ')}  ${filePath}`);
+              continue;
+            }
+          } catch (statError) {
+            app.debug(`❌ Error checking file size: ${filePath} - ${(statError as Error).message}`);
+            continue;
+          }
+
+          try {
+            // Read parquet file schema using DuckDB
+            const { spawn } = require('child_process');
+            const duckdbResult = await new Promise<string>((resolve, reject) => {
+              const duckdb = spawn('duckdb', ['-c', `DESCRIBE SELECT * FROM '${filePath}';`]);
+              let output = '';
+              let error = '';
+
+              duckdb.stdout.on('data', (data: Buffer) => {
+                output += data.toString();
+              });
+
+              duckdb.stderr.on('data', (data: Buffer) => {
+                error += data.toString();
+              });
+
+              duckdb.on('close', (code: number) => {
+                if (code === 0) {
+                  resolve(output);
+                } else {
+                  reject(new Error(`DuckDB error: ${error}`));
+                }
+              });
+            });
+
+            // Parse schema from DuckDB output
+            const lines = duckdbResult.trim().split('\n');
+            const valueFields: { [key: string]: string } = {};
+            let signalkPath = '';
+
+            for (const line of lines) {
+              const match = line.match(/│\s*(\w+)\s*│\s*(\w+)/);
+              if (match) {
+                const [, fieldName, fieldType] = match;
+                if (fieldName === 'value' || fieldName.startsWith('value_')) {
+                  valueFields[fieldName] = fieldType;
+                }
+                if (fieldName === 'path') {
+                  // Extract SignalK path from file path using the configured prefix
+                  const pathRegex = new RegExp(`/vessels/[^/]+/(.+)/${filenamePrefix}_`);
+                  const pathMatch = filePath.match(pathRegex);
+                  if (pathMatch) {
+                    signalkPath = pathMatch[1].replace(/\//g, '.'); // Convert directory separators to dots
+                    app.debug(`🔍 Extracted SignalK path: ${signalkPath} from ${path.basename(filePath)}`);
+                  } else {
+                    app.debug(`🔍 Could not extract SignalK path from ${path.basename(filePath)} using prefix ${filenamePrefix}`);
+                  }
+                }
+              }
+            }
+
+            // Check if file needs repair
+            let needsRepair = false;
+
+            /*
+            ┌─────────────────────────────────────────────────────────────────────────────────────────┐
+            │                                 REPAIR LOGIC PATHWAYS                                   │
+            ├─────────────────────────────────────────────────────────────────────────────────────────┤
+            │ INITIAL SETUP:                                                                          │
+            │ - Sample 100 records from parquet file                                                 │
+            │ - Extract schema to get valueFields (field names and types)                            │
+            │ - Detect exploded file: hasExplodedFields = Object.keys(valueFields).some(             │
+            │   fieldName => fieldName.startsWith('value_') && fieldName !== 'value' &&             │
+            │   fieldName !== 'value_json')                                                          │
+            │ - Set isExplodedFile = hasExplodedFields                                               │
+            │                                                                                         │
+            │ MAIN LOOP - for each field in valueFields:                                             │
+            │                                                                                         │
+            │ Path 1: Always skip value_json                                                         │
+            │ - IF fieldName === 'value_json' → continue (skip entirely)                            │
+            │                                                                                         │
+            │ Path 2: Skip value field in exploded files                                             │
+            │ - IF isExplodedFile AND fieldName === 'value' → continue (skip entirely)              │
+            │                                                                                         │
+            │ Path 3: Process VARCHAR/UTF8 fields                                                    │
+            │ - IF fieldType === 'UTF8' OR fieldType === 'VARCHAR'                                  │
+            │ - Extract sample values, initialize typeDetected = false                               │
+            │   Path 3a: STEP 1 - Content analysis with data                                         │
+            │   - IF fieldValues.length > 0:                                                         │
+            │     - Analyze each value: numeric? boolean? string?                                     │
+            │     - IF all numeric → needsRepair = true, typeDetected = true, BREAK main loop       │
+            │     - IF all boolean → needsRepair = true, typeDetected = true, BREAK main loop       │
+            │     - IF mixed/strings → typeDetected = true (no repair)                               │
+            │   Path 3b: STEP 2 - Metadata fallback                                                  │
+            │   - IF !typeDetected:                                                                   │
+            │     - Set isExplodedField = fieldName.startsWith('value_')                             │
+            │     - IF !isExplodedField AND signalkPath exists:                                      │
+            │       - Fetch SignalK metadata from HTTP API                                           │
+            │       - IF response ok AND metadata has numeric units → needsRepair = true, BREAK     │
+            │       - IF metadata request fails → log error, continue                                │
+            │                                                                                         │
+            │ Path 4: Process BIGINT fields                                                          │
+            │ - IF fieldType === 'BIGINT' → needsRepair = true, BREAK main loop                     │
+            │                                                                                         │
+            │ Path 5: Skip other field types                                                         │
+            │ - IF field type is neither VARCHAR/UTF8 nor BIGINT → continue to next field           │
+            │                                                                                         │
+            │ FINAL PATHS:                                                                            │
+            │ Path 6: IF needsRepair === true → backup original and create repaired version          │
+            │ Path 7: IF needsRepair === false → skip this file entirely                             │
+            └─────────────────────────────────────────────────────────────────────────────────────────┘
+            */
+
+            // STEP 1: LOOK AT THE STRING AND SEE WHAT IT IS
+            // Read sample data once for all fields
+            let sampleRecords = [];
+            const reader = await parquet.ParquetReader.openFile(filePath);
+            const cursor = reader.getCursor();
+            let record = null;
+            let sampleCount = 0;
+
+            // Sample first 100 records for content analysis
+            while ((record = await cursor.next()) && sampleCount < 100) {
+              sampleRecords.push(record);
+              sampleCount++;
+            }
+            await reader.close();
+
+            // Determine if this is an exploded file
+            const hasExplodedFields = Object.keys(valueFields).some(fieldName => fieldName.startsWith('value_') && fieldName !== 'value' && fieldName !== 'value_json');
+            const isExplodedFile = hasExplodedFields;
+
+            for (const [fieldName, fieldType] of Object.entries(valueFields)) {
+              // Always skip value_json
+              if (fieldName === 'value_json') {
+                continue;
+              }
+
+              // Skip value field in exploded files
+              if (isExplodedFile && fieldName === 'value') {
+                continue;
+              }
+
+              if (fieldType === 'UTF8' || fieldType === 'VARCHAR') {
+                // Analyze content of this field
+                const fieldValues = sampleRecords.map(r => r[fieldName]).filter(v => v !== null && v !== undefined);
+
+                let typeDetected = false;
+
+                if (fieldValues.length > 0) {
+                  let allNumeric = true;
+                  let allBoolean = true;
+
+                  for (const value of fieldValues) {
+                    const str = String(value).trim();
+                    if (str === 'true' || str === 'false') {
+                      allNumeric = false;
+                    } else if (!isNaN(Number(str)) && str !== '') {
+                      allBoolean = false;
+                    } else {
+                      allNumeric = false;
+                      allBoolean = false;
+                      break;
+                    }
+                  }
+
+                  if (allNumeric && fieldValues.length > 0) {
+                    needsRepair = true;
+                    typeDetected = true;
+                    app.debug(`🔧 File needs repair: ${path.basename(filePath)} (${fieldName} contains numbers, should be DOUBLE, not ${fieldType})`);
+                    break;
+                  } else if (allBoolean && fieldValues.length > 0) {
+                    needsRepair = true;
+                    typeDetected = true;
+                    app.debug(`🔧 File needs repair: ${path.basename(filePath)} (${fieldName} contains booleans, should be BOOLEAN, not ${fieldType})`);
+                    break;
+                  } else if (fieldValues.length > 0) {
+                    // Contains strings - mark as OK
+                    typeDetected = true;
+                  }
+                }
+
+                // STEP 2: LOOK AT METADATA (SKIP IF EXPLODED) - only if step 1 can't determine
+                if (!typeDetected) {
+                  const isExplodedField = fieldName.startsWith('value_');
+
+                  if (!isExplodedField && signalkPath) {
+                    try {
+                      const response = await fetch(`http://localhost:3000/signalk/v1/api/vessels/self/${signalkPath.replace(/\./g, '/')}/meta`);
+                      if (response.ok) {
+                        const metadata = await response.json() as any;
+                        if (metadata && metadata.units &&
+                            (metadata.units === 'm' || metadata.units === 'deg' || metadata.units === 'm/s' ||
+                             metadata.units === 'rad' || metadata.units === 'K' || metadata.units === 'Pa' ||
+                             metadata.units === 'V' || metadata.units === 'A' || metadata.units === 'Hz' ||
+                             metadata.units === 'ratio' || metadata.units === 'kg' || metadata.units === 'J')) {
+                          needsRepair = true;
+                          app.debug(`🔧 File needs repair: ${path.basename(filePath)} (${fieldName} should be DOUBLE per metadata, not ${fieldType})`);
+                          break;
+                        }
+                      }
+                    } catch (metadataError) {
+                      app.debug(`🔧 Metadata check failed for ${fieldName}: ${(metadataError as Error).message}`);
+                    }
+                  }
+                }
+              } else if (fieldType === 'BIGINT') {
+                // BIGINTS ARE FORBIDDEN - automatically repair
+                needsRepair = true;
+                app.debug(`🔧 File needs repair: ${path.basename(filePath)} (${fieldName} is BIGINT, converting to DOUBLE)`);
+                break;
+              }
+            }
+
+            if (needsRepair) {
+              // Create backup directory
+              const backupDir = path.join(path.dirname(filePath), 'repaired');
+              await fs.mkdir(backupDir, { recursive: true });
+
+              // Backup original file
+              const backupPath = path.join(backupDir, path.basename(filePath));
+              await fs.copyFile(filePath, backupPath);
+              backedUpFiles++;
+              app.debug(`🔧 Backed up: ${path.basename(filePath)}`);
+
+              // Read original data
+              const reader = await parquet.ParquetReader.openFile(filePath);
+              const cursor = reader.getCursor();
+              const records: any[] = [];
+              let record = null;
+              while (record = await cursor.next()) {
+                records.push(record);
+              }
+              await reader.close();
+
+              // Create writer instance with correct schema detection
+              const { ParquetWriter } = require('./parquet-writer');
+              const writer = new ParquetWriter({ format: 'parquet', app });
+
+              // Use the corrected schema detection with HTTP metadata
+              const correctedSchema = await writer.createParquetSchema(records, signalkPath);
+
+              // Write corrected file
+              const parquetWriter = await parquet.ParquetWriter.openFile(correctedSchema, filePath);
+              for (const record of records) {
+                const preparedRecord = writer.prepareRecordForParquet(record, correctedSchema);
+                await parquetWriter.appendRow(preparedRecord);
+              }
+              await parquetWriter.close();
+
+              repairedFiles++;
+              app.debug(`🔧 ✅ Repaired: ${path.basename(filePath)}`);
+            }
+
+          } catch (fileError) {
+            app.debug(`🔧 ❌ Error processing ${path.basename(filePath)}: ${(fileError as Error).message}`);
+          }
+        }
+
+        const message = `Repaired ${repairedFiles} files, backed up ${backedUpFiles} originals to 'repaired' folders`;
+        app.debug(`🔧 Repair completed: ${message}`);
+
+        // Send completion response
+        res.json({
+          success: true,
+          repairedFiles,
+          backedUpFiles,
+          message
+        });
+
+      } catch (error) {
+        app.debug(`❌ Schema repair failed: ${(error as Error).message}`);
+        res.status(500).json({
+          success: false,
+          message: `Repair failed: ${(error as Error).message}`
         });
       }
     }

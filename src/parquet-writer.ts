@@ -103,12 +103,12 @@ export class ParquetWriter {
       const currentPath = records.length > 0 ? records[0].path : undefined;
 
       // Extract output directory from filepath (go up to find the base data directory)
-      const outputDirectory = this.extractOutputDirectory(filepath);
+      // const outputDirectory = this.extractOutputDirectory(filepath);
 
       // Extract filename prefix from filepath (everything before the date part)
-      const filename = path.basename(filepath, '.parquet');
-      const match = filename.match(/^(.+)_\d{4}-\d{2}-\d{2}/);
-      const filenamePrefix = match ? match[1] : 'signalk_data';
+      // const filename = path.basename(filepath, '.parquet');
+      // const match = filename.match(/^(.+)_\d{4}-\d{2}-\d{2}/);
+      // const filenamePrefix = match ? match[1] : 'signalk_data';
 
       // Check if parquet library is available
       if (!parquet) {
@@ -116,7 +116,7 @@ export class ParquetWriter {
       }
 
       // Use intelligent schema detection for optimal data types
-      const schema = await this.createParquetSchema(records, currentPath, outputDirectory, filenamePrefix);
+      const schema = await this.createParquetSchema(records, currentPath);
 
       // Create Parquet writer
       const writer = await parquet.ParquetWriter.openFile(schema, filepath);
@@ -184,7 +184,7 @@ export class ParquetWriter {
 
   // Create Parquet schema based on sample records
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  async createParquetSchema(records: DataRecord[], currentPath?: string, outputDirectory?: string, filenamePrefix?: string): Promise<any> {
+  async createParquetSchema(records: DataRecord[], currentPath?: string): Promise<any> {
 
     if (!parquet || records.length === 0) {
       this.app?.debug(
@@ -195,7 +195,6 @@ export class ParquetWriter {
 
     this.app?.debug(`🔍 Schema Detection: Starting for ${records.length} records`);
     this.app?.debug(`📍 Current Path: ${currentPath || 'unknown'}`);
-    this.app?.debug(`📁 Output Directory: ${outputDirectory || 'unknown'}`);
 
     // Cache for metadata lookups to avoid repeated API calls
     const metadataCache = new Map<string, any>();
@@ -211,16 +210,35 @@ export class ParquetWriter {
 
     const schemaFields: { [key: string]: ParquetField } = {};
 
+    // Determine if this is an exploded file (matches detection logic)
+    const hasExplodedFields = columns.some(colName => colName.startsWith('value_') && colName !== 'value' && colName !== 'value_json');
+    const isExplodedFile = hasExplodedFields;
+    this.app?.debug(`🔍 Schema Detection: isExplodedFile = ${isExplodedFile}`);
+
     // Analyze each column to determine the best Parquet type
     for (const colName of columns) {
       this.app?.debug(`🔎 Analyzing column: ${colName}`);
-      // Guideline 1 & 2: Force timestamps, JSON, metadata, and source columns to UTF8
-      if (colName === 'received_timestamp' || colName === 'signalk_timestamp' || colName === 'value_json' || colName === 'meta' || colName.startsWith('source') || colName === 'context' || colName === 'path') {
-        this.app?.debug(`  ⏰ ${colName}: Forced to UTF8 (timestamp/json/meta/source/context/path rule)`);
+
+      // Always skip value_json (matches detection logic)
+      if (colName === 'value_json') {
+        this.app?.debug(`  ⏭️ ${colName}: Skipped entirely (always ignored)`);
+        continue;
+      }
+
+      // Skip value field in exploded files (matches detection logic)
+      if (isExplodedFile && colName === 'value') {
+        this.app?.debug(`  ⏭️ ${colName}: Skipped in exploded file (always empty)`);
+        continue;
+      }
+
+      // Force timestamps, metadata, and source columns to UTF8
+      if (colName === 'received_timestamp' || colName === 'signalk_timestamp' || colName === 'meta' || colName.startsWith('source') || colName === 'context' || colName === 'path') {
+        this.app?.debug(`  ⏰ ${colName}: Forced to UTF8 (timestamp/meta/source/context/path rule)`);
         schemaFields[colName] = { type: 'UTF8', optional: true };
         continue;
       }
 
+      // Extract values for this column (matches detection logic)
       const values = records
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         .map(r => (r as any)[colName])
@@ -228,52 +246,86 @@ export class ParquetWriter {
 
       this.app?.debug(`  📊 ${colName}: ${values.length}/${records.length} non-null values`);
 
-      if (values.length === 0) {
-        // Guideline 3: Handle empty values with intelligent fallback
-        this.app?.debug(`  🔍 ${colName}: All null values, using intelligent fallback`);
-        const fallbackType = await this.getTypeForEmptyColumn(colName, currentPath, outputDirectory, metadataCache, filenamePrefix);
-        this.app?.debug(`  ✅ ${colName}: ${fallbackType} (from intelligent fallback)`);
-        schemaFields[colName] = { type: fallbackType, optional: true };
-        continue;
-      }
-
-      // Guideline 4: Special handling for value_ fields (exploded values)
-      if (colName.startsWith('value_')) {
-        this.app?.debug(`  🧩 ${colName}: Exploded value field, analyzing across files`);
-        const explodedType = this.getTypeForExplodedField(colName, currentPath, outputDirectory, filenamePrefix);
-        this.app?.debug(`  ✅ ${colName}: ${explodedType} (from exploded field analysis)`);
-        schemaFields[colName] = { type: explodedType, optional: true };
-        continue;
-      }
-
-      const hasNumbers = values.some(v => typeof v === 'number');
-      const hasStrings = values.some(v => typeof v === 'string');
-      const hasBooleans = values.some(v => typeof v === 'boolean');
+      // Handle BIGINT fields (matches detection logic: BIGINT -> DOUBLE)
       const hasBigInts = values.some(v => typeof v === 'bigint');
-
-      this.app?.debug(`  🧮 ${colName}: Types present - numbers:${hasNumbers}, strings:${hasStrings}, booleans:${hasBooleans}, bigints:${hasBigInts}`);
-
-      // Guideline 5: Never use BIGINT, convert to UTF8
-      if (hasBigInts && !hasNumbers && !hasStrings && !hasBooleans) {
-        this.app?.debug(`  ✅ ${colName}: UTF8 (BigInt conversion)`);
-        schemaFields[colName] = { type: 'UTF8', optional: true };
-      } else if (hasNumbers && !hasStrings && !hasBooleans && !hasBigInts) {
-        // All numbers - check if integers or floats
-        const allIntegers = values.every(v => Number.isInteger(v));
-        const finalType = allIntegers ? 'INT64' : 'DOUBLE';
-        this.app?.debug(`  ✅ ${colName}: ${finalType} (all numbers, integers:${allIntegers})`);
-        schemaFields[colName] = {
-          type: finalType,
-          optional: true,
-        };
-      } else if (hasBooleans && !hasNumbers && !hasStrings && !hasBigInts) {
-        this.app?.debug(`  ✅ ${colName}: BOOLEAN (all booleans)`);
-        schemaFields[colName] = { type: 'BOOLEAN', optional: true };
-      } else {
-        // Mixed types or strings - use UTF8
-        this.app?.debug(`  ✅ ${colName}: UTF8 (mixed types or strings)`);
-        schemaFields[colName] = { type: 'UTF8', optional: true };
+      if (hasBigInts) {
+        this.app?.debug(`  ✅ ${colName}: DOUBLE (BIGINT converted to DOUBLE, matches detection logic)`);
+        schemaFields[colName] = { type: 'DOUBLE', optional: true };
+        continue;
       }
+
+      // STEP 1: LOOK AT THE STRING AND SEE WHAT IT IS (matches detection logic)
+      let typeDetected = false;
+      let schemaType = 'UTF8'; // default
+
+      if (values.length > 0) {
+        let allNumeric = true;
+        let allBoolean = true;
+
+        for (const value of values) {
+          const str = String(value).trim();
+          if (str === 'true' || str === 'false') {
+            allNumeric = false;
+          } else if (!isNaN(Number(str)) && str !== '') {
+            allBoolean = false;
+          } else {
+            allNumeric = false;
+            allBoolean = false;
+            break;
+          }
+        }
+
+        if (allNumeric && values.length > 0) {
+          schemaType = 'DOUBLE';
+          typeDetected = true;
+          this.app?.debug(`  ✅ ${colName}: DOUBLE (contains numbers, matches detection logic)`);
+        } else if (allBoolean && values.length > 0) {
+          schemaType = 'BOOLEAN';
+          typeDetected = true;
+          this.app?.debug(`  ✅ ${colName}: BOOLEAN (contains booleans, matches detection logic)`);
+        } else if (values.length > 0) {
+          schemaType = 'UTF8';
+          typeDetected = true;
+          this.app?.debug(`  ✅ ${colName}: UTF8 (contains strings, matches detection logic)`);
+        }
+      }
+
+      // STEP 2: LOOK AT METADATA (SKIP IF EXPLODED) - only if step 1 can't determine (matches detection logic)
+      if (!typeDetected) {
+        const isExplodedField = colName.startsWith('value_');
+
+        if (!isExplodedField && currentPath) {
+          this.app?.debug(`  🔍 ${colName}: Using metadata fallback (matches detection logic)`);
+          try {
+            const response = await fetch(`http://localhost:3000/signalk/v1/api/vessels/self/${currentPath.replace(/\./g, '/')}/meta`);
+            if (response.ok) {
+              const metadata = await response.json() as any;
+              if (metadata && metadata.units &&
+                  (metadata.units === 'm' || metadata.units === 'deg' || metadata.units === 'm/s' ||
+                   metadata.units === 'rad' || metadata.units === 'K' || metadata.units === 'Pa' ||
+                   metadata.units === 'V' || metadata.units === 'A' || metadata.units === 'Hz' ||
+                   metadata.units === 'ratio' || metadata.units === 'kg' || metadata.units === 'J')) {
+                schemaType = 'DOUBLE';
+                this.app?.debug(`  ✅ ${colName}: DOUBLE (from metadata units: ${metadata.units}, matches detection logic)`);
+              } else {
+                schemaType = 'UTF8';
+                this.app?.debug(`  ✅ ${colName}: UTF8 (metadata has no numeric units, matches detection logic)`);
+              }
+            } else {
+              schemaType = 'UTF8';
+              this.app?.debug(`  ✅ ${colName}: UTF8 (metadata request failed, matches detection logic)`);
+            }
+          } catch (metadataError) {
+            schemaType = 'UTF8';
+            this.app?.debug(`  ✅ ${colName}: UTF8 (metadata error, matches detection logic)`);
+          }
+        } else {
+          schemaType = 'UTF8';
+          this.app?.debug(`  ✅ ${colName}: UTF8 (exploded field or no path, matches detection logic)`);
+        }
+      }
+
+      schemaFields[colName] = { type: schemaType, optional: true };
     }
 
     const finalSchema = new parquet.ParquetSchema(schemaFields);
@@ -364,24 +416,71 @@ export class ParquetWriter {
     return 'UTF8';
   }
 
-  // Guideline 4: Get type for exploded value_ fields by examining other files
-  private getTypeForExplodedField(colName: string, currentPath?: string, outputDirectory?: string, filenamePrefix?: string): string {
+  // Guideline 4: Get type for exploded value_ fields by parsing actual values
+  private async getTypeForExplodedField(colName: string, currentPath?: string, outputDirectory?: string, values?: any[], metadataCache?: Map<string, any>, filenamePrefix?: string): Promise<string> {
     this.app?.debug(`    🧩 Exploded field analysis for: ${colName} (path: ${currentPath || 'unknown'})`);
 
-    if (!currentPath || !outputDirectory) {
-      this.app?.debug(`    ↪️ Missing path/directory info, using field name inference`);
-      return this.inferTypeFromFieldName(colName);
+    // Always keep value_json as VARCHAR
+    if (colName === 'value_json') {
+      this.app?.debug(`    ✅ ${colName}: UTF8 (JSON field always string)`);
+      return 'UTF8';
     }
 
-    // Disabled cross-file analysis to prevent parquet read errors
-    // const typeFromOtherFiles = this.getTypeFromOtherFiles(currentPath, outputDirectory, colName, filenamePrefix);
-    // if (typeFromOtherFiles) {
-    //   this.app?.debug(`    ✅ Found type ${typeFromOtherFiles} from other files for ${colName}`);
-    //   return typeFromOtherFiles;
-    // }
+    // If we have values, parse them to detect actual data types
+    if (values && values.length > 0) {
+      this.app?.debug(`    🧮 Parsing ${values.length} values for ${colName}`);
 
-    // Fallback to field name inference
-    this.app?.debug(`    ↪️ No type found in other files, using field name inference`);
+      let parsedNumbers = 0;
+      let parsedBooleans = 0;
+      let actualStrings = 0;
+      let unparseable = 0;
+
+      const stringValues = values.filter(v => typeof v === 'string');
+      for (const str of stringValues) {
+        const trimmed = str.trim();
+        if (trimmed === 'true' || trimmed === 'false') {
+          parsedBooleans++;
+        } else if (!isNaN(Number(trimmed)) && trimmed !== '') {
+          parsedNumbers++;
+        } else if (trimmed === '') {
+          unparseable++;
+        } else {
+          actualStrings++;
+        }
+      }
+
+      const hasNumbers = values.some(v => typeof v === 'number') || parsedNumbers > 0;
+      const hasStrings = values.some(v => typeof v === 'string' && v.trim() !== '' && isNaN(Number(v.trim())) && v.trim() !== 'true' && v.trim() !== 'false') || actualStrings > 0;
+      const hasBooleans = values.some(v => typeof v === 'boolean') || parsedBooleans > 0;
+
+      this.app?.debug(`    🧮 ${colName}: Parsed - numbers:${parsedNumbers}, booleans:${parsedBooleans}, strings:${actualStrings}, unparseable:${unparseable}`);
+      this.app?.debug(`    🧮 ${colName}: Final - hasNumbers:${hasNumbers}, hasStrings:${hasStrings}, hasBooleans:${hasBooleans}`);
+
+      if (hasNumbers && !hasStrings && !hasBooleans) {
+        // All numbers - check if integers or floats
+        // Always use DOUBLE for numeric maritime data (never INT64/BIGINT)
+        const finalType = 'DOUBLE';
+        this.app?.debug(`    ✅ ${colName}: ${finalType} (parsed numbers, always DOUBLE for maritime data)`);
+        return finalType;
+      } else if (hasBooleans && !hasNumbers && !hasStrings) {
+        this.app?.debug(`    ✅ ${colName}: BOOLEAN (parsed booleans)`);
+        return 'BOOLEAN';
+      } else if (unparseable > 0 && !hasNumbers && !hasStrings && !hasBooleans) {
+        // Only unparseable (empty) values - use HTTP metadata
+        if (currentPath && metadataCache) {
+          this.app?.debug(`    🔍 ${colName}: Only empty values, using HTTP metadata fallback`);
+          const fallbackType = await this.getTypeForEmptyColumn(colName, currentPath, outputDirectory, metadataCache, filenamePrefix);
+          this.app?.debug(`    ✅ ${colName}: ${fallbackType} (from HTTP metadata for empty values)`);
+          return fallbackType;
+        }
+      } else if (hasStrings || actualStrings > 0) {
+        this.app?.debug(`    ✅ ${colName}: UTF8 (parsed strings)`);
+        return 'UTF8';
+      }
+    }
+
+    // Fallback to field name inference if no values or unclear parsing
+    this.app?.debug(`    ↪️ No clear type from value parsing, using field name inference`);
     return this.inferTypeFromFieldName(colName);
   }
 

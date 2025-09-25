@@ -1009,6 +1009,7 @@
                     <h2>🔍 Data Validation</h2>
                     <p>Validate parquet file schemas against SignalK metadata and schema guidelines:</p>
                     <button onclick="runDataValidation()" id="validateBtn">🔍 Run Schema Validation</button>
+                    <button onclick="repairSchemas()" id="repairBtn" style="margin-left: 10px;">🔧 Repair Schema Violations</button>
                     <div id="validationStatus" style="margin-top: 10px;"></div>
 
                     <div id="validationResults" style="margin-top: 15px; display: none;">
@@ -1452,6 +1453,14 @@
 
                 resultsDiv.style.display = 'block';
 
+                // Show repair button if there are violations
+                const repairBtn = document.getElementById('repairBtn');
+                if (result.violations && result.violations > 0) {
+                    repairBtn.style.display = 'inline-block';
+                } else {
+                    // Keep repair button visible
+                }
+
             } catch (error) {
                 statusDiv.innerHTML = `<div class="error">❌ Error: ${error.message}</div>`;
                 console.error('Validation error:', error);
@@ -1459,6 +1468,45 @@
                 // Reset button
                 button.disabled = false;
                 button.textContent = '🔍 Run Schema Validation';
+            }
+        }
+
+        async function repairSchemas() {
+            const statusDiv = document.getElementById('validationStatus');
+            const repairBtn = document.getElementById('repairBtn');
+
+            // Show loading state
+            repairBtn.disabled = true;
+            repairBtn.textContent = '🔄 Repairing Schemas...';
+            statusDiv.innerHTML = '<div class="loading">🔧 Starting schema repair process...</div>';
+
+            try {
+                const response = await fetch('/plugins/signalk-parquet/api/repair-schemas', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    }
+                });
+
+                const result = await response.json();
+
+                if (!response.ok) {
+                    throw new Error(result.message || 'Repair failed');
+                }
+
+                // Show completion status
+                statusDiv.innerHTML = `<div class="success">✅ Repair completed: ${result.repairedFiles} files repaired, ${result.backedUpFiles} files backed up</div>`;
+
+                // Re-run validation after repair
+                setTimeout(() => runDataValidation(), 2000);
+
+            } catch (error) {
+                statusDiv.innerHTML = `<div class="error">❌ Repair Error: ${error.message}</div>`;
+                console.error('Repair error:', error);
+            } finally {
+                // Reset button
+                repairBtn.disabled = false;
+                repairBtn.textContent = '🔧 Repair Schema Violations';
             }
         }
 
