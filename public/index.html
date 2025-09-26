@@ -1008,8 +1008,20 @@
                 <div class="section">
                     <h2>🔍 Data Validation</h2>
                     <p>Validate parquet file schemas against SignalK metadata and schema guidelines:</p>
-                    <button onclick="runDataValidation()" id="validateBtn">🔍 Run Schema Validation</button>
-                    <button onclick="repairSchemas()" id="repairBtn" style="margin-left: 10px;">🔧 Repair Schema Violations</button>
+                    <div style="margin-bottom: 10px;">
+                        <button onclick="runDataValidation()" id="validateBtn">🔍 Run Schema Validation</button>
+                        <button onclick="repairSchemas()" id="repairBtn" style="margin-left: 10px;">🔧 Repair Schema Violations</button>
+                        <button onclick="cancelProcess()" id="cancelBtn" style="margin-left: 10px; display: none; background: #dc3545; color: white;">❌ Cancel Process</button>
+                    </div>
+                    <div id="processStatus" style="margin-bottom: 10px; display: none; padding: 10px; background: #e3f2fd; border-radius: 5px;">
+                        <div style="font-weight: bold;" id="processType"></div>
+                        <div id="processProgress" style="margin-top: 5px;">
+                            <div style="background: #ddd; height: 20px; border-radius: 10px; overflow: hidden;">
+                                <div id="progressBar" style="background: #4caf50; height: 100%; width: 0%; transition: width 0.3s;"></div>
+                            </div>
+                            <div style="margin-top: 5px; font-size: 0.9em;" id="progressText"></div>
+                        </div>
+                    </div>
                     <div id="validationStatus" style="margin-top: 10px;"></div>
 
                     <div id="validationResults" style="margin-top: 15px; display: none;">
@@ -1400,9 +1412,11 @@
             const detailsDiv = document.getElementById('validationDetails');
             const button = document.getElementById('validateBtn');
 
-            // Show loading state
+            // Show loading state and cancel button, disable both buttons
             button.disabled = true;
             button.textContent = '🔄 Running Validation...';
+            document.getElementById('repairBtn').disabled = true;
+            document.getElementById('cancelBtn').style.display = 'inline-block';
             statusDiv.innerHTML = '<div class="loading">Validating parquet schemas...</div>';
             resultsDiv.style.display = 'none';
 
@@ -1413,6 +1427,11 @@
                         'Content-Type': 'application/json',
                     }
                 });
+
+                // Start monitoring process status
+                if (!processStatusInterval) {
+                    processStatusInterval = setInterval(checkProcessStatus, 1000);
+                }
 
                 const result = await response.json();
 
@@ -1454,9 +1473,11 @@
                 statusDiv.innerHTML = `<div class="error">❌ Error: ${error.message}</div>`;
                 console.error('Validation error:', error);
             } finally {
-                // Reset button
+                // Reset both buttons and hide cancel button
                 button.disabled = false;
                 button.textContent = '🔍 Run Schema Validation';
+                document.getElementById('repairBtn').disabled = false;
+                document.getElementById('cancelBtn').style.display = 'none';
             }
         }
 
@@ -1464,9 +1485,11 @@
             const statusDiv = document.getElementById('validationStatus');
             const repairBtn = document.getElementById('repairBtn');
 
-            // Show loading state
+            // Show loading state and cancel button, disable both buttons
             repairBtn.disabled = true;
             repairBtn.textContent = '🔄 Repairing Schemas...';
+            document.getElementById('validateBtn').disabled = true;
+            document.getElementById('cancelBtn').style.display = 'inline-block';
             statusDiv.innerHTML = '<div class="loading">🔧 Starting schema repair process...</div>';
 
             try {
@@ -1476,6 +1499,11 @@
                         'Content-Type': 'application/json',
                     }
                 });
+
+                // Start monitoring process status
+                if (!processStatusInterval) {
+                    processStatusInterval = setInterval(checkProcessStatus, 1000);
+                }
 
                 const result = await response.json();
 
@@ -1493,9 +1521,98 @@
                 statusDiv.innerHTML = `<div class="error">❌ Repair Error: ${error.message}</div>`;
                 console.error('Repair error:', error);
             } finally {
-                // Reset button
+                // Reset both buttons and hide cancel button
                 repairBtn.disabled = false;
                 repairBtn.textContent = '🔧 Repair Schema Violations';
+                document.getElementById('validateBtn').disabled = false;
+                document.getElementById('cancelBtn').style.display = 'none';
+            }
+        }
+
+        // Process management functions
+        let processStatusInterval = null;
+
+        async function cancelProcess() {
+            try {
+                const response = await fetch('/plugins/signalk-parquet/api/cancel-process', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    }
+                });
+
+                const result = await response.json();
+
+                if (result.success) {
+                    document.getElementById('validationStatus').innerHTML = '<div class="warning">🚫 Cancelling process...</div>';
+                } else {
+                    document.getElementById('validationStatus').innerHTML = `<div class="error">❌ Cancel failed: ${result.error}</div>`;
+                }
+            } catch (error) {
+                document.getElementById('validationStatus').innerHTML = `<div class="error">❌ Cancel error: ${error.message}</div>`;
+            }
+        }
+
+        async function checkProcessStatus() {
+            try {
+                const response = await fetch('/plugins/signalk-parquet/api/process-status');
+                const status = await response.json();
+
+                if (status.success) {
+                    updateProcessUI(status);
+                } else {
+                    console.error('Failed to get process status:', status.error);
+                }
+            } catch (error) {
+                console.error('Error checking process status:', error);
+            }
+        }
+
+        function updateProcessUI(status) {
+            const processStatusDiv = document.getElementById('processStatus');
+            const processTypeDiv = document.getElementById('processType');
+            const progressBar = document.getElementById('progressBar');
+            const progressText = document.getElementById('progressText');
+            const cancelBtn = document.getElementById('cancelBtn');
+            const validateBtn = document.getElementById('validateBtn');
+            const repairBtn = document.getElementById('repairBtn');
+
+            if (status.isRunning) {
+                // Show process status
+                processStatusDiv.style.display = 'block';
+                processTypeDiv.textContent = `Running ${status.processType} process...`;
+
+                const progress = status.progress || 0;
+                progressBar.style.width = `${progress}%`;
+                progressText.textContent = `${status.processedFiles || 0} / ${status.totalFiles || 0} files processed`;
+
+                if (status.currentFile) {
+                    progressText.textContent += ` - Current: ${status.currentFile}`;
+                }
+
+                // Show cancel button and disable main buttons
+                cancelBtn.style.display = 'inline-block';
+                validateBtn.disabled = true;
+                repairBtn.disabled = true;
+                validateBtn.textContent = '🔍 Run Schema Validation';
+                repairBtn.textContent = '🔧 Repair Schema Violations';
+
+                // Continue polling
+                if (!processStatusInterval) {
+                    processStatusInterval = setInterval(checkProcessStatus, 1000);
+                }
+            } else {
+                // Hide process status
+                processStatusDiv.style.display = 'none';
+                cancelBtn.style.display = 'none';
+                validateBtn.disabled = false;
+                repairBtn.disabled = false;
+
+                // Stop polling
+                if (processStatusInterval) {
+                    clearInterval(processStatusInterval);
+                    processStatusInterval = null;
+                }
             }
         }
 
@@ -2823,9 +2940,12 @@
         document.addEventListener('DOMContentLoaded', async function() {
             // Load and display version information
             await loadVersionInfo();
-            
+
             // Load SignalK paths for the dropdown
             await loadSignalKPaths();
+
+            // Check if any process is currently running
+            await checkProcessStatus();
             
             // Set up auto-refresh for streams and stats - DISABLED
             // setInterval(() => {
