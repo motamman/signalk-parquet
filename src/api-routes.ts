@@ -2086,165 +2086,19 @@ export function registerApiRoutes(
           }
 
           try {
-            const reader = await parquet.ParquetReader.openFile(filePath);
-            const cursor = reader.getCursor();
-            const schema = cursor.schema;
+            // Use SchemaService for consistent validation logic
+            const validationResult = await schemaService.validateFileSchema(filePath);
 
-            if (schema && schema.schema) {
-              schemasFound++;
-              const fields = schema.schema;
+            schemasFound++;
 
-              // Check timestamps
-              const receivedTimestamp = fields.received_timestamp ? fields.received_timestamp.type : 'MISSING';
-              const signalkTimestamp = fields.signalk_timestamp ? fields.signalk_timestamp.type : 'MISSING';
-
-              // Find all value fields
-              const valueFields: { [key: string]: string } = {};
-              Object.keys(fields).forEach(fieldName => {
-                if (fieldName.startsWith('value_') || fieldName === 'value') {
-                  valueFields[fieldName] = fields[fieldName].type;
-                }
-              });
-
-              // Extract SignalK path for metadata lookup
-              const relativePath = path.relative(dataDir, filePath);
-              const pathMatch = relativePath.match(/vessels\/[^/]+\/(.+?)\/[^/]*\.parquet$/);
-              const signalkPath = pathMatch ? pathMatch[1].replace(/\//g, '.') : '';
-
-              // Check for schema violations
-              let hasViolations = false;
-              const violations: string[] = [];
-
-              // Rule 1: Timestamps should be UTF8/VARCHAR
-              if (receivedTimestamp !== 'UTF8' && receivedTimestamp !== 'MISSING') {
-                violations.push(`received_timestamp should be UTF8, got ${receivedTimestamp}`);
-                hasViolations = true;
-              }
-              if (signalkTimestamp !== 'UTF8' && signalkTimestamp !== 'MISSING') {
-                violations.push(`signalk_timestamp should be UTF8, got ${signalkTimestamp}`);
-                hasViolations = true;
-              }
-
-              // Rule 2: Check value fields using TWO-STEP PROCESS (matches repair logic)
-              // Determine if this is an exploded file
-              const isExplodedFile = Object.keys(valueFields).some(fieldName =>
-                fieldName.startsWith('value_') && fieldName !== 'value' && fieldName !== 'value_json'
-              );
-              addDebug(`🔍 Validation: isExplodedFile = ${isExplodedFile}`);
-
-              // Read sample data for content analysis (STEP 1)
-              let sampleRecords = [];
-              try {
-                if (!parquet) {
-                  throw new Error('ParquetJS not available');
-                }
-                const reader = await parquet.ParquetReader.openFile(filePath);
-                const cursor = reader.getCursor();
-                let record: any;
-                let count = 0;
-                while ((record = await cursor.next()) && count < 100) {
-                  sampleRecords.push(record);
-                  count++;
-                }
-                await reader.close();
-              } catch (error) {
-                addDebug(`⚠️ Could not read sample data for validation: ${(error as Error).message}`);
-                sampleRecords = [];
-              }
-
-              for (const [fieldName, fieldType] of Object.entries(valueFields)) {
-                // Always skip value_json (matches repair logic)
-                if (fieldName === 'value_json') {
-                  addDebug(`⏭️ ${fieldName}: Skipped entirely (always ignored)`);
-                  continue;
-                }
-
-                // Skip value field in exploded files (matches repair logic)
-                if (isExplodedFile && fieldName === 'value') {
-                  addDebug(`⏭️ ${fieldName}: Skipped in exploded file (always empty)`);
-                  continue;
-                }
-
-                if (fieldType === 'UTF8' || fieldType === 'VARCHAR') {
-                  let shouldBeNumeric = false;
-
-                  // STEP 1: LOOK AT THE STRING AND SEE WHAT IT IS (matches repair logic)
-                  if (sampleRecords.length > 0) {
-                    const values = sampleRecords
-                      .map(r => r[fieldName])
-                      .filter(v => v !== null && v !== undefined);
-
-                    if (values.length > 0) {
-                      let allNumeric = true;
-                      let allBoolean = true;
-
-                      for (const value of values) {
-                        const str = String(value).trim();
-                        if (str === 'true' || str === 'false') {
-                          allNumeric = false;
-                        } else if (!isNaN(Number(str)) && str !== '') {
-                          allBoolean = false;
-                        } else {
-                          allNumeric = false;
-                          allBoolean = false;
-                          break;
-                        }
-                      }
-
-                      if (allNumeric && values.length > 0) {
-                        shouldBeNumeric = true;
-                        violations.push(`${fieldName} contains numbers but is ${fieldType}, should be DOUBLE`);
-                        hasViolations = true;
-                        addDebug(`🔍 ${fieldName}: VARCHAR contains numbers, flagged as violation`);
-                      } else if (allBoolean && values.length > 0) {
-                        violations.push(`${fieldName} contains booleans but is ${fieldType}, should be BOOLEAN`);
-                        hasViolations = true;
-                        addDebug(`🔍 ${fieldName}: VARCHAR contains booleans, flagged as violation`);
-                      }
-                    }
-                  }
-
-                  // STEP 2: LOOK AT METADATA (SKIP IF EXPLODED) - only if step 1 can't determine (matches repair logic)
-                  if (!shouldBeNumeric && sampleRecords.length === 0) {
-                    const isExplodedField = fieldName.startsWith('value_');
-
-                    if (!isExplodedField && signalkPath) {
-                      addDebug(`🔍 ${fieldName}: Using metadata fallback (matches repair logic)`);
-                      try {
-                        const response = await fetch(`http://localhost:3000/signalk/v1/api/vessels/self/${signalkPath.replace(/\./g, '/')}/meta`);
-                        if (response.ok) {
-                          const metadata = await response.json() as any;
-                          if (metadata && metadata.units &&
-                              (metadata.units === 'm' || metadata.units === 'deg' || metadata.units === 'm/s' ||
-                               metadata.units === 'rad' || metadata.units === 'K' || metadata.units === 'Pa' ||
-                               metadata.units === 'V' || metadata.units === 'A' || metadata.units === 'Hz' ||
-                               metadata.units === 'ratio' || metadata.units === 'kg' || metadata.units === 'J')) {
-                            violations.push(`${fieldName} has numeric units (${metadata.units}) but is ${fieldType}, should be DOUBLE`);
-                            hasViolations = true;
-                            addDebug(`🔍 ${fieldName}: Metadata indicates numeric (${metadata.units}), flagged as violation`);
-                          }
-                        }
-                      } catch (metadataError) {
-                        addDebug(`🔍 ${fieldName}: Metadata lookup failed, no violation flagged`);
-                      }
-                    } else {
-                      addDebug(`🔍 ${fieldName}: Exploded field or no path, skipping metadata (matches repair logic)`);
-                    }
-                  }
-                }
-              }
-
-              if (hasViolations) {
-                violationSchemas++;
-                const shortPath = path.relative(dataDir, filePath);
-                // Add file to repair array instead of UI details
-                state.filesToRepair.push(filePath);
-                violationDetails.push(`[${totalFiles}] ${shortPath}: ${violations.join(', ')}`);
-              } else {
-                correctSchemas++;
-              }
-
-              if (typeof reader.close === 'function') reader.close();
+            if (!validationResult.isValid) {
+              violationSchemas++;
+              const shortPath = path.relative(dataDir, filePath);
+              // Add file to repair array instead of UI details
+              state.filesToRepair.push(filePath);
+              violationDetails.push(`[${totalFiles}] ${shortPath}: ${validationResult.violations.join(', ')}`);
+            } else {
+              correctSchemas++;
             }
 
           } catch (error) {
