@@ -7,6 +7,7 @@ import {
   FileFormat,
 } from './types';
 import { ServerAPI } from '@signalk/server-api';
+import { SchemaService } from './schema-service';
 
 // Try to import ParquetJS, fall back if not available
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -20,10 +21,20 @@ try {
 export class ParquetWriter {
   private format: FileFormat;
   private app?: ServerAPI;
+  private schemaService?: SchemaService;
 
   constructor(options: ParquetWriterOptions = { format: 'json' }) {
     this.format = options.format || 'json';
     this.app = options.app;
+
+    // Initialize schema service if app is available
+    if (this.app) {
+      this.schemaService = new SchemaService(this.app);
+    }
+  }
+
+  getSchemaService(): SchemaService | undefined {
+    return this.schemaService;
   }
 
   async writeRecords(filepath: string, records: DataRecord[]): Promise<string> {
@@ -183,156 +194,15 @@ export class ParquetWriter {
   }
 
   // Create Parquet schema based on sample records
+  // Now uses consolidated SchemaService
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   async createParquetSchema(records: DataRecord[], currentPath?: string): Promise<any> {
-
-    if (!parquet || records.length === 0) {
-      this.app?.debug(
-        'createParquetSchema: No parquet lib or empty records, throwing error'
-      );
-      throw new Error('Cannot create Parquet schema');
+    if (!this.schemaService) {
+      throw new Error('SchemaService not available');
     }
 
-    this.app?.debug(`🔍 Schema Detection: Starting for ${records.length} records`);
-    this.app?.debug(`📍 Current Path: ${currentPath || 'unknown'}`);
-
-    // Cache for metadata lookups to avoid repeated API calls
-    const metadataCache = new Map<string, any>();
-
-    // Get all unique column names from all records
-    const allColumns = new Set<string>();
-    records.forEach(record => {
-      Object.keys(record).forEach(key => allColumns.add(key));
-    });
-
-    const columns = Array.from(allColumns).sort();
-    this.app?.debug(`📋 Columns found: [${columns.join(', ')}]`);
-
-    const schemaFields: { [key: string]: ParquetField } = {};
-
-    // Determine if this is an exploded file (matches detection logic)
-    const hasExplodedFields = columns.some(colName => colName.startsWith('value_') && colName !== 'value' && colName !== 'value_json');
-    const isExplodedFile = hasExplodedFields;
-    this.app?.debug(`🔍 Schema Detection: isExplodedFile = ${isExplodedFile}`);
-
-    // Analyze each column to determine the best Parquet type
-    for (const colName of columns) {
-      this.app?.debug(`🔎 Analyzing column: ${colName}`);
-
-      // Always skip value_json (matches detection logic)
-      if (colName === 'value_json') {
-        this.app?.debug(`  ⏭️ ${colName}: Skipped entirely (always ignored)`);
-        continue;
-      }
-
-      // Skip value field in exploded files (matches detection logic)
-      if (isExplodedFile && colName === 'value') {
-        this.app?.debug(`  ⏭️ ${colName}: Skipped in exploded file (always empty)`);
-        continue;
-      }
-
-      // Force timestamps, metadata, and source columns to UTF8
-      if (colName === 'received_timestamp' || colName === 'signalk_timestamp' || colName === 'meta' || colName.startsWith('source') || colName === 'context' || colName === 'path') {
-        this.app?.debug(`  ⏰ ${colName}: Forced to UTF8 (timestamp/meta/source/context/path rule)`);
-        schemaFields[colName] = { type: 'UTF8', optional: true };
-        continue;
-      }
-
-      // Extract values for this column (matches detection logic)
-      const values = records
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        .map(r => (r as any)[colName])
-        .filter(v => v !== null && v !== undefined);
-
-      this.app?.debug(`  📊 ${colName}: ${values.length}/${records.length} non-null values`);
-
-      // Handle BIGINT fields (matches detection logic: BIGINT -> DOUBLE)
-      const hasBigInts = values.some(v => typeof v === 'bigint');
-      if (hasBigInts) {
-        this.app?.debug(`  ✅ ${colName}: DOUBLE (BIGINT converted to DOUBLE, matches detection logic)`);
-        schemaFields[colName] = { type: 'DOUBLE', optional: true };
-        continue;
-      }
-
-      // STEP 1: LOOK AT THE STRING AND SEE WHAT IT IS (matches detection logic)
-      let typeDetected = false;
-      let schemaType = 'UTF8'; // default
-
-      if (values.length > 0) {
-        let allNumeric = true;
-        let allBoolean = true;
-
-        for (const value of values) {
-          const str = String(value).trim();
-          if (str === 'true' || str === 'false') {
-            allNumeric = false;
-          } else if (!isNaN(Number(str)) && str !== '') {
-            allBoolean = false;
-          } else {
-            allNumeric = false;
-            allBoolean = false;
-            break;
-          }
-        }
-
-        if (allNumeric && values.length > 0) {
-          schemaType = 'DOUBLE';
-          typeDetected = true;
-          this.app?.debug(`  ✅ ${colName}: DOUBLE (contains numbers, matches detection logic)`);
-        } else if (allBoolean && values.length > 0) {
-          schemaType = 'BOOLEAN';
-          typeDetected = true;
-          this.app?.debug(`  ✅ ${colName}: BOOLEAN (contains booleans, matches detection logic)`);
-        } else if (values.length > 0) {
-          schemaType = 'UTF8';
-          typeDetected = true;
-          this.app?.debug(`  ✅ ${colName}: UTF8 (contains strings, matches detection logic)`);
-        }
-      }
-
-      // STEP 2: LOOK AT METADATA (SKIP IF EXPLODED) - only if step 1 can't determine (matches detection logic)
-      if (!typeDetected) {
-        const isExplodedField = colName.startsWith('value_');
-
-        if (!isExplodedField && currentPath) {
-          this.app?.debug(`  🔍 ${colName}: Using metadata fallback (matches detection logic)`);
-          try {
-            const response = await fetch(`http://localhost:3000/signalk/v1/api/vessels/self/${currentPath.replace(/\./g, '/')}/meta`);
-            if (response.ok) {
-              const metadata = await response.json() as any;
-              if (metadata && metadata.units &&
-                  (metadata.units === 'm' || metadata.units === 'deg' || metadata.units === 'm/s' ||
-                   metadata.units === 'rad' || metadata.units === 'K' || metadata.units === 'Pa' ||
-                   metadata.units === 'V' || metadata.units === 'A' || metadata.units === 'Hz' ||
-                   metadata.units === 'ratio' || metadata.units === 'kg' || metadata.units === 'J')) {
-                schemaType = 'DOUBLE';
-                this.app?.debug(`  ✅ ${colName}: DOUBLE (from metadata units: ${metadata.units}, matches detection logic)`);
-              } else {
-                schemaType = 'UTF8';
-                this.app?.debug(`  ✅ ${colName}: UTF8 (metadata has no numeric units, matches detection logic)`);
-              }
-            } else {
-              schemaType = 'UTF8';
-              this.app?.debug(`  ✅ ${colName}: UTF8 (metadata request failed, matches detection logic)`);
-            }
-          } catch (metadataError) {
-            schemaType = 'UTF8';
-            this.app?.debug(`  ✅ ${colName}: UTF8 (metadata error, matches detection logic)`);
-          }
-        } else {
-          schemaType = 'UTF8';
-          this.app?.debug(`  ✅ ${colName}: UTF8 (exploded field or no path, matches detection logic)`);
-        }
-      }
-
-      schemaFields[colName] = { type: schemaType, optional: true };
-    }
-
-    const finalSchema = new parquet.ParquetSchema(schemaFields);
-    this.app?.debug(`🎯 Schema Detection: Complete. Final schema has ${Object.keys(schemaFields).length} fields`);
-    this.app?.debug(`📋 Final schema object: ${finalSchema ? 'SUCCESS' : 'FAILED'}`);
-
-    return finalSchema;
+    const result = await this.schemaService.detectOptimalSchema(records, currentPath);
+    return result.schema;
   }
 
   // Guideline 3: Get type for empty columns using SignalK metadata and other files
