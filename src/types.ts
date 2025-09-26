@@ -10,6 +10,13 @@ import {
 export { NormalizedDelta, SourceRef };
 import { Request, Response, Router } from 'express';
 
+// Forward declaration to avoid circular dependency
+export interface SchemaService {
+  detectOptimalSchema(records: DataRecord[], currentPath?: string): Promise<any>;
+  validateFileSchema(filePath: string): Promise<any>;
+  repairFileSchema(filePath: string, filenamePrefix?: string): Promise<any>;
+}
+
 // SignalK Plugin Interface
 export interface SignalKPlugin {
   id: string;
@@ -272,6 +279,29 @@ export interface S3TestApiResponse extends ApiResponse {
   keyPrefix?: string;
 }
 
+export interface ValidationApiResponse extends ApiResponse {
+  totalFiles?: number;
+  totalVessels?: number;
+  correctSchemas?: number;
+  violations?: number;
+  violationDetails?: string[];
+  debugMessages?: string[];
+}
+
+export interface ProcessStatusApiResponse extends ApiResponse {
+  isRunning: boolean;
+  processType?: ProcessType;
+  startTime?: string;
+  totalFiles?: number;
+  processedFiles?: number;
+  currentFile?: string;
+  progress?: number; // percentage 0-100
+}
+
+export interface ProcessCancelApiResponse extends ApiResponse {
+  message: string;
+}
+
 // Claude Analysis API Response Types
 export interface AnalysisApiResponse extends ApiResponse {
   analysis?: AnalysisResult;
@@ -344,6 +374,20 @@ export interface TypedResponse<T = any> extends Response {
 }
 
 // Internal Plugin State
+// Process management types
+export type ProcessType = 'validation' | 'repair' | 'consolidation';
+
+export interface ProcessState {
+  type: ProcessType;
+  isRunning: boolean;
+  startTime: Date;
+  totalFiles?: number;
+  processedFiles?: number;
+  currentFile?: string;
+  cancelRequested?: boolean;
+  abortController?: AbortController;
+}
+
 export interface PluginState {
   unsubscribes: Array<() => void>;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -362,6 +406,8 @@ export interface PluginState {
   s3Client?: any;
   currentConfig?: PluginConfig;
   commandState: CommandRegistrationState;
+  // Process management
+  currentProcess?: ProcessState;
 }
 
 // Parquet Writer Class Interface
@@ -375,6 +421,7 @@ export interface ParquetWriter {
     date: Date,
     filenamePrefix: string
   ): Promise<number>;
+  getSchemaService(): SchemaService | undefined;
 }
 
 // DuckDB Related Types

@@ -7,6 +7,7 @@ import {
   FileFormat,
 } from './types';
 import { ServerAPI } from '@signalk/server-api';
+import { SchemaService } from './schema-service';
 
 // Try to import ParquetJS, fall back if not available
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -20,10 +21,20 @@ try {
 export class ParquetWriter {
   private format: FileFormat;
   private app?: ServerAPI;
+  private schemaService?: SchemaService;
 
   constructor(options: ParquetWriterOptions = { format: 'json' }) {
     this.format = options.format || 'json';
     this.app = options.app;
+
+    // Initialize schema service if app is available
+    if (this.app) {
+      this.schemaService = new SchemaService(this.app);
+    }
+  }
+
+  getSchemaService(): SchemaService | undefined {
+    return this.schemaService;
   }
 
   async writeRecords(filepath: string, records: DataRecord[]): Promise<string> {
@@ -99,8 +110,24 @@ export class ParquetWriter {
       }
 
 
+      // Extract path from records for intelligent schema detection
+      const currentPath = records.length > 0 ? records[0].path : undefined;
+
+      // Extract output directory from filepath (go up to find the base data directory)
+      // const outputDirectory = this.extractOutputDirectory(filepath);
+
+      // Extract filename prefix from filepath (everything before the date part)
+      // const filename = path.basename(filepath, '.parquet');
+      // const match = filename.match(/^(.+)_\d{4}-\d{2}-\d{2}/);
+      // const filenamePrefix = match ? match[1] : 'signalk_data';
+
+      // Check if parquet library is available
+      if (!parquet) {
+        throw new Error('ParquetJS not available');
+      }
+
       // Use intelligent schema detection for optimal data types
-      const schema = this.createParquetSchema(records);
+      const schema = await this.createParquetSchema(records, currentPath);
 
       // Create Parquet writer
       const writer = await parquet.ParquetWriter.openFile(schema, filepath);
@@ -167,72 +194,274 @@ export class ParquetWriter {
   }
 
   // Create Parquet schema based on sample records
+  // Now uses consolidated SchemaService
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  createParquetSchema(records: DataRecord[]): any {
-
-    if (!parquet || records.length === 0) {
-      this.app?.debug(
-        'createParquetSchema: No parquet lib or empty records, throwing error'
-      );
-      throw new Error('Cannot create Parquet schema');
+  async createParquetSchema(records: DataRecord[], currentPath?: string): Promise<any> {
+    if (!this.schemaService) {
+      throw new Error('SchemaService not available');
     }
 
-    // Get all unique column names from all records
-    const allColumns = new Set<string>();
-    records.forEach(record => {
-      Object.keys(record).forEach(key => allColumns.add(key));
-    });
+    const result = await this.schemaService.detectOptimalSchema(records, currentPath);
+    return result.schema;
+  }
 
-    const columns = Array.from(allColumns).sort();
-    const schemaFields: { [key: string]: ParquetField } = {};
+  // Guideline 3: Get type for empty columns using SignalK metadata and other files
+  private async getTypeForEmptyColumn(
+    colName: string,
+    currentPath?: string,
+    outputDirectory?: string,
+    metadataCache?: Map<string, any>,
+    filenamePrefix?: string
+  ): Promise<string> {
+    this.app?.debug(`    🔍 Empty column fallback for: ${colName} (path: ${currentPath || 'unknown'})`);
 
-    // Analyze each column to determine the best Parquet type
-    columns.forEach(colName => {
-      const values = records
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        .map(r => (r as any)[colName])
-        .filter(v => v !== null && v !== undefined);
+    // For non-value columns, default to UTF8
+    if (colName !== 'value') {
+      this.app?.debug(`    ↪️ Non-value column, defaulting to UTF8`);
+      return 'UTF8';
+    }
 
-      if (values.length === 0) {
-        // All null values, default to string
-        schemaFields[colName] = { type: 'UTF8', optional: true };
-        return;
-      }
+    // Try SignalK metadata first
+    if (currentPath && this.app && metadataCache) {
+      this.app?.debug(`    🔎 Checking SignalK metadata for path: ${currentPath}`);
 
-      const hasNumbers = values.some(v => typeof v === 'number');
-      const hasStrings = values.some(v => typeof v === 'string');
-      const hasBooleans = values.some(v => typeof v === 'boolean');
-      const hasBigInts = values.some(v => typeof v === 'bigint');
+      if (!metadataCache.has(currentPath)) {
+        try {
+          this.app?.debug(`    🔍 Trying HTTP metadata lookup for path: "${currentPath}"`);
 
-      // Only log details for the value column that we care about
-      if (colName === 'value') {
-      }
-
-      if (hasBigInts && !hasNumbers && !hasStrings && !hasBooleans) {
-        // All BigInts - use UTF8 to be safe
-        schemaFields[colName] = { type: 'UTF8', optional: true };
-        if (colName === 'value') {
+          // Use HTTP REST API to get metadata since getMetadata() returns undefined
+          let metadata = null;
+          try {
+            const response = await fetch(`http://localhost:3000/signalk/v1/api/vessels/self/${currentPath.replace(/\./g, '/')}/meta`);
+            if (response.ok) {
+              metadata = await response.json();
+              this.app?.debug(`    📡 HTTP metadata result: ${JSON.stringify(metadata)}`);
+            } else {
+              this.app?.debug(`    ❌ HTTP metadata request failed: ${response.status} ${response.statusText}`);
+            }
+          } catch (error) {
+            this.app?.debug(`    ❌ HTTP metadata request error: ${(error as Error).message}`);
+          }
+          metadataCache.set(currentPath, metadata);
+          this.app?.debug(`    📡 Retrieved metadata: ${metadata ? JSON.stringify(metadata) : 'null'}`);
+        } catch (error) {
+          this.app?.debug(`    ❌ Metadata API call failed: ${(error as Error).message}`);
+          metadataCache.set(currentPath, null);
         }
-      } else if (hasNumbers && !hasStrings && !hasBooleans && !hasBigInts) {
-        // All numbers - check if integers or floats
-        const allIntegers = values.every(v => Number.isInteger(v));
-        schemaFields[colName] = {
-          type: allIntegers ? 'INT64' : 'DOUBLE',
-          optional: true,
-        };
-        if (colName === 'value') {
-        }
-      } else if (hasBooleans && !hasNumbers && !hasStrings && !hasBigInts) {
-        schemaFields[colName] = { type: 'BOOLEAN', optional: true };
       } else {
-        // Mixed types or strings - use UTF8
-        schemaFields[colName] = { type: 'UTF8', optional: true };
-        if (colName === 'value') {
+        this.app?.debug(`    💾 Using cached metadata for ${currentPath}`);
+      }
+
+      const metadata = metadataCache.get(currentPath);
+      if (metadata && metadata.units) {
+        // If metadata suggests numeric units (m/s, degrees, etc.), assume numeric
+        const numericUnits = ['m/s', 'm', 'deg', 'rad', 'Pa', 'K', 'Hz', 'V', 'A', 'W'];
+        const matchedUnit = numericUnits.find(unit => metadata.units.includes(unit));
+        if (matchedUnit) {
+          this.app?.debug(`    ✅ Metadata indicates numeric unit '${matchedUnit}', using DOUBLE`);
+          return 'DOUBLE';
+        } else {
+          this.app?.debug(`    ↪️ Metadata has units '${metadata.units}' but not recognized as numeric`);
+        }
+      } else {
+        this.app?.debug(`    ↪️ No useful metadata found (metadata: ${!!metadata}, units: ${metadata?.units})`);
+      }
+    }
+
+    // Fallback to other consolidated files for the same path
+    // Disabled to prevent errors from corrupted parquet files
+    // if (currentPath && outputDirectory) {
+    //   this.app?.debug(`    🔎 Searching other files for path: ${currentPath}`);
+    //   const typeFromOtherFiles = this.getTypeFromOtherFiles(currentPath, outputDirectory, undefined, filenamePrefix);
+    //   if (typeFromOtherFiles) {
+    //     this.app?.debug(`    ✅ Found type ${typeFromOtherFiles} from other files`);
+    //     return typeFromOtherFiles;
+    //   } else {
+    //     this.app?.debug(`    ↪️ No type information found in other files`);
+    //   }
+    // }
+
+    // Final fallback to UTF8
+    this.app?.debug(`    ✅ Final fallback to UTF8`);
+    return 'UTF8';
+  }
+
+  // Guideline 4: Get type for exploded value_ fields by parsing actual values
+  private async getTypeForExplodedField(colName: string, currentPath?: string, outputDirectory?: string, values?: any[], metadataCache?: Map<string, any>, filenamePrefix?: string): Promise<string> {
+    this.app?.debug(`    🧩 Exploded field analysis for: ${colName} (path: ${currentPath || 'unknown'})`);
+
+    // Always keep value_json as VARCHAR
+    if (colName === 'value_json') {
+      this.app?.debug(`    ✅ ${colName}: UTF8 (JSON field always string)`);
+      return 'UTF8';
+    }
+
+    // If we have values, parse them to detect actual data types
+    if (values && values.length > 0) {
+      this.app?.debug(`    🧮 Parsing ${values.length} values for ${colName}`);
+
+      let parsedNumbers = 0;
+      let parsedBooleans = 0;
+      let actualStrings = 0;
+      let unparseable = 0;
+
+      const stringValues = values.filter(v => typeof v === 'string');
+      for (const str of stringValues) {
+        const trimmed = str.trim();
+        if (trimmed === 'true' || trimmed === 'false') {
+          parsedBooleans++;
+        } else if (!isNaN(Number(trimmed)) && trimmed !== '') {
+          parsedNumbers++;
+        } else if (trimmed === '') {
+          unparseable++;
+        } else {
+          actualStrings++;
         }
       }
-    });
 
-    return new parquet.ParquetSchema(schemaFields);
+      const hasNumbers = values.some(v => typeof v === 'number') || parsedNumbers > 0;
+      const hasStrings = values.some(v => typeof v === 'string' && v.trim() !== '' && isNaN(Number(v.trim())) && v.trim() !== 'true' && v.trim() !== 'false') || actualStrings > 0;
+      const hasBooleans = values.some(v => typeof v === 'boolean') || parsedBooleans > 0;
+
+      this.app?.debug(`    🧮 ${colName}: Parsed - numbers:${parsedNumbers}, booleans:${parsedBooleans}, strings:${actualStrings}, unparseable:${unparseable}`);
+      this.app?.debug(`    🧮 ${colName}: Final - hasNumbers:${hasNumbers}, hasStrings:${hasStrings}, hasBooleans:${hasBooleans}`);
+
+      if (hasNumbers && !hasStrings && !hasBooleans) {
+        // All numbers - check if integers or floats
+        // Always use DOUBLE for numeric maritime data (never INT64/BIGINT)
+        const finalType = 'DOUBLE';
+        this.app?.debug(`    ✅ ${colName}: ${finalType} (parsed numbers, always DOUBLE for maritime data)`);
+        return finalType;
+      } else if (hasBooleans && !hasNumbers && !hasStrings) {
+        this.app?.debug(`    ✅ ${colName}: BOOLEAN (parsed booleans)`);
+        return 'BOOLEAN';
+      } else if (unparseable > 0 && !hasNumbers && !hasStrings && !hasBooleans) {
+        // Only unparseable (empty) values - use HTTP metadata
+        if (currentPath && metadataCache) {
+          this.app?.debug(`    🔍 ${colName}: Only empty values, using HTTP metadata fallback`);
+          const fallbackType = await this.getTypeForEmptyColumn(colName, currentPath, outputDirectory, metadataCache, filenamePrefix);
+          this.app?.debug(`    ✅ ${colName}: ${fallbackType} (from HTTP metadata for empty values)`);
+          return fallbackType;
+        }
+      } else if (hasStrings || actualStrings > 0) {
+        this.app?.debug(`    ✅ ${colName}: UTF8 (parsed strings)`);
+        return 'UTF8';
+      }
+    }
+
+    // Fallback to field name inference if no values or unclear parsing
+    this.app?.debug(`    ↪️ No clear type from value parsing, using field name inference`);
+    return this.inferTypeFromFieldName(colName);
+  }
+
+  // Helper: Search other consolidated files for type information
+  private getTypeFromOtherFiles(currentPath: string, outputDirectory: string, specificColumn?: string, filenamePrefix?: string): string | null {
+    const targetColumn = specificColumn || 'value';
+    this.app?.debug(`      🔍 Searching files for column '${targetColumn}' in path '${currentPath}'`);
+
+    try {
+      const glob = require('glob');
+      const prefix = filenamePrefix || 'signalk_data';
+      const pathPattern = path.join(outputDirectory, 'vessels', '*', currentPath.replace(/\./g, '/'), `${prefix}_*.parquet`);
+      this.app?.debug(`      📁 Search pattern: ${pathPattern}`);
+
+      const allFiles = glob.sync(pathPattern);
+      // Filter out consolidated files
+      const files = allFiles.filter((file: string) => !file.includes('_consolidated.parquet'));
+      this.app?.debug(`      📄 Found ${files.length} regular files to check (excluding consolidated)`);
+
+      for (const filePath of files) {
+        try {
+          this.app?.debug(`      🔎 Checking file: ${path.basename(filePath)}`);
+
+          if (!parquet) {
+            this.app?.debug(`      ❌ Parquet library not available`);
+            continue;
+          }
+
+          // Skip corrupted parquet files to prevent crashes
+          if (path.basename(filePath).includes('corrupted') || path.basename(filePath).includes('quarantine')) {
+            this.app?.debug(`      ⚠️ Skipping quarantined file: ${path.basename(filePath)}`);
+            continue;
+          }
+
+          try {
+            const reader = parquet.ParquetReader.openFile(filePath);
+            const schema = reader.schema;
+
+            if (schema && schema.schema && schema.schema[targetColumn]) {
+              const columnType = schema.schema[targetColumn].type;
+              this.app?.debug(`      ✅ Found type ${columnType} for column '${targetColumn}' in ${path.basename(filePath)}`);
+              if (typeof reader.close === 'function') reader.close();
+              return columnType;
+            } else {
+              this.app?.debug(`      ↪️ Column '${targetColumn}' not found in ${path.basename(filePath)}`);
+            }
+            if (typeof reader.close === 'function') reader.close();
+          } catch (fileError) {
+            this.app?.debug(`      ⚠️ Corrupted file, skipping: ${path.basename(filePath)} - ${(fileError as Error).message}`);
+            continue;
+          }
+        } catch (error) {
+          this.app?.debug(`      ❌ Error reading file ${path.basename(filePath)}: ${(error as Error).message}`);
+          continue;
+        }
+      }
+    } catch (error) {
+      this.app?.debug(`      ❌ File search error: ${(error as Error).message}`);
+    }
+
+    this.app?.debug(`      ❌ No type information found in any files`);
+    return null;
+  }
+
+  // Helper: Infer type from field name patterns
+  private inferTypeFromFieldName(fieldName: string): string {
+    this.app?.debug(`      🏷️ Inferring type from field name: ${fieldName}`);
+    const field = fieldName.toLowerCase();
+
+    // Coordinate fields
+    if (field.includes('latitude') || field.includes('longitude') ||
+        field.includes('lat') || field.includes('lon')) {
+      this.app?.debug(`      ✅ Coordinate field detected, using DOUBLE`);
+      return 'DOUBLE';
+    }
+
+    // Numeric measurements
+    if (field.includes('speed') || field.includes('distance') || field.includes('depth') ||
+        field.includes('temperature') || field.includes('pressure') || field.includes('angle') ||
+        field.includes('bearing') || field.includes('course') || field.includes('heading')) {
+      this.app?.debug(`      ✅ Numeric measurement field detected, using DOUBLE`);
+      return 'DOUBLE';
+    }
+
+    // Time/duration fields
+    if (field.includes('time') || field.includes('duration') || field.includes('age')) {
+      const isTimestamp = field.includes('timestamp');
+      const resultType = isTimestamp ? 'UTF8' : 'DOUBLE';
+      this.app?.debug(`      ✅ Time field detected, using ${resultType} (timestamp: ${isTimestamp})`);
+      return resultType;
+    }
+
+    // Default to UTF8 for unknown patterns
+    this.app?.debug(`      ✅ Unknown pattern, defaulting to UTF8`);
+    return 'UTF8';
+  }
+
+  // Helper: Extract output directory from filepath
+  private extractOutputDirectory(filepath: string): string {
+    // filepath format: /path/to/outputDir/vessels/context/path/filename.parquet
+    // We want to extract up to the outputDir part
+    const parts = filepath.split(path.sep);
+    const vesselIndex = parts.findIndex(part => part === 'vessels');
+
+    if (vesselIndex > 0) {
+      // Return everything up to but not including 'vessels'
+      return parts.slice(0, vesselIndex).join(path.sep);
+    }
+
+    // Fallback: assume current directory structure
+    return path.dirname(path.dirname(path.dirname(filepath)));
   }
 
   // Prepare a record for typed Parquet writing
@@ -352,7 +581,7 @@ export class ParquetWriter {
         allRecords.sort((a, b) => {
           const timeA = a.received_timestamp || a.signalk_timestamp || '';
           const timeB = b.received_timestamp || b.signalk_timestamp || '';
-          return timeA.localeCompare(timeB);
+          return String(timeA).localeCompare(String(timeB));
         });
 
         await this.writeRecords(targetFile, allRecords);

@@ -135,7 +135,6 @@ export default function (app: ServerAPI): SignalKPlugin {
     );
     const msUntilMidnightUTC = nextMidnightUTC.getTime() - now.getTime();
 
-
     setTimeout(() => {
       consolidateYesterday(state.currentConfig!, state, app);
 
