@@ -2336,6 +2336,7 @@ export function registerApiRoutes(
 
         let repairedFiles = 0;
         let backedUpFiles = 0;
+        let processedFiles = 0;
 
         try {
           // Add 10 second pause before processing
@@ -2354,6 +2355,8 @@ export function registerApiRoutes(
             updateProcessProgress(state, i + 1, path.basename(filePath));
 
             app.debug(`🔧 Processing file ${i + 1}/${files.length}: ${path.basename(filePath)}`);
+
+            processedFiles++; // Count every file we process
 
             // Check file size and move corrupted files to quarantine
             try {
@@ -2398,7 +2401,7 @@ export function registerApiRoutes(
           }
 
           const message = state.currentProcess?.cancelRequested
-            ? `Repair cancelled after processing ${repairedFiles} files, backed up ${backedUpFiles} originals to 'repaired' folders`
+            ? `Repair cancelled after processing ${processedFiles} files, repaired ${repairedFiles}, backed up ${backedUpFiles} originals to 'repaired' folders`
             : `Repaired ${repairedFiles} files, backed up ${backedUpFiles} originals to 'repaired' folders`;
 
           app.debug(`🔧 Repair completed: ${message}`);
@@ -2406,6 +2409,8 @@ export function registerApiRoutes(
           // Send completion response
           res.json({
             success: true,
+            totalFiles: files.length,
+            processedFiles,
             repairedFiles,
             backedUpFiles,
             cancelled: !!state.currentProcess?.cancelRequested,

@@ -1011,7 +1011,6 @@
                     <div style="margin-bottom: 10px;">
                         <button onclick="runDataValidation()" id="validateBtn">🔍 Run Schema Validation</button>
                         <button onclick="repairSchemas()" id="repairBtn" style="margin-left: 10px;">🔧 Repair Schema Violations</button>
-                        <button onclick="cancelProcess()" id="cancelBtn" style="margin-left: 10px; display: none; background: #dc3545; color: white;">❌ Cancel Process</button>
                     </div>
                     <div id="processTimer" style="background: rgb(227, 242, 253); border: 1px solid rgb(33, 150, 243); border-radius: 5px; padding: 10px; margin-bottom: 15px; text-align: center; font-family: monospace; display: none;">
                         <strong id="processIcon">🔍 Validation Timer</strong><br>
@@ -1409,27 +1408,49 @@
             const detailsDiv = document.getElementById('validationDetails');
             const button = document.getElementById('validateBtn');
 
-            // Show loading state and cancel button, disable both buttons, start timer
-            button.disabled = true;
-            button.textContent = '🔄 Running Validation...';
+            // If already running, cancel the current validation
+            if (currentValidationController) {
+                // Send cancellation request to backend
+                try {
+                    await fetch('/plugins/signalk-parquet/api/cancel-process', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                        }
+                    });
+                } catch (error) {
+                    console.error('Error cancelling process:', error);
+                }
+
+                // Reset button but keep the validation request running to get partial results
+                currentValidationController = null;
+                button.textContent = '🔍 Run Schema Validation';
+                button.style.background = '';
+                button.style.color = '';
+                document.getElementById('repairBtn').disabled = false;
+                stopProcessTimer();
+                return;
+            }
+
+            // Transform button to cancel and disable repair
             document.getElementById('repairBtn').disabled = true;
-            document.getElementById('cancelBtn').style.display = 'inline-block';
+            button.textContent = '❌ Cancel Validation';
+            button.style.background = '#dc3545';
+            button.style.color = 'white';
             startProcessTimer('validation');
             statusDiv.innerHTML = '<div class="loading">Validating parquet schemas...</div>';
             resultsDiv.style.display = 'none';
 
             try {
+                // Set flag to track running validation
+                currentValidationController = true;
+
                 const response = await fetch('/plugins/signalk-parquet/api/validate-schemas', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
                     }
                 });
-
-                // Start monitoring process status
-                if (!processStatusInterval) {
-                    processStatusInterval = setInterval(checkProcessStatus, 1000);
-                }
 
                 const result = await response.json();
 
@@ -1471,11 +1492,12 @@
                 statusDiv.innerHTML = `<div class="error">❌ Error: ${error.message}</div>`;
                 console.error('Validation error:', error);
             } finally {
-                // Reset both buttons and hide cancel button, stop timer
-                button.disabled = false;
+                // Reset button states
+                currentValidationController = null;
                 button.textContent = '🔍 Run Schema Validation';
+                button.style.background = '';
+                button.style.color = '';
                 document.getElementById('repairBtn').disabled = false;
-                document.getElementById('cancelBtn').style.display = 'none';
                 stopProcessTimer();
             }
         }
@@ -1483,16 +1505,44 @@
         async function repairSchemas() {
             const statusDiv = document.getElementById('validationStatus');
             const repairBtn = document.getElementById('repairBtn');
+            const validateBtn = document.getElementById('validateBtn');
 
-            // Show loading state and cancel button, disable both buttons, start timer
-            repairBtn.disabled = true;
-            repairBtn.textContent = '🔄 Repairing Schemas...';
-            document.getElementById('validateBtn').disabled = true;
-            document.getElementById('cancelBtn').style.display = 'inline-block';
+            // If already running, cancel the current repair
+            if (currentRepairController) {
+                // Send cancellation request to backend
+                try {
+                    await fetch('/plugins/signalk-parquet/api/cancel-process', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                        }
+                    });
+                } catch (error) {
+                    console.error('Error cancelling process:', error);
+                }
+
+                // Reset button but keep the repair request running to get partial results
+                currentRepairController = null;
+                repairBtn.textContent = '🔧 Repair Schema Violations';
+                repairBtn.style.background = '';
+                repairBtn.style.color = '';
+                validateBtn.disabled = false;
+                stopProcessTimer();
+                return;
+            }
+
+            // Transform button to cancel and disable validate
+            validateBtn.disabled = true;
+            repairBtn.textContent = '❌ Cancel Repair';
+            repairBtn.style.background = '#dc3545';
+            repairBtn.style.color = 'white';
             startProcessTimer('repair');
             statusDiv.innerHTML = '<div class="loading">🔧 Starting schema repair process...</div>';
 
             try {
+                // Set flag to track running repair
+                currentRepairController = true;
+
                 const response = await fetch('/plugins/signalk-parquet/api/repair-schemas', {
                     method: 'POST',
                     headers: {
@@ -1500,41 +1550,73 @@
                     }
                 });
 
-                // Start monitoring process status
-                if (!processStatusInterval) {
-                    processStatusInterval = setInterval(checkProcessStatus, 1000);
-                }
-
                 const result = await response.json();
 
                 if (!response.ok) {
                     throw new Error(result.message || 'Repair failed');
                 }
 
-                // Show completion status
-                statusDiv.innerHTML = `<div class="success">✅ Repair completed: ${result.repairedFiles} files repaired, ${result.backedUpFiles} files backed up</div>`;
+                // Show completion status based on whether it was cancelled
+                const resultsDiv = document.getElementById('validationResults');
+                const summaryDiv = document.getElementById('validationSummary');
+                const detailsDiv = document.getElementById('validationDetails');
 
-                // Re-run validation after repair
-                setTimeout(() => runDataValidation(), 2000);
+                if (result.cancelled) {
+                    statusDiv.innerHTML = `<div class="warning">🚫 Repair cancelled</div>`;
+
+                    // Show repair summary in validation format
+                    summaryDiv.innerHTML = `
+                        <strong>Repair Summary (Cancelled):</strong><br>
+                        📁 Total files: ${result.totalFiles || 0}<br>
+                        📂 Files processed: ${result.processedFiles || 0}<br>
+                        🔧 Files repaired: ${result.repairedFiles || 0}<br>
+                        📋 Files backed up: ${result.backedUpFiles || 0}<br>
+                        📊 Progress: ${result.totalFiles > 0 ? ((result.processedFiles / result.totalFiles) * 100).toFixed(1) : 0}%
+                    `;
+
+                    detailsDiv.innerHTML = `${result.message || 'Repair process was cancelled by user.'}<br><br>Original files that were repaired have been backed up to "repaired" subdirectories.`;
+                    resultsDiv.style.display = 'block';
+                } else {
+                    statusDiv.innerHTML = `<div class="success">✅ Repair completed successfully</div>`;
+
+                    // Show completion summary in validation format
+                    summaryDiv.innerHTML = `
+                        <strong>Repair Summary:</strong><br>
+                        📁 Total files: ${result.totalFiles || 0}<br>
+                        📂 Files processed: ${result.processedFiles || 0}<br>
+                        🔧 Files repaired: ${result.repairedFiles || 0}<br>
+                        📋 Files backed up: ${result.backedUpFiles || 0}<br>
+                        📊 Success rate: ${result.totalFiles > 0 && result.repairedFiles > 0 ? ((result.repairedFiles / result.totalFiles) * 100).toFixed(1) : 100}%
+                    `;
+
+                    detailsDiv.innerHTML = `${result.message || 'Schema repair process completed.'}<br><br>All original files have been safely backed up to "repaired" subdirectories before modification.`;
+                    resultsDiv.style.display = 'block';
+
+                    // Don't auto-run validation - let user manually run it if they want
+                }
 
             } catch (error) {
                 statusDiv.innerHTML = `<div class="error">❌ Repair Error: ${error.message}</div>`;
                 console.error('Repair error:', error);
             } finally {
-                // Reset both buttons and hide cancel button, stop timer
-                repairBtn.disabled = false;
+                // Reset button states
+                currentRepairController = null;
                 repairBtn.textContent = '🔧 Repair Schema Violations';
-                document.getElementById('validateBtn').disabled = false;
-                document.getElementById('cancelBtn').style.display = 'none';
+                repairBtn.style.background = '';
+                repairBtn.style.color = '';
+                validateBtn.disabled = false;
                 stopProcessTimer();
             }
         }
+
 
         // Process management functions
         let processStatusInterval = null;
         let processStartTime = null;
         let processTimerInterval = null;
         let processProgressInterval = null;
+        let currentValidationController = null;
+        let currentRepairController = null;
 
         function startProcessTimer(processType) {
             processStartTime = new Date();
@@ -1556,19 +1638,31 @@
             processTimer.style.display = 'block';
 
             // Start updating elapsed time (every 100ms)
-            processTimerInterval = setInterval(updateProcessTimer, 100);
+            processTimerInterval = setInterval(() => updateProcessTimer(processType), 100);
 
-            // Start updating progress (every 2 seconds to avoid browser overload)
-            processProgressInterval = setInterval(updateProcessProgress, 2000);
+            // Start updating progress after 10 seconds (when actual processing begins)
+            setTimeout(() => {
+                processProgressInterval = setInterval(updateProcessProgress, 2000);
+            }, 10000);
         }
 
-        function updateProcessTimer() {
+        function updateProcessTimer(processType) {
             if (!processStartTime) return;
 
             const now = new Date();
             const elapsed = (now - processStartTime) / 1000;
             const processElapsedSpan = document.getElementById('processElapsed');
-            processElapsedSpan.textContent = `Elapsed: ${elapsed.toFixed(1)}s`;
+            const processProgressSpan = document.getElementById('processProgress');
+
+            if (elapsed < 10) {
+                // Show organizing phase for first 10 seconds
+                processElapsedSpan.textContent = `Organizing files... ${elapsed.toFixed(1)}s`;
+                processProgressSpan.textContent = 'Preparing file list and checking directories...';
+            } else {
+                // Show normal elapsed time after 10 seconds
+                processElapsedSpan.textContent = `Elapsed: ${elapsed.toFixed(1)}s`;
+                // Progress will be updated by updateProcessProgress after 10 seconds
+            }
         }
 
         async function updateProcessProgress() {
@@ -1602,26 +1696,6 @@
             document.getElementById('processTimer').style.display = 'none';
         }
 
-        async function cancelProcess() {
-            try {
-                const response = await fetch('/plugins/signalk-parquet/api/cancel-process', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    }
-                });
-
-                const result = await response.json();
-
-                if (result.success) {
-                    document.getElementById('validationStatus').innerHTML = '<div class="warning">🚫 Cancelling process...</div>';
-                } else {
-                    document.getElementById('validationStatus').innerHTML = `<div class="error">❌ Cancel failed: ${result.error}</div>`;
-                }
-            } catch (error) {
-                document.getElementById('validationStatus').innerHTML = `<div class="error">❌ Cancel error: ${error.message}</div>`;
-            }
-        }
 
         async function checkProcessStatus() {
             try {
