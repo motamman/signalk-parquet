@@ -57,6 +57,7 @@ export default function (app: ServerAPI): SignalKPlugin {
       registeredCommands: new Map(),
       putHandlers: new Map(),
     },
+    filesToRepair: [], // Initialize repair array
   };
 
   let currentPaths: PathConfig[] = [];

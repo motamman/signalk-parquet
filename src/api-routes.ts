@@ -1991,6 +1991,9 @@ export function registerApiRoutes(
 
         app.debug('🔍 Starting schema validation...');
 
+        // Clear repair array at start of new validation
+        state.filesToRepair = [];
+
         // Create SchemaService instance
         const schemaService = new SchemaService(app);
 
@@ -2234,6 +2237,8 @@ export function registerApiRoutes(
               if (hasViolations) {
                 violationSchemas++;
                 const shortPath = path.relative(dataDir, filePath);
+                // Add file to repair array instead of UI details
+                state.filesToRepair.push(filePath);
                 violationDetails.push(`[${totalFiles}] ${shortPath}: ${violations.join(', ')}`);
               } else {
                 correctSchemas++;
@@ -2262,7 +2267,7 @@ export function registerApiRoutes(
           totalVessels: vessels.size,
           correctSchemas,
           violations: violationSchemas,
-          violationDetails,
+          filesToRepair: state.filesToRepair.length, // Send count instead of details
           debugMessages
         });
 
@@ -2298,24 +2303,19 @@ export function registerApiRoutes(
         const glob = require('glob');
         const path = require('path');
 
-        // Get the data directory and find files
-        const configOutputDir = state.currentConfig?.outputDirectory || 'data';
-        const pluginDataPath = app.getDataDirPath();
-        const signalkDataDir = path.dirname(path.dirname(pluginDataPath));
-        const dataDir = path.join(signalkDataDir, configOutputDir);
+        // Use pre-computed array from validation instead of scanning filesystem
+        const files = [...state.filesToRepair]; // Copy the array
+
+        if (files.length === 0) {
+          return res.status(400).json({
+            success: false,
+            error: 'No files to repair. Run validation first to identify files needing repair.'
+          });
+        }
+
+        app.debug(`🔧 Using pre-computed list of ${files.length} files needing repair`);
 
         const filenamePrefix = state.currentConfig?.filenamePrefix || 'signalk_data';
-        const files = glob.sync(`${dataDir}/vessels/**/${filenamePrefix}_*.parquet`, {
-          ignore: [
-            `${dataDir}/vessels/**/processed/**`,
-            `${dataDir}/vessels/**/repaired/**`,
-            `${dataDir}/vessels/**/quarantine/**`,
-            `${dataDir}/vessels/**/claude-schemas/**`,
-            `${dataDir}/vessels/**/failed/**`
-          ]
-        });
-
-        app.debug(`🔧 Found ${files.length} parquet files to check`);
 
         // Start the repair process
         if (!startProcess(state, 'repair', files.length)) {
@@ -2392,6 +2392,11 @@ export function registerApiRoutes(
                 if (result.backedUp) {
                   backedUpFiles++;
                 }
+                // Remove successfully repaired file from array
+                const fileIndex = state.filesToRepair.indexOf(filePath);
+                if (fileIndex > -1) {
+                  state.filesToRepair.splice(fileIndex, 1);
+                }
                 app.debug(`🔧 ✅ Repaired: ${path.basename(filePath)}`);
               }
 
@@ -2437,5 +2442,14 @@ export function registerApiRoutes(
       }
     }
   );
+
+  // Get repair status (files available for repair)
+  router.get('/api/repair-status', (_: TypedRequest, res: any) => {
+    res.json({
+      success: true,
+      filesToRepair: state.filesToRepair.length,
+      hasFilesToRepair: state.filesToRepair.length > 0
+    });
+  });
 
 }

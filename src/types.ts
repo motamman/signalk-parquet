@@ -285,6 +285,7 @@ export interface ValidationApiResponse extends ApiResponse {
   correctSchemas?: number;
   violations?: number;
   violationDetails?: string[];
+  filesToRepair?: number; // Count of files needing repair
   debugMessages?: string[];
 }
 
@@ -408,6 +409,8 @@ export interface PluginState {
   commandState: CommandRegistrationState;
   // Process management
   currentProcess?: ProcessState;
+  // Repair management
+  filesToRepair: string[]; // Server-side array of files needing repair
 }
 
 // Parquet Writer Class Interface

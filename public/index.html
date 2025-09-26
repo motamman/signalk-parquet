@@ -1010,7 +1010,7 @@
                     <p>Validate parquet file schemas against SignalK metadata and schema guidelines:</p>
                     <div style="margin-bottom: 10px;">
                         <button onclick="runDataValidation()" id="validateBtn">🔍 Run Schema Validation</button>
-                        <button onclick="repairSchemas()" id="repairBtn" style="margin-left: 10px;">🔧 Repair Schema Violations</button>
+                        <button onclick="repairSchemas()" id="repairBtn" style="margin-left: 10px; opacity: 0.5;" disabled>🔧 Repair Schema Violations</button>
                     </div>
                     <div id="processTimer" style="background: rgb(227, 242, 253); border: 1px solid rgb(33, 150, 243); border-radius: 5px; padding: 10px; margin-bottom: 15px; text-align: center; font-family: monospace; display: none;">
                         <strong id="processIcon">🔍 Validation Timer</strong><br>
@@ -1471,22 +1471,17 @@
                     📊 Success rate: ${((result.correctSchemas / result.totalFiles) * 100).toFixed(1)}%
                 `;
 
-                // Show detailed violations
-                if (result.violationDetails && result.violationDetails.length > 0) {
-                    detailsDiv.innerHTML = result.violationDetails.join('\n');
+                // Show summary instead of detailed violations (performance improvement)
+                if (result.violations && result.violations > 0) {
+                    detailsDiv.innerHTML = `Found ${result.violations} files with schema violations. Files have been queued for repair.`;
                 } else {
                     detailsDiv.innerHTML = 'No schema violations found! 🎉';
                 }
 
                 resultsDiv.style.display = 'block';
 
-                // Show repair button if there are violations
-                const repairBtn = document.getElementById('repairBtn');
-                if (result.violations && result.violations > 0) {
-                    repairBtn.style.display = 'inline-block';
-                } else {
-                    // Keep repair button visible
-                }
+                // Update repair button state
+                updateRepairButtonState();
 
             } catch (error) {
                 statusDiv.innerHTML = `<div class="error">❌ Error: ${error.message}</div>`;
@@ -1502,10 +1497,35 @@
             }
         }
 
+        async function updateRepairButtonState() {
+            try {
+                const response = await fetch('/plugins/signalk-parquet/api/repair-status');
+                const result = await response.json();
+
+                const repairBtn = document.getElementById('repairBtn');
+                if (result.success && result.hasFilesToRepair) {
+                    repairBtn.disabled = false;
+                    repairBtn.style.opacity = '1';
+                    repairBtn.title = `${result.filesToRepair} files ready for repair`;
+                } else {
+                    repairBtn.disabled = true;
+                    repairBtn.style.opacity = '0.5';
+                    repairBtn.title = 'No files to repair. Run validation first.';
+                }
+            } catch (error) {
+                console.error('Error checking repair status:', error);
+            }
+        }
+
         async function repairSchemas() {
             const statusDiv = document.getElementById('validationStatus');
             const repairBtn = document.getElementById('repairBtn');
             const validateBtn = document.getElementById('validateBtn');
+
+            // Check if button is disabled - this blocks onclick events on disabled buttons
+            if (repairBtn.disabled) {
+                return; // Silently do nothing, like a real disabled button
+            }
 
             // If already running, cancel the current repair
             if (currentRepairController) {
@@ -1594,6 +1614,9 @@
 
                     // Don't auto-run validation - let user manually run it if they want
                 }
+
+                // Update repair button state after completion
+                await updateRepairButtonState();
 
             } catch (error) {
                 statusDiv.innerHTML = `<div class="error">❌ Repair Error: ${error.message}</div>`;
@@ -3090,7 +3113,10 @@
 
             // Check if any process is currently running
             await checkProcessStatus();
-            
+
+            // Check repair button state on load
+            await updateRepairButtonState();
+
             // Set up auto-refresh for streams and stats - DISABLED
             // setInterval(() => {
             //     loadStreams();
