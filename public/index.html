@@ -1016,9 +1016,6 @@
                         <h3>Validation Summary</h3>
                         <div id="validationSummary" style="margin-bottom: 15px; padding: 10px; background: #f8f9fa; border-radius: 5px;"></div>
 
-                        <h3>Debug Information</h3>
-                        <div id="validationDebug" style="margin-bottom: 15px; max-height: 200px; overflow-y: auto; border: 1px solid #ddd; padding: 10px; background: #f8f8f8; font-family: monospace; font-size: 11px;"></div>
-
                         <h3>Schema Violations</h3>
                         <div id="validationDetails" style="max-height: 400px; overflow-y: auto; border: 1px solid #ddd; padding: 10px; background: white; font-family: monospace; font-size: 12px;"></div>
                     </div>
@@ -1400,7 +1397,6 @@
             const statusDiv = document.getElementById('validationStatus');
             const resultsDiv = document.getElementById('validationResults');
             const summaryDiv = document.getElementById('validationSummary');
-            const debugDiv = document.getElementById('validationDebug');
             const detailsDiv = document.getElementById('validationDetails');
             const button = document.getElementById('validateBtn');
 
@@ -1436,13 +1432,6 @@
                     ❌ Schema violations: ${result.violations}<br>
                     📊 Success rate: ${((result.correctSchemas / result.totalFiles) * 100).toFixed(1)}%
                 `;
-
-                // Show debug information
-                if (result.debugMessages && result.debugMessages.length > 0) {
-                    debugDiv.innerHTML = result.debugMessages.join('\n');
-                } else {
-                    debugDiv.innerHTML = 'No debug information available';
-                }
 
                 // Show detailed violations
                 if (result.violationDetails && result.violationDetails.length > 0) {

@@ -1912,6 +1912,11 @@ export function registerApiRoutes(
         });
         addDebug(`📄 Found ${files.length} parquet files`);
 
+        // Add 10 second pause before processing
+        addDebug(`⏸️ Pausing for 10 seconds before processing...`);
+        await new Promise(resolve => setTimeout(resolve, 10000));
+        addDebug(`▶️ Resuming processing after 10 second pause`);
+
         // Process each file
         for (const filePath of files) {
           // Skip quarantined files and processed directories
@@ -2156,6 +2161,11 @@ export function registerApiRoutes(
         });
 
         app.debug(`🔧 Found ${parquetFiles.length} parquet files to check`);
+
+        // Add 10 second pause before processing
+        app.debug(`⏸️ Pausing for 10 seconds before processing...`);
+        await new Promise(resolve => setTimeout(resolve, 10000));
+        app.debug(`▶️ Resuming processing after 10 second pause`);
 
         for (let i = 0; i < parquetFiles.length; i++) {
           const filePath = parquetFiles[i];

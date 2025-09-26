@@ -120,45 +120,44 @@ export default function (app: ServerAPI): SignalKPlugin {
       saveAllBuffers(state.currentConfig!, state, app);
     }, state.currentConfig.saveIntervalSeconds * 1000);
 
-    // CONSOLIDATION DISABLED FOR TESTING - Set up daily consolidation (run at midnight UTC)
-    // const now = new Date();
-    // const nextMidnightUTC = new Date(
-    //   Date.UTC(
-    //     now.getUTCFullYear(),
-    //     now.getUTCMonth(),
-    //     now.getUTCDate() + 1,
-    //     0,
-    //     0,
-    //     0,
-    //     0
-    //   )
-    // );
-    // const msUntilMidnightUTC = nextMidnightUTC.getTime() - now.getTime();
+    // Set up daily consolidation (run at midnight UTC)
+    const now = new Date();
+    const nextMidnightUTC = new Date(
+      Date.UTC(
+        now.getUTCFullYear(),
+        now.getUTCMonth(),
+        now.getUTCDate() + 1,
+        0,
+        0,
+        0,
+        0
+      )
+    );
+    const msUntilMidnightUTC = nextMidnightUTC.getTime() - now.getTime();
 
+    setTimeout(() => {
+      consolidateYesterday(state.currentConfig!, state, app);
 
-    // setTimeout(() => {
-    //   consolidateYesterday(state.currentConfig!, state, app);
+      // Then run daily consolidation every 24 hours
+      state.consolidationInterval = setInterval(
+        () => {
+          consolidateYesterday(state.currentConfig!, state, app);
+        },
+        24 * 60 * 60 * 1000
+      );
+    }, msUntilMidnightUTC);
 
-    //   // Then run daily consolidation every 24 hours
-    //   state.consolidationInterval = setInterval(
-    //     () => {
-    //       consolidateYesterday(state.currentConfig!, state, app);
-    //     },
-    //     24 * 60 * 60 * 1000
-    //   );
-    // }, msUntilMidnightUTC);
+    // Run startup consolidation for missed previous days
+    setTimeout(() => {
+      consolidateMissedDays(state.currentConfig!, state, app);
+    }, 5000); // Wait 5 seconds after startup to avoid conflicts
 
-    // // Run startup consolidation for missed previous days
-    // setTimeout(() => {
-    //   consolidateMissedDays(state.currentConfig!, state, app);
-    // }, 5000); // Wait 5 seconds after startup to avoid conflicts
-
-    // // Upload all existing consolidated files to S3 (for catching up after BigInt fix)
-    // if (state.currentConfig.s3Upload.enabled) {
-    //   setTimeout(() => {
-    //     uploadAllConsolidatedFilesToS3(state.currentConfig!, state, app);
-    //   }, 10000); // Wait 10 seconds after startup to avoid conflicts
-    // }
+    // Upload all existing consolidated files to S3 (for catching up after BigInt fix)
+    if (state.currentConfig.s3Upload.enabled) {
+      setTimeout(() => {
+        uploadAllConsolidatedFilesToS3(state.currentConfig!, state, app);
+      }, 10000); // Wait 10 seconds after startup to avoid conflicts
+    }
 
     // Register History API routes directly with the main app
     try {
