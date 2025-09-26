@@ -1013,14 +1013,11 @@
                         <button onclick="repairSchemas()" id="repairBtn" style="margin-left: 10px;">🔧 Repair Schema Violations</button>
                         <button onclick="cancelProcess()" id="cancelBtn" style="margin-left: 10px; display: none; background: #dc3545; color: white;">❌ Cancel Process</button>
                     </div>
-                    <div id="processStatus" style="margin-bottom: 10px; display: none; padding: 10px; background: #e3f2fd; border-radius: 5px;">
-                        <div style="font-weight: bold;" id="processType"></div>
-                        <div id="processProgress" style="margin-top: 5px;">
-                            <div style="background: #ddd; height: 20px; border-radius: 10px; overflow: hidden;">
-                                <div id="progressBar" style="background: #4caf50; height: 100%; width: 0%; transition: width 0.3s;"></div>
-                            </div>
-                            <div style="margin-top: 5px; font-size: 0.9em;" id="progressText"></div>
-                        </div>
+                    <div id="processTimer" style="background: rgb(227, 242, 253); border: 1px solid rgb(33, 150, 243); border-radius: 5px; padding: 10px; margin-bottom: 15px; text-align: center; font-family: monospace; display: none;">
+                        <strong id="processIcon">🔍 Validation Timer</strong><br>
+                        <span id="processStartTime">Process started: --:--:--</span><br>
+                        <span id="processElapsed">Elapsed: 0.0s</span><br>
+                        <span id="processProgress">Files processed: 0 of 0 (0%)</span>
                     </div>
                     <div id="validationStatus" style="margin-top: 10px;"></div>
 
@@ -1412,11 +1409,12 @@
             const detailsDiv = document.getElementById('validationDetails');
             const button = document.getElementById('validateBtn');
 
-            // Show loading state and cancel button, disable both buttons
+            // Show loading state and cancel button, disable both buttons, start timer
             button.disabled = true;
             button.textContent = '🔄 Running Validation...';
             document.getElementById('repairBtn').disabled = true;
             document.getElementById('cancelBtn').style.display = 'inline-block';
+            startProcessTimer('validation');
             statusDiv.innerHTML = '<div class="loading">Validating parquet schemas...</div>';
             resultsDiv.style.display = 'none';
 
@@ -1473,11 +1471,12 @@
                 statusDiv.innerHTML = `<div class="error">❌ Error: ${error.message}</div>`;
                 console.error('Validation error:', error);
             } finally {
-                // Reset both buttons and hide cancel button
+                // Reset both buttons and hide cancel button, stop timer
                 button.disabled = false;
                 button.textContent = '🔍 Run Schema Validation';
                 document.getElementById('repairBtn').disabled = false;
                 document.getElementById('cancelBtn').style.display = 'none';
+                stopProcessTimer();
             }
         }
 
@@ -1485,11 +1484,12 @@
             const statusDiv = document.getElementById('validationStatus');
             const repairBtn = document.getElementById('repairBtn');
 
-            // Show loading state and cancel button, disable both buttons
+            // Show loading state and cancel button, disable both buttons, start timer
             repairBtn.disabled = true;
             repairBtn.textContent = '🔄 Repairing Schemas...';
             document.getElementById('validateBtn').disabled = true;
             document.getElementById('cancelBtn').style.display = 'inline-block';
+            startProcessTimer('repair');
             statusDiv.innerHTML = '<div class="loading">🔧 Starting schema repair process...</div>';
 
             try {
@@ -1521,16 +1521,86 @@
                 statusDiv.innerHTML = `<div class="error">❌ Repair Error: ${error.message}</div>`;
                 console.error('Repair error:', error);
             } finally {
-                // Reset both buttons and hide cancel button
+                // Reset both buttons and hide cancel button, stop timer
                 repairBtn.disabled = false;
                 repairBtn.textContent = '🔧 Repair Schema Violations';
                 document.getElementById('validateBtn').disabled = false;
                 document.getElementById('cancelBtn').style.display = 'none';
+                stopProcessTimer();
             }
         }
 
         // Process management functions
         let processStatusInterval = null;
+        let processStartTime = null;
+        let processTimerInterval = null;
+        let processProgressInterval = null;
+
+        function startProcessTimer(processType) {
+            processStartTime = new Date();
+            const processTimer = document.getElementById('processTimer');
+            const processIcon = document.getElementById('processIcon');
+            const processStartTimeSpan = document.getElementById('processStartTime');
+
+            // Set icon and text based on process type
+            if (processType === 'validation') {
+                processIcon.textContent = '🔍 Validation Timer';
+            } else if (processType === 'repair') {
+                processIcon.textContent = '🔧 Repair Timer';
+            }
+
+            // Show start time
+            processStartTimeSpan.textContent = `Process started: ${processStartTime.toLocaleTimeString()}`;
+
+            // Show the timer
+            processTimer.style.display = 'block';
+
+            // Start updating elapsed time (every 100ms)
+            processTimerInterval = setInterval(updateProcessTimer, 100);
+
+            // Start updating progress (every 2 seconds to avoid browser overload)
+            processProgressInterval = setInterval(updateProcessProgress, 2000);
+        }
+
+        function updateProcessTimer() {
+            if (!processStartTime) return;
+
+            const now = new Date();
+            const elapsed = (now - processStartTime) / 1000;
+            const processElapsedSpan = document.getElementById('processElapsed');
+            processElapsedSpan.textContent = `Elapsed: ${elapsed.toFixed(1)}s`;
+        }
+
+        async function updateProcessProgress() {
+            try {
+                const response = await fetch('/plugins/signalk-parquet/api/process-status');
+                const status = await response.json();
+
+                if (status.success && status.isRunning) {
+                    const processProgressSpan = document.getElementById('processProgress');
+                    const processed = status.processedFiles || 0;
+                    const total = status.totalFiles || 0;
+                    const percent = total > 0 ? ((processed / total) * 100).toFixed(1) : 0;
+
+                    processProgressSpan.textContent = `Files processed: ${processed.toLocaleString()} of ${total.toLocaleString()} (${percent}%)`;
+                }
+            } catch (error) {
+                console.error('Error updating progress:', error);
+            }
+        }
+
+        function stopProcessTimer() {
+            if (processTimerInterval) {
+                clearInterval(processTimerInterval);
+                processTimerInterval = null;
+            }
+            if (processProgressInterval) {
+                clearInterval(processProgressInterval);
+                processProgressInterval = null;
+            }
+            processStartTime = null;
+            document.getElementById('processTimer').style.display = 'none';
+        }
 
         async function cancelProcess() {
             try {
