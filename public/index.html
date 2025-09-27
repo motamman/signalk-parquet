@@ -1398,6 +1398,8 @@
         let currentRepairController = null;
         let currentValidationJobId = null;
         let validationCancelRequested = false;
+        let currentRepairJobId = null;
+        let repairCancelRequested = false;
 
         // Cancel current validation
         function cancelValidation() {
@@ -1445,9 +1447,24 @@
 
         // Cancel current repair
         function cancelRepair() {
-            if (currentRepairController) {
-                currentRepairController.abort();
-                currentRepairController = null;
+            if (repairCancelRequested) {
+                return;
+            }
+
+            repairCancelRequested = true;
+
+            const repairBtn = document.getElementById('repairBtn');
+            if (repairBtn) {
+                repairBtn.textContent = '⏳ Cancelling repair...';
+                repairBtn.disabled = true;
+            }
+
+            if (currentRepairJobId) {
+                fetch(`/plugins/signalk-parquet/api/repair-schemas/cancel/${currentRepairJobId}`, {
+                    method: 'POST'
+                }).catch(error => {
+                    console.error('Cancel repair request error:', error);
+                });
             }
         }
 
@@ -1551,6 +1568,99 @@
                         return lastProgress;
                     }
                     console.error('Progress polling error:', error);
+                    break;
+                }
+            }
+
+            return lastProgress;
+        }
+
+        // Poll for repair progress
+        async function pollRepairProgress(jobId, timerElement, startTime, abortSignal) {
+            let polling = true;
+            let lastProgress = null;
+
+            while (polling) {
+                try {
+                    if (abortSignal?.aborted) {
+                        throw new DOMException('Repair polling aborted', 'AbortError');
+                    }
+
+                    const response = await fetch(`/plugins/signalk-parquet/api/repair-schemas/progress/${jobId}`, {
+                        signal: abortSignal
+                    });
+
+                    if (!response.ok) {
+                        console.error('Failed to get repair progress:', response.status);
+                        break;
+                    }
+
+                    const progress = await response.json();
+                    lastProgress = progress;
+
+                    const processed = progress.processed ?? 0;
+                    const total = progress.total ?? 0;
+                    const percent = progress.percent ?? (total > 0 ? Math.round((processed / total) * 100) : 0);
+                    const elapsed = (new Date() - startTime) / 1000;
+                    const statusText = progress.message || 'Repair in progress';
+                    const statusColor = progress.status === 'cancelled'
+                        ? '#d32f2f'
+                        : progress.status === 'cancelling'
+                            ? '#b36b00'
+                            : '#666';
+
+                    timerElement.innerHTML = [
+                        '<strong>🔧 Repair Progress</strong><br>',
+                        `Started: ${startTime.toLocaleTimeString()}<br>`,
+                        `Elapsed: ${elapsed.toFixed(1)}s<br>`,
+                        `<strong>Files: ${processed.toLocaleString()} / ${total.toLocaleString()} (${percent}%)</strong><br>`,
+                        progress.currentFile ? `<span style="font-size: 0.9em; color: #666;">Current: ${progress.currentFile}</span><br>` : '',
+                        `<span style="font-size: 0.9em; color: ${statusColor};">${statusText}</span>`
+                    ].filter(Boolean).join('');
+
+                    if (progress.status === 'completed' || progress.status === 'cancelled' || progress.status === 'error') {
+                        polling = false;
+                        const endTime = new Date();
+                        const totalTime = (endTime - startTime) / 1000;
+                        lastProgress.completedAt = endTime;
+
+                        if (progress.status === 'completed') {
+                            timerElement.innerHTML = [
+                                '<strong>✅ Repair Completed</strong><br>',
+                                `Started: ${startTime.toLocaleTimeString()}<br>`,
+                                `Ended: ${endTime.toLocaleTimeString()}<br>`,
+                                `<strong>Total Time: ${totalTime.toFixed(1)}s</strong>`
+                            ].join('');
+                            timerElement.style.background = '#e8f5e8';
+                            timerElement.style.borderColor = '#4caf50';
+                        } else if (progress.status === 'cancelled') {
+                            timerElement.innerHTML = [
+                                '<strong>❌ Repair Cancelled</strong><br>',
+                                `Started: ${startTime.toLocaleTimeString()}<br>`,
+                                `Cancelled: ${endTime.toLocaleTimeString()}<br>`,
+                                `<strong>Total Time: ${totalTime.toFixed(1)}s</strong>`
+                            ].join('');
+                            timerElement.style.background = '#fff3cd';
+                            timerElement.style.borderColor = '#ffc107';
+                        } else if (progress.status === 'error') {
+                            timerElement.innerHTML = [
+                                '<strong>⛔ Repair Failed</strong><br>',
+                                `Started: ${startTime.toLocaleTimeString()}<br>`,
+                                `Ended: ${endTime.toLocaleTimeString()}<br>`,
+                                `<strong>Total Time: ${totalTime.toFixed(1)}s</strong>`
+                            ].join('');
+                            timerElement.style.background = '#ffeaea';
+                            timerElement.style.borderColor = '#f44336';
+                        }
+                    }
+
+                    await new Promise(resolve => setTimeout(resolve, 500));
+
+                } catch (error) {
+                    if (error.name === 'AbortError') {
+                        return lastProgress;
+                    }
+                    console.error('Repair progress polling error:', error);
                     break;
                 }
             }
@@ -1723,7 +1833,7 @@
 
                         if (repairBtn) {
                             repairBtn.style.display = 'inline-block';
-                            repairBtn.disabled = isCancelled || violations === 0;
+                            repairBtn.disabled = violations === 0;
                         }
                     } else {
                         if (summaryHeader) {
@@ -1741,8 +1851,6 @@
                             repairBtn.disabled = true;
                         }
                     }
-                } else {
-                    loadingElement.remove();
                 }
             } catch (error) {
                 // Stop timer on error
@@ -1754,14 +1862,21 @@
                 if (error.name === 'AbortError') {
                     // Try to get progress info from the server response if available
                     let progressInfo = '';
+                    let violationCount = 0;
                     try {
-                        if (error.response) {
-                            const cancelData = await error.response.json();
-                            if (cancelData.processedFiles !== undefined && cancelData.totalFiles !== undefined) {
-                                const percentage = cancelData.totalFiles > 0
-                                    ? Math.round((cancelData.processedFiles / cancelData.totalFiles) * 100)
-                                    : 0;
-                                progressInfo = `<br><strong>Progress: ${cancelData.processedFiles.toLocaleString()}/${cancelData.totalFiles.toLocaleString()} files (${percentage}%)</strong>`;
+                        if (currentValidationJobId) {
+                            const progressResponse = await fetch(`/plugins/signalk-parquet/api/validate-schemas/progress/${currentValidationJobId}`);
+                            if (progressResponse.ok) {
+                                const cancelData = await progressResponse.json();
+                                if (cancelData.result && Array.isArray(cancelData.result.violationFiles)) {
+                                    violationCount = cancelData.result.violationFiles.length;
+                                }
+                                if (cancelData.processed !== undefined && cancelData.total !== undefined) {
+                                    const percentage = cancelData.total > 0
+                                        ? Math.round((cancelData.processed / cancelData.total) * 100)
+                                        : 0;
+                                    progressInfo = `<br><strong>Progress: ${cancelData.processed.toLocaleString()}/${cancelData.total.toLocaleString()} files (${percentage}%)</strong>`;
+                                }
                             }
                         }
                     } catch (parseError) {
@@ -1776,6 +1891,11 @@
                     `;
                     timerElement.style.background = '#fff3cd';
                     timerElement.style.borderColor = '#ffc107';
+
+                    if (repairBtn) {
+                        repairBtn.style.display = 'inline-block';
+                        repairBtn.disabled = violationCount === 0;
+                    }
                 } else {
                     timerElement.innerHTML = `
                         <strong>⏱️ Validation Failed</strong><br>
@@ -1807,34 +1927,52 @@
             const statusDiv = document.getElementById('validationStatus');
             const repairBtn = document.getElementById('repairBtn');
 
-            // If already running, cancel the current repair
-            if (currentRepairController) {
+            // If a job is already running, treat the click as a cancel request
+            if (currentRepairJobId || currentRepairController) {
                 cancelRepair();
                 return;
             }
 
-            // Show loading state with cancel button
-            const originalButtonText = repairBtn.textContent;
+            repairCancelRequested = false;
+            currentRepairJobId = null;
+
             repairBtn.textContent = '⏸️ Repairing Schemas (click to cancel)';
             repairBtn.style.background = '#ffc107';
+            repairBtn.onclick = cancelRepair;
+            repairBtn.disabled = false;
 
-            statusDiv.innerHTML = `
-                <div class="loading" style="text-align: center; padding: 20px;">
-                    🔧 Starting schema repair process...<br><br>
-                    <button onclick="cancelRepair()" style="padding: 8px 16px; background: #dc3545; color: white; border: none; border-radius: 4px; cursor: pointer;">❌ Cancel Repair</button>
-                </div>
+            const startTime = new Date();
+            const timerElement = document.createElement('div');
+            timerElement.id = 'repairTimer';
+            timerElement.style.cssText = 'background: #e3f2fd; border: 1px solid #2196f3; border-radius: 5px; padding: 10px; margin-bottom: 15px; text-align: center; font-family: monospace;';
+            timerElement.innerHTML = `
+                <strong>🔧 Repair Timer</strong><br>
+                Started: ${startTime.toLocaleTimeString()}<br>
+                Elapsed: 0.0s<br>
+                <span style="font-size: 0.9em; color: #666;">Preparing repair job...</span>
             `;
 
-            try {
-                // Create abort controller for cancellation
-                currentRepairController = new AbortController();
+            statusDiv.innerHTML = '';
+            statusDiv.appendChild(timerElement);
 
+            const timerInterval = setInterval(() => {
+                const elapsed = (new Date() - startTime) / 1000;
+                timerElement.innerHTML = `
+                    <strong>🔧 Repair Timer</strong><br>
+                    Started: ${startTime.toLocaleTimeString()}<br>
+                    Elapsed: ${elapsed.toFixed(1)}s<br>
+                    <span style="font-size: 0.9em; color: #666;">Preparing repair job...</span>
+                `;
+            }, 100);
+
+            let finalProgress = null;
+
+            try {
                 const response = await fetch('/plugins/signalk-parquet/api/repair-schemas', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
-                    },
-                    signal: currentRepairController.signal
+                    }
                 });
 
                 const result = await response.json();
@@ -1843,25 +1981,76 @@
                     throw new Error(result.message || 'Repair failed');
                 }
 
-                // Show completion status
-                statusDiv.innerHTML = `<div class="success">✅ Repair completed: ${result.repairedFiles} files repaired, ${result.backedUpFiles} files backed up</div>`;
+                if (!result.jobId) {
+                    timerElement.innerHTML = '<strong>❌ Repair response missing job ID</strong>';
+                    timerElement.style.background = '#ffeaea';
+                    timerElement.style.borderColor = '#f44336';
+                    return;
+                }
 
-                // Re-run validation after repair
-                setTimeout(() => runDataValidation(), 2000);
+                currentRepairJobId = result.jobId;
+                currentRepairController = new AbortController();
+
+                clearInterval(timerInterval);
+                finalProgress = await pollRepairProgress(result.jobId, timerElement, startTime, currentRepairController.signal);
+
+                if (finalProgress && finalProgress.result) {
+                    const { repairedFiles, backedUpFiles, skippedFiles, quarantinedFiles, errors, message } = finalProgress.result;
+                    const summaryLines = [
+                        `<strong>${message || 'Repair summary'}</strong>`,
+                        `✅ Repaired: ${repairedFiles.toLocaleString()}`,
+                        `📦 Backups created: ${backedUpFiles.toLocaleString()}`,
+                        `⏭️ Skipped (already clean): ${skippedFiles.length.toLocaleString()}`,
+                        `🚫 Quarantined: ${quarantinedFiles.length.toLocaleString()}`,
+                        `⚠️ Errors: ${errors.length.toLocaleString()}`
+                    ];
+
+                    timerElement.innerHTML = summaryLines.join('<br>');
+
+                    if (errors.length > 0) {
+                        const errorList = document.createElement('div');
+                        errorList.style.cssText = 'margin-top: 10px; background: #fff3f3; border: 1px solid #f44336; padding: 10px; font-size: 12px; max-height: 150px; overflow-y: auto;';
+                        errorList.innerHTML = errors.map(err => `❌ ${err}`).join('<br>');
+                        timerElement.appendChild(errorList);
+                    }
+
+                    if (finalProgress.status === 'completed') {
+                        timerElement.style.background = '#e8f5e8';
+                        timerElement.style.borderColor = '#4caf50';
+                    } else if (finalProgress.status === 'cancelled') {
+                        timerElement.style.background = '#fff3cd';
+                        timerElement.style.borderColor = '#ffc107';
+                    } else if (finalProgress.status === 'error') {
+                        timerElement.style.background = '#ffeaea';
+                        timerElement.style.borderColor = '#f44336';
+                    }
+
+                    // Refresh validation to show updated status after successful repair
+                    if (finalProgress.status === 'completed') {
+                        setTimeout(() => runDataValidation(), 2000);
+                    }
+                }
 
             } catch (error) {
-                // Check if it was cancelled
-                if (error.name === 'AbortError') {
-                    statusDiv.innerHTML = `<div class="error" style="background: #fff3cd; color: #856404;">❌ Repair Cancelled</div>`;
-                } else {
-                    statusDiv.innerHTML = `<div class="error">❌ Repair Error: ${error.message}</div>`;
-                    console.error('Repair error:', error);
-                }
+                clearInterval(timerInterval);
+                timerElement.innerHTML = `<strong>❌ Repair Error</strong><br>${error.message}`;
+                timerElement.style.background = '#ffeaea';
+                timerElement.style.borderColor = '#f44336';
+                console.error('Repair error:', error);
             } finally {
-                // Reset button and controller
-                currentRepairController = null;
+                clearInterval(timerInterval);
+                currentRepairJobId = null;
+                repairCancelRequested = false;
+
+                if (currentRepairController) {
+                    currentRepairController.abort();
+                    currentRepairController = null;
+                }
+
                 repairBtn.textContent = '🔧 Repair Schema Violations';
                 repairBtn.style.background = '';
+                repairBtn.onclick = repairSchemas;
+                repairBtn.disabled = false;
             }
         }
 
