@@ -55,10 +55,25 @@ interface ValidationProgress {
   percent: number;
   startTime: Date;
   currentFile?: string;
+  currentVessel?: string;
+  currentRelativePath?: string;
   error?: string;
+  completedAt?: Date;
+  result?: ValidationApiResponse;
 }
 
 const validationJobs = new Map<string, ValidationProgress>();
+
+const VALIDATION_JOB_TTL_MS = 10 * 60 * 1000; // Retain job metadata for 10 minutes
+
+function scheduleValidationJobCleanup(jobId: string) {
+  setTimeout(() => {
+    const job = validationJobs.get(jobId);
+    if (job && job.status !== 'running') {
+      validationJobs.delete(jobId);
+    }
+  }, VALIDATION_JOB_TTL_MS);
+}
 
 // Shared analyzer instance to maintain conversation state across requests
 let sharedAnalyzer: ClaudeAnalyzer | null = null;
@@ -1899,8 +1914,7 @@ export function registerApiRoutes(
   // Validate parquet schemas
   router.post(
     '/api/validate-schemas',
-    async (req: TypedRequest, res: TypedResponse<ValidationApiResponse & {jobId: string}>) => {
-      // Create job for progress tracking
+    async (_req: TypedRequest, res: TypedResponse<ValidationApiResponse & { jobId: string; status?: string }>) => {
       const jobId = `val_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
       const progressJob: ValidationProgress = {
         jobId,
@@ -1910,286 +1924,290 @@ export function registerApiRoutes(
         percent: 0,
         startTime: new Date()
       };
+
       validationJobs.set(jobId, progressJob);
 
-      try {
-        app.debug('🔍 Starting schema validation...');
-        app.debug(`📋 Created validation job: ${jobId}`);
+      const runValidationJob = async () => {
+        try {
+          app.debug('🔍 Starting schema validation...');
+          app.debug(`📋 Created validation job: ${jobId}`);
 
-        // Import required modules for parquet reading
-        const parquet = require('@dsnp/parquetjs');
-        const glob = require('glob');
-        const path = require('path');
+          const parquet = require('@dsnp/parquetjs');
+          const glob = require('glob');
+          const path = require('path');
 
-        // Get the data directory from plugin config - use SignalK's main data dir, not plugin config dir
-        const configOutputDir = state.currentConfig?.outputDirectory || 'data';
-        const pluginDataPath = app.getDataDirPath(); // /Users/.../plugin-config-data/signalk-parquet
-        const signalkDataDir = path.dirname(path.dirname(pluginDataPath)); // Go up 2 levels to get to .signalk
-        const dataDir = path.join(signalkDataDir, configOutputDir);
+          const configOutputDir = state.currentConfig?.outputDirectory || 'data';
+          const pluginDataPath = app.getDataDirPath();
+          const signalkDataDir = path.dirname(path.dirname(pluginDataPath));
+          const dataDir = path.join(signalkDataDir, configOutputDir);
 
-        let totalFiles = 0;
-        let schemasFound = 0;
-        let correctSchemas = 0;
-        let violationSchemas = 0;
-        const vessels = new Set<string>();
-        const violationDetails: string[] = [];
-        const debugMessages: string[] = [];
+          let totalFiles = 0;
+          let correctSchemas = 0;
+          let violationSchemas = 0;
+          const vessels = new Set<string>();
+          const violationDetails: string[] = [];
+          const debugMessages: string[] = [];
 
-        // Helper function to add debug messages
-        const addDebug = (message: string) => {
-          debugMessages.push(message);
-          app.debug(message);
-        };
+          const addDebug = (message: string) => {
+            debugMessages.push(message);
+            app.debug(message);
+          };
 
-        // Search for all parquet files
-        const searchPattern = path.join(dataDir, 'vessels', '**', '*.parquet');
-        addDebug(`🔍 Data directory: ${dataDir}`);
-        addDebug(`🔍 Searching pattern: ${searchPattern}`);
+          const searchPattern = path.join(dataDir, 'vessels', '**', '*.parquet');
+          addDebug(`🔍 Data directory: ${dataDir}`);
+          addDebug(`🔍 Searching pattern: ${searchPattern}`);
 
-        const files = glob.sync(searchPattern, {
-          ignore: [
-            `${dataDir}/**/processed/**`,
-            `${dataDir}/**/repaired/**`,
-            `${dataDir}/**/quarantine/**`,
-            `${dataDir}/**/claude-schemas/**`,
-            `${dataDir}/**/failed/**`
-          ]
-        });
-        addDebug(`📄 Found ${files.length} parquet files`);
+          const files = glob.sync(searchPattern, {
+            ignore: [
+              `${dataDir}/**/processed/**`,
+              `${dataDir}/**/repaired/**`,
+              `${dataDir}/**/quarantine/**`,
+              `${dataDir}/**/claude-schemas/**`,
+              `${dataDir}/**/failed/**`
+            ]
+          });
+          addDebug(`📄 Found ${files.length} parquet files`);
 
-        // Update job with total file count
-        progressJob.total = files.length;
+          progressJob.total = files.length;
+          progressJob.percent = files.length === 0 ? 100 : 0;
 
-        // Add 10 second pause before processing (single delay to avoid disconnect detection)
-        addDebug(`⏸️ Pausing for 10 seconds before processing...`);
-        await new Promise(resolve => {
-          const delayTimeout = setTimeout(resolve, 10000);
-        });
-        addDebug(`▶️ Resuming processing after 10 second pause`);
+          addDebug('⏸️ Pausing for 10 seconds before processing...');
+          await new Promise(resolve => setTimeout(resolve, 10000));
+          addDebug('▶️ Resuming processing after 10 second pause');
 
-        // Process each file
-        for (let fileIndex = 0; fileIndex < files.length; fileIndex++) {
-          const filePath = files[fileIndex];
+          for (let fileIndex = 0; fileIndex < files.length; fileIndex++) {
+            const filePath = files[fileIndex];
 
-          // Update progress every 10 files
-          if (fileIndex % 10 === 0 || fileIndex === files.length - 1) {
-            progressJob.processed = fileIndex;
-            progressJob.percent = Math.round((fileIndex / files.length) * 100);
+            progressJob.processed = Math.min(fileIndex + 1, files.length);
+            progressJob.percent = files.length > 0
+              ? Math.round((progressJob.processed / files.length) * 100)
+              : 100;
             progressJob.currentFile = path.basename(filePath);
-          }
+            progressJob.currentRelativePath = path.relative(dataDir, filePath);
 
+            const pathParts = filePath.split(path.sep);
+            const vesselsIndex = pathParts.findIndex((part: string) => part === 'vessels');
+            const vesselName = vesselsIndex !== -1 && vesselsIndex + 1 < pathParts.length
+              ? pathParts[vesselsIndex + 1]
+              : undefined;
+            progressJob.currentVessel = vesselName;
 
-          // Skip quarantined files and processed directories
-          if (path.basename(filePath).includes('quarantine') || path.basename(filePath).includes('corrupted') || filePath.includes('/processed/') || filePath.includes('/repaired/')) {
-            continue;
-          }
-
-          // Extract vessel from path (vessels/[vessel]/)
-          const pathParts = filePath.split(path.sep);
-          const vesselsIndex = pathParts.findIndex((part: string) => part === 'vessels');
-          if (vesselsIndex !== -1 && vesselsIndex + 1 < pathParts.length) {
-            vessels.add(pathParts[vesselsIndex + 1]);
-          }
-
-          totalFiles++;
-
-          try {
-            const reader = await parquet.ParquetReader.openFile(filePath);
-            const cursor = reader.getCursor();
-            const schema = cursor.schema;
-
-            if (schema && schema.schema) {
-              schemasFound++;
-              const fields = schema.schema;
-
-              // Check timestamps
-              const receivedTimestamp = fields.received_timestamp ? fields.received_timestamp.type : 'MISSING';
-              const signalkTimestamp = fields.signalk_timestamp ? fields.signalk_timestamp.type : 'MISSING';
-
-              // Find all value fields
-              const valueFields: { [key: string]: string } = {};
-              Object.keys(fields).forEach(fieldName => {
-                if (fieldName.startsWith('value_') || fieldName === 'value') {
-                  valueFields[fieldName] = fields[fieldName].type;
-                }
-              });
-
-              // Extract SignalK path for metadata lookup
-              const relativePath = path.relative(dataDir, filePath);
-              const pathMatch = relativePath.match(/vessels\/[^/]+\/(.+?)\/[^/]*\.parquet$/);
-              const signalkPath = pathMatch ? pathMatch[1].replace(/\//g, '.') : '';
-
-              // Check for schema violations
-              let hasViolations = false;
-              const violations: string[] = [];
-
-              // Rule 1: Timestamps should be UTF8/VARCHAR
-              if (receivedTimestamp !== 'UTF8' && receivedTimestamp !== 'MISSING') {
-                violations.push(`received_timestamp should be UTF8, got ${receivedTimestamp}`);
-                hasViolations = true;
-              }
-              if (signalkTimestamp !== 'UTF8' && signalkTimestamp !== 'MISSING') {
-                violations.push(`signalk_timestamp should be UTF8, got ${signalkTimestamp}`);
-                hasViolations = true;
-              }
-
-              // Rule 2: Check value fields using TWO-STEP PROCESS (matches repair logic)
-              // Determine if this is an exploded file
-              const isExplodedFile = Object.keys(valueFields).some(fieldName =>
-                fieldName.startsWith('value_') && fieldName !== 'value' && fieldName !== 'value_json'
-              );
-              addDebug(`🔍 Validation: isExplodedFile = ${isExplodedFile}`);
-
-              // Read sample data for content analysis (STEP 1)
-              let sampleRecords = [];
-              try {
-                if (!parquet) {
-                  throw new Error('ParquetJS not available');
-                }
-                const reader = await parquet.ParquetReader.openFile(filePath);
-                const cursor = reader.getCursor();
-                let record: any;
-                let count = 0;
-                while ((record = await cursor.next()) && count < 100) {
-                  sampleRecords.push(record);
-                  count++;
-                }
-                await reader.close();
-              } catch (error) {
-                addDebug(`⚠️ Could not read sample data for validation: ${(error as Error).message}`);
-                sampleRecords = [];
-              }
-
-              for (const [fieldName, fieldType] of Object.entries(valueFields)) {
-                // Always skip value_json (matches repair logic)
-                if (fieldName === 'value_json') {
-                  addDebug(`⏭️ ${fieldName}: Skipped entirely (always ignored)`);
-                  continue;
-                }
-
-                // Skip value field in exploded files (matches repair logic)
-                if (isExplodedFile && fieldName === 'value') {
-                  addDebug(`⏭️ ${fieldName}: Skipped in exploded file (always empty)`);
-                  continue;
-                }
-
-                if (fieldType === 'UTF8' || fieldType === 'VARCHAR') {
-                  let shouldBeNumeric = false;
-
-                  // STEP 1: LOOK AT THE STRING AND SEE WHAT IT IS (matches repair logic)
-                  if (sampleRecords.length > 0) {
-                    const values = sampleRecords
-                      .map(r => r[fieldName])
-                      .filter(v => v !== null && v !== undefined);
-
-                    if (values.length > 0) {
-                      let allNumeric = true;
-                      let allBoolean = true;
-
-                      for (const value of values) {
-                        const str = String(value).trim();
-                        if (str === 'true' || str === 'false') {
-                          allNumeric = false;
-                        } else if (!isNaN(Number(str)) && str !== '') {
-                          allBoolean = false;
-                        } else {
-                          allNumeric = false;
-                          allBoolean = false;
-                          break;
-                        }
-                      }
-
-                      if (allNumeric && values.length > 0) {
-                        shouldBeNumeric = true;
-                        violations.push(`${fieldName} contains numbers but is ${fieldType}, should be DOUBLE`);
-                        hasViolations = true;
-                        addDebug(`🔍 ${fieldName}: VARCHAR contains numbers, flagged as violation`);
-                      } else if (allBoolean && values.length > 0) {
-                        violations.push(`${fieldName} contains booleans but is ${fieldType}, should be BOOLEAN`);
-                        hasViolations = true;
-                        addDebug(`🔍 ${fieldName}: VARCHAR contains booleans, flagged as violation`);
-                      }
-                    }
-                  }
-
-                  // STEP 2: LOOK AT METADATA (SKIP IF EXPLODED) - only if step 1 can't determine (matches repair logic)
-                  if (!shouldBeNumeric && sampleRecords.length === 0) {
-                    const isExplodedField = fieldName.startsWith('value_');
-
-                    if (!isExplodedField && signalkPath) {
-                      addDebug(`🔍 ${fieldName}: Using metadata fallback (matches repair logic)`);
-                      try {
-                        const response = await fetch(`http://localhost:3000/signalk/v1/api/vessels/self/${signalkPath.replace(/\./g, '/')}/meta`);
-                        if (response.ok) {
-                          const metadata = await response.json() as any;
-                          if (metadata && metadata.units &&
-                              (metadata.units === 'm' || metadata.units === 'deg' || metadata.units === 'm/s' ||
-                               metadata.units === 'rad' || metadata.units === 'K' || metadata.units === 'Pa' ||
-                               metadata.units === 'V' || metadata.units === 'A' || metadata.units === 'Hz' ||
-                               metadata.units === 'ratio' || metadata.units === 'kg' || metadata.units === 'J')) {
-                            violations.push(`${fieldName} has numeric units (${metadata.units}) but is ${fieldType}, should be DOUBLE`);
-                            hasViolations = true;
-                            addDebug(`🔍 ${fieldName}: Metadata indicates numeric (${metadata.units}), flagged as violation`);
-                          }
-                        }
-                      } catch (metadataError) {
-                        addDebug(`🔍 ${fieldName}: Metadata lookup failed, no violation flagged`);
-                      }
-                    } else {
-                      addDebug(`🔍 ${fieldName}: Exploded field or no path, skipping metadata (matches repair logic)`);
-                    }
-                  }
-                }
-              }
-
-              if (hasViolations) {
-                violationSchemas++;
-                const shortPath = path.relative(dataDir, filePath);
-                violationDetails.push(`[${totalFiles}] ${shortPath}: ${violations.join(', ')}`);
-              } else {
-                correctSchemas++;
-              }
-
-              if (typeof reader.close === 'function') reader.close();
+            if (vesselName) {
+              vessels.add(vesselName);
             }
 
-          } catch (error) {
-            app.debug(`Error processing ${filePath}: ${(error as Error).message}`);
-            // Count as violation since we couldn't read the schema
-            violationSchemas++;
-            const shortPath = path.relative(dataDir, filePath);
-            violationDetails.push(`[${totalFiles}] ${shortPath}: ERROR - ${(error as Error).message}`);
+            if (path.basename(filePath).includes('quarantine') ||
+                path.basename(filePath).includes('corrupted') ||
+                filePath.includes('/processed/') ||
+                filePath.includes('/repaired/')) {
+              continue;
+            }
+
+            totalFiles++;
+
+            try {
+              const reader = await parquet.ParquetReader.openFile(filePath);
+              const cursor = reader.getCursor();
+              const schema = cursor.schema;
+
+              if (schema && schema.schema) {
+                const fields = schema.schema;
+
+                const receivedTimestamp = fields.received_timestamp ? fields.received_timestamp.type : 'MISSING';
+                const signalkTimestamp = fields.signalk_timestamp ? fields.signalk_timestamp.type : 'MISSING';
+
+                const valueFields: { [key: string]: string } = {};
+                Object.keys(fields).forEach(fieldName => {
+                  if (fieldName.startsWith('value_') || fieldName === 'value') {
+                    valueFields[fieldName] = fields[fieldName].type;
+                  }
+                });
+
+                const relativePath = progressJob.currentRelativePath || path.relative(dataDir, filePath);
+                const pathMatch = relativePath.match(/vessels\/[^/]+\/(.+?)\/[^/]*\.parquet$/);
+                const signalkPath = pathMatch ? pathMatch[1].replace(/\//g, '.') : '';
+
+                let hasViolations = false;
+                const violations: string[] = [];
+
+                if (receivedTimestamp !== 'UTF8' && receivedTimestamp !== 'MISSING') {
+                  violations.push(`received_timestamp should be UTF8, got ${receivedTimestamp}`);
+                  hasViolations = true;
+                }
+                if (signalkTimestamp !== 'UTF8' && signalkTimestamp !== 'MISSING') {
+                  violations.push(`signalk_timestamp should be UTF8, got ${signalkTimestamp}`);
+                  hasViolations = true;
+                }
+
+                const isExplodedFile = Object.keys(valueFields).some(fieldName =>
+                  fieldName.startsWith('value_') && fieldName !== 'value' && fieldName !== 'value_json'
+                );
+                addDebug(`🔍 Validation: isExplodedFile = ${isExplodedFile}`);
+
+                let sampleRecords = [];
+                try {
+                  if (!parquet) {
+                    throw new Error('ParquetJS not available');
+                  }
+                  const sampleReader = await parquet.ParquetReader.openFile(filePath);
+                  const sampleCursor = sampleReader.getCursor();
+                  let record: any;
+                  let count = 0;
+                  while ((record = await sampleCursor.next()) && count < 100) {
+                    sampleRecords.push(record);
+                    count++;
+                  }
+                  await sampleReader.close();
+                } catch (error) {
+                  addDebug(`⚠️ Could not read sample data for validation: ${(error as Error).message}`);
+                  sampleRecords = [];
+                }
+
+                for (const [fieldName, fieldType] of Object.entries(valueFields)) {
+                  if (fieldName === 'value_json') {
+                    addDebug(`⏭️ ${fieldName}: Skipped entirely (always ignored)`);
+                    continue;
+                  }
+
+                  if (isExplodedFile && fieldName === 'value') {
+                    addDebug(`⏭️ ${fieldName}: Skipped in exploded file (always empty)`);
+                    continue;
+                  }
+
+                  if (fieldType === 'UTF8' || fieldType === 'VARCHAR') {
+                    let shouldBeNumeric = false;
+
+                    if (sampleRecords.length > 0) {
+                      const values = sampleRecords
+                        .map(r => r[fieldName])
+                        .filter(v => v !== null && v !== undefined);
+
+                      if (values.length > 0) {
+                        let allNumeric = true;
+                        let allBoolean = true;
+
+                        for (const value of values) {
+                          const str = String(value).trim();
+                          if (str === 'true' || str === 'false') {
+                            allNumeric = false;
+                          } else if (!isNaN(Number(str)) && str !== '') {
+                            allBoolean = false;
+                          } else {
+                            allNumeric = false;
+                            allBoolean = false;
+                            break;
+                          }
+                        }
+
+                        if (allNumeric && values.length > 0) {
+                          shouldBeNumeric = true;
+                          violations.push(`${fieldName} contains numbers but is ${fieldType}, should be DOUBLE`);
+                          hasViolations = true;
+                          addDebug(`🔍 ${fieldName}: VARCHAR contains numbers, flagged as violation`);
+                        } else if (allBoolean && values.length > 0) {
+                          violations.push(`${fieldName} contains booleans but is ${fieldType}, should be BOOLEAN`);
+                          hasViolations = true;
+                          addDebug(`🔍 ${fieldName}: VARCHAR contains booleans, flagged as violation`);
+                        }
+                      }
+                    }
+
+                    if (!shouldBeNumeric && sampleRecords.length === 0) {
+                      const isExplodedField = fieldName.startsWith('value_');
+
+                      if (!isExplodedField && signalkPath) {
+                        addDebug(`🔍 ${fieldName}: Using metadata fallback (matches repair logic)`);
+                        try {
+                          const response = await fetch(`http://localhost:3000/signalk/v1/api/vessels/self/${signalkPath.replace(/\./g, '/')}/meta`);
+                          if (response.ok) {
+                            const metadata = await response.json() as any;
+                            if (metadata && metadata.units &&
+                                (metadata.units === 'm' || metadata.units === 'deg' || metadata.units === 'm/s' ||
+                                 metadata.units === 'rad' || metadata.units === 'K' || metadata.units === 'Pa' ||
+                                 metadata.units === 'V' || metadata.units === 'A' || metadata.units === 'Hz' ||
+                                 metadata.units === 'ratio' || metadata.units === 'kg' || metadata.units === 'J')) {
+                              violations.push(`${fieldName} has numeric units (${metadata.units}) but is ${fieldType}, should be DOUBLE`);
+                              hasViolations = true;
+                              addDebug(`🔍 ${fieldName}: Metadata indicates numeric (${metadata.units}), flagged as violation`);
+                            }
+                          }
+                        } catch (metadataError) {
+                          addDebug(`🔍 ${fieldName}: Metadata lookup failed, no violation flagged`);
+                        }
+                      } else {
+                        addDebug(`🔍 ${fieldName}: Exploded field or no path, skipping metadata (matches repair logic)`);
+                      }
+                    }
+                  }
+                }
+
+                if (hasViolations) {
+                  violationSchemas++;
+                  const shortPath = path.relative(dataDir, filePath);
+                  violationDetails.push(`[${totalFiles}] ${shortPath}: ${violations.join(', ')}`);
+                } else {
+                  correctSchemas++;
+                }
+
+                if (typeof reader.close === 'function') reader.close();
+              }
+
+            } catch (error) {
+              app.debug(`Error processing ${filePath}: ${(error as Error).message}`);
+              violationSchemas++;
+              const shortPath = path.relative(dataDir, filePath);
+              violationDetails.push(`[${totalFiles}] ${shortPath}: ERROR - ${(error as Error).message}`);
+            }
           }
+
+          addDebug(`📊 Validation completed: ${totalFiles} files, ${vessels.size} vessels, ${correctSchemas} correct, ${violationSchemas} violations`);
+
+          progressJob.status = 'completed';
+          progressJob.processed = files.length;
+          progressJob.percent = 100;
+          progressJob.completedAt = new Date();
+          progressJob.currentFile = undefined;
+          progressJob.currentVessel = undefined;
+          progressJob.currentRelativePath = undefined;
+          progressJob.result = {
+            success: true,
+            totalFiles,
+            totalVessels: vessels.size,
+            correctSchemas,
+            violations: violationSchemas,
+            violationDetails,
+            debugMessages,
+            jobId
+          };
+        } catch (error) {
+          app.error(`Error during schema validation: ${error}`);
+          progressJob.status = 'error';
+          progressJob.error = (error as Error).message;
+          progressJob.completedAt = new Date();
+          progressJob.result = {
+            success: false,
+            error: (error as Error).message,
+            jobId
+          };
+        } finally {
+          progressJob.currentFile = undefined;
+          progressJob.currentVessel = undefined;
+          progressJob.currentRelativePath = undefined;
+          scheduleValidationJobCleanup(jobId);
         }
+      };
 
-        addDebug(`📊 Validation completed: ${totalFiles} files, ${vessels.size} vessels, ${correctSchemas} correct, ${violationSchemas} violations`);
-
-        // Mark job as completed
-        progressJob.status = 'completed';
-        progressJob.processed = totalFiles;
-        progressJob.percent = 100;
-
-        return res.json({
-          success: true,
-          totalFiles,
-          totalVessels: vessels.size,
-          correctSchemas,
-          violations: violationSchemas,
-          violationDetails,
-          debugMessages,
-          jobId
+      setImmediate(() => {
+        runValidationJob().catch(error => {
+          app.error(`Unhandled validation job error: ${error}`);
         });
+      });
 
-      } catch (error) {
-        app.error(`Error during schema validation: ${error}`);
-        progressJob.status = 'error';
-        progressJob.error = (error as Error).message;
-        return res.status(500).json({
-          success: false,
-          error: (error as Error).message,
-          jobId
-        });
-      }
+      return res.json({
+        success: true,
+        status: 'started',
+        jobId
+      });
     }
   );
 

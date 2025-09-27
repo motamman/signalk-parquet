@@ -282,6 +282,7 @@ export interface ValidationApiResponse extends ApiResponse {
   processedFiles?: number;
   processedVessels?: number;
   progress?: string;
+  jobId?: string;
 }
 
 // Claude Analysis API Response Types
