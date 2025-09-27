@@ -2522,7 +2522,12 @@ export function registerApiRoutes(
 
               let needsRepair = Array.isArray(violation?.issues) && violation.issues.length > 0;
 
+              app.debug(`🔧 DEBUG: BEFORE processing file ${i + 1}/${targetFiles.length}: ${relativePath}`);
               app.debug(`🔧 Repair job ${jobId}: processing ${relativePath}`);
+              app.debug(`🔧 DEBUG: AFTER processing file ${i + 1}/${targetFiles.length}: ${relativePath}`);
+
+              // 20 second pause for debugging
+              await new Promise(resolve => setTimeout(resolve, 20000));
 
               try {
                 const stats = await fs.stat(filePath);
