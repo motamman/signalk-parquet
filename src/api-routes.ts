@@ -2489,6 +2489,23 @@ export function registerApiRoutes(
             await new Promise(resolve => setTimeout(resolve, 10000));
             job.message = 'Starting repair process';
 
+            if (job.cancelRequested) {
+              app.debug(`🔧 Repair job ${jobId}: cancelled before processing`);
+              job.status = 'cancelled';
+              job.message = 'Repair cancelled before start';
+              job.completedAt = new Date();
+              job.result = {
+                success: false,
+                repairedFiles: 0,
+                backedUpFiles: 0,
+                skippedFiles: [],
+                quarantinedFiles: [],
+                errors: [],
+                message: 'Repair cancelled before start'
+              };
+              return;
+            }
+
             for (let i = 0; i < targetFiles.length; i++) {
               if (job.cancelRequested) {
                 app.debug(`🔧 Repair job ${jobId}: cancellation detected`);
@@ -2497,11 +2514,13 @@ export function registerApiRoutes(
                 break;
               }
 
-              const { absolute: filePath, relative: relativePath } = targetFiles[i];
+              const { absolute: filePath, relative: relativePath, violation } = targetFiles[i];
               job.currentFile = relativePath;
-              job.processed = i;
-              job.percent = job.total > 0 ? Math.round((i / job.total) * 100) : 100;
-              job.message = `Repairing (${i + 1}/${job.total}): ${relativePath}`;
+              job.processed = Math.min(i + 1, job.total);
+              job.percent = job.total > 0 ? Math.round(((i + 1) / job.total) * 100) : 100;
+              job.message = `Repairing (${Math.min(i + 1, job.total)}/${job.total}): ${relativePath}`;
+
+              let needsRepair = Array.isArray(violation?.issues) && violation.issues.length > 0;
 
               app.debug(`🔧 Repair job ${jobId}: processing ${relativePath}`);
 
@@ -2601,8 +2620,6 @@ export function registerApiRoutes(
 
                 const fieldEntries = Object.entries(valueFields);
                 const hasExplodedFields = fieldEntries.some(([fieldName]) => fieldName.startsWith('value_') && fieldName !== 'value' && fieldName !== 'value_json');
-
-                let needsRepair = false;
 
                 for (const [fieldName, fieldType] of fieldEntries) {
                   if (fieldName === 'value_json') continue;
@@ -2707,8 +2724,6 @@ export function registerApiRoutes(
                 job.percent = job.total > 0 ? Math.round(((i + 1) / job.total) * 100) : 100;
               }
 
-              job.processed = i + 1;
-              job.percent = job.total > 0 ? Math.round(((i + 1) / job.total) * 100) : 100;
             }
 
             if (handledRelativePaths.size > 0) {
