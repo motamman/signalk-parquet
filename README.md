@@ -1,6 +1,6 @@
 # <img src="public/parquet.png" alt="SignalK Parquet Data Store" width="72" height="72" style="vertical-align: middle; margin-right: 20px;"> SignalK Parquet Data Store
 
-A comprehensive TypeScript-based SignalK plugin and webpp that saves marine data directly to Parquet files with regimen-based control and advanced querying features, including a REST API built on the SignalK History API and Claude AI history data analysis. 
+A comprehensive SignalK plugin and webpp that saves Signalk data directly to Parquet files with regimen-based control and advanced querying features, including a REST API built on the SignalK History API and Claude AI history data analysis. 
 
 ## Features
 
