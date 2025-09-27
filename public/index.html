@@ -1696,7 +1696,7 @@
             const startTime = new Date();
             const timerElement = document.createElement('div');
             timerElement.id = 'validationTimer';
-            timerElement.style.cssText = 'background: #e3f2fd; border: 1px solid #2196f3; border-radius: 5px; padding: 10px; margin-bottom: 15px; text-align: center; font-family: monospace;';
+            timerElement.style.cssText = 'background: #e3f2fd; border: 1px solid #2196f3; border-radius: 5px; padding: 15px; margin-bottom: 15px; text-align: center; font-family: monospace; box-shadow: 0 2px 4px rgba(0,0,0,0.1);';
 
             statusDiv.innerHTML = '';
             statusDiv.appendChild(timerElement);
@@ -1784,12 +1784,12 @@
                     const violationsLabel = isCancelled ? 'Detected schema issues' : 'Schema violations';
 
                     const statsLines = [
-                        `📁 <strong>${filesLabel}:</strong> ${totalFiles.toLocaleString()}${isCancelled && overallTotal ? ` / ${overallTotal.toLocaleString()}` : isSuccess ? ' (100%)' : ''}`,
-                        `🚢 <strong>${vesselsLabel}:</strong> ${totalVessels.toLocaleString()}`,
-                        `✅ <strong>${correctLabel}:</strong> ${correctSchemas.toLocaleString()}`,
-                        `❌ <strong>${violationsLabel}:</strong> ${violations.toLocaleString()}`,
-                        `📊 <strong>${isCancelled ? 'Processed success rate' : 'Success rate'}:</strong> ${successRate}%`
-                    ].join('<br>');
+                        `<div style="display: flex; justify-content: space-between; margin-bottom: 6px;"><span>📁 <strong>${filesLabel}:</strong></span> <span style="font-weight: bold;">${totalFiles.toLocaleString()}${isCancelled && overallTotal ? ` / ${overallTotal.toLocaleString()}` : isSuccess ? ' (100%)' : ''}</span></div>`,
+                        `<div style="display: flex; justify-content: space-between; margin-bottom: 6px;"><span>🚢 <strong>${vesselsLabel}:</strong></span> <span style="font-weight: bold;">${totalVessels.toLocaleString()}</span></div>`,
+                        `<div style="display: flex; justify-content: space-between; margin-bottom: 6px;"><span>✅ <strong>${correctLabel}:</strong></span> <span style="font-weight: bold; color: #4caf50;">${correctSchemas.toLocaleString()}</span></div>`,
+                        `<div style="display: flex; justify-content: space-between; margin-bottom: 6px;"><span>❌ <strong>${violationsLabel}:</strong></span> <span style="font-weight: bold; color: ${violations > 0 ? '#f44336' : '#4caf50'};">${violations.toLocaleString()}</span></div>`,
+                        `<div style="display: flex; justify-content: space-between;"><span>📊 <strong>${isCancelled ? 'Processed success rate' : 'Success rate'}:</strong></span> <span style="font-weight: bold; color: ${parseFloat(successRate) === 100 ? '#4caf50' : '#ff9800'};">${successRate}%</span></div>`
+                    ].join('');
 
                     const statusNote = isCancelled && overallTotal
                         ? '<div style="margin-top: 8px; color: #b36b00;">Cancellation requested during processing. Only partial results are available.</div>'
@@ -1802,7 +1802,7 @@
                         `Started: ${startTime.toLocaleTimeString()}<br>`,
                         `Ended: ${endTime.toLocaleTimeString()}<br>`,
                         `<strong>Total Time: ${totalTime.toFixed(1)}s</strong>`,
-                        `<div style="margin-top: 10px; text-align: left; line-height: 1.6;">${statsLines}</div>`,
+                        `<div style="margin-top: 15px; padding: 12px; background: rgba(255,255,255,0.3); border-radius: 4px; text-align: left; line-height: 1.8; font-size: 14px;">${statsLines}</div>`,
                         statusNote
                     ].filter(Boolean).join('');
                     timerElement.style.background = background;
