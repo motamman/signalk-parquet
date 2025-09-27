@@ -46,6 +46,20 @@ import { AnalysisTemplateManager, TEMPLATE_CATEGORIES } from './analysis-templat
 import { VesselContextManager } from './vessel-context';
 // import { initializeStreamingService, shutdownStreamingService } from './index';
 
+// Progress tracking for validation jobs
+interface ValidationProgress {
+  jobId: string;
+  status: 'running' | 'completed' | 'cancelled' | 'error';
+  processed: number;
+  total: number;
+  percent: number;
+  startTime: Date;
+  currentFile?: string;
+  error?: string;
+}
+
+const validationJobs = new Map<string, ValidationProgress>();
+
 // Shared analyzer instance to maintain conversation state across requests
 let sharedAnalyzer: ClaudeAnalyzer | null = null;
 
@@ -1864,12 +1878,43 @@ export function registerApiRoutes(
   // SCHEMA VALIDATION API ROUTES
   // ===========================================
 
+  // Get validation progress
+  router.get(
+    '/api/validate-schemas/progress/:jobId',
+    async (req: TypedRequest, res: TypedResponse<ValidationProgress>) => {
+      const { jobId } = req.params;
+      const progress = validationJobs.get(jobId);
+
+      if (!progress) {
+        return res.status(404).json({
+          success: false,
+          error: 'Validation job not found'
+        } as any);
+      }
+
+      return res.json(progress);
+    }
+  );
+
   // Validate parquet schemas
   router.post(
     '/api/validate-schemas',
-    async (_: TypedRequest, res: TypedResponse<ValidationApiResponse>) => {
+    async (req: TypedRequest, res: TypedResponse<ValidationApiResponse & {jobId: string}>) => {
+      // Create job for progress tracking
+      const jobId = `val_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+      const progressJob: ValidationProgress = {
+        jobId,
+        status: 'running',
+        processed: 0,
+        total: 0,
+        percent: 0,
+        startTime: new Date()
+      };
+      validationJobs.set(jobId, progressJob);
+
       try {
         app.debug('🔍 Starting schema validation...');
+        app.debug(`📋 Created validation job: ${jobId}`);
 
         // Import required modules for parquet reading
         const parquet = require('@dsnp/parquetjs');
@@ -1912,13 +1957,28 @@ export function registerApiRoutes(
         });
         addDebug(`📄 Found ${files.length} parquet files`);
 
-        // Add 10 second pause before processing
+        // Update job with total file count
+        progressJob.total = files.length;
+
+        // Add 10 second pause before processing (single delay to avoid disconnect detection)
         addDebug(`⏸️ Pausing for 10 seconds before processing...`);
-        await new Promise(resolve => setTimeout(resolve, 10000));
+        await new Promise(resolve => {
+          const delayTimeout = setTimeout(resolve, 10000);
+        });
         addDebug(`▶️ Resuming processing after 10 second pause`);
 
         // Process each file
-        for (const filePath of files) {
+        for (let fileIndex = 0; fileIndex < files.length; fileIndex++) {
+          const filePath = files[fileIndex];
+
+          // Update progress every 10 files
+          if (fileIndex % 10 === 0 || fileIndex === files.length - 1) {
+            progressJob.processed = fileIndex;
+            progressJob.percent = Math.round((fileIndex / files.length) * 100);
+            progressJob.currentFile = path.basename(filePath);
+          }
+
+
           // Skip quarantined files and processed directories
           if (path.basename(filePath).includes('quarantine') || path.basename(filePath).includes('corrupted') || filePath.includes('/processed/') || filePath.includes('/repaired/')) {
             continue;
@@ -2104,21 +2164,30 @@ export function registerApiRoutes(
 
         addDebug(`📊 Validation completed: ${totalFiles} files, ${vessels.size} vessels, ${correctSchemas} correct, ${violationSchemas} violations`);
 
-        res.json({
+        // Mark job as completed
+        progressJob.status = 'completed';
+        progressJob.processed = totalFiles;
+        progressJob.percent = 100;
+
+        return res.json({
           success: true,
           totalFiles,
           totalVessels: vessels.size,
           correctSchemas,
           violations: violationSchemas,
           violationDetails,
-          debugMessages
+          debugMessages,
+          jobId
         });
 
       } catch (error) {
         app.error(`Error during schema validation: ${error}`);
-        res.status(500).json({
+        progressJob.status = 'error';
+        progressJob.error = (error as Error).message;
+        return res.status(500).json({
           success: false,
-          error: (error as Error).message
+          error: (error as Error).message,
+          jobId
         });
       }
     }

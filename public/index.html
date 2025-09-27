@@ -1393,6 +1393,79 @@
             }
         }
 
+        // Global variables for validation cancellation
+        let currentValidationController = null;
+        let currentRepairController = null;
+
+        // Cancel current validation
+        function cancelValidation() {
+            if (currentValidationController) {
+                currentValidationController.abort();
+                currentValidationController = null;
+            }
+        }
+
+        // Cancel current repair
+        function cancelRepair() {
+            if (currentRepairController) {
+                currentRepairController.abort();
+                currentRepairController = null;
+            }
+        }
+
+        // Poll for validation progress
+        async function pollValidationProgress(jobId, timerInterval, timerElement, startTime) {
+            let polling = true;
+
+            while (polling) {
+                try {
+                    const response = await fetch(`/plugins/signalk-parquet/api/validate-schemas/progress/${jobId}`);
+                    if (!response.ok) {
+                        console.error('Failed to get progress:', response.status);
+                        break;
+                    }
+
+                    const progress = await response.json();
+
+                    // Update timer with real progress
+                    const elapsed = (new Date() - startTime) / 1000;
+                    timerElement.innerHTML = `
+                        <strong>⏱️ Validation Progress</strong><br>
+                        Started: ${startTime.toLocaleTimeString()}<br>
+                        Elapsed: ${elapsed.toFixed(1)}s<br>
+                        <strong>Files: ${progress.processed.toLocaleString()} / ${progress.total.toLocaleString()} (${progress.percent}%)</strong><br>
+                        <span style="font-size: 0.9em; color: #666;">Current: ${progress.currentFile || 'Processing...'}</span>
+                    `;
+
+                    // Check if completed
+                    if (progress.status === 'completed' || progress.status === 'cancelled' || progress.status === 'error') {
+                        polling = false;
+
+                        if (progress.status === 'completed') {
+                            const endTime = new Date();
+                            const totalTime = (endTime - startTime) / 1000;
+                            timerElement.innerHTML = `
+                                <strong>⏱️ Validation Complete</strong><br>
+                                Started: ${startTime.toLocaleTimeString()}<br>
+                                Completed: ${endTime.toLocaleTimeString()}<br>
+                                <strong>Total Time: ${totalTime.toFixed(1)}s</strong><br>
+                                <strong>📁 Files: ${progress.total.toLocaleString()} (100%)</strong>
+                            `;
+                            timerElement.style.background = '#e8f5e8';
+                            timerElement.style.borderColor = '#4caf50';
+                        }
+                    }
+
+                    // Wait 500ms before next poll
+                    await new Promise(resolve => setTimeout(resolve, 500));
+
+                } catch (error) {
+                    console.error('Progress polling error:', error);
+                    break;
+                }
+            }
+        }
+
         async function runDataValidation() {
             const statusDiv = document.getElementById('validationStatus');
             const resultsDiv = document.getElementById('validationResults');
@@ -1400,11 +1473,41 @@
             const detailsDiv = document.getElementById('validationDetails');
             const button = document.getElementById('validateBtn');
 
-            // Show loading state
-            button.disabled = true;
-            button.textContent = '🔄 Running Validation...';
-            statusDiv.innerHTML = '<div class="loading">Validating parquet schemas...</div>';
+
+            // Show loading state with cancel button and timer
+            const originalButtonText = button.textContent;
+            button.textContent = '⏸️ Running Validation (click to cancel)';
+            button.style.background = '#ffc107';
+
+            // Start timer
+            const startTime = new Date();
+            const timerElement = document.createElement('div');
+            timerElement.id = 'validationTimer';
+            timerElement.style.cssText = 'background: #e3f2fd; border: 1px solid #2196f3; border-radius: 5px; padding: 10px; margin-bottom: 15px; text-align: center; font-family: monospace;';
+
+            const loadingElement = document.createElement('div');
+            loadingElement.style.cssText = 'text-align: center; padding: 20px;';
+            loadingElement.innerHTML = `
+                🔄 Validating parquet schemas...<br><br>
+                <button onclick="cancelValidation()" style="padding: 8px 16px; background: #dc3545; color: white; border: none; border-radius: 4px; cursor: pointer;">❌ Cancel Validation</button>
+            `;
+
+            statusDiv.innerHTML = '';
+            statusDiv.appendChild(timerElement);
+            statusDiv.appendChild(loadingElement);
             resultsDiv.style.display = 'none';
+
+            // Update timer every 100ms - NO FAKE PROGRESS
+            const timerInterval = setInterval(() => {
+                const elapsed = (new Date() - startTime) / 1000;
+
+                timerElement.innerHTML = `
+                    <strong>⏱️ Validation Timer</strong><br>
+                    Started: ${startTime.toLocaleTimeString()}<br>
+                    Elapsed: ${elapsed.toFixed(1)}s<br>
+                    <span id="validationProgress" style="font-size: 0.9em; color: #666;">Running validation...</span>
+                `;
+            }, 100);
 
             try {
                 const response = await fetch('/plugins/signalk-parquet/api/validate-schemas', {
@@ -1413,6 +1516,7 @@
                         'Content-Type': 'application/json',
                     }
                 });
+                console.log('✅ Fetch completed, response status:', response.status);
 
                 const result = await response.json();
 
@@ -1420,8 +1524,33 @@
                     throw new Error(result.message || 'Validation failed');
                 }
 
-                // Show success status
-                statusDiv.innerHTML = `<div class="success">✅ Validation completed successfully</div>`;
+                // Start polling for progress if we got a jobId
+                if (result.jobId) {
+                    console.log('📋 Starting progress polling for job:', result.jobId);
+                    clearInterval(timerInterval); // Stop the basic timer since we're switching to progress polling
+                    await pollValidationProgress(result.jobId, timerInterval, timerElement, startTime);
+                } else {
+                    // Old style response without polling
+                    console.log('⚠️ No jobId in response, using old style completion');
+                }
+
+                // Stop timer and show final time
+                clearInterval(timerInterval);
+                const endTime = new Date();
+                const totalTime = (endTime - startTime) / 1000;
+
+                timerElement.innerHTML = `
+                    <strong>⏱️ Validation Complete</strong><br>
+                    Started: ${startTime.toLocaleTimeString()}<br>
+                    Completed: ${endTime.toLocaleTimeString()}<br>
+                    <strong>Total Time: ${totalTime.toFixed(1)}s</strong><br>
+                    <strong>📁 Files: ${result.totalFiles || 0} | 🚢 Vessels: ${result.totalVessels || 0}</strong>
+                `;
+                timerElement.style.background = '#e8f5e8';
+                timerElement.style.borderColor = '#4caf50';
+
+                // Remove loading message
+                loadingElement.remove();
 
                 // Show summary
                 summaryDiv.innerHTML = `
@@ -1451,12 +1580,53 @@
                 }
 
             } catch (error) {
-                statusDiv.innerHTML = `<div class="error">❌ Error: ${error.message}</div>`;
-                console.error('Validation error:', error);
+                // Stop timer on error
+                clearInterval(timerInterval);
+                const endTime = new Date();
+                const totalTime = (endTime - startTime) / 1000;
+
+                // Check if it was cancelled
+                if (error.name === 'AbortError') {
+                    // Try to get progress info from the server response if available
+                    let progressInfo = '';
+                    try {
+                        if (error.response) {
+                            const cancelData = await error.response.json();
+                            if (cancelData.processedFiles !== undefined && cancelData.totalFiles !== undefined) {
+                                const percentage = cancelData.totalFiles > 0
+                                    ? Math.round((cancelData.processedFiles / cancelData.totalFiles) * 100)
+                                    : 0;
+                                progressInfo = `<br><strong>Progress: ${cancelData.processedFiles.toLocaleString()}/${cancelData.totalFiles.toLocaleString()} files (${percentage}%)</strong>`;
+                            }
+                        }
+                    } catch (parseError) {
+                        // Ignore parse errors, just show basic cancellation
+                    }
+
+                    timerElement.innerHTML = `
+                        <strong>❌ Validation Cancelled</strong><br>
+                        Started: ${startTime.toLocaleTimeString()}<br>
+                        Cancelled: ${endTime.toLocaleTimeString()}<br>
+                        <strong>Time: ${totalTime.toFixed(1)}s</strong>${progressInfo}
+                    `;
+                    timerElement.style.background = '#fff3cd';
+                    timerElement.style.borderColor = '#ffc107';
+                } else {
+                    timerElement.innerHTML = `
+                        <strong>⏱️ Validation Failed</strong><br>
+                        Started: ${startTime.toLocaleTimeString()}<br>
+                        Failed: ${endTime.toLocaleTimeString()}<br>
+                        <strong>Total Time: ${totalTime.toFixed(1)}s</strong>
+                    `;
+                    timerElement.style.background = '#ffeaea';
+                    timerElement.style.borderColor = '#f44336';
+                    console.error('Validation error:', error);
+                }
+
+                loadingElement.remove();
             } finally {
-                // Reset button
-                button.disabled = false;
                 button.textContent = '🔍 Run Schema Validation';
+                button.style.background = '';
             }
         }
 
@@ -1464,17 +1634,34 @@
             const statusDiv = document.getElementById('validationStatus');
             const repairBtn = document.getElementById('repairBtn');
 
-            // Show loading state
-            repairBtn.disabled = true;
-            repairBtn.textContent = '🔄 Repairing Schemas...';
-            statusDiv.innerHTML = '<div class="loading">🔧 Starting schema repair process...</div>';
+            // If already running, cancel the current repair
+            if (currentRepairController) {
+                cancelRepair();
+                return;
+            }
+
+            // Show loading state with cancel button
+            const originalButtonText = repairBtn.textContent;
+            repairBtn.textContent = '⏸️ Repairing Schemas (click to cancel)';
+            repairBtn.style.background = '#ffc107';
+
+            statusDiv.innerHTML = `
+                <div class="loading" style="text-align: center; padding: 20px;">
+                    🔧 Starting schema repair process...<br><br>
+                    <button onclick="cancelRepair()" style="padding: 8px 16px; background: #dc3545; color: white; border: none; border-radius: 4px; cursor: pointer;">❌ Cancel Repair</button>
+                </div>
+            `;
 
             try {
+                // Create abort controller for cancellation
+                currentRepairController = new AbortController();
+
                 const response = await fetch('/plugins/signalk-parquet/api/repair-schemas', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
-                    }
+                    },
+                    signal: currentRepairController.signal
                 });
 
                 const result = await response.json();
@@ -1490,12 +1677,18 @@
                 setTimeout(() => runDataValidation(), 2000);
 
             } catch (error) {
-                statusDiv.innerHTML = `<div class="error">❌ Repair Error: ${error.message}</div>`;
-                console.error('Repair error:', error);
+                // Check if it was cancelled
+                if (error.name === 'AbortError') {
+                    statusDiv.innerHTML = `<div class="error" style="background: #fff3cd; color: #856404;">❌ Repair Cancelled</div>`;
+                } else {
+                    statusDiv.innerHTML = `<div class="error">❌ Repair Error: ${error.message}</div>`;
+                    console.error('Repair error:', error);
+                }
             } finally {
-                // Reset button
-                repairBtn.disabled = false;
+                // Reset button and controller
+                currentRepairController = null;
                 repairBtn.textContent = '🔧 Repair Schema Violations';
+                repairBtn.style.background = '';
             }
         }
 

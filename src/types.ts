@@ -279,6 +279,9 @@ export interface ValidationApiResponse extends ApiResponse {
   violations?: number;
   violationDetails?: string[];
   debugMessages?: string[];
+  processedFiles?: number;
+  processedVessels?: number;
+  progress?: string;
 }
 
 // Claude Analysis API Response Types
