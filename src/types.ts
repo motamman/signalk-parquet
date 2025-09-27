@@ -272,12 +272,19 @@ export interface S3TestApiResponse extends ApiResponse {
   keyPrefix?: string;
 }
 
+export interface ValidationViolation {
+  file: string;
+  vessel?: string;
+  issues: string[];
+}
+
 export interface ValidationApiResponse extends ApiResponse {
   totalFiles?: number;
   totalVessels?: number;
   correctSchemas?: number;
   violations?: number;
   violationDetails?: string[];
+  violationFiles?: ValidationViolation[];
   debugMessages?: string[];
   processedFiles?: number;
   processedVessels?: number;

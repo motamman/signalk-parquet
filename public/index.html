@@ -1566,6 +1566,7 @@
             const summaryHeader = document.getElementById('validationSummaryHeader');
             const detailsHeader = document.getElementById('validationDetailsHeader');
             const button = document.getElementById('validateBtn');
+            const repairBtn = document.getElementById('repairBtn');
 
             validationCancelRequested = false;
             currentValidationJobId = null;
@@ -1574,6 +1575,10 @@
             button.textContent = '⏸️ Running Validation (click to cancel)';
             button.style.background = '#ffc107';
             button.onclick = cancelValidation;
+            if (repairBtn) {
+                repairBtn.style.display = 'inline-block';
+                repairBtn.disabled = true;
+            }
 
             // Start timer
             const startTime = new Date();
@@ -1581,16 +1586,8 @@
             timerElement.id = 'validationTimer';
             timerElement.style.cssText = 'background: #e3f2fd; border: 1px solid #2196f3; border-radius: 5px; padding: 10px; margin-bottom: 15px; text-align: center; font-family: monospace;';
 
-            const loadingElement = document.createElement('div');
-            loadingElement.style.cssText = 'text-align: center; padding: 20px;';
-            loadingElement.innerHTML = `
-                🔄 Validating parquet schemas...<br><br>
-                <button id="cancelValidationBtn" onclick="cancelValidation()" style="padding: 8px 16px; background: #dc3545; color: white; border: none; border-radius: 4px; cursor: pointer;">❌ Cancel Validation</button>
-            `;
-
             statusDiv.innerHTML = '';
             statusDiv.appendChild(timerElement);
-            statusDiv.appendChild(loadingElement);
             resultsDiv.style.display = 'none';
             summaryDiv.innerHTML = '';
             detailsDiv.innerHTML = '';
@@ -1699,11 +1696,8 @@
                     timerElement.style.background = background;
                     timerElement.style.borderColor = border;
 
-                    loadingElement.remove();
-
                     if (isSuccess || isCancelled) {
                         const hasViolations = Array.isArray(summaryData.violationDetails) && summaryData.violationDetails.length > 0;
-                        const repairBtn = document.getElementById('repairBtn');
 
                         if (hasViolations) {
                             if (summaryHeader) {
@@ -1728,7 +1722,8 @@
                         }
 
                         if (repairBtn) {
-                            repairBtn.style.display = (!isCancelled && violations > 0) ? 'inline-block' : 'none';
+                            repairBtn.style.display = 'inline-block';
+                            repairBtn.disabled = isCancelled || violations === 0;
                         }
                     } else {
                         if (summaryHeader) {
@@ -1740,6 +1735,11 @@
                         summaryDiv.style.display = summaryDiv.innerHTML ? 'block' : 'none';
                         detailsDiv.innerHTML = '';
                         resultsDiv.style.display = summaryDiv.innerHTML ? 'block' : 'none';
+
+                        if (repairBtn) {
+                            repairBtn.style.display = 'inline-block';
+                            repairBtn.disabled = true;
+                        }
                     }
                 } else {
                     loadingElement.remove();
@@ -1788,7 +1788,10 @@
                     console.error('Validation error:', error);
                 }
 
-                loadingElement.remove();
+                if (repairBtn) {
+                    repairBtn.style.display = 'inline-block';
+                    repairBtn.disabled = true;
+                }
             } finally {
                 currentValidationJobId = null;
                 validationCancelRequested = false;

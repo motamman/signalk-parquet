@@ -26,6 +26,7 @@ import {
   AnalysisApiResponse,
   ClaudeConnectionTestResponse,
   ValidationApiResponse,
+  ValidationViolation,
 } from './types';
 import {
   loadWebAppConfig,
@@ -64,6 +65,8 @@ interface ValidationProgress {
 }
 
 const validationJobs = new Map<string, ValidationProgress>();
+
+let lastValidationViolations: ValidationViolation[] = [];
 
 const VALIDATION_JOB_TTL_MS = 10 * 60 * 1000; // Retain job metadata for 10 minutes
 
@@ -1968,8 +1971,10 @@ export function registerApiRoutes(
       };
 
       validationJobs.set(jobId, progressJob);
+      lastValidationViolations = [];
 
       const runValidationJob = async () => {
+        let violationFiles: ValidationViolation[] = [];
         try {
           app.debug('🔍 Starting schema validation...');
           app.debug(`📋 Created validation job: ${jobId}`);
@@ -2193,6 +2198,11 @@ export function registerApiRoutes(
                   violationSchemas++;
                   const shortPath = path.relative(dataDir, filePath);
                   violationDetails.push(`[${totalFiles}] ${shortPath}: ${violations.join(', ')}`);
+                  violationFiles.push({
+                    file: shortPath,
+                    vessel: vesselName,
+                    issues: [...violations]
+                  });
                 } else {
                   correctSchemas++;
                 }
@@ -2205,6 +2215,11 @@ export function registerApiRoutes(
               violationSchemas++;
               const shortPath = path.relative(dataDir, filePath);
               violationDetails.push(`[${totalFiles}] ${shortPath}: ERROR - ${(error as Error).message}`);
+              violationFiles.push({
+                file: shortPath,
+                vessel: progressJob.currentVessel,
+                issues: [`ERROR - ${(error as Error).message}`]
+              });
             }
           }
 
@@ -2224,9 +2239,11 @@ export function registerApiRoutes(
               correctSchemas,
               violations: violationSchemas,
               violationDetails,
+              violationFiles,
               debugMessages,
               jobId
             };
+            lastValidationViolations = violationFiles;
             return;
           }
 
@@ -2246,9 +2263,11 @@ export function registerApiRoutes(
             correctSchemas,
             violations: violationSchemas,
             violationDetails,
+            violationFiles,
             debugMessages,
             jobId
           };
+          lastValidationViolations = violationFiles;
         } catch (error) {
           app.error(`Error during schema validation: ${error}`);
           progressJob.status = 'error';
@@ -2257,8 +2276,10 @@ export function registerApiRoutes(
           progressJob.result = {
             success: false,
             error: (error as Error).message,
+            violationFiles,
             jobId
           };
+          lastValidationViolations = violationFiles;
         } finally {
           progressJob.currentFile = undefined;
           progressJob.currentVessel = undefined;
@@ -2290,7 +2311,6 @@ export function registerApiRoutes(
 
         // Import required modules
         const parquet = require('@dsnp/parquetjs');
-        const glob = require('glob');
         const path = require('path');
         // fs-extra already imported at top of file
 
@@ -2305,28 +2325,65 @@ export function registerApiRoutes(
 
         app.debug(`🔧 Starting repair process in ${dataDir}`);
 
-        // Find all parquet files using the configured filename prefix
         const filenamePrefix = state.currentConfig?.filenamePrefix || 'signalk_data';
-        const parquetFiles = glob.sync(`${dataDir}/vessels/**/${filenamePrefix}_*.parquet`, {
-          ignore: [
-            `${dataDir}/vessels/**/processed/**`,
-            `${dataDir}/vessels/**/repaired/**`,
-            `${dataDir}/vessels/**/quarantine/**`,
-            `${dataDir}/vessels/**/claude-schemas/**`,
-            `${dataDir}/vessels/**/failed/**`
-          ]
-        });
 
-        app.debug(`🔧 Found ${parquetFiles.length} parquet files to check`);
+        const uniqueViolations = new Map<string, ValidationViolation>();
+        for (const violation of lastValidationViolations) {
+          if (violation?.file) {
+            uniqueViolations.set(violation.file, violation);
+          }
+        }
+
+        if (uniqueViolations.size === 0) {
+          const message = 'No validation violations available for repair. Run validation first.';
+          app.debug(`🔧 ${message}`);
+          return res.status(400).json({
+            success: false,
+            message
+          });
+        }
+
+        const targetFiles: { relative: string; absolute: string }[] = [];
+        for (const [relativePath] of uniqueViolations) {
+          const absolutePath = path.isAbsolute(relativePath)
+            ? relativePath
+            : path.join(dataDir, relativePath);
+
+          if (!absolutePath.startsWith(dataDir)) {
+            app.debug(`❌ Skipping flagged file outside data directory: ${relativePath}`);
+            continue;
+          }
+
+          if (await fs.pathExists(absolutePath)) {
+            targetFiles.push({ relative: relativePath, absolute: absolutePath });
+          } else {
+            app.debug(`❌ Flagged file no longer exists: ${relativePath}`);
+          }
+        }
+
+        if (targetFiles.length === 0) {
+          const message = 'Validation flagged files are missing; nothing to repair.';
+          app.debug(`🔧 ${message}`);
+          return res.status(400).json({
+            success: false,
+            message
+          });
+        }
+
+        targetFiles.sort((a, b) => a.relative.localeCompare(b.relative));
+
+        app.debug(`🔧 Repairing ${targetFiles.length} files flagged by validation`);
 
         // Add 10 second pause before processing
         app.debug(`⏸️ Pausing for 10 seconds before processing...`);
         await new Promise(resolve => setTimeout(resolve, 10000));
         app.debug(`▶️ Resuming processing after 10 second pause`);
 
-        for (let i = 0; i < parquetFiles.length; i++) {
-          const filePath = parquetFiles[i];
-          app.debug(`🔧 Processing file ${i + 1}/${parquetFiles.length}: ${path.basename(filePath)}`);
+        const handledRelativePaths = new Set<string>();
+
+        for (let i = 0; i < targetFiles.length; i++) {
+          const { absolute: filePath, relative: relativePath } = targetFiles[i];
+          app.debug(`🔧 Processing file ${i + 1}/${targetFiles.length}: ${relativePath}`);
 
           // Check file size and move corrupted files to quarantine
           try {
@@ -2346,6 +2403,7 @@ export function registerApiRoutes(
               await fs.appendFile(logFile, logEntry);
 
               app.debug(`📋 Quarantined: ${stats.size.toString().padStart(12, ' ')}  ${filePath}`);
+              handledRelativePaths.add(relativePath);
               continue;
             }
           } catch (statError) {
@@ -2357,7 +2415,7 @@ export function registerApiRoutes(
             // Read parquet file schema using DuckDB
             const { spawn } = require('child_process');
             const duckdbResult = await new Promise<string>((resolve, reject) => {
-              const duckdb = spawn('duckdb', ['-c', `DESCRIBE SELECT * FROM '${filePath}';`]);
+            const duckdb = spawn('duckdb', ['-c', `DESCRIBE SELECT * FROM '${filePath}';`]);
               let output = '';
               let error = '';
 
@@ -2595,6 +2653,7 @@ export function registerApiRoutes(
 
               repairedFiles++;
               app.debug(`🔧 ✅ Repaired: ${path.basename(filePath)}`);
+              handledRelativePaths.add(relativePath);
             }
 
           } catch (fileError) {
@@ -2602,7 +2661,13 @@ export function registerApiRoutes(
           }
         }
 
-        const message = `Repaired ${repairedFiles} files, backed up ${backedUpFiles} originals to 'repaired' folders`;
+        if (handledRelativePaths.size > 0) {
+          lastValidationViolations = lastValidationViolations.filter(
+            violation => !handledRelativePaths.has(violation.file)
+          );
+        }
+
+        const message = `Repaired ${repairedFiles} files (processed ${targetFiles.length} flagged files), backed up ${backedUpFiles} originals to 'repaired' folders`;
         app.debug(`🔧 Repair completed: ${message}`);
 
         // Send completion response
