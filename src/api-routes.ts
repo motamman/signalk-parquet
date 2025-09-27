@@ -26,6 +26,7 @@ import {
   AnalysisApiResponse,
   ClaudeConnectionTestResponse,
   ValidationApiResponse,
+  ValidationViolation,
 } from './types';
 import { SchemaService } from './schema-service';
 import { ProcessType, ProcessState, ProcessStatusApiResponse, ProcessCancelApiResponse } from './types';
@@ -47,6 +48,73 @@ import { ClaudeAnalyzer, AnalysisRequest, FollowUpRequest } from './claude-analy
 import { AnalysisTemplateManager, TEMPLATE_CATEGORIES } from './analysis-templates';
 import { VesselContextManager } from './vessel-context';
 // import { initializeStreamingService, shutdownStreamingService } from './index';
+
+// Progress tracking for validation jobs
+interface ValidationProgress {
+  jobId: string;
+  status: 'running' | 'cancelling' | 'completed' | 'cancelled' | 'error';
+  processed: number;
+  total: number;
+  percent: number;
+  startTime: Date;
+  currentFile?: string;
+  currentVessel?: string;
+  currentRelativePath?: string;
+  cancelRequested?: boolean;
+  error?: string;
+  completedAt?: Date;
+  result?: ValidationApiResponse;
+}
+
+const validationJobs = new Map<string, ValidationProgress>();
+
+let lastValidationViolations: ValidationViolation[] = [];
+
+interface RepairProgress {
+  jobId: string;
+  status: 'running' | 'cancelling' | 'completed' | 'cancelled' | 'error';
+  processed: number;
+  total: number;
+  percent: number;
+  startTime: Date;
+  currentFile?: string;
+  message?: string;
+  cancelRequested?: boolean;
+  completedAt?: Date;
+  result?: {
+    success: boolean;
+    repairedFiles: number;
+    backedUpFiles: number;
+    skippedFiles: string[];
+    quarantinedFiles: string[];
+    errors: string[];
+    message?: string;
+  };
+}
+
+const repairJobs = new Map<string, RepairProgress>();
+
+const VALIDATION_JOB_TTL_MS = 10 * 60 * 1000; // Retain job metadata for 10 minutes
+
+function scheduleValidationJobCleanup(jobId: string) {
+  setTimeout(() => {
+    const job = validationJobs.get(jobId);
+    if (job && job.status !== 'running') {
+      validationJobs.delete(jobId);
+    }
+  }, VALIDATION_JOB_TTL_MS);
+}
+
+const REPAIR_JOB_TTL_MS = 10 * 60 * 1000;
+
+function scheduleRepairJobCleanup(jobId: string) {
+  setTimeout(() => {
+    const job = repairJobs.get(jobId);
+    if (job && job.status !== 'running') {
+      repairJobs.delete(jobId);
+    }
+  }, REPAIR_JOB_TTL_MS);
+}
 
 // Shared analyzer instance to maintain conversation state across requests
 let sharedAnalyzer: ClaudeAnalyzer | null = null;
@@ -1976,237 +2044,705 @@ export function registerApiRoutes(
   // SCHEMA VALIDATION API ROUTES
   // ===========================================
 
+  // Get validation progress
+  router.get(
+    '/api/validate-schemas/progress/:jobId',
+    async (req: TypedRequest, res: TypedResponse<ValidationProgress>) => {
+      const { jobId } = req.params;
+      const progress = validationJobs.get(jobId);
+
+      if (!progress) {
+        return res.status(404).json({
+          success: false,
+          error: 'Validation job not found'
+        } as any);
+      }
+
+      res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+      res.set('Pragma', 'no-cache');
+      res.set('Expires', '0');
+      res.set('Surrogate-Control', 'no-store');
+
+      return res.json(progress);
+    }
+  );
+
+  router.post(
+    '/api/validate-schemas/cancel/:jobId',
+    async (
+      req: TypedRequest,
+      res: TypedResponse<ValidationApiResponse & { jobId: string; status: ValidationProgress['status'] }>
+    ) => {
+      const { jobId } = req.params;
+      const job = validationJobs.get(jobId);
+
+      if (!job) {
+        return res.status(404).json({
+          success: false,
+          error: 'Validation job not found',
+          jobId,
+          status: 'error'
+        } as any);
+      }
+
+      if (job.status === 'completed' || job.status === 'cancelled' || job.status === 'error') {
+        return res.json({
+          success: true,
+          message: `Validation job already ${job.status}`,
+          jobId,
+          status: job.status
+        });
+      }
+
+      job.cancelRequested = true;
+      job.status = 'cancelling';
+      app.debug(`⏹️ Cancellation requested for validation job: ${jobId}`);
+
+      return res.json({
+        success: true,
+        message: 'Cancellation requested',
+        jobId,
+        status: job.status
+      });
+    }
+  );
+
+  router.get(
+    '/api/repair-schemas/progress/:jobId',
+    async (req: TypedRequest, res: TypedResponse<RepairProgress>) => {
+      const { jobId } = req.params;
+      const progress = repairJobs.get(jobId);
+
+      if (!progress) {
+        return res.status(404).json({
+          success: false,
+          message: 'Repair job not found'
+        } as any);
+      }
+
+      res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+      res.set('Pragma', 'no-cache');
+      res.set('Expires', '0');
+      res.set('Surrogate-Control', 'no-store');
+
+      return res.json(progress);
+    }
+  );
+
+  router.post(
+    '/api/repair-schemas/cancel/:jobId',
+    async (
+      req: TypedRequest,
+      res: TypedResponse<{ success: boolean; message: string; jobId: string; status: RepairProgress['status'] }>
+    ) => {
+      const { jobId } = req.params;
+      const job = repairJobs.get(jobId);
+
+      if (!job) {
+        return res.status(404).json({
+          success: false,
+          message: 'Repair job not found',
+          jobId,
+          status: 'error'
+        });
+      }
+
+      if (job.status === 'completed' || job.status === 'cancelled' || job.status === 'error') {
+        return res.json({
+          success: true,
+          message: `Repair job already ${job.status}`,
+          jobId,
+          status: job.status
+        });
+      }
+
+      job.cancelRequested = true;
+      job.status = 'cancelling';
+      job.message = 'Cancellation requested';
+      app.debug(`⏹️ Cancellation requested for repair job: ${jobId}`);
+
+      return res.json({
+        success: true,
+        message: 'Cancellation requested',
+        jobId,
+        status: job.status
+      });
+    }
+  );
+
   // Validate parquet schemas
   router.post(
     '/api/validate-schemas',
-    async (_: TypedRequest, res: TypedResponse<ValidationApiResponse>) => {
-      try {
-        // Check if another process is running
-        if (state.currentProcess?.isRunning) {
-          return res.status(409).json({
-            success: false,
-            error: `Cannot start validation: ${state.currentProcess.type} is already running. Cancel it first.`
+    async (_req: TypedRequest, res: TypedResponse<ValidationApiResponse & { jobId: string; status?: string }>) => {
+      const jobId = `val_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+      const progressJob: ValidationProgress = {
+        jobId,
+        status: 'running',
+        processed: 0,
+        total: 0,
+        percent: 0,
+        startTime: new Date(),
+        cancelRequested: false
+      };
+
+      validationJobs.set(jobId, progressJob);
+      lastValidationViolations = [];
+
+      const runValidationJob = async () => {
+        let violationFiles: ValidationViolation[] = [];
+        try {
+          app.debug('🔍 Starting schema validation...');
+          app.debug(`📋 Created validation job: ${jobId}`);
+
+          const parquet = require('@dsnp/parquetjs');
+          const glob = require('glob');
+          const path = require('path');
+
+          const configOutputDir = state.currentConfig?.outputDirectory || 'data';
+          const pluginDataPath = app.getDataDirPath();
+          const signalkDataDir = path.dirname(path.dirname(pluginDataPath));
+          const dataDir = path.join(signalkDataDir, configOutputDir);
+
+          let totalFiles = 0;
+          let correctSchemas = 0;
+          let violationSchemas = 0;
+          const vessels = new Set<string>();
+          const violationDetails: string[] = [];
+          const debugMessages: string[] = [];
+
+          const addDebug = (message: string) => {
+            debugMessages.push(message);
+            app.debug(message);
+          };
+
+          const searchPattern = path.join(dataDir, 'vessels', '**', '*.parquet');
+          addDebug(`🔍 Data directory: ${dataDir}`);
+          addDebug(`🔍 Searching pattern: ${searchPattern}`);
+
+          const files = glob.sync(searchPattern, {
+            ignore: [
+              `${dataDir}/**/processed/**`,
+              `${dataDir}/**/repaired/**`,
+              `${dataDir}/**/quarantine/**`,
+              `${dataDir}/**/claude-schemas/**`,
+              `${dataDir}/**/failed/**`
+            ]
           });
-        }
+          addDebug(`📄 Found ${files.length} parquet files`);
 
-        app.debug('🔍 Starting schema validation...');
+          progressJob.total = files.length;
+          progressJob.percent = files.length === 0 ? 100 : 0;
 
-        // Create SchemaService instance
-        const schemaService = new SchemaService(app);
+          addDebug('⏸️ Pausing for 10 seconds before processing...');
+          await new Promise(resolve => setTimeout(resolve, 10000));
+          addDebug('▶️ Resuming processing after 10 second pause');
 
-        // Import required modules for parquet reading
-        const parquet = require('@dsnp/parquetjs');
-        const glob = require('glob');
-        const path = require('path');
+          for (let fileIndex = 0; fileIndex < files.length; fileIndex++) {
+            if (progressJob.cancelRequested) {
+              addDebug('⏹️ Validation cancellation requested, stopping processing');
+              progressJob.status = 'cancelled';
+              break;
+            }
 
-        // Get the data directory from plugin config - use SignalK's main data dir, not plugin config dir
-        const configOutputDir = state.currentConfig?.outputDirectory || 'data';
-        const pluginDataPath = app.getDataDirPath(); // /Users/.../plugin-config-data/signalk-parquet
-        const signalkDataDir = path.dirname(path.dirname(pluginDataPath)); // Go up 2 levels to get to .signalk
-        const dataDir = path.join(signalkDataDir, configOutputDir);
+            const filePath = files[fileIndex];
 
-        let totalFiles = 0;
-        let schemasFound = 0;
-        let correctSchemas = 0;
-        let violationSchemas = 0;
-        const vessels = new Set<string>();
-        const violationDetails: string[] = [];
-        const debugMessages: string[] = [];
+            progressJob.processed = Math.min(fileIndex + 1, files.length);
+            progressJob.percent = files.length > 0
+              ? Math.round((progressJob.processed / files.length) * 100)
+              : 100;
+            progressJob.currentFile = path.basename(filePath);
+            progressJob.currentRelativePath = path.relative(dataDir, filePath);
 
-        // Helper function to add debug messages
-        const addDebug = (message: string) => {
-          debugMessages.push(message);
-          app.debug(message);
-        };
+            const pathParts = filePath.split(path.sep);
+            const vesselsIndex = pathParts.findIndex((part: string) => part === 'vessels');
+            const vesselName = vesselsIndex !== -1 && vesselsIndex + 1 < pathParts.length
+              ? pathParts[vesselsIndex + 1]
+              : undefined;
+            progressJob.currentVessel = vesselName;
 
-        // Search for all parquet files
-        const searchPattern = path.join(dataDir, 'vessels', '**', '*.parquet');
-        addDebug(`🔍 Data directory: ${dataDir}`);
-        addDebug(`🔍 Searching pattern: ${searchPattern}`);
+            if (vesselName) {
+              vessels.add(vesselName);
+            }
 
-        const files = glob.sync(searchPattern, {
-          ignore: [
-            `${dataDir}/**/processed/**`,
-            `${dataDir}/**/repaired/**`,
-            `${dataDir}/**/quarantine/**`,
-            `${dataDir}/**/claude-schemas/**`,
-            `${dataDir}/**/failed/**`
-          ]
-        });
-        addDebug(`📄 Found ${files.length} parquet files`);
+            if (path.basename(filePath).includes('quarantine') ||
+                path.basename(filePath).includes('corrupted') ||
+                filePath.includes('/processed/') ||
+                filePath.includes('/repaired/')) {
+              continue;
+            }
 
-        // Start the validation process
-        if (!startProcess(state, 'validation', files.length)) {
-          return res.status(409).json({
-            success: false,
-            error: 'Cannot start validation: Another process is already running'
-          });
-        }
+            totalFiles++;
 
-        // Add 10 second pause before processing
-        addDebug(`⏸️ Pausing for 10 seconds before processing...`);
-        await new Promise(resolve => setTimeout(resolve, 10000));
-        addDebug(`▶️ Resuming processing after 10 second pause`);
+            try {
+              const reader = await parquet.ParquetReader.openFile(filePath);
+              const cursor = reader.getCursor();
+              const schema = cursor.schema;
 
-        // Process each file
-        for (const filePath of files) {
-          // Skip quarantined files and processed directories
-          if (path.basename(filePath).includes('quarantine') || path.basename(filePath).includes('corrupted') || filePath.includes('/processed/') || filePath.includes('/repaired/')) {
-            continue;
+              if (schema && schema.schema) {
+                const fields = schema.schema;
+
+                const receivedTimestamp = fields.received_timestamp ? fields.received_timestamp.type : 'MISSING';
+                const signalkTimestamp = fields.signalk_timestamp ? fields.signalk_timestamp.type : 'MISSING';
+
+                const valueFields: { [key: string]: string } = {};
+                Object.keys(fields).forEach(fieldName => {
+                  if (fieldName.startsWith('value_') || fieldName === 'value') {
+                    valueFields[fieldName] = fields[fieldName].type;
+                  }
+                });
+
+                const relativePath = progressJob.currentRelativePath || path.relative(dataDir, filePath);
+                const pathMatch = relativePath.match(/vessels\/[^/]+\/(.+?)\/[^/]*\.parquet$/);
+                const signalkPath = pathMatch ? pathMatch[1].replace(/\//g, '.') : '';
+
+                let hasViolations = false;
+                const violations: string[] = [];
+
+                if (receivedTimestamp !== 'UTF8' && receivedTimestamp !== 'MISSING') {
+                  violations.push(`received_timestamp should be UTF8, got ${receivedTimestamp}`);
+                  hasViolations = true;
+                }
+                if (signalkTimestamp !== 'UTF8' && signalkTimestamp !== 'MISSING') {
+                  violations.push(`signalk_timestamp should be UTF8, got ${signalkTimestamp}`);
+                  hasViolations = true;
+                }
+
+                const isExplodedFile = Object.keys(valueFields).some(fieldName =>
+                  fieldName.startsWith('value_') && fieldName !== 'value' && fieldName !== 'value_json'
+                );
+                addDebug(`🔍 Validation: isExplodedFile = ${isExplodedFile}`);
+
+                let sampleRecords = [];
+                try {
+                  if (!parquet) {
+                    throw new Error('ParquetJS not available');
+                  }
+                  const sampleReader = await parquet.ParquetReader.openFile(filePath);
+                  const sampleCursor = sampleReader.getCursor();
+                  let record: any;
+                  let count = 0;
+                  while ((record = await sampleCursor.next()) && count < 100) {
+                    sampleRecords.push(record);
+                    count++;
+                  }
+                  await sampleReader.close();
+                } catch (error) {
+                  addDebug(`⚠️ Could not read sample data for validation: ${(error as Error).message}`);
+                  sampleRecords = [];
+                }
+
+                for (const [fieldName, fieldType] of Object.entries(valueFields)) {
+                  if (fieldName === 'value_json') {
+                    addDebug(`⏭️ ${fieldName}: Skipped entirely (always ignored)`);
+                    continue;
+                  }
+
+                  if (isExplodedFile && fieldName === 'value') {
+                    addDebug(`⏭️ ${fieldName}: Skipped in exploded file (always empty)`);
+                    continue;
+                  }
+
+                  if (fieldType === 'UTF8' || fieldType === 'VARCHAR') {
+                    let shouldBeNumeric = false;
+
+                    if (sampleRecords.length > 0) {
+                      const values = sampleRecords
+                        .map(r => r[fieldName])
+                        .filter(v => v !== null && v !== undefined);
+
+                      if (values.length > 0) {
+                        let allNumeric = true;
+                        let allBoolean = true;
+
+                        for (const value of values) {
+                          const str = String(value).trim();
+                          if (str === 'true' || str === 'false') {
+                            allNumeric = false;
+                          } else if (!isNaN(Number(str)) && str !== '') {
+                            allBoolean = false;
+                          } else {
+                            allNumeric = false;
+                            allBoolean = false;
+                            break;
+                          }
+                        }
+
+                        if (allNumeric && values.length > 0) {
+                          shouldBeNumeric = true;
+                          violations.push(`${fieldName} contains numbers but is ${fieldType}, should be DOUBLE`);
+                          hasViolations = true;
+                          addDebug(`🔍 ${fieldName}: VARCHAR contains numbers, flagged as violation`);
+                        } else if (allBoolean && values.length > 0) {
+                          violations.push(`${fieldName} contains booleans but is ${fieldType}, should be BOOLEAN`);
+                          hasViolations = true;
+                          addDebug(`🔍 ${fieldName}: VARCHAR contains booleans, flagged as violation`);
+                        }
+                      }
+                    }
+
+                    if (!shouldBeNumeric && sampleRecords.length === 0) {
+                      const isExplodedField = fieldName.startsWith('value_');
+
+                      if (!isExplodedField && signalkPath) {
+                        addDebug(`🔍 ${fieldName}: Using metadata fallback (matches repair logic)`);
+                        try {
+                          const response = await fetch(`http://localhost:3000/signalk/v1/api/vessels/self/${signalkPath.replace(/\./g, '/')}/meta`);
+                          if (response.ok) {
+                            const metadata = await response.json() as any;
+                            if (metadata && metadata.units &&
+                                (metadata.units === 'm' || metadata.units === 'deg' || metadata.units === 'm/s' ||
+                                 metadata.units === 'rad' || metadata.units === 'K' || metadata.units === 'Pa' ||
+                                 metadata.units === 'V' || metadata.units === 'A' || metadata.units === 'Hz' ||
+                                 metadata.units === 'ratio' || metadata.units === 'kg' || metadata.units === 'J')) {
+                              violations.push(`${fieldName} has numeric units (${metadata.units}) but is ${fieldType}, should be DOUBLE`);
+                              hasViolations = true;
+                              addDebug(`🔍 ${fieldName}: Metadata indicates numeric (${metadata.units}), flagged as violation`);
+                            }
+                          }
+                        } catch (metadataError) {
+                          addDebug(`🔍 ${fieldName}: Metadata lookup failed, no violation flagged`);
+                        }
+                      } else {
+                        addDebug(`🔍 ${fieldName}: Exploded field or no path, skipping metadata (matches repair logic)`);
+                      }
+                    }
+                  }
+                }
+
+                if (hasViolations) {
+                  violationSchemas++;
+                  const shortPath = path.relative(dataDir, filePath);
+                  violationDetails.push(`[${totalFiles}] ${shortPath}: ${violations.join(', ')}`);
+                  violationFiles.push({
+                    file: shortPath,
+                    vessel: vesselName,
+                    issues: [...violations]
+                  });
+                } else {
+                  correctSchemas++;
+                }
+
+                if (typeof reader.close === 'function') reader.close();
+              }
+
+            } catch (error) {
+              app.debug(`Error processing ${filePath}: ${(error as Error).message}`);
+              violationSchemas++;
+              const shortPath = path.relative(dataDir, filePath);
+              violationDetails.push(`[${totalFiles}] ${shortPath}: ERROR - ${(error as Error).message}`);
+              violationFiles.push({
+                file: shortPath,
+                vessel: progressJob.currentVessel,
+                issues: [`ERROR - ${(error as Error).message}`]
+              });
+            }
           }
 
-          // Extract vessel from path (vessels/[vessel]/)
-          const pathParts = filePath.split(path.sep);
-          const vesselsIndex = pathParts.findIndex((part: string) => part === 'vessels');
-          if (vesselsIndex !== -1 && vesselsIndex + 1 < pathParts.length) {
-            vessels.add(pathParts[vesselsIndex + 1]);
-          }
-
-          totalFiles++;
-
-          // Update progress and check for cancellation
-          updateProcessProgress(state, totalFiles, path.basename(filePath));
-
-          // Check if cancellation was requested
-          if (state.currentProcess?.cancelRequested) {
-            finishProcess(state);
-            return res.json({
+          if (progressJob.cancelRequested || progressJob.status === 'cancelled') {
+            addDebug(`⏹️ Validation cancelled by user after processing ${totalFiles} files`);
+            progressJob.status = 'cancelled';
+            progressJob.completedAt = new Date();
+            progressJob.currentFile = undefined;
+            progressJob.currentVessel = undefined;
+            progressJob.currentRelativePath = undefined;
+            progressJob.result = {
               success: false,
-              error: `Validation cancelled by user after processing ${totalFiles} files`,
+              error: 'Validation cancelled by user',
+              cancelled: true,
               totalFiles,
               totalVessels: vessels.size,
               correctSchemas,
               violations: violationSchemas,
               violationDetails,
-              debugMessages
-            });
+              violationFiles,
+              debugMessages,
+              jobId
+            };
+            lastValidationViolations = violationFiles;
+            return;
           }
 
+          addDebug(`📊 Validation completed: ${totalFiles} files, ${vessels.size} vessels, ${correctSchemas} correct, ${violationSchemas} violations`);
+
+          progressJob.status = 'completed';
+          progressJob.processed = files.length;
+          progressJob.percent = 100;
+          progressJob.completedAt = new Date();
+          progressJob.currentFile = undefined;
+          progressJob.currentVessel = undefined;
+          progressJob.currentRelativePath = undefined;
+          progressJob.result = {
+            success: true,
+            totalFiles,
+            totalVessels: vessels.size,
+            correctSchemas,
+            violations: violationSchemas,
+            violationDetails,
+            violationFiles,
+            debugMessages,
+            jobId
+          };
+          lastValidationViolations = violationFiles;
+        } catch (error) {
+          app.error(`Error during schema validation: ${error}`);
+          progressJob.status = 'error';
+          progressJob.error = (error as Error).message;
+          progressJob.completedAt = new Date();
+          progressJob.result = {
+            success: false,
+            error: (error as Error).message,
+            violationFiles,
+            jobId
+          };
+          lastValidationViolations = violationFiles;
+        } finally {
+          progressJob.currentFile = undefined;
+          progressJob.currentVessel = undefined;
+          progressJob.currentRelativePath = undefined;
+          scheduleValidationJobCleanup(jobId);
+        }
+      };
+
+      setImmediate(() => {
+        runValidationJob().catch(error => {
+          app.error(`Unhandled validation job error: ${error}`);
+        });
+      });
+
+      return res.json({
+        success: true,
+        status: 'started',
+        jobId
+      });
+    }
+  );
+
+    // Repair schema violations endpoint
+  router.post(
+    '/api/repair-schemas',
+    async (_: TypedRequest, res: any) => {
+      try {
+        app.debug('🔧 Starting schema repair...');
+
+        const parquet = require('@dsnp/parquetjs');
+        const path = require('path');
+
+        const configOutputDir = state.currentConfig?.outputDirectory || 'data';
+        const pluginDataPath = app.getDataDirPath();
+        const signalkDataDir = path.dirname(path.dirname(pluginDataPath));
+        const dataDir = path.join(signalkDataDir, configOutputDir);
+        const filenamePrefix = state.currentConfig?.filenamePrefix || 'signalk_data';
+
+        const uniqueViolations = new Map<string, ValidationViolation>();
+        for (const violation of lastValidationViolations) {
+          if (violation?.file) {
+            uniqueViolations.set(violation.file, violation);
+          }
+        }
+
+        if (uniqueViolations.size === 0) {
+          const message = 'No validation violations available for repair. Run validation first.';
+          app.debug(`🔧 ${message}`);
+          return res.status(400).json({ success: false, message });
+        }
+
+        const targetFiles: { relative: string; absolute: string; violation?: ValidationViolation }[] = [];
+        for (const [relativePath, violation] of uniqueViolations) {
+          const absolutePath = path.isAbsolute(relativePath)
+            ? relativePath
+            : path.join(dataDir, relativePath);
+
+          if (!absolutePath.startsWith(dataDir)) {
+            app.debug(`❌ Skipping flagged file outside data directory: ${relativePath}`);
+            continue;
+          }
+
+          if (await fs.pathExists(absolutePath)) {
+            targetFiles.push({ relative: relativePath, absolute: absolutePath, violation });
+          } else {
+            app.debug(`❌ Flagged file no longer exists: ${relativePath}`);
+          }
+        }
+
+        if (targetFiles.length === 0) {
+          const message = 'Validation flagged files are missing; nothing to repair.';
+          app.debug(`🔧 ${message}`);
+          return res.status(400).json({ success: false, message });
+        }
+
+        targetFiles.sort((a, b) => a.relative.localeCompare(b.relative));
+
+        const jobId = `rep_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+        const job: RepairProgress = {
+          jobId,
+          status: 'running',
+          processed: 0,
+          total: targetFiles.length,
+          percent: targetFiles.length === 0 ? 100 : 0,
+          startTime: new Date(),
+          message: `Preparing to repair ${targetFiles.length} files`,
+          cancelRequested: false
+        };
+
+        repairJobs.set(jobId, job);
+
+        const runRepairJob = async () => {
+          let repairedFiles = 0;
+          let backedUpFiles = 0;
+          const skippedFiles: string[] = [];
+          const quarantinedFiles: string[] = [];
+          const errors: string[] = [];
+          const handledRelativePaths = new Set<string>();
+
           try {
-            const reader = await parquet.ParquetReader.openFile(filePath);
-            const cursor = reader.getCursor();
-            const schema = cursor.schema;
+            app.debug(`🔧 Repair job ${jobId}: targeting ${targetFiles.length} files`);
 
-            if (schema && schema.schema) {
-              schemasFound++;
-              const fields = schema.schema;
+            job.message = 'Pausing briefly before repair';
+            await new Promise(resolve => setTimeout(resolve, 10000));
+            job.message = 'Starting repair process';
 
-              // Check timestamps
-              const receivedTimestamp = fields.received_timestamp ? fields.received_timestamp.type : 'MISSING';
-              const signalkTimestamp = fields.signalk_timestamp ? fields.signalk_timestamp.type : 'MISSING';
+            if (job.cancelRequested) {
+              app.debug(`🔧 Repair job ${jobId}: cancelled before processing`);
+              job.status = 'cancelled';
+              job.message = 'Repair cancelled before start';
+              job.completedAt = new Date();
+              job.result = {
+                success: false,
+                repairedFiles: 0,
+                backedUpFiles: 0,
+                skippedFiles: [],
+                quarantinedFiles: [],
+                errors: [],
+                message: 'Repair cancelled before start'
+              };
+              return;
+            }
 
-              // Find all value fields
-              const valueFields: { [key: string]: string } = {};
-              Object.keys(fields).forEach(fieldName => {
-                if (fieldName.startsWith('value_') || fieldName === 'value') {
-                  valueFields[fieldName] = fields[fieldName].type;
-                }
-              });
-
-              // Extract SignalK path for metadata lookup
-              const relativePath = path.relative(dataDir, filePath);
-              const pathMatch = relativePath.match(/vessels\/[^/]+\/(.+?)\/[^/]*\.parquet$/);
-              const signalkPath = pathMatch ? pathMatch[1].replace(/\//g, '.') : '';
-
-              // Check for schema violations
-              let hasViolations = false;
-              const violations: string[] = [];
-
-              // Rule 1: Timestamps should be UTF8/VARCHAR
-              if (receivedTimestamp !== 'UTF8' && receivedTimestamp !== 'MISSING') {
-                violations.push(`received_timestamp should be UTF8, got ${receivedTimestamp}`);
-                hasViolations = true;
-              }
-              if (signalkTimestamp !== 'UTF8' && signalkTimestamp !== 'MISSING') {
-                violations.push(`signalk_timestamp should be UTF8, got ${signalkTimestamp}`);
-                hasViolations = true;
+            for (let i = 0; i < targetFiles.length; i++) {
+              if (job.cancelRequested) {
+                app.debug(`🔧 Repair job ${jobId}: cancellation detected`);
+                job.status = 'cancelled';
+                job.message = 'Repair cancelled by user';
+                break;
               }
 
-              // Rule 2: Check value fields using TWO-STEP PROCESS (matches repair logic)
-              // Determine if this is an exploded file
-              const isExplodedFile = Object.keys(valueFields).some(fieldName =>
-                fieldName.startsWith('value_') && fieldName !== 'value' && fieldName !== 'value_json'
-              );
-              addDebug(`🔍 Validation: isExplodedFile = ${isExplodedFile}`);
+              const { absolute: filePath, relative: relativePath, violation } = targetFiles[i];
+              job.currentFile = relativePath;
+              job.processed = Math.min(i + 1, job.total);
+              job.percent = job.total > 0 ? Math.round(((i + 1) / job.total) * 100) : 100;
+              job.message = `Repairing (${Math.min(i + 1, job.total)}/${job.total}): ${relativePath}`;
 
-              // Read sample data for content analysis (STEP 1)
-              let sampleRecords = [];
+              let needsRepair = Array.isArray(violation?.issues) && violation.issues.length > 0;
+
+              app.debug(`🔧 Repair job ${jobId}: processing ${relativePath}`);
+
+
               try {
-                if (!parquet) {
-                  throw new Error('ParquetJS not available');
+                const stats = await fs.stat(filePath);
+                if (stats.size < 100) {
+                  app.debug(`❌ File too small (${stats.size} bytes), moving to quarantine: ${path.basename(filePath)}`);
+
+                  const quarantineDir = path.join(path.dirname(filePath), 'quarantine');
+                  await fs.ensureDir(quarantineDir);
+                  const quarantineFile = path.join(quarantineDir, path.basename(filePath));
+                  await fs.move(filePath, quarantineFile, { overwrite: true });
+
+                  const logFile = path.join(quarantineDir, 'quarantine.log');
+                  const logEntry = `${new Date().toISOString()} | repair | ${stats.size} bytes | File too small (corrupted) | ${filePath}\n`;
+                  await fs.appendFile(logFile, logEntry);
+
+                  quarantinedFiles.push(relativePath);
+                  handledRelativePaths.add(relativePath);
+                  job.processed = i + 1;
+                  job.percent = job.total > 0 ? Math.round(((i + 1) / job.total) * 100) : 100;
+                  job.message = `Quarantined: ${relativePath}`;
+                  continue;
                 }
-                const reader = await parquet.ParquetReader.openFile(filePath);
-                const cursor = reader.getCursor();
-                let record: any;
-                let count = 0;
-                while ((record = await cursor.next()) && count < 100) {
-                  sampleRecords.push(record);
-                  count++;
-                }
-                await reader.close();
-              } catch (error) {
-                addDebug(`⚠️ Could not read sample data for validation: ${(error as Error).message}`);
-                sampleRecords = [];
+              } catch (statError) {
+                const message = `Error checking file size for ${relativePath}: ${(statError as Error).message}`;
+                app.debug(`❌ ${message}`);
+                errors.push(message);
+                job.processed = i + 1;
+                job.percent = job.total > 0 ? Math.round(((i + 1) / job.total) * 100) : 100;
+                job.message = `Skipped due to error: ${relativePath}`;
+                continue;
               }
 
-              for (const [fieldName, fieldType] of Object.entries(valueFields)) {
-                // Always skip value_json (matches repair logic)
-                if (fieldName === 'value_json') {
-                  addDebug(`⏭️ ${fieldName}: Skipped entirely (always ignored)`);
-                  continue;
-                }
+              try {
+                // Get schema and sample data directly from parquet file (same as validation)
+                const parquetReader = await parquet.ParquetReader.openFile(filePath);
+                const parquetCursor = parquetReader.getCursor();
+                const schema = parquetCursor.schema;
 
-                // Skip value field in exploded files (matches repair logic)
-                if (isExplodedFile && fieldName === 'value') {
-                  addDebug(`⏭️ ${fieldName}: Skipped in exploded file (always empty)`);
-                  continue;
-                }
+                const valueFields: { [key: string]: string } = {};
+                let signalkPath = '';
 
-                if (fieldType === 'UTF8' || fieldType === 'VARCHAR') {
-                  let shouldBeNumeric = false;
+                // Extract schema fields
+                if (schema && schema.schema) {
+                  const fields = schema.schema;
 
-                  // STEP 1: LOOK AT THE STRING AND SEE WHAT IT IS (matches repair logic)
-                  if (sampleRecords.length > 0) {
-                    const values = sampleRecords
-                      .map(r => r[fieldName])
-                      .filter(v => v !== null && v !== undefined);
-
-                    if (values.length > 0) {
-                      let allNumeric = true;
-                      let allBoolean = true;
-
-                      for (const value of values) {
-                        const str = String(value).trim();
-                        if (str === 'true' || str === 'false') {
-                          allNumeric = false;
-                        } else if (!isNaN(Number(str)) && str !== '') {
-                          allBoolean = false;
-                        } else {
-                          allNumeric = false;
-                          allBoolean = false;
-                          break;
-                        }
-                      }
-
-                      if (allNumeric && values.length > 0) {
-                        shouldBeNumeric = true;
-                        violations.push(`${fieldName} contains numbers but is ${fieldType}, should be DOUBLE`);
-                        hasViolations = true;
-                        addDebug(`🔍 ${fieldName}: VARCHAR contains numbers, flagged as violation`);
-                      } else if (allBoolean && values.length > 0) {
-                        violations.push(`${fieldName} contains booleans but is ${fieldType}, should be BOOLEAN`);
-                        hasViolations = true;
-                        addDebug(`🔍 ${fieldName}: VARCHAR contains booleans, flagged as violation`);
-                      }
+                  // Get value fields
+                  for (const [fieldName, fieldInfo] of Object.entries(fields)) {
+                    if (fieldName === 'value' || fieldName.startsWith('value_')) {
+                      valueFields[fieldName] = (fieldInfo as any).type || 'UNKNOWN';
                     }
                   }
 
-                  // STEP 2: LOOK AT METADATA (SKIP IF EXPLODED) - only if step 1 can't determine (matches repair logic)
-                  if (!shouldBeNumeric && sampleRecords.length === 0) {
-                    const isExplodedField = fieldName.startsWith('value_');
+                  // Extract SignalK path from file path (same logic as before)
+                  const pathRegex = new RegExp(`/vessels/[^/]+/(.+)/${filenamePrefix}_`);
+                  const pathMatch = filePath.match(pathRegex);
+                  if (pathMatch) {
+                    signalkPath = pathMatch[1].replace(/\//g, '.');
+                    app.debug(`🔍 Extracted SignalK path: ${signalkPath} from ${path.basename(filePath)}`);
+                  } else {
+                    app.debug(`🔍 Could not extract SignalK path from ${path.basename(filePath)} using prefix ${filenamePrefix}`);
+                  }
+                }
 
-                    if (!isExplodedField && signalkPath) {
-                      addDebug(`🔍 ${fieldName}: Using metadata fallback (matches repair logic)`);
+                // Read sample records for analysis
+                const sampleRecords: any[] = [];
+                try {
+                  let record: any;
+                  let count = 0;
+                  while ((record = await parquetCursor.next()) && count < 100) {
+                    sampleRecords.push(record);
+                    count++;
+                  }
+                } catch (sampleError) {
+                  app.debug(`🔧 Could not read sample data for repair: ${(sampleError as Error).message}`);
+                }
+                await parquetReader.close();
+
+                const fieldEntries = Object.entries(valueFields);
+                const hasExplodedFields = fieldEntries.some(([fieldName]) => fieldName.startsWith('value_') && fieldName !== 'value' && fieldName !== 'value_json');
+
+                for (const [fieldName, fieldType] of fieldEntries) {
+                  if (fieldName === 'value_json') continue;
+                  if (hasExplodedFields && fieldName === 'value') continue;
+
+                  if (fieldType === 'UTF8' || fieldType === 'VARCHAR') {
+                    const values = sampleRecords
+                      .map(r => r[fieldName])
+                      .filter(v => v !== null && v !== undefined)
+                      .map(v => String(v).trim());
+
+                    if (values.length > 0) {
+                      const allNumeric = values.every(v => v !== '' && !isNaN(Number(v)) && v !== 'true' && v !== 'false');
+                      const allBoolean = values.every(v => v === 'true' || v === 'false');
+
+                      if (allNumeric) {
+                        needsRepair = true;
+                        app.debug(`🔧 File needs repair: ${relativePath} (${fieldName} contains numbers, should be DOUBLE, not ${fieldType})`);
+                        break;
+                      }
+                      if (allBoolean) {
+                        needsRepair = true;
+                        app.debug(`🔧 File needs repair: ${relativePath} (${fieldName} contains booleans, should be BOOLEAN, not ${fieldType})`);
+                        break;
+                      }
+                    }
+
+                    if (!needsRepair && signalkPath && !fieldName.startsWith('value_')) {
                       try {
                         const response = await fetch(`http://localhost:3000/signalk/v1/api/vessels/self/${signalkPath.replace(/\./g, '/')}/meta`);
                         if (response.ok) {
@@ -2216,221 +2752,143 @@ export function registerApiRoutes(
                                metadata.units === 'rad' || metadata.units === 'K' || metadata.units === 'Pa' ||
                                metadata.units === 'V' || metadata.units === 'A' || metadata.units === 'Hz' ||
                                metadata.units === 'ratio' || metadata.units === 'kg' || metadata.units === 'J')) {
-                            violations.push(`${fieldName} has numeric units (${metadata.units}) but is ${fieldType}, should be DOUBLE`);
-                            hasViolations = true;
-                            addDebug(`🔍 ${fieldName}: Metadata indicates numeric (${metadata.units}), flagged as violation`);
+                            needsRepair = true;
+                            app.debug(`🔧 File needs repair: ${relativePath} (${fieldName} should be DOUBLE per metadata, not ${fieldType})`);
+                            break;
                           }
                         }
                       } catch (metadataError) {
-                        addDebug(`🔍 ${fieldName}: Metadata lookup failed, no violation flagged`);
+                        app.debug(`🔧 Metadata check failed for ${fieldName}: ${(metadataError as Error).message}`);
                       }
-                    } else {
-                      addDebug(`🔍 ${fieldName}: Exploded field or no path, skipping metadata (matches repair logic)`);
                     }
+                  } else if (fieldType === 'BIGINT') {
+                    needsRepair = true;
+                    app.debug(`🔧 File needs repair: ${relativePath} (${fieldName} is BIGINT, converting to DOUBLE)`);
+                    break;
                   }
                 }
+
+                if (!needsRepair) {
+                  skippedFiles.push(relativePath);
+                  handledRelativePaths.add(relativePath);
+                  job.message = `Skipped (no repair needed): ${relativePath}`;
+                  job.processed = i + 1;
+                  job.percent = job.total > 0 ? Math.round(((i + 1) / job.total) * 100) : 100;
+                  continue;
+                }
+
+                const backupDir = path.join(path.dirname(filePath), 'repaired');
+                await fs.mkdir(backupDir, { recursive: true });
+
+                const backupPath = path.join(backupDir, path.basename(filePath));
+                await fs.copyFile(filePath, backupPath);
+                backedUpFiles++;
+                app.debug(`🔧 Backed up: ${path.basename(filePath)}`);
+
+                const reader = await parquet.ParquetReader.openFile(filePath);
+                const cursor = reader.getCursor();
+                const records: any[] = [];
+                let record: any;
+                while ((record = await cursor.next())) {
+                  records.push(record);
+                }
+                await reader.close();
+                const { ParquetWriter } = require('./parquet-writer');
+                const writer = new ParquetWriter({ format: 'parquet', app });
+                const correctedSchema = await writer.createParquetSchema(records, signalkPath);
+
+                const parquetWriter = await parquet.ParquetWriter.openFile(correctedSchema, filePath);
+                for (const row of records) {
+                  const prepared = writer.prepareRecordForParquet(row, correctedSchema);
+                  await parquetWriter.appendRow(prepared);
+                }
+                await parquetWriter.close();
+                repairedFiles++;
+                handledRelativePaths.add(relativePath);
+                job.message = `Repaired: ${relativePath}`;
+                app.debug(`🔧 ✅ Repaired: ${path.basename(filePath)}`);
+
+              } catch (fileError) {
+                const message = `Error processing ${relativePath}: ${(fileError as Error).message}`;
+                app.debug(`🔧 ❌ ${message}`);
+                errors.push(message);
+                job.message = message;
+                job.processed = i + 1;
+                job.percent = job.total > 0 ? Math.round(((i + 1) / job.total) * 100) : 100;
               }
 
-              if (hasViolations) {
-                violationSchemas++;
-                const shortPath = path.relative(dataDir, filePath);
-                violationDetails.push(`[${totalFiles}] ${shortPath}: ${violations.join(', ')}`);
-              } else {
-                correctSchemas++;
-              }
-
-              if (typeof reader.close === 'function') reader.close();
             }
 
-          } catch (error) {
-            app.debug(`Error processing ${filePath}: ${(error as Error).message}`);
-            // Count as violation since we couldn't read the schema
-            violationSchemas++;
-            const shortPath = path.relative(dataDir, filePath);
-            violationDetails.push(`[${totalFiles}] ${shortPath}: ERROR - ${(error as Error).message}`);
+            if (handledRelativePaths.size > 0) {
+              lastValidationViolations = lastValidationViolations.filter(
+                violation => !handledRelativePaths.has(violation.file)
+              );
+            }
+
+            if (job.status === 'cancelled') {
+              job.completedAt = new Date();
+              job.result = {
+                success: false,
+                repairedFiles,
+                backedUpFiles,
+                skippedFiles,
+                quarantinedFiles,
+                errors,
+                message: 'Repair cancelled'
+              };
+            } else {
+              job.status = errors.length > 0 ? 'error' : 'completed';
+              job.message = errors.length > 0
+                ? 'Repair completed with errors'
+                : 'Repair completed successfully';
+              job.completedAt = new Date();
+              job.result = {
+                success: errors.length === 0,
+                repairedFiles,
+                backedUpFiles,
+                skippedFiles,
+                quarantinedFiles,
+                errors,
+                message: job.message
+              };
+            }
+
+          } catch (jobError) {
+            job.status = 'error';
+            job.message = `Repair job failed: ${(jobError as Error).message}`;
+            job.completedAt = new Date();
+            job.result = {
+              success: false,
+              repairedFiles: 0,
+              backedUpFiles: 0,
+              skippedFiles: [],
+              quarantinedFiles: [],
+              errors: [(jobError as Error).message],
+            };
+          } finally {
+            job.currentFile = undefined;
+            job.processed = job.total;
+            job.percent = 100;
+            scheduleRepairJobCleanup(jobId);
           }
-        }
+        };
 
-        addDebug(`📊 Validation completed: ${totalFiles} files, ${vessels.size} vessels, ${correctSchemas} correct, ${violationSchemas} violations`);
-
-        // Finish the process
-        finishProcess(state);
+        setImmediate(() => {
+          runRepairJob().catch(error => {
+            app.debug(`❌ Unhandled repair job error (${jobId}): ${error}`);
+          });
+        });
 
         return res.json({
           success: true,
-          totalFiles,
-          totalVessels: vessels.size,
-          correctSchemas,
-          violations: violationSchemas,
-          violationDetails,
-          debugMessages
+          status: 'started',
+          jobId,
+          totalFiles: targetFiles.length
         });
-
-      } catch (error) {
-        // Finish the process on error
-        finishProcess(state);
-
-        app.error(`Error during schema validation: ${error}`);
-        return res.status(500).json({
-          success: false,
-          error: (error as Error).message
-        });
-      }
-    }
-  );
-
-  // Repair schema violations endpoint
-  router.post(
-    '/api/repair-schemas',
-    async (_: TypedRequest, res: any) => {
-      try {
-        app.debug('🔧 Starting schema repair...');
-
-        // Check if another process is running
-        if (state.currentProcess?.isRunning) {
-          return res.status(409).json({
-            success: false,
-            error: `Cannot start repair: ${state.currentProcess.type} is already running. Cancel it first.`
-          });
-        }
-
-        // Import required modules
-        const glob = require('glob');
-        const path = require('path');
-
-        // Get the data directory and find files
-        const configOutputDir = state.currentConfig?.outputDirectory || 'data';
-        const pluginDataPath = app.getDataDirPath();
-        const signalkDataDir = path.dirname(path.dirname(pluginDataPath));
-        const dataDir = path.join(signalkDataDir, configOutputDir);
-
-        const filenamePrefix = state.currentConfig?.filenamePrefix || 'signalk_data';
-        const files = glob.sync(`${dataDir}/vessels/**/${filenamePrefix}_*.parquet`, {
-          ignore: [
-            `${dataDir}/vessels/**/processed/**`,
-            `${dataDir}/vessels/**/repaired/**`,
-            `${dataDir}/vessels/**/quarantine/**`,
-            `${dataDir}/vessels/**/claude-schemas/**`,
-            `${dataDir}/vessels/**/failed/**`
-          ]
-        });
-
-        app.debug(`🔧 Found ${files.length} parquet files to check`);
-
-        // Start the repair process
-        if (!startProcess(state, 'repair', files.length)) {
-          return res.status(409).json({
-            success: false,
-            error: 'Cannot start repair: Another process is already running'
-          });
-        }
-
-        // Initialize SchemaService if not available
-        if (!state.parquetWriter?.getSchemaService()) {
-          finishProcess(state);
-          return res.status(500).json({
-            success: false,
-            error: 'SchemaService not available'
-          });
-        }
-
-        let repairedFiles = 0;
-        let backedUpFiles = 0;
-        let processedFiles = 0;
-
-        try {
-          // Add 10 second pause before processing
-          app.debug(`⏸️ Pausing for 10 seconds before processing...`);
-          await new Promise(resolve => setTimeout(resolve, 10000));
-          app.debug(`▶️ Resuming processing after 10 second pause`);
-
-          for (let i = 0; i < files.length; i++) {
-            // Check for cancellation
-            if (state.currentProcess?.cancelRequested) {
-              app.debug('🔧 Repair process was cancelled by user');
-              break;
-            }
-
-            const filePath = files[i];
-            updateProcessProgress(state, i + 1, path.basename(filePath));
-
-            app.debug(`🔧 Processing file ${i + 1}/${files.length}: ${path.basename(filePath)}`);
-
-            processedFiles++; // Count every file we process
-
-            // Check file size and move corrupted files to quarantine
-            try {
-              const stats = await fs.stat(filePath);
-              if (stats.size < 100) {
-                app.debug(`❌ File too small (${stats.size} bytes), moving to quarantine: ${path.basename(filePath)}`);
-
-                // Move to quarantine
-                const quarantineDir = path.join(path.dirname(filePath), 'quarantine');
-                await fs.ensureDir(quarantineDir);
-                const quarantineFile = path.join(quarantineDir, path.basename(filePath));
-                await fs.move(filePath, quarantineFile);
-
-                // Log quarantine entry
-                const logFile = path.join(quarantineDir, 'quarantine.log');
-                const logEntry = `${new Date().toISOString()} | repair | ${stats.size} bytes | File too small (corrupted) | ${filePath}\n`;
-                await fs.appendFile(logFile, logEntry);
-
-                app.debug(`📋 Quarantined: ${stats.size.toString().padStart(12, ' ')}  ${filePath}`);
-                continue;
-              }
-            } catch (statError) {
-              app.debug(`❌ Error checking file size: ${filePath} - ${(statError as Error).message}`);
-              continue;
-            }
-
-            try {
-              // Use SchemaService for repair
-              const result = await state.parquetWriter!.getSchemaService()!.repairFileSchema(filePath, filenamePrefix);
-
-              if (result.repaired) {
-                repairedFiles++;
-                if (result.backedUp) {
-                  backedUpFiles++;
-                }
-                app.debug(`🔧 ✅ Repaired: ${path.basename(filePath)}`);
-              }
-
-            } catch (fileError) {
-              app.debug(`🔧 ❌ Error processing ${path.basename(filePath)}: ${(fileError as Error).message}`);
-            }
-          }
-
-          const message = state.currentProcess?.cancelRequested
-            ? `Repair cancelled after processing ${processedFiles} files, repaired ${repairedFiles}, backed up ${backedUpFiles} originals to 'repaired' folders`
-            : `Repaired ${repairedFiles} files, backed up ${backedUpFiles} originals to 'repaired' folders`;
-
-          app.debug(`🔧 Repair completed: ${message}`);
-
-          // Send completion response
-          res.json({
-            success: true,
-            totalFiles: files.length,
-            processedFiles,
-            repairedFiles,
-            backedUpFiles,
-            cancelled: !!state.currentProcess?.cancelRequested,
-            message
-          });
-
-        } catch (error) {
-          app.debug(`❌ Schema repair failed: ${(error as Error).message}`);
-          res.status(500).json({
-            success: false,
-            message: `Repair failed: ${(error as Error).message}`
-          });
-        } finally {
-          finishProcess(state);
-        }
 
       } catch (error) {
         app.debug(`❌ Schema repair failed: ${(error as Error).message}`);
-        finishProcess(state);
-        res.status(500).json({
+        return res.status(500).json({
           success: false,
           message: `Repair failed: ${(error as Error).message}`
         });

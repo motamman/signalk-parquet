@@ -644,7 +644,7 @@ export function initializeRegimenStates(
 
 }
 
-// Startup consolidation for missed previous days (excludes current day)
+// Startup consolidation for missed previous days (last 7 days, excludes current day)
 export async function consolidateMissedDays(config: PluginConfig, state: PluginState, app: ServerAPI): Promise<void> {
   try {
 
@@ -654,9 +654,12 @@ export async function consolidateMissedDays(config: PluginConfig, state: PluginS
       return;
     }
 
-    // Find all non-consolidated files older than today
+    // Find all non-consolidated files from the last 7 days (excluding today)
     const today = new Date();
     today.setUTCHours(0, 0, 0, 0);
+
+    const sevenDaysAgo = new Date(today);
+    sevenDaysAgo.setUTCDate(today.getUTCDate() - 7);
 
     const pattern = path.join(outputDir, '**/*.parquet');
     const files = await glob(pattern);
@@ -683,8 +686,8 @@ export async function consolidateMissedDays(config: PluginConfig, state: PluginS
         const fileDate = new Date(year, month, day);
         fileDate.setUTCHours(0, 0, 0, 0);
 
-        // Only consolidate if file is from before today
-        if (fileDate < today) {
+        // Only consolidate if file is from before today and within last 7 days
+        if (fileDate < today && fileDate >= sevenDaysAgo) {
           const dateStr = `${year}-${month + 1 < 10 ? '0' : ''}${month + 1}-${day < 10 ? '0' : ''}${day}`;
           datesNeedingConsolidation.add(dateStr);
         }
