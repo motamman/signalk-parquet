@@ -2560,68 +2560,51 @@ export function registerApiRoutes(
               }
 
               try {
-                const { spawn } = require('child_process');
-                const duckdbResult = await new Promise<string>((resolve, reject) => {
-                  const duckdb = spawn('duckdb', ['-c', `DESCRIBE SELECT * FROM '${filePath}';`]);
-                  let output = '';
-                  let error = '';
+                // Get schema and sample data directly from parquet file (same as validation)
+                const parquetReader = await parquet.ParquetReader.openFile(filePath);
+                const parquetCursor = parquetReader.getCursor();
+                const schema = parquetCursor.schema;
 
-                  duckdb.stdout.on('data', (data: Buffer) => {
-                    output += data.toString();
-                  });
+                app.debug(`🔧 DEBUG: AFTER parquet schema read for file ${i + 1}/${targetFiles.length}: ${relativePath}`);
 
-                  duckdb.stderr.on('data', (data: Buffer) => {
-                    error += data.toString();
-                  });
-
-                  duckdb.on('close', (code: number) => {
-                    if (code === 0) {
-                      resolve(output);
-                    } else {
-                      reject(new Error(`DuckDB error: ${error}`));
-                    }
-                  });
-                });
-
-                app.debug(`🔧 DEBUG: AFTER DuckDB query for file ${i + 1}/${targetFiles.length}: ${relativePath}`);
-                const lines = duckdbResult.trim().split('\n');
                 const valueFields: { [key: string]: string } = {};
                 let signalkPath = '';
 
-                for (const line of lines) {
-                  const match = line.match(/│\s*(\w+)\s*│\s*(\w+)/);
-                  if (match) {
-                    const [, fieldName, fieldType] = match;
+                // Extract schema fields
+                if (schema && schema.schema) {
+                  const fields = schema.schema;
+
+                  // Get value fields
+                  for (const [fieldName, fieldInfo] of Object.entries(fields)) {
                     if (fieldName === 'value' || fieldName.startsWith('value_')) {
-                      valueFields[fieldName] = fieldType;
+                      valueFields[fieldName] = (fieldInfo as any).type || 'UNKNOWN';
                     }
-                    if (fieldName === 'path') {
-                      const pathRegex = new RegExp(`/vessels/[^/]+/(.+)/${filenamePrefix}_`);
-                      const pathMatch = filePath.match(pathRegex);
-                      if (pathMatch) {
-                        signalkPath = pathMatch[1].replace(/\//g, '.');
-                        app.debug(`🔍 Extracted SignalK path: ${signalkPath} from ${path.basename(filePath)}`);
-                      } else {
-                        app.debug(`🔍 Could not extract SignalK path from ${path.basename(filePath)} using prefix ${filenamePrefix}`);
-                      }
-                    }
+                  }
+
+                  // Extract SignalK path from file path (same logic as before)
+                  const pathRegex = new RegExp(`/vessels/[^/]+/(.+)/${filenamePrefix}_`);
+                  const pathMatch = filePath.match(pathRegex);
+                  if (pathMatch) {
+                    signalkPath = pathMatch[1].replace(/\//g, '.');
+                    app.debug(`🔍 Extracted SignalK path: ${signalkPath} from ${path.basename(filePath)}`);
+                  } else {
+                    app.debug(`🔍 Could not extract SignalK path from ${path.basename(filePath)} using prefix ${filenamePrefix}`);
                   }
                 }
 
+                // Read sample records for analysis
                 const sampleRecords: any[] = [];
                 try {
-                  const reader = await parquet.ParquetReader.openFile(filePath);
-                  const cursor = reader.getCursor();
                   let record: any;
                   let count = 0;
-                  while ((record = await cursor.next()) && count < 100) {
+                  while ((record = await parquetCursor.next()) && count < 100) {
                     sampleRecords.push(record);
                     count++;
                   }
-                  await reader.close();
                 } catch (sampleError) {
                   app.debug(`🔧 Could not read sample data for repair: ${(sampleError as Error).message}`);
                 }
+                await parquetReader.close();
 
                 const fieldEntries = Object.entries(valueFields);
                 const hasExplodedFields = fieldEntries.some(([fieldName]) => fieldName.startsWith('value_') && fieldName !== 'value' && fieldName !== 'value_json');
