@@ -2526,11 +2526,10 @@ export function registerApiRoutes(
               app.debug(`🔧 Repair job ${jobId}: processing ${relativePath}`);
               app.debug(`🔧 DEBUG: AFTER processing file ${i + 1}/${targetFiles.length}: ${relativePath}`);
 
-              // 20 second pause for debugging
-              await new Promise(resolve => setTimeout(resolve, 20000));
 
               try {
                 const stats = await fs.stat(filePath);
+                app.debug(`🔧 DEBUG: AFTER fs.stat for file ${i + 1}/${targetFiles.length}: ${relativePath}`);
                 if (stats.size < 100) {
                   app.debug(`❌ File too small (${stats.size} bytes), moving to quarantine: ${path.basename(filePath)}`);
 
@@ -2584,6 +2583,7 @@ export function registerApiRoutes(
                   });
                 });
 
+                app.debug(`🔧 DEBUG: AFTER DuckDB query for file ${i + 1}/${targetFiles.length}: ${relativePath}`);
                 const lines = duckdbResult.trim().split('\n');
                 const valueFields: { [key: string]: string } = {};
                 let signalkPath = '';
@@ -2704,6 +2704,7 @@ export function registerApiRoutes(
                 }
                 await reader.close();
 
+                app.debug(`🔧 DEBUG: AFTER reading parquet file ${i + 1}/${targetFiles.length}: ${relativePath}`);
                 const { ParquetWriter } = require('./parquet-writer');
                 const writer = new ParquetWriter({ format: 'parquet', app });
                 const correctedSchema = await writer.createParquetSchema(records, signalkPath);
@@ -2715,6 +2716,7 @@ export function registerApiRoutes(
                 }
                 await parquetWriter.close();
 
+                app.debug(`🔧 DEBUG: AFTER writing parquet file ${i + 1}/${targetFiles.length}: ${relativePath}`);
                 repairedFiles++;
                 handledRelativePaths.add(relativePath);
                 job.message = `Repaired: ${relativePath}`;
@@ -2728,6 +2730,10 @@ export function registerApiRoutes(
                 job.processed = i + 1;
                 job.percent = job.total > 0 ? Math.round(((i + 1) / job.total) * 100) : 100;
               }
+
+              // 20 second pause for debugging after each file
+              app.debug(`🔧 DEBUG: END of file processing ${i + 1}/${targetFiles.length}: ${relativePath}`);
+              await new Promise(resolve => setTimeout(resolve, 20000));
 
             }
 
