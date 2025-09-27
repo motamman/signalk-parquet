@@ -2029,10 +2029,6 @@
                         timerElement.style.borderColor = '#f44336';
                     }
 
-                    // Refresh validation to show updated status after successful repair
-                    if (finalProgress.status === 'completed') {
-                        setTimeout(() => runDataValidation(), 2000);
-                    }
                 }
 
             } catch (error) {
