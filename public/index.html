@@ -1013,10 +1013,10 @@
                     <div id="validationStatus" style="margin-top: 10px;"></div>
 
                     <div id="validationResults" style="margin-top: 15px; display: none;">
-                        <h3>Validation Summary</h3>
+                        <h3 id="validationSummaryHeader">Validation Summary</h3>
                         <div id="validationSummary" style="margin-bottom: 15px; padding: 10px; background: #f8f9fa; border-radius: 5px;"></div>
 
-                        <h3>Schema Violations</h3>
+                        <h3 id="validationDetailsHeader">Schema Violations</h3>
                         <div id="validationDetails" style="max-height: 400px; overflow-y: auto; border: 1px solid #ddd; padding: 10px; background: white; font-family: monospace; font-size: 12px;"></div>
                     </div>
                 </div>
@@ -1396,12 +1396,50 @@
         // Global variables for validation cancellation
         let currentValidationController = null;
         let currentRepairController = null;
+        let currentValidationJobId = null;
+        let validationCancelRequested = false;
 
         // Cancel current validation
         function cancelValidation() {
-            if (currentValidationController) {
+            if (validationCancelRequested) {
+                return;
+            }
+
+            const cancelBtn = document.getElementById('cancelValidationBtn');
+            const validateBtn = document.getElementById('validateBtn');
+
+            if (currentValidationJobId) {
+                validationCancelRequested = true;
+                if (cancelBtn) {
+                    cancelBtn.disabled = true;
+                    cancelBtn.textContent = 'Cancelling...';
+                }
+                if (validateBtn) {
+                    validateBtn.textContent = '⏳ Cancelling validation...';
+                    validateBtn.disabled = true;
+                }
+
+                fetch(`/plugins/signalk-parquet/api/validate-schemas/cancel/${currentValidationJobId}`, {
+                    method: 'POST'
+                }).then(response => {
+                    if (!response.ok) {
+                        console.error('Cancel validation request failed:', response.status);
+                    }
+                }).catch(error => {
+                    console.error('Cancel validation request error:', error);
+                });
+            } else if (currentValidationController) {
+                validationCancelRequested = true;
                 currentValidationController.abort();
                 currentValidationController = null;
+                if (cancelBtn) {
+                    cancelBtn.disabled = true;
+                    cancelBtn.textContent = 'Cancelling...';
+                }
+                if (validateBtn) {
+                    validateBtn.textContent = '⏳ Cancelling validation...';
+                    validateBtn.disabled = true;
+                }
             }
         }
 
@@ -1443,6 +1481,21 @@
 
                     const vessel = progress.currentVessel || 'Detecting vessel...';
                     const contextPath = progress.currentRelativePath || progress.currentFile || 'Processing...';
+                    const isCancelling = progress.status === 'cancelling' || progress.cancelRequested;
+                    const statusText = progress.status === 'cancelled'
+                        ? 'Status: Cancelled'
+                        : isCancelling
+                            ? 'Status: Cancelling...'
+                            : 'Status: Running';
+                    const statusColor = progress.status === 'cancelled'
+                        ? '#d32f2f'
+                        : isCancelling
+                            ? '#b36b00'
+                            : '#666';
+
+                    if (isCancelling) {
+                        validationCancelRequested = true;
+                    }
 
                     timerElement.innerHTML = `
                         <strong>⏱️ Validation Progress</strong><br>
@@ -1450,7 +1503,8 @@
                         Elapsed: ${elapsed.toFixed(1)}s<br>
                         <strong>Files: ${processed.toLocaleString()} / ${total.toLocaleString()} (${percent}%)</strong><br>
                         <span style="font-size: 0.9em; color: #666;">Vessel: ${vessel}</span><br>
-                        <span style="font-size: 0.9em; color: #666;">Current: ${contextPath}</span>
+                        <span style="font-size: 0.9em; color: #666;">Current: ${contextPath}</span><br>
+                        <span style="font-size: 0.9em; color: ${statusColor};">${statusText}</span>
                     `;
 
                     if (progress.status === 'completed' || progress.status === 'cancelled' || progress.status === 'error') {
@@ -1494,7 +1548,7 @@
 
                 } catch (error) {
                     if (error.name === 'AbortError') {
-                        throw error;
+                        return lastProgress;
                     }
                     console.error('Progress polling error:', error);
                     break;
@@ -1509,11 +1563,17 @@
             const resultsDiv = document.getElementById('validationResults');
             const summaryDiv = document.getElementById('validationSummary');
             const detailsDiv = document.getElementById('validationDetails');
+            const summaryHeader = document.getElementById('validationSummaryHeader');
+            const detailsHeader = document.getElementById('validationDetailsHeader');
             const button = document.getElementById('validateBtn');
+
+            validationCancelRequested = false;
+            currentValidationJobId = null;
 
             // Show loading state with cancel button and timer
             button.textContent = '⏸️ Running Validation (click to cancel)';
             button.style.background = '#ffc107';
+            button.onclick = cancelValidation;
 
             // Start timer
             const startTime = new Date();
@@ -1525,13 +1585,18 @@
             loadingElement.style.cssText = 'text-align: center; padding: 20px;';
             loadingElement.innerHTML = `
                 🔄 Validating parquet schemas...<br><br>
-                <button onclick="cancelValidation()" style="padding: 8px 16px; background: #dc3545; color: white; border: none; border-radius: 4px; cursor: pointer;">❌ Cancel Validation</button>
+                <button id="cancelValidationBtn" onclick="cancelValidation()" style="padding: 8px 16px; background: #dc3545; color: white; border: none; border-radius: 4px; cursor: pointer;">❌ Cancel Validation</button>
             `;
 
             statusDiv.innerHTML = '';
             statusDiv.appendChild(timerElement);
             statusDiv.appendChild(loadingElement);
             resultsDiv.style.display = 'none';
+            summaryDiv.innerHTML = '';
+            detailsDiv.innerHTML = '';
+            summaryDiv.style.display = 'none';
+            if (summaryHeader) summaryHeader.style.display = 'none';
+            if (detailsHeader) detailsHeader.style.display = 'none';
 
             // Update timer every 100ms - NO FAKE PROGRESS
             const timerInterval = setInterval(() => {
@@ -1569,6 +1634,7 @@
                 // Start polling for progress if we got a jobId
                 if (result.jobId) {
                     console.log('📋 Starting progress polling for job:', result.jobId);
+                    currentValidationJobId = result.jobId;
                     clearInterval(timerInterval); // Stop the basic timer since we're switching to progress polling
                     finalProgress = await pollValidationProgress(result.jobId, timerElement, startTime, controller.signal);
                 } else {
@@ -1582,48 +1648,98 @@
                 const totalTime = (endTime - startTime) / 1000;
 
                 const summaryData = finalProgress?.result || result;
+                const overallTotal = finalProgress?.total ?? summaryData?.totalFiles ?? 0;
 
-                if (summaryData && summaryData.success) {
+                if (summaryData) {
                     const totalFiles = summaryData.totalFiles ?? 0;
                     const totalVessels = summaryData.totalVessels ?? 0;
                     const correctSchemas = summaryData.correctSchemas ?? 0;
                     const violations = summaryData.violations ?? 0;
+                    const isCancelled = Boolean(summaryData.cancelled || summaryData.error === 'Validation cancelled by user');
+                    const isSuccess = Boolean(summaryData.success && !isCancelled);
+                    const errorMessage = summaryData.error || summaryData.message || '';
+                    const header = isCancelled
+                        ? '❌ Validation Cancelled'
+                        : isSuccess
+                            ? '⏱️ Validation Complete'
+                            : '⛔ Validation Failed';
+                    const background = isCancelled ? '#fff3cd' : (isSuccess ? '#e8f5e8' : '#ffeaea');
+                    const border = isCancelled ? '#ffc107' : (isSuccess ? '#4caf50' : '#f44336');
                     const successRate = totalFiles > 0
                         ? ((correctSchemas / totalFiles) * 100).toFixed(1)
                         : '0.0';
 
-                    timerElement.innerHTML = `
-                        <strong>⏱️ Validation Complete</strong><br>
-                        Started: ${startTime.toLocaleTimeString()}<br>
-                        Completed: ${endTime.toLocaleTimeString()}<br>
-                        <strong>Total Time: ${totalTime.toFixed(1)}s</strong><br>
-                        <strong>📁 Files: ${totalFiles.toLocaleString()} | 🚢 Vessels: ${totalVessels.toLocaleString()}</strong>
-                    `;
-                    timerElement.style.background = '#e8f5e8';
-                    timerElement.style.borderColor = '#4caf50';
+                    const filesLabel = isCancelled ? 'Processed files' : 'Total files';
+                    const vesselsLabel = isCancelled ? 'Vessels encountered' : 'Total vessels';
+                    const correctLabel = isCancelled ? 'Correct schemas (processed)' : 'Correct schemas';
+                    const violationsLabel = isCancelled ? 'Detected schema issues' : 'Schema violations';
+
+                    const statsLines = [
+                        `📁 <strong>${filesLabel}:</strong> ${totalFiles.toLocaleString()}${isCancelled && overallTotal ? ` / ${overallTotal.toLocaleString()}` : isSuccess ? ' (100%)' : ''}`,
+                        `🚢 <strong>${vesselsLabel}:</strong> ${totalVessels.toLocaleString()}`,
+                        `✅ <strong>${correctLabel}:</strong> ${correctSchemas.toLocaleString()}`,
+                        `❌ <strong>${violationsLabel}:</strong> ${violations.toLocaleString()}`,
+                        `📊 <strong>${isCancelled ? 'Processed success rate' : 'Success rate'}:</strong> ${successRate}%`
+                    ].join('<br>');
+
+                    const statusNote = isCancelled && overallTotal
+                        ? '<div style="margin-top: 8px; color: #b36b00;">Cancellation requested during processing. Only partial results are available.</div>'
+                        : (!isSuccess && !isCancelled && errorMessage
+                            ? `<div style="margin-top: 8px; color: #d32f2f;">${errorMessage}</div>`
+                            : '');
+
+                    timerElement.innerHTML = [
+                        `<strong>${header}</strong><br>`,
+                        `Started: ${startTime.toLocaleTimeString()}<br>`,
+                        `Ended: ${endTime.toLocaleTimeString()}<br>`,
+                        `<strong>Total Time: ${totalTime.toFixed(1)}s</strong>`,
+                        `<div style="margin-top: 10px; text-align: left; line-height: 1.6;">${statsLines}</div>`,
+                        statusNote
+                    ].filter(Boolean).join('');
+                    timerElement.style.background = background;
+                    timerElement.style.borderColor = border;
 
                     loadingElement.remove();
 
-                    summaryDiv.innerHTML = `
-                        <strong>Summary:</strong><br>
-                        📁 Total files: ${totalFiles.toLocaleString()}<br>
-                        🚢 Total vessels: ${totalVessels.toLocaleString()}<br>
-                        ✅ Correct schemas: ${correctSchemas.toLocaleString()}<br>
-                        ❌ Schema violations: ${violations.toLocaleString()}<br>
-                        📊 Success rate: ${successRate}%
-                    `;
+                    if (isSuccess || isCancelled) {
+                        const hasViolations = Array.isArray(summaryData.violationDetails) && summaryData.violationDetails.length > 0;
+                        const repairBtn = document.getElementById('repairBtn');
 
-                    if (summaryData.violationDetails && summaryData.violationDetails.length > 0) {
-                        detailsDiv.innerHTML = summaryData.violationDetails.join('\n');
+                        if (hasViolations) {
+                            if (summaryHeader) {
+                                summaryHeader.style.display = 'none';
+                            }
+                            summaryDiv.style.display = 'none';
+                            summaryDiv.innerHTML = '';
+
+                            if (detailsHeader) {
+                                detailsHeader.style.display = 'block';
+                                detailsHeader.textContent = `Schema Violations (${violations.toLocaleString()})`;
+                            }
+                            detailsDiv.innerHTML = summaryData.violationDetails.join('\n');
+                            resultsDiv.style.display = 'block';
+                        } else {
+                            if (summaryHeader) summaryHeader.style.display = 'none';
+                            if (detailsHeader) detailsHeader.style.display = 'none';
+                            summaryDiv.style.display = 'none';
+                            summaryDiv.innerHTML = '';
+                            detailsDiv.innerHTML = '';
+                            resultsDiv.style.display = 'none';
+                        }
+
+                        if (repairBtn) {
+                            repairBtn.style.display = (!isCancelled && violations > 0) ? 'inline-block' : 'none';
+                        }
                     } else {
-                        detailsDiv.innerHTML = 'No schema violations found! 🎉';
-                    }
-
-                    resultsDiv.style.display = 'block';
-
-                    const repairBtn = document.getElementById('repairBtn');
-                    if (violations > 0) {
-                        repairBtn.style.display = 'inline-block';
+                        if (summaryHeader) {
+                            summaryHeader.style.display = 'block';
+                            summaryHeader.textContent = 'Validation Summary';
+                        }
+                        if (detailsHeader) detailsHeader.style.display = 'none';
+                        summaryDiv.innerHTML = errorMessage ? `❌ ${errorMessage}` : 'Validation failed.';
+                        summaryDiv.style.display = summaryDiv.innerHTML ? 'block' : 'none';
+                        detailsDiv.innerHTML = '';
+                        resultsDiv.style.display = summaryDiv.innerHTML ? 'block' : 'none';
                     }
                 } else {
                     loadingElement.remove();
@@ -1674,7 +1790,11 @@
 
                 loadingElement.remove();
             } finally {
+                currentValidationJobId = null;
+                validationCancelRequested = false;
                 currentValidationController = null;
+                button.onclick = runDataValidation;
+                button.disabled = false;
                 button.textContent = '🔍 Run Schema Validation';
                 button.style.background = '';
             }

@@ -49,7 +49,7 @@ import { VesselContextManager } from './vessel-context';
 // Progress tracking for validation jobs
 interface ValidationProgress {
   jobId: string;
-  status: 'running' | 'completed' | 'cancelled' | 'error';
+  status: 'running' | 'cancelling' | 'completed' | 'cancelled' | 'error';
   processed: number;
   total: number;
   percent: number;
@@ -57,6 +57,7 @@ interface ValidationProgress {
   currentFile?: string;
   currentVessel?: string;
   currentRelativePath?: string;
+  cancelRequested?: boolean;
   error?: string;
   completedAt?: Date;
   result?: ValidationApiResponse;
@@ -1911,6 +1912,46 @@ export function registerApiRoutes(
     }
   );
 
+  router.post(
+    '/api/validate-schemas/cancel/:jobId',
+    async (
+      req: TypedRequest,
+      res: TypedResponse<ValidationApiResponse & { jobId: string; status: ValidationProgress['status'] }>
+    ) => {
+      const { jobId } = req.params;
+      const job = validationJobs.get(jobId);
+
+      if (!job) {
+        return res.status(404).json({
+          success: false,
+          error: 'Validation job not found',
+          jobId,
+          status: 'error'
+        } as any);
+      }
+
+      if (job.status === 'completed' || job.status === 'cancelled' || job.status === 'error') {
+        return res.json({
+          success: true,
+          message: `Validation job already ${job.status}`,
+          jobId,
+          status: job.status
+        });
+      }
+
+      job.cancelRequested = true;
+      job.status = 'cancelling';
+      app.debug(`⏹️ Cancellation requested for validation job: ${jobId}`);
+
+      return res.json({
+        success: true,
+        message: 'Cancellation requested',
+        jobId,
+        status: job.status
+      });
+    }
+  );
+
   // Validate parquet schemas
   router.post(
     '/api/validate-schemas',
@@ -1922,7 +1963,8 @@ export function registerApiRoutes(
         processed: 0,
         total: 0,
         percent: 0,
-        startTime: new Date()
+        startTime: new Date(),
+        cancelRequested: false
       };
 
       validationJobs.set(jobId, progressJob);
@@ -1976,6 +2018,12 @@ export function registerApiRoutes(
           addDebug('▶️ Resuming processing after 10 second pause');
 
           for (let fileIndex = 0; fileIndex < files.length; fileIndex++) {
+            if (progressJob.cancelRequested) {
+              addDebug('⏹️ Validation cancellation requested, stopping processing');
+              progressJob.status = 'cancelled';
+              break;
+            }
+
             const filePath = files[fileIndex];
 
             progressJob.processed = Math.min(fileIndex + 1, files.length);
@@ -2158,6 +2206,28 @@ export function registerApiRoutes(
               const shortPath = path.relative(dataDir, filePath);
               violationDetails.push(`[${totalFiles}] ${shortPath}: ERROR - ${(error as Error).message}`);
             }
+          }
+
+          if (progressJob.cancelRequested || progressJob.status === 'cancelled') {
+            addDebug(`⏹️ Validation cancelled by user after processing ${totalFiles} files`);
+            progressJob.status = 'cancelled';
+            progressJob.completedAt = new Date();
+            progressJob.currentFile = undefined;
+            progressJob.currentVessel = undefined;
+            progressJob.currentRelativePath = undefined;
+            progressJob.result = {
+              success: false,
+              error: 'Validation cancelled by user',
+              cancelled: true,
+              totalFiles,
+              totalVessels: vessels.size,
+              correctSchemas,
+              violations: violationSchemas,
+              violationDetails,
+              debugMessages,
+              jobId
+            };
+            return;
           }
 
           addDebug(`📊 Validation completed: ${totalFiles} files, ${vessels.size} vessels, ${correctSchemas} correct, ${violationSchemas} violations`);
