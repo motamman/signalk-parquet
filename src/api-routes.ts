@@ -1946,6 +1946,11 @@ export function registerApiRoutes(
         } as any);
       }
 
+      res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+      res.set('Pragma', 'no-cache');
+      res.set('Expires', '0');
+      res.set('Surrogate-Control', 'no-store');
+
       return res.json(progress);
     }
   );
@@ -2002,6 +2007,11 @@ export function registerApiRoutes(
           message: 'Repair job not found'
         } as any);
       }
+
+      res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+      res.set('Pragma', 'no-cache');
+      res.set('Expires', '0');
+      res.set('Surrogate-Control', 'no-store');
 
       return res.json(progress);
     }

@@ -1480,7 +1480,8 @@
                     }
 
                     const response = await fetch(`/plugins/signalk-parquet/api/validate-schemas/progress/${jobId}`, {
-                        signal: abortSignal
+                        signal: abortSignal,
+                        cache: 'no-store'
                     });
 
                     if (!response.ok) {
@@ -1587,7 +1588,8 @@
                     }
 
                     const response = await fetch(`/plugins/signalk-parquet/api/repair-schemas/progress/${jobId}`, {
-                        signal: abortSignal
+                        signal: abortSignal,
+                        cache: 'no-store'
                     });
 
                     if (!response.ok) {
@@ -1865,7 +1867,9 @@
                     let violationCount = 0;
                     try {
                         if (currentValidationJobId) {
-                            const progressResponse = await fetch(`/plugins/signalk-parquet/api/validate-schemas/progress/${currentValidationJobId}`);
+                            const progressResponse = await fetch(`/plugins/signalk-parquet/api/validate-schemas/progress/${currentValidationJobId}`, {
+                                cache: 'no-store'
+                            });
                             if (progressResponse.ok) {
                                 const cancelData = await progressResponse.json();
                                 if (cancelData.result && Array.isArray(cancelData.result.violationFiles)) {
