@@ -1065,7 +1065,7 @@
                         <h3>Query Data</h3>
                         <div class="form-group">
                             <label for="dataPathsQueryInput">DuckDB SQL Query:</label>
-                            <textarea id="dataPathsQueryInput" placeholder="SELECT * FROM 'path/to/file.parquet' LIMIT 10"></textarea>
+                            <textarea id="dataPathsQueryInput" placeholder="SELECT * FROM read_parquet('path/to/file.parquet', union_by_name=true) LIMIT 10"></textarea>
                         </div>
                         <button onclick="executeDataPathsQuery()">▶️ Execute Query</button>
                         <button class="btn-secondary" onclick="clearDataPathsQuery()">🗑️ Clear</button>
