@@ -970,7 +970,7 @@ CRITICAL FOR TOKEN EFFICIENCY:
     MAX(CAST(value AS DOUBLE)) as max_value, 
     MIN(CAST(value AS DOUBLE)) as min_value,
     COUNT(*) as record_count
-  FROM 'path/*.parquet' 
+  FROM read_parquet('path/*.parquet', union_by_name=true) 
   WHERE signalk_timestamp >= 'start_time' AND signalk_timestamp <= 'end_time'
     AND value IS NOT NULL
   GROUP BY time_bucket 
@@ -978,11 +978,40 @@ CRITICAL FOR TOKEN EFFICIENCY:
 - Use date_trunc('minute', ...) for detailed analysis, date_trunc('hour', ...) for overviews
 - NEVER return more than 100 time buckets per query
 
+SPATIAL ANALYSIS CAPABILITIES:
+The database includes DuckDB spatial extension with advanced geographic functions:
+- ST_Point(longitude, latitude): Create point geometries
+- ST_Distance_Sphere(point1, point2): Calculate distances in meters between points
+- ST_AsText(geometry): Convert geometries to WKT text
+- ST_Centroid(ST_Collect(points)): Find center of multiple points
+- ST_ConvexHull(ST_Collect(points)): Create movement boundary polygons
+
+SPATIAL QUERY PATTERNS for position analysis:
+- Distance between consecutive positions:
+  WITH positions AS (
+    SELECT signalk_timestamp, ST_Point(value_longitude, value_latitude) as point,
+           LAG(ST_Point(value_longitude, value_latitude)) OVER (ORDER BY signalk_timestamp) as prev_point
+    FROM read_parquet('path/*.parquet', union_by_name=true)
+    WHERE value_latitude IS NOT NULL AND value_longitude IS NOT NULL
+  )
+  SELECT signalk_timestamp,
+         ST_Distance_Sphere(point, prev_point) as distance_meters
+  FROM positions WHERE prev_point IS NOT NULL;
+
+- Movement analysis with time bucketing:
+  SELECT
+    strftime(date_trunc('hour', signalk_timestamp::TIMESTAMP), '%Y-%m-%dT%H:%M:%SZ') as time_bucket,
+    ST_AsText(ST_Centroid(ST_Collect(ST_Point(value_longitude, value_latitude)))) as centroid,
+    ST_AsText(ST_ConvexHull(ST_Collect(ST_Point(value_longitude, value_latitude)))) as movement_area,
+    SUM(distance_calculations) as total_distance
+  FROM your_position_analysis GROUP BY time_bucket;
+
 Focus on:
 1. Current vessel status and recent activity
-2. Patterns in navigation, weather, and performance data  
+2. Patterns in navigation, weather, and performance data
 3. Safety considerations and operational insights
-4. Data quality and completeness assessment
+4. **Spatial patterns: track analysis, distance calculations, movement areas**
+5. Data quality and completeness assessment
 
 Begin your analysis by querying relevant data within the specified time range.`;
 
@@ -1139,7 +1168,7 @@ CRITICAL FOR TOKEN EFFICIENCY:
     MAX(CAST(value AS DOUBLE)) as max_value, 
     MIN(CAST(value AS DOUBLE)) as min_value,
     COUNT(*) as record_count
-  FROM 'path/*.parquet' 
+  FROM read_parquet('path/*.parquet', union_by_name=true) 
   WHERE signalk_timestamp >= 'start_time' AND signalk_timestamp <= 'end_time'
     AND value IS NOT NULL
   GROUP BY time_bucket 
@@ -2665,7 +2694,7 @@ Begin your analysis by querying relevant data within the specified time range.`;
           signalk_timestamp,
           CAST(value AS BOOLEAN) as current_value,
           LAG(CAST(value AS BOOLEAN)) OVER (ORDER BY signalk_timestamp) as previous_value
-        FROM '${this.dataDirectory}/vessels/*/commands/${regimenName}/*.parquet'
+        FROM read_parquet('${this.dataDirectory}/vessels/*/commands/${regimenName}/*.parquet', union_by_name=true)
         ${timeConstraint}
         ORDER BY signalk_timestamp
       ),
@@ -2970,7 +2999,7 @@ Common vessel data paths (when available):
 - navigation.closestApproach: Closest approach calculations
 - navigation.distanceToSelf: Distance from your vessel in meters
 
-Query example: SELECT * FROM 'data/vessels/*/navigation/position/*.parquet'`;
+Query example: SELECT * FROM read_parquet('data/vessels/*/navigation/position/*.parquet', union_by_name=true)`;
           } else {
             otherVesselsInfo = `
 OTHER VESSELS: None detected in this dataset`;
@@ -3006,20 +3035,58 @@ COLUMN STRUCTURE:
 - value_latitude, value_longitude (DOUBLE): Extracted position coordinates
 
 MANDATORY QUERY SYNTAX - USE EXACT FILE PATHS:
-- Recent position: SELECT received_timestamp, value_latitude, value_longitude FROM '${dataDir}/${selfContextPath}/navigation/position/*.parquet' ORDER BY received_timestamp DESC LIMIT 100
-- Speed analysis: SELECT AVG(CAST(value AS DOUBLE)) as avg_speed FROM '${dataDir}/${selfContextPath}/navigation/speedOverGround/*.parquet' WHERE signalk_timestamp >= '2024-01-01T00:00:00Z'
-- Wind patterns: SELECT DATE_TRUNC('hour', CAST(received_timestamp AS TIMESTAMP)) as hour, AVG(CAST(value AS DOUBLE)) FROM '${dataDir}/${selfContextPath}/environment/wind/speedTrue/*.parquet' GROUP BY hour ORDER BY hour
+- Recent position: SELECT received_timestamp, value_latitude, value_longitude FROM read_parquet('${dataDir}/${selfContextPath}/navigation/position/*.parquet', union_by_name=true) ORDER BY received_timestamp DESC LIMIT 100
+- Speed analysis: SELECT AVG(CAST(value AS DOUBLE)) as avg_speed FROM read_parquet('${dataDir}/${selfContextPath}/navigation/speedOverGround/*.parquet', union_by_name=true) WHERE signalk_timestamp >= '2024-01-01T00:00:00Z'
+- Wind patterns: SELECT DATE_TRUNC('hour', CAST(received_timestamp AS TIMESTAMP)) as hour, AVG(CAST(value AS DOUBLE)) FROM read_parquet('${dataDir}/${selfContextPath}/environment/wind/speedTrue/*.parquet', union_by_name=true) GROUP BY hour ORDER BY hour
 - Time-based filtering: WHERE signalk_timestamp >= 'YYYY-MM-DDTHH:MM:SSZ' AND signalk_timestamp <= 'YYYY-MM-DDTHH:MM:SSZ'
+
+SPATIAL QUERY EXAMPLES - Advanced Geographic Analysis:
+- Track distance calculation:
+  WITH ordered_positions AS (
+    SELECT signalk_timestamp, ST_Point(value_longitude, value_latitude) as position,
+           LAG(ST_Point(value_longitude, value_latitude)) OVER (ORDER BY signalk_timestamp) as prev_position
+    FROM read_parquet('${dataDir}/${selfContextPath}/navigation/position/*.parquet', union_by_name=true)
+    WHERE signalk_timestamp >= 'start_time' AND signalk_timestamp <= 'end_time'
+      AND value_latitude IS NOT NULL AND value_longitude IS NOT NULL
+  )
+  SELECT signalk_timestamp, ST_Distance_Sphere(position, prev_position) as distance_meters
+  FROM ordered_positions WHERE prev_position IS NOT NULL;
+
+- Hourly movement summary:
+  WITH ordered_positions AS (
+    SELECT signalk_timestamp, ST_Point(value_longitude, value_latitude) as position,
+           LAG(ST_Point(value_longitude, value_latitude)) OVER (ORDER BY signalk_timestamp) as prev_position
+    FROM read_parquet('${dataDir}/${selfContextPath}/navigation/position/*.parquet', union_by_name=true)
+    WHERE signalk_timestamp >= 'start_time' AND signalk_timestamp <= 'end_time'
+  ), distances AS (
+    SELECT *, ST_Distance_Sphere(position, prev_position) as distance_meters
+    FROM ordered_positions WHERE prev_position IS NOT NULL
+  )
+  SELECT
+    strftime(date_trunc('hour', signalk_timestamp::TIMESTAMP), '%Y-%m-%dT%H:%M:%SZ') as time_bucket,
+    ST_AsText(ST_Centroid(ST_Collect(position))) as centroid,
+    SUM(distance_meters) as total_distance_meters,
+    COUNT(*) as position_records
+  FROM distances GROUP BY time_bucket ORDER BY time_bucket;
+
+- Multi-vessel proximity analysis:
+  SELECT v1.context as vessel1, v2.context as vessel2,
+         ST_Distance_Sphere(ST_Point(v1.value_longitude, v1.value_latitude),
+                           ST_Point(v2.value_longitude, v2.value_latitude)) as distance_meters
+  FROM read_parquet('${dataDir}/vessels/*/navigation/position/*.parquet', union_by_name=true) v1
+  JOIN read_parquet('${dataDir}/vessels/*/navigation/position/*.parquet', union_by_name=true) v2
+    ON v1.received_timestamp = v2.received_timestamp AND v1.context != v2.context
+  WHERE v1.signalk_timestamp >= 'start_time' AND v1.signalk_timestamp <= 'end_time';
 
 CRITICAL: Your vessel's data is at: ${dataDir}/${selfContextPath}/
 IMPORTANT: Use the vessel's MMSI from the VESSEL CONTEXT section above to filter data by context column.
-Example: SELECT * FROM '${dataDir}/${selfContextPath}/navigation/position/*.parquet' WHERE context LIKE '%[MMSI_FROM_VESSEL_CONTEXT]%' LIMIT 5
+Example: SELECT * FROM read_parquet('${dataDir}/${selfContextPath}/navigation/position/*.parquet', union_by_name=true) WHERE context LIKE '%[MMSI_FROM_VESSEL_CONTEXT]%' LIMIT 5
 
 MULTI-VESSEL QUERIES:
-- Find all vessels: SELECT DISTINCT context FROM '${dataDir}/vessels/*/navigation/position/*.parquet'
-- All vessels positions: SELECT context, received_timestamp, value_latitude, value_longitude FROM '${dataDir}/vessels/*/navigation/position/*.parquet' ORDER BY received_timestamp DESC
-- Specific vessel by MMSI: SELECT * FROM '${dataDir}/vessels/urn_mrn_imo_mmsi_123456789/navigation/position/*.parquet'
-- Vessel traffic analysis: SELECT context, COUNT(*) as message_count FROM '${dataDir}/vessels/*/navigation/position/*.parquet' GROUP BY context
+- Find all vessels: SELECT DISTINCT context FROM read_parquet('${dataDir}/vessels/*/navigation/position/*.parquet', union_by_name=true)
+- All vessels positions: SELECT context, received_timestamp, value_latitude, value_longitude FROM read_parquet('${dataDir}/vessels/*/navigation/position/*.parquet', union_by_name=true) ORDER BY received_timestamp DESC
+- Specific vessel by MMSI: SELECT * FROM read_parquet('${dataDir}/vessels/urn_mrn_imo_mmsi_123456789/navigation/position/*.parquet', union_by_name=true)
+- Vessel traffic analysis: SELECT context, COUNT(*) as message_count FROM read_parquet('${dataDir}/vessels/*/navigation/position/*.parquet', union_by_name=true) GROUP BY context
 
 IMPORTANT NOTES:
 - All timestamps are ISO strings in VARCHAR format, not milliseconds
