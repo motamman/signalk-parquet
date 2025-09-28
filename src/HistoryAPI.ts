@@ -295,7 +295,7 @@ export class HistoryAPI {
             ), '%Y-%m-%dT%H:%M:%SZ') as timestamp,
             ${getAggregateExpression(pathSpec.aggregateMethod, pathSpec.path)} as value,
             FIRST(value_json) as value_json
-          FROM '${filePath}'
+          FROM read_parquet('${filePath}', union_by_name=true)
           WHERE
             signalk_timestamp >= '${fromIso}'
             AND 
