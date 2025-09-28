@@ -1842,7 +1842,7 @@ Begin your analysis by querying relevant data within the specified time range.`;
       this.activeConversations.set(request.conversationId, conversationMessages);
 
       const followUpResponse = {
-        id: request.conversationId, // Keep same conversation ID
+        id: `${request.conversationId}_followup_${Date.now()}`, // Unique ID for follow-up
         analysis: analysisResult.trim() || 'Follow-up question answered.',
         insights: [
           'Follow-up question processed',
@@ -1861,7 +1861,10 @@ Begin your analysis by querying relevant data within the specified time range.`;
           dataPath: 'follow_up_question',
           analysisType: 'custom',
           recordCount: queryCount,
-          timeRange: undefined
+          timeRange: undefined,
+          originalConversationId: request.conversationId,
+          followUpQuestion: request.question,
+          isFollowUp: true
         },
         usage: totalTokenUsage
       };
