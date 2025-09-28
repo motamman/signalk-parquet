@@ -295,7 +295,7 @@ export class HistoryAPI {
             ), '%Y-%m-%dT%H:%M:%SZ') as timestamp,
             ${getAggregateExpression(pathSpec.aggregateMethod, pathSpec.path)} as value,
             FIRST(value_json) as value_json
-          FROM '${filePath}'
+          FROM read_parquet('${filePath}', union_by_name=true)
           WHERE
             signalk_timestamp >= '${fromIso}'
             AND 
@@ -307,6 +307,10 @@ export class HistoryAPI {
 
           const duckDB = await DuckDBInstance.create();
           const connection = await duckDB.connect();
+
+          // Load spatial extension for geographic queries
+          await connection.runAndReadAll("INSTALL spatial;");
+          await connection.runAndReadAll("LOAD spatial;");
 
           try {
             const result = await connection.runAndReadAll(query);
