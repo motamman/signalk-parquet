@@ -1204,7 +1204,7 @@
         }
 
         function generateQueryForPath(signalkPath, directory) {
-            const query = `SELECT * FROM '${directory}/*.parquet' ORDER BY received_timestamp DESC LIMIT 10`;
+            const query = `SELECT * FROM read_parquet('${directory}/*.parquet', union_by_name=true) ORDER BY received_timestamp DESC LIMIT 10`;
             setDataPathsQuery(query);
         }
 
@@ -1222,9 +1222,9 @@
             // Generate examples based on available paths
             availablePaths.slice(0, 4).forEach(pathInfo => {
                 const examples = [
-                    `SELECT * FROM '${pathInfo.directory}/*.parquet' ORDER BY received_timestamp DESC LIMIT 10`,
-                    `SELECT COUNT(*) as total_records FROM '${pathInfo.directory}/*.parquet'`,
-                    `SELECT received_timestamp, value, source_label FROM '${pathInfo.directory}/*.parquet' WHERE value IS NOT NULL ORDER BY received_timestamp DESC LIMIT 10`
+                    `SELECT * FROM read_parquet('${pathInfo.directory}/*.parquet', union_by_name=true) ORDER BY received_timestamp DESC LIMIT 10`,
+                    `SELECT COUNT(*) as total_records FROM read_parquet('${pathInfo.directory}/*.parquet', union_by_name=true)`,
+                    `SELECT received_timestamp, value, source_label FROM read_parquet('${pathInfo.directory}/*.parquet', union_by_name=true) WHERE value IS NOT NULL ORDER BY received_timestamp DESC LIMIT 10`
                 ];
                 
                 examples.forEach(query => {
