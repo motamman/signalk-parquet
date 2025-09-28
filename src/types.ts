@@ -121,6 +121,15 @@ export interface PathConfig {
 }
 
 // Command Registration Types
+export interface ThresholdConfig {
+  enabled: boolean;
+  watchPath: string;                    // SignalK path to monitor
+  operator: 'gt' | 'lt' | 'eq' | 'ne' | 'true' | 'false';  // greater than, less than, equal, not equal, true, false
+  value?: number | boolean | string;    // Threshold value (not needed for true/false)
+  activateOnMatch: boolean;             // true = activate command when condition met, false = deactivate
+  hysteresis?: number;                  // Optional: prevent rapid switching (for numeric values)
+}
+
 export interface CommandConfig {
   command: string;
   path: string;
@@ -129,6 +138,10 @@ export interface CommandConfig {
   keywords?: string[];      // For Claude context matching
   active?: boolean;
   lastExecuted?: string;
+  defaultState?: boolean;   // Default on/off state when no threshold or manual override
+  thresholds?: ThresholdConfig[];  // Threshold-based activation (multiple thresholds supported)
+  manualOverride?: boolean;     // True when manually controlled via PUT
+  manualOverrideUntil?: string; // ISO timestamp when override expires (optional)
 }
 
 export interface CommandRegistrationState {
@@ -146,6 +159,8 @@ export interface CommandRegistrationRequest {
   command: string;
   description?: string;
   keywords?: string[];
+  defaultState?: boolean;
+  thresholds?: ThresholdConfig[];
 }
 
 // Web App Configuration (stored separately from plugin config)
@@ -484,6 +499,7 @@ export type CommandPutHandler = (
 ) => CommandExecutionResult;
 
 export interface CommandExecutionResult {
+  success: boolean;
   state: 'COMPLETED' | 'PENDING' | 'FAILED';
   statusCode?: number;
   message?: string;

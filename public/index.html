@@ -535,6 +535,93 @@
                             <input type="text" id="commandKeywords" placeholder="e.g., anchor, anchoring, drag, swing">
                             <small style="color: #666; font-size: 11px;">Separate multiple keywords with commas</small>
                         </div>
+
+                        <!-- Default State Configuration -->
+                        <div class="form-group">
+                            <label for="addCommandDefaultState">Default State:</label>
+                            <select id="addCommandDefaultState">
+                                <option value="">No default (manual control only)</option>
+                                <option value="true">Default ON</option>
+                                <option value="false">Default OFF</option>
+                            </select>
+                            <small style="color: #666; font-size: 11px;">State when no threshold or manual override is active</small>
+                        </div>
+
+                        <!-- Threshold Configuration -->
+                        <div style="margin-top: 20px; padding: 15px; background: #f0f8ff; border: 1px solid #b3d9ff; border-radius: 5px;">
+                            <h5 style="margin-bottom: 15px; color: #0066cc;">🎯 Threshold-Based Activation</h5>
+
+                            <div id="addCommandThresholdsList">
+                                <!-- New thresholds will be populated here -->
+                            </div>
+
+                            <button type="button" onclick="addNewCommandThreshold()" style="background: #4caf50; color: white; border: none; padding: 8px 12px; border-radius: 4px; margin-top: 10px;">➕ Add Threshold</button>
+
+                            <!-- Add Threshold Form for new command (hidden by default) -->
+                            <div id="addCommandThresholdForm" style="display: none; margin-top: 15px; padding: 15px; background: #f8f9fa; border: 1px solid #ddd; border-radius: 5px;">
+                                <h6 style="margin-bottom: 10px; color: #333;">Add New Threshold</h6>
+
+                                <div class="form-group">
+                                    <label for="addCmdThresholdPath">SignalK Path to Monitor:</label>
+                                    <div style="margin-bottom: 8px; display: flex; align-items: center; gap: 15px;">
+                                        <label style="display: flex; align-items: center; font-weight: normal; cursor: pointer; white-space: nowrap;">
+                                            <span style="margin-right: 5px;">🏠 Self paths</span>
+                                            <input type="radio" id="addCmdPathFilterSelf" name="addCmdPathFilter" value="self" checked onchange="updateAddCmdThresholdPathFilter()">
+                                        </label>
+                                        <label style="display: flex; align-items: center; font-weight: normal; cursor: pointer; white-space: nowrap;">
+                                            <span style="margin-right: 5px;">🚢 Other vessel paths</span>
+                                            <input type="radio" id="addCmdPathFilterOthers" name="addCmdPathFilter" value="others" onchange="updateAddCmdThresholdPathFilter()">
+                                        </label>
+                                    </div>
+                                    <select id="addCmdThresholdPath" style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px;">
+                                        <option value="">-- Select SignalK Path --</option>
+                                        <option value="custom">🖊️ Enter Custom Path</option>
+                                    </select>
+                                    <input type="text" id="addCmdThresholdPathCustom" placeholder="Enter custom SignalK path (e.g., navigation.speedOverGround)" style="width: 100%; padding: 8px; margin-top: 5px; border: 1px solid #ddd; border-radius: 4px; display: none;">
+                                </div>
+
+                                <div style="display: flex; gap: 10px;">
+                                    <div class="form-group" style="flex: 1;">
+                                        <label for="addCmdThresholdOperator">Condition:</label>
+                                        <select id="addCmdThresholdOperator" onchange="toggleAddCmdThresholdValueField()">
+                                            <option value="gt">Greater than (&gt;)</option>
+                                            <option value="lt">Less than (&lt;)</option>
+                                            <option value="eq">Equal to (=)</option>
+                                            <option value="ne">Not equal to (≠)</option>
+                                            <option value="true">Is true</option>
+                                            <option value="false">Is false</option>
+                                        </select>
+                                    </div>
+
+                                    <div class="form-group" style="flex: 1;" id="addCmdThresholdValueGroup">
+                                        <label for="addCmdThresholdValue">Value:</label>
+                                        <input type="text" id="addCmdThresholdValue" placeholder="e.g., 5.0">
+                                    </div>
+                                </div>
+
+                                <div style="display: flex; gap: 10px;">
+                                    <div class="form-group" style="flex: 1;">
+                                        <label for="addCmdThresholdAction">Action when condition met:</label>
+                                        <select id="addCmdThresholdAction">
+                                            <option value="true">Turn command ON</option>
+                                            <option value="false">Turn command OFF</option>
+                                        </select>
+                                    </div>
+
+                                    <div class="form-group" style="flex: 1;">
+                                        <label for="addCmdThresholdHysteresis">Hysteresis (seconds):</label>
+                                        <input type="number" id="addCmdThresholdHysteresis" placeholder="2.0" step="0.1">
+                                        <small style="color: #666; font-size: 11px;">Prevent rapid switching</small>
+                                    </div>
+                                </div>
+
+                                <div style="margin-top: 15px; display: flex; gap: 10px;">
+                                    <button type="button" onclick="saveAddCmdThreshold()" style="background: #4caf50; color: white; border: none; padding: 6px 12px; border-radius: 4px;">✅ Add Threshold</button>
+                                    <button type="button" onclick="cancelAddCmdThreshold()" style="background: #666; color: white; border: none; padding: 6px 12px; border-radius: 4px;">❌ Cancel</button>
+                                </div>
+                            </div>
+                        </div>
+
                         <div style="margin-top: 20px; padding-top: 15px; border-top: 1px solid #ddd;">
                             <button onclick="registerCommand()">✅ Register Command</button>
                             <button class="btn-secondary" onclick="hideAddCommandForm()">❌ Cancel</button>
@@ -557,6 +644,93 @@
                             <input type="text" id="editCommandKeywords" placeholder="e.g., anchor, anchoring, drag, swing">
                             <small style="color: #666; font-size: 11px;">Separate multiple keywords with commas</small>
                         </div>
+
+                        <!-- Default State Configuration -->
+                        <div class="form-group">
+                            <label for="editCommandDefaultState">Default State:</label>
+                            <select id="editCommandDefaultState">
+                                <option value="">No default (manual control only)</option>
+                                <option value="true">Default ON</option>
+                                <option value="false">Default OFF</option>
+                            </select>
+                            <small style="color: #666; font-size: 11px;">State when no threshold or manual override is active</small>
+                        </div>
+
+                        <!-- Threshold Configuration -->
+                        <div style="margin-top: 20px; padding: 15px; background: #f0f8ff; border: 1px solid #b3d9ff; border-radius: 5px;">
+                            <h5 style="margin-bottom: 15px; color: #0066cc;">🎯 Threshold-Based Activation</h5>
+
+                            <div id="thresholdsList">
+                                <!-- Existing thresholds will be populated here -->
+                            </div>
+
+                            <button type="button" onclick="addNewThreshold()" style="background: #4caf50; color: white; border: none; padding: 8px 12px; border-radius: 4px; margin-top: 10px;">➕ Add Threshold</button>
+
+                            <!-- Add Threshold Form (hidden by default) -->
+                            <div id="addThresholdForm" style="display: none; margin-top: 15px; padding: 15px; background: #f8f9fa; border: 1px solid #ddd; border-radius: 5px;">
+                                <h6 style="margin-bottom: 10px; color: #333;">Add New Threshold</h6>
+
+                                <div class="form-group">
+                                    <label for="newThresholdPath">SignalK Path to Monitor:</label>
+                                    <div style="margin-bottom: 8px; display: flex; align-items: center; gap: 15px;">
+                                        <label style="display: flex; align-items: center; font-weight: normal; cursor: pointer; white-space: nowrap;">
+                                            <span style="margin-right: 5px;">🏠 Self paths</span>
+                                            <input type="radio" id="thresholdPathFilterSelf" name="thresholdPathFilter" value="self" checked onchange="updateThresholdPathFilter()">
+                                        </label>
+                                        <label style="display: flex; align-items: center; font-weight: normal; cursor: pointer; white-space: nowrap;">
+                                            <span style="margin-right: 5px;">🚢 Other vessel paths</span>
+                                            <input type="radio" id="thresholdPathFilterOthers" name="thresholdPathFilter" value="others" onchange="updateThresholdPathFilter()">
+                                        </label>
+                                    </div>
+                                    <select id="newThresholdPath" style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px;">
+                                        <option value="">-- Select SignalK Path --</option>
+                                        <option value="custom">🖊️ Enter Custom Path</option>
+                                    </select>
+                                    <input type="text" id="newThresholdPathCustom" placeholder="Enter custom SignalK path (e.g., navigation.speedOverGround)" style="width: 100%; padding: 8px; margin-top: 5px; border: 1px solid #ddd; border-radius: 4px; display: none;">
+                                </div>
+
+                                <div style="display: flex; gap: 10px;">
+                                    <div class="form-group" style="flex: 1;">
+                                        <label for="newThresholdOperator">Condition:</label>
+                                        <select id="newThresholdOperator" onchange="toggleNewThresholdValueField()">
+                                            <option value="gt">Greater than (&gt;)</option>
+                                            <option value="lt">Less than (&lt;)</option>
+                                            <option value="eq">Equal to (=)</option>
+                                            <option value="ne">Not equal to (≠)</option>
+                                            <option value="true">Is true</option>
+                                            <option value="false">Is false</option>
+                                        </select>
+                                    </div>
+
+                                    <div class="form-group" style="flex: 1;" id="newThresholdValueGroup">
+                                        <label for="newThresholdValue">Value:</label>
+                                        <input type="text" id="newThresholdValue" placeholder="e.g., 5.0">
+                                    </div>
+                                </div>
+
+                                <div style="display: flex; gap: 10px;">
+                                    <div class="form-group" style="flex: 1;">
+                                        <label for="newThresholdAction">Action when condition met:</label>
+                                        <select id="newThresholdAction">
+                                            <option value="true">Turn command ON</option>
+                                            <option value="false">Turn command OFF</option>
+                                        </select>
+                                    </div>
+
+                                    <div class="form-group" style="flex: 1;">
+                                        <label for="newThresholdHysteresis">Hysteresis (seconds):</label>
+                                        <input type="number" id="newThresholdHysteresis" placeholder="2.0" step="0.1">
+                                        <small style="color: #666; font-size: 11px;">Prevent rapid switching</small>
+                                    </div>
+                                </div>
+
+                                <div style="margin-top: 15px; display: flex; gap: 10px;">
+                                    <button type="button" onclick="saveNewThreshold()" style="background: #4caf50; color: white; border: none; padding: 6px 12px; border-radius: 4px;">✅ Add Threshold</button>
+                                    <button type="button" onclick="cancelNewThreshold()" style="background: #666; color: white; border: none; padding: 6px 12px; border-radius: 4px;">❌ Cancel</button>
+                                </div>
+                            </div>
+                        </div>
+
                         <div style="margin-top: 20px; padding-top: 15px; border-top: 1px solid #ddd;">
                             <button onclick="updateCommand()">✅ Update Command</button>
                             <button class="btn-secondary" onclick="hideEditCommandForm()">❌ Cancel</button>
@@ -2865,36 +3039,99 @@
         
         function displayCommands(commands) {
             const container = document.getElementById('commandContainer');
-            
+
             if (!commands || commands.length === 0) {
                 container.innerHTML = '<div class="info">No commands registered yet.</div>';
                 return;
             }
-            
+
             let html = '<div class="table-container"><table><thead><tr>';
-            html += '<th>Command</th><th>Path</th><th>Description</th><th>Keywords</th><th>Status</th><th>Registered</th><th>Actions</th>';
+            html += '<th>Command</th><th>Path</th><th>Description</th><th>Automation</th><th>Status</th><th>Actions</th>';
             html += '</tr></thead><tbody>';
-            
+
             commands.forEach(command => {
                 const status = command.active ? '🟢 Active' : '🔴 Inactive';
                 const registeredDate = new Date(command.registered).toLocaleString();
-                const keywords = command.keywords ? command.keywords.join(', ') : '<em style="color: #999;">No keywords</em>';
+                const keywords = command.keywords ? command.keywords.join(', ') : '';
+
+                // Automation info
+                let automationInfo = '<div style="font-size: 0.9em;">';
+
+                // Manual override status
+                if (command.manualOverride) {
+                    const expiry = command.manualOverrideUntil ?
+                        ` (expires ${new Date(command.manualOverrideUntil).toLocaleString()})` : ' (permanent)';
+                    automationInfo += `<div style="color: #ff9800; margin-bottom: 5px;">🔒 Manual Override${expiry}</div>`;
+                }
+
+                // Thresholds configuration (multiple thresholds supported)
+                if (command.thresholds && command.thresholds.length > 0) {
+                    command.thresholds.forEach(threshold => {
+                        if (threshold.enabled) {
+                            const operator = {
+                                'gt': '>', 'lt': '<', 'eq': '=', 'ne': '≠', 'true': 'is true', 'false': 'is false'
+                            }[threshold.operator] || threshold.operator;
+
+                            const value = threshold.value !== undefined ? ` ${threshold.value}` : '';
+                            const action = threshold.activateOnMatch ? 'ON' : 'OFF';
+
+                            automationInfo += `<div style="color: #2196f3; margin-bottom: 3px;">
+                                🎯 <strong>${threshold.watchPath}</strong> ${operator}${value} → ${action}
+                            </div>`;
+
+                            if (threshold.hysteresis) {
+                                automationInfo += `<div style="color: #666; font-size: 0.8em;">⏱️ ${threshold.hysteresis}s hysteresis</div>`;
+                            }
+                        }
+                    });
+                } else if (command.defaultState !== undefined) {
+                    automationInfo += `<div style="color: #4caf50;">⚙️ Default: ${command.defaultState ? 'ON' : 'OFF'}</div>`;
+                } else {
+                    automationInfo += '<div style="color: #999;">Manual control only</div>';
+                }
+
+                if (keywords) {
+                    automationInfo += `<div style="color: #666; font-size: 0.8em; margin-top: 3px;">🏷️ ${keywords}</div>`;
+                }
+
+                automationInfo += '</div>';
+
                 html += `<tr>
-                    <td><strong>${command.command}</strong></td>
-                    <td><code>vessels.self.commands.${command.command}</code></td>
-                    <td>${command.description || 'No description'}</td>
-                    <td>${keywords}</td>
-                    <td>${status}</td>
-                    <td>${registeredDate}</td>
                     <td>
-                        <button onclick="executeCommand('${command.command}', true)" style="margin-right: 5px;">▶️ Start</button>
-                        <button onclick="executeCommand('${command.command}', false)" style="margin-right: 5px;">⏹️ Stop</button>
-                        <button onclick="showEditCommandForm('${command.command}')" class="btn-secondary" style="margin-right: 5px;">✏️ Edit</button>
-                        <button onclick="unregisterCommand('${command.command}')" class="btn-danger">❌ Remove</button>
+                        <div><strong>${command.command}</strong></div>
+                        <div style="font-size: 0.8em; color: #666; margin-top: 2px;">${command.description || 'No description'}</div>
+                        <div style="font-size: 0.7em; color: #999; margin-top: 2px;">Registered: ${registeredDate}</div>
+                    </td>
+                    <td><code style="font-size: 0.8em;">vessels.self.commands.${command.command}</code></td>
+                    <td>${automationInfo}</td>
+                    <td style="text-align: center;">
+                        <div style="margin-bottom: 5px;">${status}</div>
+                        ${command.manualOverride ?
+                            `<button onclick="setManualOverride('${command.command}', false)"
+                                    style="background: #ff9800; color: white; border: none; padding: 2px 6px; border-radius: 3px; font-size: 0.8em;">
+                                🔓 Clear Override
+                            </button>` :
+                            `<button onclick="promptManualOverride('${command.command}')"
+                                    style="background: #666; color: white; border: none; padding: 2px 6px; border-radius: 3px; font-size: 0.8em;">
+                                🔒 Override
+                            </button>`
+                        }
+                    </td>
+                    <td>
+                        <div style="display: flex; flex-direction: column; gap: 3px;">
+                            <div>
+                                <button onclick="executeCommand('${command.command}', true)" style="margin-right: 3px; padding: 4px 8px; font-size: 0.8em;">▶️ Start</button>
+                                <button onclick="executeCommand('${command.command}', false)" style="padding: 4px 8px; font-size: 0.8em;">⏹️ Stop</button>
+                            </div>
+                            <div>
+                                <button onclick="showEditCommandForm('${command.command}')" class="btn-secondary" style="margin-right: 3px; padding: 3px 6px; font-size: 0.8em;">✏️ Edit</button>
+                                <button onclick="unregisterCommand('${command.command}')" class="btn-danger" style="padding: 3px 6px; font-size: 0.8em;">❌ Remove</button>
+                            </div>
+                        </div>
                     </td>
                 </tr>`;
             });
-            
+
             html += '</tbody></table></div>';
             container.innerHTML = html;
         }
@@ -2912,6 +3149,14 @@
             document.getElementById('commandName').value = '';
             document.getElementById('commandDescription').value = '';
             document.getElementById('commandKeywords').value = '';
+            document.getElementById('addCommandDefaultState').value = '';
+
+            // Clear thresholds
+            addingThresholds = [];
+            displayAddCommandThresholdsList();
+
+            // Hide threshold form if visible
+            document.getElementById('addCommandThresholdForm').style.display = 'none';
         }
         
         // Edit command functions
@@ -2930,7 +3175,21 @@
                 document.getElementById('editCommandName').value = command.command;
                 document.getElementById('editCommandDescription').value = command.description || '';
                 document.getElementById('editCommandKeywords').value = command.keywords ? command.keywords.join(', ') : '';
-                
+
+                // Populate default state
+                const defaultStateSelect = document.getElementById('editCommandDefaultState');
+                if (command.defaultState === true) {
+                    defaultStateSelect.value = 'true';
+                } else if (command.defaultState === false) {
+                    defaultStateSelect.value = 'false';
+                } else {
+                    defaultStateSelect.value = '';
+                }
+
+                // Populate thresholds configuration (multiple thresholds supported)
+                editingThresholds = command.thresholds ? [...command.thresholds] : [];
+                displayThresholdsList();
+
                 // Show the form
                 document.getElementById('editCommandForm').style.display = 'block';
                 
@@ -2948,10 +3207,17 @@
                 const command = document.getElementById('editCommandName').value.trim();
                 const description = document.getElementById('editCommandDescription').value.trim();
                 const keywordsInput = document.getElementById('editCommandKeywords').value.trim();
-                
+
                 // Parse keywords from comma-separated string
                 const keywords = keywordsInput ? keywordsInput.split(',').map(k => k.trim()).filter(k => k.length > 0) : undefined;
-                
+
+                // Get default state
+                const defaultStateValue = document.getElementById('editCommandDefaultState').value;
+                const defaultState = defaultStateValue === '' ? undefined : (defaultStateValue === 'true');
+
+                // Get thresholds configuration (multiple thresholds supported)
+                const thresholds = editingThresholds.length > 0 ? editingThresholds : undefined;
+
                 const response = await fetch(`/plugins/signalk-parquet/api/commands/${command}`, {
                     method: 'PUT',
                     headers: {
@@ -2959,7 +3225,9 @@
                     },
                     body: JSON.stringify({
                         description: description || undefined,
-                        keywords: keywords
+                        keywords: keywords,
+                        defaultState: defaultState,
+                        thresholds: thresholds
                     })
                 });
                 
@@ -2991,7 +3259,14 @@
                 
                 // Parse keywords from comma-separated string
                 const keywords = keywordsInput ? keywordsInput.split(',').map(k => k.trim()).filter(k => k.length > 0) : undefined;
-                
+
+                // Get default state
+                const defaultStateValue = document.getElementById('addCommandDefaultState').value;
+                const defaultState = defaultStateValue === '' ? undefined : (defaultStateValue === 'true');
+
+                // Get thresholds configuration
+                const thresholds = addingThresholds.length > 0 ? addingThresholds : undefined;
+
                 const response = await fetch('/plugins/signalk-parquet/api/commands', {
                     method: 'POST',
                     headers: {
@@ -3000,7 +3275,9 @@
                     body: JSON.stringify({
                         command: command,
                         description: description || undefined,
-                        keywords: keywords
+                        keywords: keywords,
+                        defaultState: defaultState,
+                        thresholds: thresholds
                     })
                 });
                 
@@ -3069,7 +3346,398 @@
                 alert(`Network error: ${error.message}`);
             }
         }
-        
+
+        // Threshold UI functions
+        let editingThresholds = []; // Store thresholds being edited
+        let addingThresholds = []; // Store thresholds being added to new command
+
+        function updateThresholdPathFilter() {
+            populateThresholdPaths();
+        }
+
+        async function populateThresholdPaths() {
+            const select = document.getElementById('newThresholdPath');
+            const filterType = document.querySelector('input[name="thresholdPathFilter"]:checked')?.value || 'self';
+
+            // Clear existing options except the default ones
+            select.innerHTML = '<option value="">-- Select SignalK Path --</option><option value="custom">🖊️ Enter Custom Path</option>';
+
+            try {
+                // Fetch live SignalK data
+                const response = await fetch('/signalk/v1/api/');
+                const data = await response.json();
+
+                // Extract paths from SignalK API with filter
+                const allPaths = extractPathsFromSignalK(data, filterType);
+
+                // Add available paths
+                allPaths.forEach(path => {
+                    const option = document.createElement('option');
+                    option.value = path;
+                    option.textContent = path;
+                    select.appendChild(option);
+                });
+
+            } catch (error) {
+                console.log('Could not load real-time SignalK paths for thresholds:', error);
+            }
+
+            // Handle custom path selection
+            select.onchange = function() {
+                const customInput = document.getElementById('newThresholdPathCustom');
+                if (this.value === 'custom') {
+                    customInput.style.display = 'block';
+                    customInput.focus();
+                } else {
+                    customInput.style.display = 'none';
+                }
+            };
+        }
+
+        function toggleNewThresholdValueField() {
+            const operator = document.getElementById('newThresholdOperator').value;
+            const valueGroup = document.getElementById('newThresholdValueGroup');
+
+            // Hide value field for true/false operators
+            if (operator === 'true' || operator === 'false') {
+                valueGroup.style.display = 'none';
+            } else {
+                valueGroup.style.display = 'block';
+            }
+        }
+
+        function addNewThreshold() {
+            const form = document.getElementById('addThresholdForm');
+            form.style.display = 'block';
+
+            // Populate the path dropdown
+            populateThresholdPaths();
+
+            // Clear form
+            document.getElementById('newThresholdPath').value = '';
+            document.getElementById('newThresholdPathCustom').value = '';
+            document.getElementById('newThresholdPathCustom').style.display = 'none';
+            document.getElementById('newThresholdOperator').value = 'gt';
+            document.getElementById('newThresholdValue').value = '';
+            document.getElementById('newThresholdAction').value = 'true';
+            document.getElementById('newThresholdHysteresis').value = '';
+
+            toggleNewThresholdValueField();
+        }
+
+        function cancelNewThreshold() {
+            document.getElementById('addThresholdForm').style.display = 'none';
+        }
+
+        function saveNewThreshold() {
+            const pathSelect = document.getElementById('newThresholdPath');
+            const pathCustom = document.getElementById('newThresholdPathCustom');
+            const operator = document.getElementById('newThresholdOperator').value;
+            const value = document.getElementById('newThresholdValue').value.trim();
+            const action = document.getElementById('newThresholdAction').value === 'true';
+            const hysteresis = document.getElementById('newThresholdHysteresis').value.trim();
+
+            // Get the path
+            let path = pathSelect.value;
+            if (path === 'custom') {
+                path = pathCustom.value.trim();
+            }
+
+            if (!path) {
+                alert('Please select or enter a SignalK path');
+                return;
+            }
+
+            // Validate value for non-boolean operators
+            if (operator !== 'true' && operator !== 'false' && !value) {
+                alert('Please enter a threshold value');
+                return;
+            }
+
+            // Create new threshold
+            const threshold = {
+                enabled: true,
+                watchPath: path,
+                operator: operator,
+                activateOnMatch: action
+            };
+
+            // Add value if needed
+            if (operator !== 'true' && operator !== 'false' && value) {
+                const numValue = parseFloat(value);
+                threshold.value = isNaN(numValue) ? value : numValue;
+            }
+
+            // Add hysteresis if specified
+            if (hysteresis) {
+                const hysteresisValue = parseFloat(hysteresis);
+                if (!isNaN(hysteresisValue)) {
+                    threshold.hysteresis = hysteresisValue;
+                }
+            }
+
+            // Add to thresholds array
+            editingThresholds.push(threshold);
+
+            // Refresh the thresholds display
+            displayThresholdsList();
+
+            // Hide the form
+            cancelNewThreshold();
+        }
+
+        function displayThresholdsList() {
+            const container = document.getElementById('thresholdsList');
+
+            if (!editingThresholds || editingThresholds.length === 0) {
+                container.innerHTML = '<div style="color: #999; font-style: italic; padding: 10px;">No thresholds configured</div>';
+                return;
+            }
+
+            let html = '';
+            editingThresholds.forEach((threshold, index) => {
+                const operator = {
+                    'gt': '>', 'lt': '<', 'eq': '=', 'ne': '≠', 'true': 'is true', 'false': 'is false'
+                }[threshold.operator] || threshold.operator;
+
+                const value = threshold.value !== undefined ? ` ${threshold.value}` : '';
+                const action = threshold.activateOnMatch ? 'ON' : 'OFF';
+                const hysteresis = threshold.hysteresis ? ` (${threshold.hysteresis}s hysteresis)` : '';
+
+                html += `
+                    <div style="background: white; border: 1px solid #ddd; border-radius: 4px; padding: 10px; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center;">
+                        <div>
+                            <strong>${threshold.watchPath}</strong> ${operator}${value} → ${action}${hysteresis}
+                        </div>
+                        <button onclick="removeThreshold(${index})" style="background: #f44336; color: white; border: none; padding: 4px 8px; border-radius: 3px; font-size: 0.8em;">
+                            ❌ Remove
+                        </button>
+                    </div>
+                `;
+            });
+
+            container.innerHTML = html;
+        }
+
+        function removeThreshold(index) {
+            editingThresholds.splice(index, 1);
+            displayThresholdsList();
+        }
+
+        // Add command threshold functions
+        function updateAddCmdThresholdPathFilter() {
+            populateAddCmdThresholdPaths();
+        }
+
+        async function populateAddCmdThresholdPaths() {
+            const select = document.getElementById('addCmdThresholdPath');
+            const filterType = document.querySelector('input[name="addCmdPathFilter"]:checked')?.value || 'self';
+
+            // Clear existing options except the default ones
+            select.innerHTML = '<option value="">-- Select SignalK Path --</option><option value="custom">🖊️ Enter Custom Path</option>';
+
+            try {
+                // Fetch live SignalK data
+                const response = await fetch('/signalk/v1/api/');
+                const data = await response.json();
+
+                // Extract paths from SignalK API with filter
+                const allPaths = extractPathsFromSignalK(data, filterType);
+
+                // Add available paths
+                allPaths.forEach(path => {
+                    const option = document.createElement('option');
+                    option.value = path;
+                    option.textContent = path;
+                    select.appendChild(option);
+                });
+
+            } catch (error) {
+                console.log('Could not load real-time SignalK paths for add command thresholds:', error);
+            }
+
+            // Handle custom path selection
+            select.onchange = function() {
+                const customInput = document.getElementById('addCmdThresholdPathCustom');
+                if (this.value === 'custom') {
+                    customInput.style.display = 'block';
+                    customInput.focus();
+                } else {
+                    customInput.style.display = 'none';
+                }
+            };
+        }
+
+        function toggleAddCmdThresholdValueField() {
+            const operator = document.getElementById('addCmdThresholdOperator').value;
+            const valueGroup = document.getElementById('addCmdThresholdValueGroup');
+
+            // Hide value field for true/false operators
+            if (operator === 'true' || operator === 'false') {
+                valueGroup.style.display = 'none';
+            } else {
+                valueGroup.style.display = 'block';
+            }
+        }
+
+        function addNewCommandThreshold() {
+            const form = document.getElementById('addCommandThresholdForm');
+            form.style.display = 'block';
+
+            // Populate the path dropdown
+            populateAddCmdThresholdPaths();
+
+            // Clear form
+            document.getElementById('addCmdThresholdPath').value = '';
+            document.getElementById('addCmdThresholdPathCustom').value = '';
+            document.getElementById('addCmdThresholdPathCustom').style.display = 'none';
+            document.getElementById('addCmdThresholdOperator').value = 'gt';
+            document.getElementById('addCmdThresholdValue').value = '';
+            document.getElementById('addCmdThresholdAction').value = 'true';
+            document.getElementById('addCmdThresholdHysteresis').value = '';
+
+            toggleAddCmdThresholdValueField();
+        }
+
+        function cancelAddCmdThreshold() {
+            document.getElementById('addCommandThresholdForm').style.display = 'none';
+        }
+
+        function saveAddCmdThreshold() {
+            const pathSelect = document.getElementById('addCmdThresholdPath');
+            const pathCustom = document.getElementById('addCmdThresholdPathCustom');
+            const operator = document.getElementById('addCmdThresholdOperator').value;
+            const value = document.getElementById('addCmdThresholdValue').value.trim();
+            const action = document.getElementById('addCmdThresholdAction').value === 'true';
+            const hysteresis = document.getElementById('addCmdThresholdHysteresis').value.trim();
+
+            // Get the path
+            let path = pathSelect.value;
+            if (path === 'custom') {
+                path = pathCustom.value.trim();
+            }
+
+            if (!path) {
+                alert('Please select or enter a SignalK path');
+                return;
+            }
+
+            // Validate value for non-boolean operators
+            if (operator !== 'true' && operator !== 'false' && !value) {
+                alert('Please enter a threshold value');
+                return;
+            }
+
+            // Create new threshold
+            const threshold = {
+                enabled: true,
+                watchPath: path,
+                operator: operator,
+                activateOnMatch: action
+            };
+
+            // Add value if needed
+            if (operator !== 'true' && operator !== 'false' && value) {
+                const numValue = parseFloat(value);
+                threshold.value = isNaN(numValue) ? value : numValue;
+            }
+
+            // Add hysteresis if specified
+            if (hysteresis) {
+                const hysteresisValue = parseFloat(hysteresis);
+                if (!isNaN(hysteresisValue)) {
+                    threshold.hysteresis = hysteresisValue;
+                }
+            }
+
+            // Add to thresholds array
+            addingThresholds.push(threshold);
+
+            // Refresh the thresholds display
+            displayAddCommandThresholdsList();
+
+            // Hide the form
+            cancelAddCmdThreshold();
+        }
+
+        function displayAddCommandThresholdsList() {
+            const container = document.getElementById('addCommandThresholdsList');
+
+            if (!addingThresholds || addingThresholds.length === 0) {
+                container.innerHTML = '<div style="color: #999; font-style: italic; padding: 10px;">No thresholds configured</div>';
+                return;
+            }
+
+            let html = '';
+            addingThresholds.forEach((threshold, index) => {
+                const operator = {
+                    'gt': '>', 'lt': '<', 'eq': '=', 'ne': '≠', 'true': 'is true', 'false': 'is false'
+                }[threshold.operator] || threshold.operator;
+
+                const value = threshold.value !== undefined ? ` ${threshold.value}` : '';
+                const action = threshold.activateOnMatch ? 'ON' : 'OFF';
+                const hysteresis = threshold.hysteresis ? ` (${threshold.hysteresis}s hysteresis)` : '';
+
+                html += `
+                    <div style="background: white; border: 1px solid #ddd; border-radius: 4px; padding: 10px; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center;">
+                        <div>
+                            <strong>${threshold.watchPath}</strong> ${operator}${value} → ${action}${hysteresis}
+                        </div>
+                        <button onclick="removeAddCommandThreshold(${index})" style="background: #f44336; color: white; border: none; padding: 4px 8px; border-radius: 3px; font-size: 0.8em;">
+                            ❌ Remove
+                        </button>
+                    </div>
+                `;
+            });
+
+            container.innerHTML = html;
+        }
+
+        function removeAddCommandThreshold(index) {
+            addingThresholds.splice(index, 1);
+            displayAddCommandThresholdsList();
+        }
+
+        // Manual override functions
+        async function setManualOverride(commandName, override, expiryMinutes = null) {
+            try {
+                const body = { override: override };
+                if (expiryMinutes) {
+                    body.expiryMinutes = expiryMinutes;
+                }
+
+                const response = await fetch(`/plugins/signalk-parquet/api/commands/${commandName}/override`, {
+                    method: 'PUT',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(body)
+                });
+
+                const result = await response.json();
+
+                if (result.success) {
+                    await loadCommands();
+                    alert(`Manual override ${override ? 'enabled' : 'disabled'} for ${commandName}`);
+                } else {
+                    alert(`Failed to set manual override: ${result.error}`);
+                }
+            } catch (error) {
+                alert(`Network error: ${error.message}`);
+            }
+        }
+
+        async function promptManualOverride(commandName) {
+            const override = confirm(`Enable manual override for command '${commandName}'?\n\nThis will ignore threshold conditions until manually cleared.`);
+
+            if (override) {
+                const expiry = prompt(`Override duration in minutes (leave empty for permanent):`);
+                const expiryMinutes = expiry && !isNaN(expiry) ? parseInt(expiry) : null;
+
+                await setManualOverride(commandName, true, expiryMinutes);
+            }
+        }
+
         async function loadCommandHistory() {
             try {
                 const response = await fetch('/plugins/signalk-parquet/api/commands/history');

@@ -16,6 +16,8 @@ import {
   initializeCommandState,
   getCurrentCommands,
   setCurrentCommands,
+  startThresholdMonitoring,
+  stopThresholdMonitoring,
 } from './commands';
 import {
   initializeS3,
@@ -112,6 +114,9 @@ export default function (app: ServerAPI): SignalKPlugin {
     // Initialize command state
     initializeCommandState(currentPaths, app);
 
+    // Start threshold monitoring system
+    startThresholdMonitoring(app);
+
     // Subscribe to data paths based on initial regimen states
     updateDataSubscriptions(currentPaths, state, state.currentConfig, app);
 
@@ -194,6 +199,9 @@ export default function (app: ServerAPI): SignalKPlugin {
   };
 
   plugin.stop = function (): void {
+
+    // Stop threshold monitoring system
+    stopThresholdMonitoring();
 
     // Clear intervals
     if (state.saveInterval) {
@@ -387,21 +395,15 @@ export default function (app: ServerAPI): SignalKPlugin {
             description: 'Default Claude model for analysis. Can be overridden in the web interface.',
             enum: [
               'claude-opus-4-1-20250805',
-              'claude-opus-4-20250514', 
-              'claude-sonnet-4-20250514',
-              'claude-3-7-sonnet-20250219',
-              'claude-3-5-haiku-20241022',
-              'claude-3-haiku-20240307'
+              'claude-opus-4-20250514',
+              'claude-sonnet-4-20250514'
             ],
             enumNames: [
               'Claude Opus 4.1 (Most Capable & Intelligent)',
               'Claude Opus 4 (Previous Flagship Model)',
-              'Claude Sonnet 4 (Exceptional Reasoning)',
-              'Claude 3.7 Sonnet (Extended Thinking - Recommended)',
-              'Claude 3.5 Haiku (Fast & Balanced)',
-              'Claude 3 Haiku (Fastest & Cost-Effective)',
+              'Claude Sonnet 4 (Exceptional Reasoning)'
             ],
-            default: 'claude-3-7-sonnet-20250219',
+            default: 'claude-sonnet-4-20250514',
           },
           maxTokens: {
             type: 'number',

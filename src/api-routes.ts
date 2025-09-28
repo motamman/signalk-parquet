@@ -40,6 +40,7 @@ import {
   getCurrentCommands,
   getCommandHistory,
   getCommandState,
+  setManualOverride,
 } from './commands';
 import { updateDataSubscriptions } from './data-handler';
 import { toContextFilePath, toParquetFilePath } from './utils/path-helpers';
@@ -795,7 +796,7 @@ export function registerApiRoutes(
       res: TypedResponse<CommandApiResponse>
     ) => {
       try {
-        const { command, description, keywords } = req.body;
+        const { command, description, keywords, defaultState, thresholds } = req.body;
 
         if (!command || !/^[a-zA-Z0-9_]+$/.test(command) || command.length === 0 || command.length > 50) {
           return res.status(400).json({
@@ -805,7 +806,7 @@ export function registerApiRoutes(
           });
         }
 
-        const result = registerCommand(command, description, keywords);
+        const result = registerCommand(command, description, keywords, defaultState, thresholds);
 
         if (result.state === 'COMPLETED') {
           // Update webapp config
@@ -919,14 +920,19 @@ export function registerApiRoutes(
   router.put(
     '/api/commands/:command',
     (
-      req: TypedRequest<{ description?: string; keywords?: string[] }>,
+      req: TypedRequest<{
+        description?: string;
+        keywords?: string[];
+        defaultState?: boolean;
+        thresholds?: any[];
+      }>,
       res: TypedResponse<CommandApiResponse>
     ) => {
       try {
         const { command } = req.params;
-        const { description, keywords } = req.body;
+        const { description, keywords, defaultState, thresholds } = req.body;
 
-        const result = updateCommand(command, description, keywords);
+        const result = updateCommand(command, description, keywords, defaultState, thresholds);
         if (result.state === 'COMPLETED') {
           // Update webapp config
           const webAppConfig = loadWebAppConfig(app);
@@ -945,6 +951,44 @@ export function registerApiRoutes(
         }
       } catch (error) {
         app.error(`Error updating command: ${error}`);
+        return res.status(500).json({
+          success: false,
+          error: 'Internal server error',
+        });
+      }
+    }
+  );
+
+  // Manual override endpoint
+  router.put(
+    '/api/commands/:command/override',
+    (
+      req: TypedRequest<{ override: boolean; expiryMinutes?: number }>,
+      res: TypedResponse<CommandApiResponse>
+    ) => {
+      try {
+        const { command } = req.params;
+        const { override, expiryMinutes } = req.body;
+
+        const result = setManualOverride(command, override, expiryMinutes);
+        if (result.success) {
+          // Update webapp config
+          const webAppConfig = loadWebAppConfig(app);
+          const currentCommands = getCurrentCommands();
+          saveWebAppConfig(webAppConfig.paths, currentCommands, app);
+
+          return res.json({
+            success: true,
+            message: result.message,
+          });
+        } else {
+          return res.status(400).json({
+            success: false,
+            error: result.message,
+          });
+        }
+      } catch (error) {
+        app.error(`Error setting manual override: ${error}`);
         return res.status(500).json({
           success: false,
           error: 'Internal server error',

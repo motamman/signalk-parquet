@@ -7,6 +7,7 @@ import {
   PathConfig,
   WebAppPathConfig,
   PluginConfig,
+  ThresholdConfig,
 } from './types';
 import {
   Context,
@@ -29,6 +30,13 @@ const commandState: CommandRegistrationState = {
   registeredCommands: new Map<string, CommandConfig>(),
   putHandlers: new Map<string, CommandPutHandler>(),
 };
+
+// Threshold monitoring state
+const thresholdState = new Map<string, {
+  lastValue: any;
+  lastTriggered: number;
+  unsubscribe?: () => void;
+}>();
 
 // Configuration management functions
 export function loadWebAppConfig(app?: ServerAPI): WebAppPathConfig {
@@ -230,7 +238,9 @@ export function initializeCommandState(
     const result = registerCommand(
       commandConfig.command,
       commandConfig.description,
-      commandConfig.keywords
+      commandConfig.keywords,
+      commandConfig.defaultState,
+      commandConfig.thresholds
     );
     if (result.state === 'COMPLETED') {
     } else {
@@ -276,12 +286,15 @@ export function initializeCommandState(
 export function registerCommand(
   commandName: string,
   description?: string,
-  keywords?: string[]
+  keywords?: string[],
+  defaultState?: boolean,
+  thresholds?: ThresholdConfig[]
 ): CommandExecutionResult {
   try {
     // Validate command name
     if (!isValidCommandName(commandName)) {
       return {
+        success: false,
         state: 'FAILED',
         statusCode: 400,
         message:
@@ -293,6 +306,7 @@ export function registerCommand(
     // Check if command already exists
     if (commandState.registeredCommands.has(commandName)) {
       return {
+        success: false,
         state: 'FAILED',
         statusCode: 409,
         message: `Command '${commandName}' already registered`,
@@ -312,6 +326,8 @@ export function registerCommand(
       keywords: keywords || [],
       active: false,
       lastExecuted: undefined,
+      defaultState: defaultState,
+      thresholds: thresholds,
     };
 
     // Create PUT handler with proper typing
@@ -340,8 +356,8 @@ export function registerCommand(
     commandState.registeredCommands.set(commandName, commandConfig);
     commandState.putHandlers.set(commandName, putHandler);
 
-    // Initialize command value to false
-    initializeCommandValue(commandName, false);
+    // Initialize command value to defaultState or false
+    initializeCommandValue(commandName, defaultState || false);
 
     // Update current commands
     currentCommands = Array.from(commandState.registeredCommands.values());
@@ -352,6 +368,7 @@ export function registerCommand(
     appInstance.debug(`✅ Registered command: ${commandName} at ${fullPath}`);
 
     return {
+      success: true,
       state: 'COMPLETED',
       statusCode: 200,
       message: `Command '${commandName}' registered successfully with automatic path configuration`,
@@ -362,6 +379,7 @@ export function registerCommand(
     appInstance.error(errorMessage);
 
     return {
+      success: false,
       state: 'FAILED',
       statusCode: 500,
       message: errorMessage,
@@ -374,12 +392,15 @@ export function registerCommand(
 export function updateCommand(
   commandName: string,
   description?: string,
-  keywords?: string[]
+  keywords?: string[],
+  defaultState?: boolean,
+  thresholds?: any[]
 ): CommandExecutionResult {
   try {
     // Check if command exists
     if (!commandState.registeredCommands.has(commandName)) {
       return {
+        success: false,
         state: 'FAILED',
         statusCode: 404,
         message: `Command '${commandName}' not found`,
@@ -395,6 +416,8 @@ export function updateCommand(
       ...existingCommand,
       description: description !== undefined ? description : existingCommand.description,
       keywords: keywords !== undefined ? keywords : existingCommand.keywords,
+      defaultState: defaultState !== undefined ? defaultState : existingCommand.defaultState,
+      thresholds: thresholds !== undefined ? thresholds : existingCommand.thresholds,
     };
 
     // Update the command in the registry
@@ -409,6 +432,7 @@ export function updateCommand(
     appInstance.debug(`✅ Updated command: ${commandName}`);
     
     return {
+      success: true,
       state: 'COMPLETED',
       statusCode: 200,
       message: `Command '${commandName}' updated successfully`,
@@ -418,6 +442,7 @@ export function updateCommand(
   } catch (error) {
     appInstance.error(`Failed to update command ${commandName}: ${(error as Error).message}`);
     return {
+      success: false,
       state: 'FAILED',
       statusCode: 500,
       message: `Failed to update command: ${(error as Error).message}`,
@@ -432,6 +457,7 @@ export function unregisterCommand(commandName: string): CommandExecutionResult {
     const commandConfig = commandState.registeredCommands.get(commandName);
     if (!commandConfig) {
       return {
+        success: false,
         state: 'FAILED',
         statusCode: 404,
         message: `Command '${commandName}' not found`,
@@ -452,6 +478,7 @@ export function unregisterCommand(commandName: string): CommandExecutionResult {
     appInstance.debug(`🗑️ Unregistered command: ${commandName}`);
 
     return {
+      success: true,
       state: 'COMPLETED',
       statusCode: 200,
       message: `Command '${commandName}' unregistered successfully with path cleanup`,
@@ -462,6 +489,7 @@ export function unregisterCommand(commandName: string): CommandExecutionResult {
     appInstance.error(errorMessage);
 
     return {
+      success: false,
       state: 'FAILED',
       statusCode: 500,
       message: errorMessage,
@@ -479,6 +507,7 @@ export function executeCommand(
     const commandConfig = commandState.registeredCommands.get(commandName);
     if (!commandConfig) {
       return {
+        success: false,
         state: 'FAILED',
         statusCode: 404,
         message: `Command '${commandName}' not found`,
@@ -522,6 +551,7 @@ export function executeCommand(
     appInstance.debug(`🎮 Executed command: ${commandName} = ${value}`);
 
     return {
+      success: true,
       state: 'COMPLETED',
       statusCode: 200,
       message: `Command '${commandName}' executed: ${value}`,
@@ -540,6 +570,7 @@ export function executeCommand(
     );
 
     return {
+      success: false,
       state: 'FAILED',
       statusCode: 500,
       message: errorMessage,
@@ -626,4 +657,227 @@ export function getCommandState(): CommandRegistrationState {
 
 export function setCurrentCommands(commands: CommandConfig[]): void {
   currentCommands = commands;
+}
+
+// Threshold monitoring system
+export function startThresholdMonitoring(app: ServerAPI): void {
+  appInstance = app;
+  app.debug('🔄 Starting threshold monitoring system');
+
+  // Process all commands
+  currentCommands.forEach(command => {
+    if (command.thresholds && command.thresholds.length > 0) {
+      // Set up monitoring for all enabled thresholds
+      command.thresholds.forEach(threshold => {
+        if (threshold.enabled) {
+          setupThresholdMonitoring(command, threshold);
+        }
+      });
+    } else {
+      // Apply default state for commands without thresholds or manual override
+      applyDefaultState(command);
+    }
+  });
+}
+
+function applyDefaultState(command: CommandConfig): void {
+  // Skip if manual override is active
+  if (command.manualOverride) {
+    return;
+  }
+
+  // Apply default state if specified and command is not already active
+  if (command.defaultState !== undefined && command.active !== command.defaultState) {
+    appInstance?.debug(`🔧 Applying default state for ${command.command}: ${command.defaultState ? 'ON' : 'OFF'}`);
+
+    const result = executeCommand(command.command, command.defaultState);
+    if (result.success) {
+      appInstance?.debug(`✅ Default state applied: ${command.command} = ${command.defaultState}`);
+    } else {
+      appInstance?.error(`❌ Failed to apply default state: ${command.command} - ${result.message}`);
+    }
+  }
+}
+
+export function stopThresholdMonitoring(): void {
+  appInstance?.debug('⏹️ Stopping threshold monitoring system');
+
+  // Unsubscribe from all threshold monitors
+  thresholdState.forEach(state => {
+    if (state.unsubscribe) {
+      state.unsubscribe();
+    }
+  });
+  thresholdState.clear();
+}
+
+function setupThresholdMonitoring(command: CommandConfig, threshold: ThresholdConfig): void {
+  if (!threshold?.enabled || !threshold.watchPath) {
+    return;
+  }
+  const monitorKey = `${command.command}_${threshold.watchPath}`;
+
+  appInstance?.debug(`🎯 Setting up threshold monitoring for ${command.command} watching ${threshold.watchPath}`);
+
+  // Clean up existing monitoring for this command
+  const existingState = thresholdState.get(monitorKey);
+  if (existingState?.unsubscribe) {
+    existingState.unsubscribe();
+  }
+
+  // Subscribe to the watch path
+  const unsubscribe = appInstance?.streambundle?.getSelfBus(threshold.watchPath as Path)?.onValue((value: any) => {
+    try {
+      processThresholdValue(command, threshold, value, monitorKey);
+    } catch (error) {
+      appInstance?.error(`❌ Error processing threshold for ${command.command}: ${(error as Error).message}`);
+    }
+  });
+
+  // Store the monitoring state
+  thresholdState.set(monitorKey, {
+    lastValue: undefined,
+    lastTriggered: 0,
+    unsubscribe
+  });
+}
+
+function processThresholdValue(command: CommandConfig, threshold: ThresholdConfig, value: any, monitorKey: string): void {
+  const state = thresholdState.get(monitorKey);
+  if (!state) return;
+
+  // Skip processing if manual override is active
+  if (command.manualOverride) {
+    // Check if manual override has expired
+    if (command.manualOverrideUntil) {
+      const expiry = new Date(command.manualOverrideUntil);
+      if (new Date() > expiry) {
+        // Override expired, clear it
+        command.manualOverride = false;
+        command.manualOverrideUntil = undefined;
+        appInstance?.debug(`⏰ Manual override expired for ${command.command}`);
+      } else {
+        // Override still active, skip threshold processing
+        return;
+      }
+    } else {
+      // Permanent manual override, skip threshold processing
+      return;
+    }
+  }
+
+  const now = Date.now();
+  const shouldActivate = evaluateThreshold(threshold, value);
+
+  // Apply hysteresis for numeric values
+  if (threshold.hysteresis && typeof value === 'number' && typeof state.lastValue === 'number') {
+    const timeSinceLastTrigger = now - state.lastTriggered;
+    if (timeSinceLastTrigger < (threshold.hysteresis * 1000)) {
+      // Within hysteresis period, skip
+      return;
+    }
+  }
+
+  // Determine if command state should change
+  const currentlyActive = command.active || false;
+  const shouldBeActive = threshold.activateOnMatch ? shouldActivate : !shouldActivate;
+
+  if (shouldBeActive !== currentlyActive) {
+    appInstance?.debug(`🎯 Threshold triggered for ${command.command}: ${threshold.watchPath} = ${value}, switching to ${shouldBeActive ? 'ON' : 'OFF'}`);
+
+    // Execute the command
+    const result = executeCommand(command.command, shouldBeActive);
+    if (result.success) {
+      state.lastTriggered = now;
+      appInstance?.debug(`✅ Threshold-triggered command executed: ${command.command} = ${shouldBeActive}`);
+    } else {
+      appInstance?.error(`❌ Threshold-triggered command failed: ${command.command} - ${result.message}`);
+    }
+  }
+
+  // Update last value
+  state.lastValue = value;
+}
+
+function evaluateThreshold(threshold: ThresholdConfig, currentValue: any): boolean {
+  switch (threshold.operator) {
+    case 'gt':
+      return typeof currentValue === 'number' && typeof threshold.value === 'number' && currentValue > threshold.value;
+
+    case 'lt':
+      return typeof currentValue === 'number' && typeof threshold.value === 'number' && currentValue < threshold.value;
+
+    case 'eq':
+      return currentValue === threshold.value;
+
+    case 'ne':
+      return currentValue !== threshold.value;
+
+    case 'true':
+      return currentValue === true || currentValue === 'true' || currentValue === 1;
+
+    case 'false':
+      return currentValue === false || currentValue === 'false' || currentValue === 0;
+
+    default:
+      appInstance?.error(`❌ Unknown threshold operator: ${threshold.operator}`);
+      return false;
+  }
+}
+
+export function updateCommandThreshold(commandName: string, threshold: ThresholdConfig): CommandExecutionResult {
+  const command = commandState.registeredCommands.get(commandName);
+  if (!command) {
+    return { success: false, state: 'FAILED', message: `Command ${commandName} not found`, timestamp: new Date().toISOString() };
+  }
+
+  // Update the thresholds configuration (replace single threshold with array)
+  command.thresholds = [threshold];
+
+  // Restart monitoring for this command
+  if (threshold.enabled) {
+    setupThresholdMonitoring(command, threshold);
+  } else {
+    // Stop monitoring if disabled
+    const monitorKey = `${commandName}_${threshold.watchPath}`;
+    const state = thresholdState.get(monitorKey);
+    if (state?.unsubscribe) {
+      state.unsubscribe();
+      thresholdState.delete(monitorKey);
+    }
+  }
+
+  // Save configuration
+  const config = loadWebAppConfig();
+  saveWebAppConfig(config.paths, config.commands, appInstance);
+
+  appInstance?.debug(`🎯 Updated threshold configuration for ${commandName}`);
+  return { success: true, state: 'COMPLETED', message: `Threshold updated for ${commandName}`, timestamp: new Date().toISOString() };
+}
+
+export function setManualOverride(commandName: string, override: boolean, expiryMinutes?: number): CommandExecutionResult {
+  const command = commandState.registeredCommands.get(commandName);
+  if (!command) {
+    return { success: false, state: 'FAILED', message: `Command ${commandName} not found`, timestamp: new Date().toISOString() };
+  }
+
+  command.manualOverride = override;
+
+  if (override && expiryMinutes) {
+    const expiry = new Date(Date.now() + expiryMinutes * 60 * 1000);
+    command.manualOverrideUntil = expiry.toISOString();
+    appInstance?.debug(`🔒 Manual override set for ${commandName} until ${expiry.toISOString()}`);
+  } else if (override) {
+    command.manualOverrideUntil = undefined;
+    appInstance?.debug(`🔒 Permanent manual override set for ${commandName}`);
+  } else {
+    command.manualOverrideUntil = undefined;
+    appInstance?.debug(`🔓 Manual override cleared for ${commandName}`);
+  }
+
+  // Save configuration
+  const config = loadWebAppConfig();
+  saveWebAppConfig(config.paths, config.commands, appInstance);
+
+  return { success: true, state: 'COMPLETED', message: `Manual override ${override ? 'enabled' : 'disabled'} for ${commandName}`, timestamp: new Date().toISOString() };
 }
