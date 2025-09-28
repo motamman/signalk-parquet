@@ -32,7 +32,8 @@ export function getAvailablePaths(dataDir: string, app: ServerAPI): PathInfo[] {
           item !== 'processed' &&
           item !== 'failed' &&
           item !== 'quarantine' &&
-          item !== 'claude-schemas'
+          item !== 'claude-schemas' &&
+          item !== 'repaired'
         ) {
           const newRelativePath = relativePath
             ? `${relativePath}.${item}`
