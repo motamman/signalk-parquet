@@ -403,7 +403,7 @@ export function registerApiRoutes(
         }
 
         const sampleFile = files[0];
-        const query = `SELECT * FROM '${sampleFile.path}' LIMIT ${limit}`;
+        const query = `SELECT * FROM read_parquet('${sampleFile.path}', union_by_name=true) LIMIT ${limit}`;
 
         const instance = await DuckDBInstance.create();
         const connection = await instance.connect();
