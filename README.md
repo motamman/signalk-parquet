@@ -1220,15 +1220,12 @@ curl http://localhost:3000/plugins/signalk-parquet/api/paths
 curl "http://localhost:3000/signalk/v1/history/contexts"
 ```
 
-For detailed testing procedures, see [TESTING.md](TESTING.md).
-
 ## TODO
 
 - [x] Implement startup consolidation for missed previous days (exclude current day)
 - [x] Add history API integration
-- [ ] Clean up data output of sourcing
+- [ ] Expose recorded spatial event via api endpoint (geojson)
 - [ ] Add Grafana integration
-- [ ] Create SignalK app store listing with screenshots
 
 ## Contributing
 
