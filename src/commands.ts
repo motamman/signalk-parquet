@@ -422,10 +422,33 @@ export function updateCommand(
 
     // Update the command in the registry
     commandState.registeredCommands.set(commandName, updatedCommand);
-    
+
     // Update current commands array
     currentCommands = Array.from(commandState.registeredCommands.values());
-    
+
+    // If thresholds were updated, restart threshold monitoring for this command
+    if (thresholds !== undefined) {
+      // Stop existing threshold monitoring for this command
+      const existingThresholds = existingCommand.thresholds || [];
+      existingThresholds.forEach(threshold => {
+        const monitorKey = `${commandName}_${threshold.watchPath}`;
+        const state = thresholdState.get(monitorKey);
+        if (state?.unsubscribe) {
+          state.unsubscribe();
+          thresholdState.delete(monitorKey);
+        }
+      });
+
+      // Start new threshold monitoring
+      if (updatedCommand.thresholds && updatedCommand.thresholds.length > 0) {
+        updatedCommand.thresholds.forEach(threshold => {
+          if (threshold.enabled) {
+            setupThresholdMonitoring(updatedCommand, threshold);
+          }
+        });
+      }
+    }
+
     // Log the update
     addCommandHistoryEntry(commandName, 'UPDATE', undefined, true);
     
