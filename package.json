@@ -1,7 +1,7 @@
 {
   "name": "signalk-parquet",
-  "version": "0.5.4-beta.1",
-  "description": "SignalK plugin to save marine data directly to Parquet files with regimen-based control",
+  "version": "0.5.5-beta.1",
+  "description": "SignalK plugin to save data directly to Parquet files with regimen-based control, for pre-selected collections of path archive. Includes database querying, Claude AI-enabled analysis, and spatial querying and analysis.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {

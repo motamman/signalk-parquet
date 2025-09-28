@@ -1,6 +1,6 @@
 # <img src="public/parquet.png" alt="SignalK Parquet Data Store" width="72" height="72" style="vertical-align: middle; margin-right: 20px;"> SignalK Parquet Data Store
 
-A comprehensive SignalK plugin and webpp that saves Signalk data directly to Parquet files with regimen-based control and advanced querying features, including a REST API built on the SignalK History API and Claude AI history data analysis. 
+A comprehensive SignalK plugin and webapp that saves SignalK data directly to Parquet files with regimen-based control and advanced querying features, including a REST API built on the SignalK History API, Claude AI history data analysis, and spatial geographic analysis capabilities. 
 
 ## Features
 
@@ -34,11 +34,16 @@ The validation system checks each Parquet file for:
 - **Schema Standards**: Enforces data best practices for long-term data integrity
 
 ### Advanced Querying
-- **SignalK History API**: Full compatibility with SignalK History API specification
+- **SignalK History API**: Modelled on the with SignalK History API specifications
 - **Backward Querying**: Query backwards from current time or specific datetime with duration-based windows
 - **Time Alignment**: Automatic alignment of data from different sensors using time bucketing
 - **Timezone Intelligence**: Smart local-to-UTC conversion with configurable timezone handling
 - **DuckDB Integration**: Direct SQL querying of Parquet files with type-safe operations
+- **🌍 NEW Spatial Analysis**: Advanced geographic analysis with DuckDB spatial extension
+  - **Track Analysis**: Calculate vessel tracks, distances, and movement patterns
+  - **Proximity Detection**: Multi-vessel distance calculations and collision risk analysis
+  - **Geographic Visualization**: Generate movement boundaries, centroids, and spatial statistics
+  - **Route Planning**: Historical track analysis for route optimization and performance analysis
 
 ### Management & Control
 - **Command Management**: Register, execute, and manage SignalK commands with automatic path configuration
@@ -454,28 +459,135 @@ This provides better compression, faster queries, and proper type safety for dat
 
 ### Query Examples
 
+#### Basic Queries
 ```sql
 -- Get latest 10 records from navigation position
-SELECT * FROM '/path/to/navigation/position/*.parquet' 
+SELECT * FROM read_parquet('/path/to/navigation/position/*.parquet', union_by_name=true)
 ORDER BY received_timestamp DESC LIMIT 10;
 
 -- Count total records
-SELECT COUNT(*) FROM '/path/to/navigation/position/*.parquet';
+SELECT COUNT(*) FROM read_parquet('/path/to/navigation/position/*.parquet', union_by_name=true);
 
 -- Filter by source
-SELECT * FROM '/path/to/environment/wind/*.parquet' 
+SELECT * FROM read_parquet('/path/to/environment/wind/*.parquet', union_by_name=true)
 WHERE source_label = 'mqtt-weatherflow-udp'
 ORDER BY received_timestamp DESC LIMIT 100;
 
 -- Aggregate by hour
-SELECT 
+SELECT
   DATE_TRUNC('hour', received_timestamp::timestamp) as hour,
   AVG(value::double) as avg_value,
   COUNT(*) as record_count
-FROM '/path/to/data/*.parquet'
+FROM read_parquet('/path/to/data/*.parquet', union_by_name=true)
 GROUP BY hour
 ORDER BY hour;
 ```
+
+#### 🌍 Spatial Analysis Queries
+
+```sql
+-- Calculate distance traveled over time
+WITH ordered_positions AS (
+  SELECT
+    signalk_timestamp,
+    ST_Point(value_longitude, value_latitude) as position,
+    LAG(ST_Point(value_longitude, value_latitude)) OVER (ORDER BY signalk_timestamp) as prev_position
+  FROM read_parquet('data/vessels/urn_mrn_imo_mmsi_368396230/navigation/position/*.parquet', union_by_name=true)
+  WHERE signalk_timestamp >= '2025-09-27T16:00:00Z'
+    AND signalk_timestamp <= '2025-09-27T23:59:59Z'
+    AND value_latitude IS NOT NULL AND value_longitude IS NOT NULL
+),
+distances AS (
+  SELECT *,
+    CASE
+      WHEN prev_position IS NOT NULL
+      THEN ST_Distance_Sphere(position, prev_position)
+      ELSE 0
+    END as distance_meters
+  FROM ordered_positions
+)
+SELECT
+  strftime(date_trunc('hour', signalk_timestamp::TIMESTAMP), '%Y-%m-%dT%H:%M:%SZ') as time_bucket,
+  AVG(value_latitude) as avg_lat,
+  AVG(value_longitude) as avg_lon,
+  ST_AsText(ST_Centroid(ST_Collect(position))) as centroid,
+  SUM(distance_meters) as total_distance_meters,
+  COUNT(*) as position_records,
+  ST_AsText(ST_ConvexHull(ST_Collect(position))) as movement_area
+FROM distances
+GROUP BY time_bucket
+ORDER BY time_bucket;
+
+-- Multi-vessel proximity analysis
+SELECT
+  v1.context as vessel1,
+  v2.context as vessel2,
+  ST_Distance_Sphere(
+    ST_Point(v1.value_longitude, v1.value_latitude),
+    ST_Point(v2.value_longitude, v2.value_latitude)
+  ) as distance_meters,
+  v1.signalk_timestamp
+FROM read_parquet('data/vessels/*/navigation/position/*.parquet', union_by_name=true) v1
+JOIN read_parquet('data/vessels/*/navigation/position/*.parquet', union_by_name=true) v2
+  ON v1.signalk_timestamp = v2.signalk_timestamp AND v1.context != v2.context
+WHERE v1.signalk_timestamp >= '2025-09-27T00:00:00Z'
+  AND ST_Distance_Sphere(
+    ST_Point(v1.value_longitude, v1.value_latitude),
+    ST_Point(v2.value_longitude, v2.value_latitude)
+  ) < 1000  -- Within 1km
+ORDER BY distance_meters;
+
+-- Advanced movement analysis with bounding boxes
+WITH ordered_positions AS (
+  SELECT
+    signalk_timestamp,
+    ST_Point(value_longitude, value_latitude) as position,
+    value_latitude,
+    value_longitude,
+    LAG(ST_Point(value_longitude, value_latitude)) OVER (ORDER BY signalk_timestamp) as prev_position,
+    strftime(date_trunc('hour', signalk_timestamp::TIMESTAMP), '%Y-%m-%dT%H:%M:%SZ') as time_bucket
+  FROM read_parquet('data/vessels/urn_mrn_imo_mmsi_368396230/navigation/position/*.parquet', union_by_name=true)
+  WHERE signalk_timestamp >= '2025-09-27T16:00:00Z'
+    AND signalk_timestamp <= '2025-09-27T23:59:59Z'
+    AND value_latitude IS NOT NULL AND value_longitude IS NOT NULL
+),
+distances AS (
+  SELECT *,
+    CASE
+      WHEN prev_position IS NOT NULL
+      THEN ST_Distance_Sphere(position, prev_position)
+      ELSE 0
+    END as distance_meters
+  FROM ordered_positions
+)
+SELECT
+  time_bucket,
+  AVG(value_latitude) as avg_lat,
+  AVG(value_longitude) as avg_lon,
+  -- Calculate bounding box manually
+  MIN(value_latitude) as min_lat,
+  MAX(value_latitude) as max_lat,
+  MIN(value_longitude) as min_lon,
+  MAX(value_longitude) as max_lon,
+  -- Distance and movement metrics
+  SUM(distance_meters) as total_distance_meters,
+  ROUND(SUM(distance_meters) / 1000.0, 2) as total_distance_km,
+  COUNT(*) as position_records,
+  -- Movement area approximation using bounding box
+  (MAX(value_latitude) - MIN(value_latitude)) * 111320 *
+  (MAX(value_longitude) - MIN(value_longitude)) * 111320 *
+  COS(RADIANS(AVG(value_latitude))) as approx_area_m2
+FROM distances
+GROUP BY time_bucket
+ORDER BY time_bucket;
+```
+
+#### Available Spatial Functions
+- `ST_Point(longitude, latitude)` - Create point geometries
+- `ST_Distance_Sphere(point1, point2)` - Calculate distances in meters
+- `ST_AsText(geometry)` - Convert to Well-Known Text format
+- `ST_Centroid(ST_Collect(points))` - Find center of multiple points
+- `ST_ConvexHull(ST_Collect(points))` - Create movement boundary polygons
 
 ## History API Integration
 
@@ -1129,7 +1241,28 @@ For detailed testing procedures, see [TESTING.md](TESTING.md).
 
 ## Changelog
 
-### Version 0.5.4-beta.1 (Latest)
+### Version 0.5.5-beta.1 (Latest)
+- **🌍 NEW Spatial Analysis System**: Advanced geographic analysis capabilities with DuckDB spatial extension
+  - Complete spatial function integration: ST_Point, ST_Distance_Sphere, ST_Centroid, ST_ConvexHull, ST_AsText
+  - Automatic spatial extension loading in all DuckDB connections for seamless geographic queries
+  - Track analysis with consecutive position distance calculations using LAG() window functions
+  - Movement area analysis with bounding boxes and geographic coordinate system calculations
+  - Multi-vessel proximity detection for collision avoidance and traffic analysis
+- **🧠 Enhanced Claude AI Spatial Intelligence**: Claude now automatically suggests spatial queries for geographic questions
+  - Comprehensive spatial query patterns and examples integrated into Claude's analysis prompts
+  - Automatic detection of spatial analysis opportunities (track analysis, distance calculations, movement patterns)
+  - Pre-built spatial query templates for common maritime analysis scenarios
+  - Advanced movement analysis with time bucketing, centroids, and area calculations
+- **📊 Standardized Query Syntax**: All queries now use read_parquet() function for better schema flexibility
+  - Updated HistoryAPI, api-routes, and claude-analyzer to use read_parquet() with union_by_name=true
+  - Enhanced schema compatibility and better error handling for evolving data structures
+  - Consistent query patterns across all system components for maintainability
+- **📖 Comprehensive Documentation**: Enhanced README with spatial analysis examples and capabilities
+  - Advanced spatial query examples including distance tracking and movement analysis
+  - Complete spatial function reference with practical maritime use cases
+  - Multi-vessel proximity analysis templates for collision detection scenarios
+
+### Version 0.5.4-beta.1
 - **🔍 NEW Data Validation System**: Comprehensive Parquet file schema validation against SignalK metadata standards
   - Real-time validation of file schemas with progress tracking and cancellation support
   - Detects incorrect data types (e.g., numeric strings, boolean strings) in existing files
