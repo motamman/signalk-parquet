@@ -2809,7 +2809,11 @@ Begin your analysis by querying relevant data within the specified time range.`;
 
     const instance = await DuckDBInstance.create();
     const connection = await instance.connect();
-    
+
+    // Load spatial extension for geographic queries
+    await connection.runAndReadAll("INSTALL spatial;");
+    await connection.runAndReadAll("LOAD spatial;");
+
     try {
       this.app?.debug(`🔍 Executing SQL query for: ${purpose}`);
       this.app?.debug(`📝 Original query: ${sql}`);

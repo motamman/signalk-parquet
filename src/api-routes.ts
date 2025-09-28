@@ -407,6 +407,11 @@ export function registerApiRoutes(
 
         const instance = await DuckDBInstance.create();
         const connection = await instance.connect();
+
+        // Load spatial extension for geographic queries
+        await connection.runAndReadAll("INSTALL spatial;");
+        await connection.runAndReadAll("LOAD spatial;");
+
         try {
           const reader = await connection.runAndReadAll(query);
           const rawData = reader.getRowObjects();
@@ -497,6 +502,11 @@ export function registerApiRoutes(
 
         const instance = await DuckDBInstance.create();
         const connection = await instance.connect();
+
+        // Load spatial extension for geographic queries
+        await connection.runAndReadAll("INSTALL spatial;");
+        await connection.runAndReadAll("LOAD spatial;");
+
         try {
           const reader = await connection.runAndReadAll(processedQuery);
           const rawData = reader.getRowObjects();
