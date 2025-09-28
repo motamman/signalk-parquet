@@ -4477,10 +4477,7 @@ Provide actionable insights based on what you observe in the data.`,
             
             const loadingElement = document.createElement('div');
             loadingElement.style.cssText = 'text-align: center; padding: 20px;';
-            loadingElement.innerHTML = `
-                🔄 Running custom analysis...<br><br>
-                <button onclick="cancelAnalysis()" style="padding: 8px 16px; background: #dc3545; color: white; border: none; border-radius: 4px; cursor: pointer;">❌ Cancel Analysis</button>
-            `;
+            loadingElement.innerHTML = ``;
             content.appendChild(loadingElement);
             
             // Update timer every 100ms
