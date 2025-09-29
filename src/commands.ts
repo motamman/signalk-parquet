@@ -359,6 +359,15 @@ export function registerCommand(
     // Initialize command value to defaultState or false
     initializeCommandValue(commandName, defaultState || false);
 
+    // Start threshold monitoring for this command if thresholds are defined
+    if (commandConfig.thresholds && commandConfig.thresholds.length > 0) {
+      commandConfig.thresholds.forEach(threshold => {
+        if (threshold.enabled) {
+          setupThresholdMonitoring(commandConfig, threshold);
+        }
+      });
+    }
+
     // Update current commands
     currentCommands = Array.from(commandState.registeredCommands.values());
 
@@ -735,7 +744,7 @@ export function stopThresholdMonitoring(): void {
 }
 
 function setupThresholdMonitoring(command: CommandConfig, threshold: ThresholdConfig): void {
-  if (!threshold?.enabled || !threshold.watchPath) {
+  if (threshold?.enabled === false || !threshold.watchPath) {
     return;
   }
   const monitorKey = `${command.command}_${threshold.watchPath}`;
@@ -749,7 +758,7 @@ function setupThresholdMonitoring(command: CommandConfig, threshold: ThresholdCo
   }
 
   // Subscribe to the watch path
-  const unsubscribe = appInstance?.streambundle?.getSelfBus(threshold.watchPath as Path)?.onValue((value: any) => {
+  const unsubscribe = appInstance?.streambundle?.getSelfStream(threshold.watchPath as Path)?.onValue((value: any) => {
     try {
       processThresholdValue(command, threshold, value, monitorKey);
     } catch (error) {
@@ -763,11 +772,24 @@ function setupThresholdMonitoring(command: CommandConfig, threshold: ThresholdCo
     lastTriggered: 0,
     unsubscribe
   });
+
+  // Evaluate immediately with current value if available
+  try {
+    const currentValue = appInstance?.getSelfPath(threshold.watchPath as Path);
+    if (currentValue !== undefined) {
+      processThresholdValue(command, threshold, currentValue, monitorKey);
+    }
+  } catch (error) {
+    appInstance?.debug(`ℹ️ Unable to read current value for ${threshold.watchPath}: ${(error as Error).message}`);
+  }
 }
 
 function processThresholdValue(command: CommandConfig, threshold: ThresholdConfig, value: any, monitorKey: string): void {
   const state = thresholdState.get(monitorKey);
   if (!state) return;
+
+  const normalizedValue = normalizeThresholdValue(value, threshold);
+  appInstance?.debug(`📈 Threshold monitor ${command.command}:${threshold.watchPath} received value: ${JSON.stringify(normalizedValue)}`);
 
   // Skip processing if manual override is active
   if (command.manualOverride) {
@@ -790,10 +812,11 @@ function processThresholdValue(command: CommandConfig, threshold: ThresholdConfi
   }
 
   const now = Date.now();
-  const shouldActivate = evaluateThreshold(threshold, value);
+  const shouldActivate = evaluateThreshold(threshold, normalizedValue);
+  appInstance?.debug(`📉 Threshold evaluation for ${command.command}:${threshold.watchPath} operator=${threshold.operator} threshold=${threshold.value} result=${shouldActivate}`);
 
   // Apply hysteresis for numeric values
-  if (threshold.hysteresis && typeof value === 'number' && typeof state.lastValue === 'number') {
+  if (threshold.hysteresis && typeof normalizedValue === 'number' && typeof state.lastValue === 'number') {
     const timeSinceLastTrigger = now - state.lastTriggered;
     if (timeSinceLastTrigger < (threshold.hysteresis * 1000)) {
       // Within hysteresis period, skip
@@ -806,7 +829,7 @@ function processThresholdValue(command: CommandConfig, threshold: ThresholdConfi
   const shouldBeActive = threshold.activateOnMatch ? shouldActivate : !shouldActivate;
 
   if (shouldBeActive !== currentlyActive) {
-    appInstance?.debug(`🎯 Threshold triggered for ${command.command}: ${threshold.watchPath} = ${value}, switching to ${shouldBeActive ? 'ON' : 'OFF'}`);
+    appInstance?.debug(`🎯 Threshold triggered for ${command.command}: ${threshold.watchPath} = ${normalizedValue}, switching to ${shouldBeActive ? 'ON' : 'OFF'}`);
 
     // Execute the command
     const result = executeCommand(command.command, shouldBeActive);
@@ -818,8 +841,12 @@ function processThresholdValue(command: CommandConfig, threshold: ThresholdConfi
     }
   }
 
+  command.active = shouldBeActive;
+  commandState.registeredCommands.set(command.command, command);
+  currentCommands = Array.from(commandState.registeredCommands.values());
+
   // Update last value
-  state.lastValue = value;
+  state.lastValue = normalizedValue;
 }
 
 function evaluateThreshold(threshold: ThresholdConfig, currentValue: any): boolean {
@@ -846,6 +873,56 @@ function evaluateThreshold(threshold: ThresholdConfig, currentValue: any): boole
       appInstance?.error(`❌ Unknown threshold operator: ${threshold.operator}`);
       return false;
   }
+}
+
+function normalizeThresholdValue(value: any, threshold: ThresholdConfig): any {
+  if (value === null || value === undefined) {
+    return value;
+  }
+
+  if (typeof value === 'object') {
+    if ('value' in value) {
+      return value.value;
+    }
+    if ('values' in value && value.values && typeof value.values === 'object') {
+      if ('value' in value.values) {
+        return value.values.value;
+      }
+    }
+  }
+
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (trimmed === '') {
+      return value;
+    }
+    const lower = trimmed.toLowerCase();
+    if (lower === 'true' || lower === 'false') {
+      return lower === 'true';
+    }
+    const num = Number(trimmed);
+    if (!Number.isNaN(num)) {
+      return num;
+    }
+  }
+
+  if (typeof value === 'number') {
+    return value;
+  }
+
+  if (typeof value === 'boolean') {
+    return value;
+  }
+
+  // If threshold expects numeric and value is object with number
+  if (typeof threshold.value === 'number') {
+    const extracted = Number(value);
+    if (!Number.isNaN(extracted)) {
+      return extracted;
+    }
+  }
+
+  return value;
 }
 
 export function updateCommandThreshold(commandName: string, threshold: ThresholdConfig): CommandExecutionResult {

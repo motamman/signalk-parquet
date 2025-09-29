@@ -160,6 +160,11 @@
             background-color: #f8f9fa;
         }
 
+        .edit-command-form-row td {
+            padding: 0;
+            background: transparent;
+        }
+
         .loading {
             text-align: center;
             padding: 20px;
@@ -555,7 +560,7 @@
                                 <!-- New thresholds will be populated here -->
                             </div>
 
-                            <button type="button" onclick="addNewCommandThreshold()" style="background: #4caf50; color: white; border: none; padding: 8px 12px; border-radius: 4px; margin-top: 10px;">➕ Add Threshold</button>
+                            <button type="button" id="addCommandThresholdButton" onclick="addNewCommandThreshold()" style="background: #4caf50; color: white; border: none; padding: 8px 12px; border-radius: 4px; margin-top: 10px;">➕ Add Threshold</button>
 
                             <!-- Add Threshold Form for new command (hidden by default) -->
                             <div id="addCommandThresholdForm" style="display: none; margin-top: 15px; padding: 15px; background: #f8f9fa; border: 1px solid #ddd; border-radius: 5px;">
@@ -629,7 +634,7 @@
                     </div>
                     
                     <!-- Edit Command Form (hidden by default) -->
-                    <div id="editCommandForm" style="display: none; margin: 20px 0; padding: 20px; background: #fff3cd; border: 1px solid #ffeaa7; border-radius: 5px;">
+                    <div id="editCommandForm" style="display: none; margin: 20px 0; padding: 20px; background: #fff3cd; border: 1px solid #ffeaa7; border-radius: 5px; width: 100%; box-sizing: border-box;">
                         <h4>Edit Command</h4>
                         <div class="form-group">
                             <label for="editCommandName">Command Name:</label>
@@ -664,7 +669,7 @@
                                 <!-- Existing thresholds will be populated here -->
                             </div>
 
-                            <button type="button" onclick="addNewThreshold()" style="background: #4caf50; color: white; border: none; padding: 8px 12px; border-radius: 4px; margin-top: 10px;">➕ Add Threshold</button>
+                            <button type="button" id="editCommandAddThresholdButton" onclick="addNewThreshold()" style="background: #4caf50; color: white; border: none; padding: 8px 12px; border-radius: 4px; margin-top: 10px;">➕ Add Threshold</button>
 
                             <!-- Add Threshold Form (hidden by default) -->
                             <div id="addThresholdForm" style="display: none; margin-top: 15px; padding: 15px; background: #f8f9fa; border: 1px solid #ddd; border-radius: 5px;">
@@ -731,9 +736,12 @@
                             </div>
                         </div>
 
-                        <div style="margin-top: 20px; padding-top: 15px; border-top: 1px solid #ddd;">
-                            <button onclick="updateCommand()">✅ Update Command</button>
-                            <button class="btn-secondary" onclick="hideEditCommandForm()">❌ Cancel</button>
+                        <div style="margin-top: 20px; padding-top: 15px; border-top: 1px solid #ddd; display: flex; flex-direction: column; gap: 10px;">
+                            <div style="display: flex; gap: 10px; align-items: center;">
+                                <button id="updateCommandButton" onclick="updateCommand()" disabled style="opacity: 0.7;">✅ Update Command</button>
+                                <button class="btn-secondary" onclick="hideEditCommandForm()">❌ Cancel</button>
+                            </div>
+                            <div id="editCommandStatus" style="font-size: 0.85em; color: #0066cc; display: none;"></div>
                         </div>
                     </div>
                     

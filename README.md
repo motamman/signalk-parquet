@@ -1240,6 +1240,7 @@ curl "http://localhost:3000/signalk/v1/history/contexts"
 
 ### Version 0.5.5-beta.3 (Latest)
 - **🧱 Front-end Modularization**: Replaced the 5,000-line inline dashboard script with focused JS modules under `public/js`, improving readability and maintainability.
+- **⚙️ Threshold Automation Fix**: Threshold monitoring now listens to raw SignalK values via `getSelfStream`, so saved trigger conditions reliably toggle their commands.
 
 ### Version 0.5.5-beta.1 
 - **🌍 NEW Spatial Analysis System**: Advanced geographic analysis capabilities with DuckDB spatial extension
@@ -1428,5 +1429,4 @@ curl "http://localhost:3000/signalk/v1/history/contexts"
 - **Enhanced command management**: Automatic path configuration for commands
 - **SignalK API compliance**: Proper subscription patterns for vessel contexts
 - Performance optimizations and better error handling
-
 

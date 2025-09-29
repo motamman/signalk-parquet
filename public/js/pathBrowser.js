@@ -104,6 +104,9 @@ export function generateQueryForPath(signalkPath, directory) {
 
 export function generateExampleQueries() {
     const container = document.getElementById('queryExamples');
+    if (!container) {
+        return;
+    }
 
     if (availablePaths.length === 0) {
         container.innerHTML = '<li><em>No data paths available yet. Start collecting data first.</em></li>';

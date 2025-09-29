@@ -2,6 +2,324 @@ import { getPluginPath } from './utils.js';
 
 let editingThresholds = [];
 let addingThresholds = [];
+let currentEditingCommand = null;
+let currentEditingRow = null;
+let editFormDirty = false;
+let editFormPlaceholder = null;
+let editFormRowElement = null;
+
+const editCommandFormElement = document.getElementById('editCommandForm');
+let editFormOriginalParent = editCommandFormElement?.parentNode || null;
+
+if (editCommandFormElement && editFormOriginalParent) {
+    editFormPlaceholder = document.createElement('div');
+    editFormPlaceholder.id = 'editCommandFormPlaceholder';
+    editFormPlaceholder.style.display = 'none';
+    editFormOriginalParent.insertBefore(editFormPlaceholder, editCommandFormElement.nextSibling);
+}
+
+function getEditCommandForm() {
+    return editCommandFormElement;
+}
+
+function getEditCommandStatusElement() {
+    return document.getElementById('editCommandStatus');
+}
+
+function getUpdateCommandButton() {
+    return document.getElementById('updateCommandButton');
+}
+
+function extractPathsFromSignalK(obj, filterType = 'self') {
+    const selfPaths = new Set();
+    const nonSelfPaths = new Set();
+
+    function extractRecursive(node, prefix = '') {
+        if (!node || typeof node !== 'object') return;
+
+        for (const key in node) {
+            if (key === 'meta' || key === 'timestamp' || key === 'source' || key === '$source') continue;
+
+            const currentPath = prefix ? `${prefix}.${key}` : key;
+
+            if (node[key] && typeof node[key] === 'object') {
+                if (node[key].value !== undefined) {
+                    selfPaths.add(currentPath);
+                } else {
+                    extractRecursive(node[key], currentPath);
+                }
+            }
+        }
+    }
+
+    const selfVesselId = obj?.self;
+    const actualSelfId = selfVesselId && selfVesselId.startsWith('vessels.')
+        ? selfVesselId.replace('vessels.', '')
+        : selfVesselId;
+
+    if (obj?.vessels) {
+        if (actualSelfId && obj.vessels[actualSelfId]) {
+            extractRecursive(obj.vessels[actualSelfId], '');
+        }
+
+        for (const vesselId in obj.vessels) {
+            if (vesselId !== actualSelfId) {
+                const tempPaths = new Set();
+                function extractOtherVessel(node, prefix = '') {
+                    if (!node || typeof node !== 'object') return;
+                    for (const key in node) {
+                        if (key === 'meta' || key === 'timestamp' || key === 'source' || key === '$source') continue;
+                        const currentPath = prefix ? `${prefix}.${key}` : key;
+                        if (node[key] && typeof node[key] === 'object') {
+                            if (node[key].value !== undefined) {
+                                tempPaths.add(currentPath);
+                            } else {
+                                extractOtherVessel(node[key], currentPath);
+                            }
+                        }
+                    }
+                }
+                extractOtherVessel(obj.vessels[vesselId], '');
+                tempPaths.forEach(path => nonSelfPaths.add(path));
+            }
+        }
+    }
+
+    for (const key in obj || {}) {
+        if (!['vessels', 'self', 'version', 'sources', 'meta', 'timestamp'].includes(key)) {
+            extractRecursive(obj[key], key);
+        }
+    }
+
+    const targetPaths = filterType === 'self' ? selfPaths : nonSelfPaths;
+    return Array.from(targetPaths).sort();
+}
+
+function updateEditCommandStatus(message = '', type = 'info') {
+    const statusEl = getEditCommandStatusElement();
+    if (!statusEl) return;
+    if (!message) {
+        statusEl.textContent = '';
+        statusEl.style.display = 'none';
+        return;
+    }
+    statusEl.textContent = message;
+    statusEl.style.display = 'block';
+    statusEl.style.color = type === 'error' ? '#d32f2f' : '#0066cc';
+}
+
+function setEditSaveButtonState() {
+    const button = getUpdateCommandButton();
+    if (!button) return;
+    button.disabled = !editFormDirty;
+    button.textContent = '✅ Update Command';
+    button.style.opacity = editFormDirty ? '1' : '0.7';
+}
+
+function markEditFormDirty() {
+    editFormDirty = true;
+    setEditSaveButtonState();
+    updateEditCommandStatus('Unsaved changes', 'info');
+}
+
+function clearEditFormDirtyState(message = '') {
+    editFormDirty = false;
+    setEditSaveButtonState();
+    updateEditCommandStatus(message, 'info');
+}
+
+function setupEditFormFieldListeners() {
+    const form = getEditCommandForm();
+    if (!form || form.dataset.listenersAttached === 'true') {
+        return;
+    }
+
+    const inputs = [
+        'editCommandDescription',
+        'editCommandKeywords'
+    ];
+    inputs.forEach(id => {
+        const el = document.getElementById(id);
+        if (el) {
+            el.addEventListener('input', () => markEditFormDirty());
+        }
+    });
+
+    const defaultStateSelect = document.getElementById('editCommandDefaultState');
+    if (defaultStateSelect) {
+        defaultStateSelect.addEventListener('change', () => markEditFormDirty());
+    }
+
+    form.dataset.listenersAttached = 'true';
+}
+
+function ensureEditFormInDom() {
+    const form = getEditCommandForm();
+    if (!form) return null;
+
+    if (!form.isConnected) {
+        if (editFormPlaceholder && editFormPlaceholder.parentNode) {
+            editFormPlaceholder.parentNode.insertBefore(form, editFormPlaceholder);
+        } else {
+            const parent = editFormOriginalParent || document.getElementById('commandManager') || document.body;
+            parent.appendChild(form);
+        }
+    }
+
+    return form;
+}
+
+function attachEditFormToRow(commandName, { scroll = true } = {}) {
+    const form = ensureEditFormInDom();
+    if (!form) return;
+
+    const targetRow = document.querySelector(`tr[data-command-row="${commandName}"]`);
+    if (!targetRow || !targetRow.parentNode) {
+        return;
+    }
+
+    const tbody = targetRow.parentNode;
+    if (!tbody) {
+        return;
+    }
+
+    if (currentEditingRow && currentEditingRow !== targetRow) {
+        currentEditingRow.classList.remove('editing-command-row');
+        currentEditingRow.style.outline = '';
+        currentEditingRow.style.outlineOffset = '';
+    }
+
+    targetRow.classList.add('editing-command-row');
+    targetRow.style.outline = '2px solid #ffc107';
+    targetRow.style.outlineOffset = '4px';
+    currentEditingRow = targetRow;
+
+    const columnCount = targetRow.children.length || targetRow.childElementCount || 1;
+
+    if (!editFormRowElement) {
+        editFormRowElement = document.createElement('tr');
+        editFormRowElement.id = 'editCommandFormRow';
+        editFormRowElement.classList.add('edit-command-form-row');
+        const cell = document.createElement('td');
+        cell.colSpan = columnCount;
+        editFormRowElement.appendChild(cell);
+    }
+
+    const cell = editFormRowElement.firstElementChild || editFormRowElement.appendChild(document.createElement('td'));
+    if (cell.colSpan !== columnCount) {
+        cell.colSpan = columnCount;
+    }
+    cell.style.padding = '0';
+
+    if (form.parentNode !== cell) {
+        while (cell.firstChild) {
+            cell.removeChild(cell.firstChild);
+        }
+        cell.appendChild(form);
+    }
+
+    tbody.insertBefore(editFormRowElement, targetRow.nextSibling);
+
+    form.style.display = 'block';
+    form.classList.add('active');
+    form.style.width = '100%';
+    form.style.maxWidth = '100%';
+    form.style.margin = '20px 0';
+    form.style.boxSizing = 'border-box';
+    if (scroll) {
+        targetRow.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+}
+
+function detachEditForm() {
+    const form = getEditCommandForm();
+    if (!form) {
+        return;
+    }
+
+    if (currentEditingRow) {
+        currentEditingRow.classList.remove('editing-command-row');
+        currentEditingRow.style.outline = '';
+        currentEditingRow.style.outlineOffset = '';
+        currentEditingRow = null;
+    }
+
+    if (editFormRowElement && editFormRowElement.parentNode) {
+        editFormRowElement.parentNode.removeChild(editFormRowElement);
+    }
+
+    if (editFormPlaceholder && editFormPlaceholder.parentNode) {
+        editFormPlaceholder.parentNode.insertBefore(form, editFormPlaceholder);
+    } else if (editFormOriginalParent) {
+        editFormOriginalParent.appendChild(form);
+    }
+
+    cancelNewThreshold();
+
+    form.style.display = 'none';
+    form.classList.remove('active');
+}
+
+async function persistCommandChanges({ silent = false, closeOnSuccess = false, reason = '' } = {}) {
+    try {
+        const form = ensureEditFormInDom();
+        if (!form) {
+            if (!silent) {
+                alert('Edit form is not available. Please reload the page.');
+            }
+            return false;
+        }
+
+        const command = document.getElementById('editCommandName').value.trim();
+        const description = document.getElementById('editCommandDescription').value.trim();
+        const keywordsInput = document.getElementById('editCommandKeywords').value.trim();
+        const keywords = keywordsInput ? keywordsInput.split(',').map(k => k.trim()).filter(k => k.length > 0) : undefined;
+        const defaultStateValue = document.getElementById('editCommandDefaultState').value;
+        const defaultState = defaultStateValue === '' ? undefined : (defaultStateValue === 'true');
+        const thresholds = editingThresholds.length > 0 ? editingThresholds : [];
+
+        const response = await fetch(`${getPluginPath()}/api/commands/${command}`, {
+            method: 'PUT',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+                description: description || undefined,
+                keywords: keywords,
+                defaultState: defaultState,
+                thresholds: thresholds
+            })
+        });
+
+        const result = await response.json();
+
+        if (result.success) {
+            clearEditFormDirtyState(reason || (silent ? '' : 'Command updated successfully!'));
+            await loadCommands();
+            if (!closeOnSuccess) {
+                attachEditFormToRow(command, { scroll: false });
+            }
+            if (closeOnSuccess) {
+                hideEditCommandForm(true);
+            }
+            return true;
+        }
+
+        if (silent) {
+            updateEditCommandStatus(result.error || 'Failed to update command', 'error');
+        } else {
+            alert('Failed to update command: ' + result.error);
+        }
+        return false;
+    } catch (error) {
+        if (silent) {
+            updateEditCommandStatus(error.message || 'Error updating command', 'error');
+        } else {
+            alert('Error updating command: ' + error.message);
+        }
+        return false;
+    }
+}
 
 export async function loadCommands() {
     try {
@@ -77,7 +395,7 @@ function displayCommands(commands) {
 
         automationInfo += '</div>';
 
-        html += `<tr>
+        html += `<tr data-command-row="${command.command}">
             <td>
                 <div><strong>${command.command}</strong></div>
                 <div style="font-size: 0.8em; color: #666; margin-top: 2px;">${command.description || 'No description'}</div>
@@ -115,6 +433,11 @@ function displayCommands(commands) {
 
     html += '</tbody></table></div>';
     container.innerHTML = html;
+
+    const form = getEditCommandForm();
+    if (currentEditingCommand && form && form.style.display !== 'none') {
+        attachEditFormToRow(currentEditingCommand, { scroll: false });
+    }
 }
 
 export function showAddCommandForm() {
@@ -137,21 +460,36 @@ function clearAddCommandForm() {
     displayAddCommandThresholdsList();
 
     // Hide threshold form if visible
-    document.getElementById('addCommandThresholdForm').style.display = 'none';
+    cancelAddCmdThreshold();
 }
 
 // Edit command functions
 export async function showEditCommandForm(commandName) {
     try {
+        if (currentEditingCommand && currentEditingCommand !== commandName && editFormDirty) {
+            const proceed = confirm(`You have unsaved changes for ${currentEditingCommand}. Discard and edit ${commandName}?`);
+            if (!proceed) {
+                return;
+            }
+        }
+
         // Find the command in the current commands list
-    const response = await fetch(`${getPluginPath()}/api/commands`).then(r => r.json());
+        const response = await fetch(`${getPluginPath()}/api/commands`).then(r => r.json());
         const command = response.commands.find(cmd => cmd.command === commandName);
         
         if (!command) {
             alert('Command not found');
             return;
         }
-        
+
+        currentEditingCommand = command.command;
+
+        const form = ensureEditFormInDom();
+        if (!form) {
+            alert('Unable to locate the edit form in the document.');
+            return;
+        }
+
         // Populate the form
         document.getElementById('editCommandName').value = command.command;
         document.getElementById('editCommandDescription').value = command.description || '';
@@ -171,59 +509,32 @@ export async function showEditCommandForm(commandName) {
         editingThresholds = command.thresholds ? [...command.thresholds] : [];
         displayThresholdsList();
 
-        // Show the form
-        document.getElementById('editCommandForm').style.display = 'block';
-        
+        setupEditFormFieldListeners();
+        attachEditFormToRow(command.command);
+        clearEditFormDirtyState('');
+
     } catch (error) {
         alert('Failed to load command details: ' + error.message);
     }
 }
 
-export function hideEditCommandForm() {
-    document.getElementById('editCommandForm').style.display = 'none';
+export function hideEditCommandForm(force = false) {
+    if (!force && editFormDirty) {
+        const confirmClose = confirm('You have unsaved changes. Close without saving?');
+        if (!confirmClose) {
+            return;
+        }
+    }
+
+    detachEditForm();
+    currentEditingCommand = null;
+    clearEditFormDirtyState('');
 }
 
 export async function updateCommand() {
-    try {
-        const command = document.getElementById('editCommandName').value.trim();
-        const description = document.getElementById('editCommandDescription').value.trim();
-        const keywordsInput = document.getElementById('editCommandKeywords').value.trim();
-
-        // Parse keywords from comma-separated string
-        const keywords = keywordsInput ? keywordsInput.split(',').map(k => k.trim()).filter(k => k.length > 0) : undefined;
-
-        // Get default state
-        const defaultStateValue = document.getElementById('editCommandDefaultState').value;
-        const defaultState = defaultStateValue === '' ? undefined : (defaultStateValue === 'true');
-
-        // Get thresholds configuration (multiple thresholds supported)
-        const thresholds = editingThresholds.length > 0 ? editingThresholds : undefined;
-
-        const response = await fetch(`${getPluginPath()}/api/commands/${command}`, {
-            method: 'PUT',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-                description: description || undefined,
-                keywords: keywords,
-                defaultState: defaultState,
-                thresholds: thresholds
-            })
-        });
-        
-        const result = await response.json();
-        
-        if (result.success) {
-            hideEditCommandForm();
-            await loadCommands();
-            alert('Command updated successfully!');
-        } else {
-            alert('Failed to update command: ' + result.error);
-        }
-        
-    } catch (error) {
-        alert('Error updating command: ' + error.message);
+    const success = await persistCommandChanges({ silent: false, closeOnSuccess: true });
+    if (success) {
+        alert('Command updated successfully!');
     }
 }
 
@@ -336,6 +647,7 @@ export function updateThresholdPathFilter() {
 }
 
 async function populateThresholdPaths() {
+    ensureEditFormInDom();
     const select = document.getElementById('newThresholdPath');
     const filterType = document.querySelector('input[name="thresholdPathFilter"]:checked')?.value || 'self';
 
@@ -343,15 +655,36 @@ async function populateThresholdPaths() {
     select.innerHTML = '<option value="">-- Select SignalK Path --</option><option value="custom">🖊️ Enter Custom Path</option>';
 
     try {
-        // Fetch live SignalK data
-        const response = await fetch('/signalk/v1/api/');
-        const data = await response.json();
+        let allPaths = [];
+        try {
+            const response = await fetch('/signalk/v1/api/');
+            if (response.ok) {
+                const data = await response.json();
+                allPaths = extractPathsFromSignalK(data, filterType);
+            }
+        } catch (error) {
+            console.log('Could not load SignalK API data, falling back to plugin paths:', error);
+        }
 
-        // Extract paths from SignalK API with filter
-        const allPaths = extractPathsFromSignalK(data, filterType);
+        if (!allPaths.length) {
+            try {
+                const pluginResponse = await fetch(`${getPluginPath()}/api/paths`);
+                if (pluginResponse.ok) {
+                    const pluginData = await pluginResponse.json();
+                    if (pluginData.success && Array.isArray(pluginData.paths)) {
+                        allPaths = pluginData.paths
+                            .map(pathInfo => pathInfo.path)
+                            .filter(Boolean);
+                    }
+                }
+            } catch (pluginError) {
+                console.log('Failed to load plugin paths for thresholds:', pluginError);
+            }
+        }
 
-        // Add available paths
-        allPaths.forEach(path => {
+        const uniquePaths = Array.from(new Set(allPaths)).sort();
+
+        uniquePaths.forEach(path => {
             const option = document.createElement('option');
             option.value = path;
             option.textContent = path;
@@ -390,6 +723,11 @@ export function addNewThreshold() {
     const form = document.getElementById('addThresholdForm');
     form.style.display = 'block';
 
+    const trigger = document.getElementById('editCommandAddThresholdButton');
+    if (trigger) {
+        trigger.style.display = 'none';
+    }
+
     // Populate the path dropdown
     populateThresholdPaths();
 
@@ -406,7 +744,15 @@ export function addNewThreshold() {
 }
 
 export function cancelNewThreshold() {
-    document.getElementById('addThresholdForm').style.display = 'none';
+    const form = document.getElementById('addThresholdForm');
+    if (form) {
+        form.style.display = 'none';
+    }
+
+    const trigger = document.getElementById('editCommandAddThresholdButton');
+    if (trigger) {
+        trigger.style.display = 'inline-block';
+    }
 }
 
 export function saveNewThreshold() {
@@ -458,12 +804,9 @@ export function saveNewThreshold() {
 
     // Add to thresholds array
     editingThresholds.push(threshold);
-
-    // Refresh the thresholds display
     displayThresholdsList();
-
-    // Hide the form
     cancelNewThreshold();
+    markEditFormDirty();
 }
 
 function displayThresholdsList() {
@@ -502,6 +845,7 @@ function displayThresholdsList() {
 export function removeThreshold(index) {
     editingThresholds.splice(index, 1);
     displayThresholdsList();
+    markEditFormDirty();
 }
 
 // Add command threshold functions
@@ -510,6 +854,7 @@ export function updateAddCmdThresholdPathFilter() {
 }
 
 async function populateAddCmdThresholdPaths() {
+    ensureEditFormInDom();
     const select = document.getElementById('addCmdThresholdPath');
     const filterType = document.querySelector('input[name="addCmdPathFilter"]:checked')?.value || 'self';
 
@@ -517,15 +862,36 @@ async function populateAddCmdThresholdPaths() {
     select.innerHTML = '<option value="">-- Select SignalK Path --</option><option value="custom">🖊️ Enter Custom Path</option>';
 
     try {
-        // Fetch live SignalK data
-        const response = await fetch('/signalk/v1/api/');
-        const data = await response.json();
+        let allPaths = [];
+        try {
+            const response = await fetch('/signalk/v1/api/');
+            if (response.ok) {
+                const data = await response.json();
+                allPaths = extractPathsFromSignalK(data, filterType);
+            }
+        } catch (error) {
+            console.log('Could not load SignalK API data for add command thresholds:', error);
+        }
 
-        // Extract paths from SignalK API with filter
-        const allPaths = extractPathsFromSignalK(data, filterType);
+        if (!allPaths.length) {
+            try {
+                const pluginResponse = await fetch(`${getPluginPath()}/api/paths`);
+                if (pluginResponse.ok) {
+                    const pluginData = await pluginResponse.json();
+                    if (pluginData.success && Array.isArray(pluginData.paths)) {
+                        allPaths = pluginData.paths
+                            .map(pathInfo => pathInfo.path)
+                            .filter(Boolean);
+                    }
+                }
+            } catch (pluginError) {
+                console.log('Failed to load plugin paths for add command thresholds:', pluginError);
+            }
+        }
 
-        // Add available paths
-        allPaths.forEach(path => {
+        const uniquePaths = Array.from(new Set(allPaths)).sort();
+
+        uniquePaths.forEach(path => {
             const option = document.createElement('option');
             option.value = path;
             option.textContent = path;
@@ -564,6 +930,11 @@ export function addNewCommandThreshold() {
     const form = document.getElementById('addCommandThresholdForm');
     form.style.display = 'block';
 
+    const trigger = document.getElementById('addCommandThresholdButton');
+    if (trigger) {
+        trigger.style.display = 'none';
+    }
+
     // Populate the path dropdown
     populateAddCmdThresholdPaths();
 
@@ -580,7 +951,15 @@ export function addNewCommandThreshold() {
 }
 
 export function cancelAddCmdThreshold() {
-    document.getElementById('addCommandThresholdForm').style.display = 'none';
+    const form = document.getElementById('addCommandThresholdForm');
+    if (form) {
+        form.style.display = 'none';
+    }
+
+    const trigger = document.getElementById('addCommandThresholdButton');
+    if (trigger) {
+        trigger.style.display = 'inline-block';
+    }
 }
 
 export function saveAddCmdThreshold() {
