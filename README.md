@@ -1238,7 +1238,10 @@ curl "http://localhost:3000/signalk/v1/history/contexts"
 
 ## Changelog
 
-### Version 0.5.5-beta.1 (Latest)
+### Version 0.5.5-beta.3 (Latest)
+- **🧱 Front-end Modularization**: Replaced the 5,000-line inline dashboard script with focused JS modules under `public/js`, improving readability and maintainability.
+
+### Version 0.5.5-beta.1 
 - **🌍 NEW Spatial Analysis System**: Advanced geographic analysis capabilities with DuckDB spatial extension
   - Complete spatial function integration: ST_Point, ST_Distance_Sphere, ST_Centroid, ST_ConvexHull, ST_AsText
   - Automatic spatial extension loading in all DuckDB connections for seamless geographic queries
@@ -1425,3 +1428,5 @@ curl "http://localhost:3000/signalk/v1/history/contexts"
 - **Enhanced command management**: Automatic path configuration for commands
 - **SignalK API compliance**: Proper subscription patterns for vessel contexts
 - Performance optimizations and better error handling
+
+
