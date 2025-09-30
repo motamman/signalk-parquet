@@ -41,12 +41,19 @@ export interface PluginConfig {
   s3Upload: S3UploadConfig;
   enableStreaming?: boolean; // Enable WebSocket streaming functionality
   claudeIntegration?: ClaudeIntegrationConfig;
+  homePortLatitude?: number;
+  homePortLongitude?: number;
+  setCurrentLocationAction?: {
+    setCurrentLocation: boolean;
+  };
 }
+
+import type { ClaudeModel } from './claude-models';
 
 export interface ClaudeIntegrationConfig {
   enabled: boolean;
   apiKey?: string;
-  model?: 'claude-opus-4-1-20250805' | 'claude-opus-4-20250514' | 'claude-sonnet-4-20250514';
+  model?: ClaudeModel;
   maxTokens?: number;
   temperature?: number;
   autoAnalysis?: {

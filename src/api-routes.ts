@@ -140,39 +140,15 @@ function getSharedAnalyzer(config: any, app: ServerAPI, getDataDir: () => string
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let ListObjectsV2Command: any;
 
+import { getValidClaudeModel } from './claude-models';
+
 // Helper function to migrate deprecated Claude model names
 function migrateClaudeModel(model?: string, app?: ServerAPI): string {
-  const currentModel = model || 'claude-sonnet-4-20250514';
-  
-  // Migration mapping for deprecated models
-  const migrations: Record<string, string> = {
-    'claude-3-sonnet-20240229': 'claude-sonnet-4-20250514',
-    'claude-3-5-sonnet-20241022': 'claude-sonnet-4-20250514',
-    'claude-3-7-sonnet-20250219': 'claude-sonnet-4-20250514',
-    'claude-3-5-haiku-20241022': 'claude-sonnet-4-20250514',
-    'claude-3-haiku-20240307': 'claude-sonnet-4-20250514',
-  };
-  
-  if (migrations[currentModel]) {
-    const newModel = migrations[currentModel];
-    app?.debug(`Auto-migrated deprecated Claude model ${currentModel} to ${newModel}`);
-    return newModel;
+  const validatedModel = getValidClaudeModel(model);
+  if (model && validatedModel !== model) {
+    app?.debug(`Auto-migrated Claude model ${model} to ${validatedModel}`);
   }
-  
-  // Validate that the model is in our supported list
-  const supportedModels = [
-    'claude-opus-4-1-20250805',
-    'claude-opus-4-20250514', 
-    'claude-sonnet-4-20250514'
-  ];
-
-  // If model is not in supported list, fall back to default
-  if (!supportedModels.includes(currentModel)) {
-    app?.debug(`Unknown Claude model ${currentModel}, falling back to default`);
-    return 'claude-sonnet-4-20250514';
-  }
-
-  return currentModel;
+  return validatedModel;
 }
 
 // ===========================================

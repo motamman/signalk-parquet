@@ -11,6 +11,7 @@ import {
   PluginState,
   PathConfig,
 } from './types';
+import { Context, SourceRef, Timestamp, Path } from '@signalk/server-api';
 import {
   loadWebAppConfig,
   initializeCommandState,
@@ -19,6 +20,12 @@ import {
   startThresholdMonitoring,
   stopThresholdMonitoring,
 } from './commands';
+import {
+  SUPPORTED_CLAUDE_MODELS,
+  DEFAULT_CLAUDE_MODEL,
+  CLAUDE_MODEL_DESCRIPTIONS,
+  getValidClaudeModel,
+} from './claude-models';
 import {
   initializeS3,
   createS3Client,
@@ -74,6 +81,28 @@ export default function (app: ServerAPI): SignalKPlugin {
     // Use SignalK's application data directory
     const defaultOutputDir = path.join(app.getDataDirPath(), 'signalk-parquet');
 
+    // Validate and migrate Claude model if needed
+    let claudeConfig = options?.claudeIntegration || { enabled: false };
+    if (claudeConfig.model) {
+      const validatedModel = getValidClaudeModel(claudeConfig.model);
+      if (validatedModel !== claudeConfig.model) {
+        app.debug(`⚠️ Saved Claude model "${claudeConfig.model}" is no longer supported. Migrating to ${validatedModel}`);
+        claudeConfig = { ...claudeConfig, model: validatedModel };
+
+        // Save migrated config
+        app.savePluginOptions(
+          { ...options, claudeIntegration: claudeConfig },
+          (err?: unknown) => {
+            if (err) {
+              app.error(`Failed to save migrated Claude model: ${err}`);
+            } else {
+              app.debug(`✅ Successfully migrated Claude model to ${validatedModel}`);
+            }
+          }
+        );
+      }
+    }
+
     state.currentConfig = {
       bufferSize: options?.bufferSize || 1000,
       saveIntervalSeconds: options?.saveIntervalSeconds || 30,
@@ -83,7 +112,12 @@ export default function (app: ServerAPI): SignalKPlugin {
       fileFormat: options?.fileFormat || 'parquet',
       vesselMMSI: vesselMMSI,
       s3Upload: options?.s3Upload || { enabled: false },
-      claudeIntegration: options?.claudeIntegration || { enabled: false },
+      claudeIntegration: claudeConfig,
+      homePortLatitude: options?.homePortLatitude || 0,
+      homePortLongitude: options?.homePortLongitude || 0,
+      setCurrentLocationAction: options?.setCurrentLocationAction || {
+        setCurrentLocation: false,
+      },
       // enableStreaming: options?.enableStreaming ?? false,
     };
 
@@ -195,6 +229,17 @@ export default function (app: ServerAPI): SignalKPlugin {
     //     app.error(`Error initializing runtime streaming service: ${error}`);
     //   }
     // }
+
+    // Handle "Set Current Location" action
+    handleSetCurrentLocationAction(state.currentConfig).catch(err => {
+      app.error(`Error handling set current location action: ${err}`);
+    });
+
+    // Publish home port position to SignalK if configured
+    if (state.currentConfig.homePortLatitude && state.currentConfig.homePortLongitude &&
+        state.currentConfig.homePortLatitude !== 0 && state.currentConfig.homePortLongitude !== 0) {
+      publishHomePortToSignalK(state.currentConfig.homePortLatitude, state.currentConfig.homePortLongitude);
+    }
 
   };
 
@@ -393,17 +438,9 @@ export default function (app: ServerAPI): SignalKPlugin {
             type: 'string',
             title: 'Default Claude Model (Optional)',
             description: 'Default Claude model for analysis. Can be overridden in the web interface.',
-            enum: [
-              'claude-opus-4-1-20250805',
-              'claude-opus-4-20250514',
-              'claude-sonnet-4-20250514'
-            ],
-            enumNames: [
-              'Claude Opus 4.1 (Most Capable & Intelligent)',
-              'Claude Opus 4 (Previous Flagship Model)',
-              'Claude Sonnet 4 (Exceptional Reasoning)'
-            ],
-            default: 'claude-sonnet-4-20250514',
+            enum: [...SUPPORTED_CLAUDE_MODELS],
+            enumNames: SUPPORTED_CLAUDE_MODELS.map(m => CLAUDE_MODEL_DESCRIPTIONS[m]),
+            default: DEFAULT_CLAUDE_MODEL,
           },
           maxTokens: {
             type: 'number',
@@ -456,6 +493,34 @@ export default function (app: ServerAPI): SignalKPlugin {
           },
         },
       },
+      homePortLatitude: {
+        type: 'number',
+        title: 'Home Port Latitude (Optional)',
+        description:
+          'Home port latitude for vessel context. If not set (0), will use vessel position from navigation.position',
+        default: 0,
+      },
+      homePortLongitude: {
+        type: 'number',
+        title: 'Home Port Longitude (Optional)',
+        description:
+          'Home port longitude for vessel context. If not set (0), will use vessel position from navigation.position',
+        default: 0,
+      },
+      setCurrentLocationAction: {
+        type: 'object',
+        title: 'Home Port Location Actions',
+        description: 'Actions for setting the home port location',
+        properties: {
+          setCurrentLocation: {
+            type: 'boolean',
+            title: 'Set Current Location as Home Port',
+            description:
+              "Check this box and save to use the vessel's current position as the home port coordinates",
+            default: false,
+          },
+        },
+      },
       // enableStreaming: {
       //   type: 'boolean',
       //   title: 'Enable WebSocket Streaming',
@@ -469,6 +534,100 @@ export default function (app: ServerAPI): SignalKPlugin {
   plugin.registerWithRouter = function (router: Router): void {
     registerApiRoutes(router, state, app);
   };
+
+  // Handle "Set Current Location" action
+  async function handleSetCurrentLocationAction(
+    config: PluginConfig
+  ): Promise<void> {
+    app.debug(
+      `handleSetCurrentLocationAction called with setCurrentLocation: ${config.setCurrentLocationAction?.setCurrentLocation}`
+    );
+
+    if (config.setCurrentLocationAction?.setCurrentLocation) {
+      // Get current position from SignalK
+      const currentPosition = getCurrentVesselPosition();
+      app.debug(
+        `Current position: ${currentPosition ? `${currentPosition.latitude}, ${currentPosition.longitude}` : 'null'}`
+      );
+
+      if (currentPosition) {
+        // Update the configuration with current position
+        const updatedConfig = {
+          ...config,
+          homePortLatitude: currentPosition.latitude,
+          homePortLongitude: currentPosition.longitude,
+          setCurrentLocationAction: {
+            setCurrentLocation: false, // Reset the checkbox
+          },
+        };
+
+        // Save the updated configuration
+        app.savePluginOptions(updatedConfig, (err?: unknown) => {
+          if (err) {
+            app.error(`Failed to save current location as home port: ${err}`);
+          } else {
+            app.debug(
+              `Set home port location to: ${currentPosition!.latitude}, ${currentPosition!.longitude}`
+            );
+
+            // Update current config
+            state.currentConfig = updatedConfig;
+
+            // Publish home port position to SignalK
+            publishHomePortToSignalK(currentPosition!.latitude, currentPosition!.longitude);
+          }
+        });
+      } else {
+        app.error(
+          'No current vessel position available. Ensure navigation.position is being published to SignalK.'
+        );
+      }
+    }
+  }
+
+  // Get current vessel position from SignalK
+  function getCurrentVesselPosition(): { latitude: number; longitude: number; timestamp: Date } | null {
+    try {
+      const position = app.getSelfPath('navigation.position');
+      if (position && position.value && position.value.latitude && position.value.longitude) {
+        return {
+          latitude: position.value.latitude,
+          longitude: position.value.longitude,
+          timestamp: new Date(position.timestamp || Date.now()),
+        };
+      }
+    } catch (error) {
+      app.debug(`Error getting vessel position: ${error}`);
+    }
+    return null;
+  }
+
+  // Publish home port position to SignalK
+  function publishHomePortToSignalK(latitude: number, longitude: number): void {
+    const homePortPosition = {
+      latitude: latitude,
+      longitude: longitude,
+    };
+
+    const delta = {
+      context: app.selfContext as Context,
+      updates: [
+        {
+          $source: 'signalk-parquet.homePort' as SourceRef,
+          timestamp: new Date().toISOString() as Timestamp,
+          values: [
+            {
+              path: 'navigation.homePort.position' as Path,
+              value: homePortPosition,
+            },
+          ],
+        },
+      ],
+    };
+
+    app.handleMessage(plugin.id, delta);
+    app.debug(`Published home port position to SignalK: ${latitude}, ${longitude}`);
+  }
 
   return plugin;
 }

@@ -1113,7 +1113,49 @@ The plugin uses a modular TypeScript architecture for maintainability:
 2. **Data Processing**: Extend `src/data-handler.ts`
 3. **Commands**: Modify `src/commands.ts`
 4. **Types**: Add interfaces to `src/types.ts`
-5. **Update Documentation**: Update README and inline comments
+5. **Claude AI Models**: Update `src/claude-models.ts` (see below)
+6. **Update Documentation**: Update README and inline comments
+
+#### Updating Claude AI Models
+
+When Anthropic releases new models, update the single source of truth in `src/claude-models.ts`:
+
+```typescript
+export const CLAUDE_MODELS = {
+  OPUS_4_1: 'claude-opus-4-1-20250805',
+  OPUS_4: 'claude-opus-4-20250514',
+  SONNET_4: 'claude-sonnet-4-20250514',
+  SONNET_4_5: 'claude-sonnet-4-5-20250929',
+  // Add new models here
+} as const;
+
+export const SUPPORTED_CLAUDE_MODELS = [
+  CLAUDE_MODELS.OPUS_4_1,
+  CLAUDE_MODELS.OPUS_4,
+  CLAUDE_MODELS.SONNET_4,
+  CLAUDE_MODELS.SONNET_4_5,
+  // Add to supported list
+] as const;
+
+export const DEFAULT_CLAUDE_MODEL = CLAUDE_MODELS.SONNET_4_5; // Update default if needed
+
+export const CLAUDE_MODEL_DESCRIPTIONS = {
+  [CLAUDE_MODELS.OPUS_4_1]: 'Claude Opus 4.1 (Most Capable & Intelligent)',
+  [CLAUDE_MODELS.OPUS_4]: 'Claude Opus 4 (Previous Flagship)',
+  [CLAUDE_MODELS.SONNET_4]: 'Claude Sonnet 4 (Balanced Performance)',
+  [CLAUDE_MODELS.SONNET_4_5]: 'Claude Sonnet 4.5 (Latest Sonnet)',
+  // Add descriptions for new models
+} as const;
+```
+
+**Why this matters:**
+- All model definitions are centralized in one file
+- Type safety across the entire codebase
+- Automatic migration of outdated models on plugin startup
+- Prevents form validation errors when users have old model values saved
+- No need to update multiple files when adding new models
+
+The plugin automatically migrates old/invalid model values to the current default on startup, preventing configuration save failures.
 
 ### Type Checking
 

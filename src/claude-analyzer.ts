@@ -6,11 +6,12 @@ import { getAvailablePaths } from './utils/path-discovery';
 import * as fs from 'fs-extra';
 import * as path from 'path';
 import { DuckDBInstance } from '@duckdb/node-api';
+import { ClaudeModel } from './claude-models';
 
 // Claude AI Integration Types
 export interface ClaudeAnalyzerConfig {
   apiKey: string;
-  model: 'claude-opus-4-1-20250805' | 'claude-opus-4-20250514' | 'claude-sonnet-4-20250514';
+  model: ClaudeModel;
   maxTokens: number;
   temperature: number;
 }
