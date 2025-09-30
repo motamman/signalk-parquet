@@ -181,8 +181,11 @@ export interface ThresholdConfig {
   latitude?: number;                    // Target latitude for position operators
   longitude?: number;                   // Target longitude for position operators
   radius?: number;                      // Radius in meters for position operators
-  boundingBox?: BoundingBox;            // Bounding box for area operators
+  boundingBox?: BoundingBox;            // Bounding box for area operators (manual mode)
   useHomePort?: boolean;                // Use home port location instead of custom lat/lon
+  boxSize?: number;                     // Box size in meters (for home port-based bounding box)
+  boxAnchor?: string;                   // Anchor point for home port-based box (nw, n, ne, w, center, e, sw, s, se)
+  boxBuffer?: number;                   // Buffer in meters to add to bounding box (default: 5m for GPS accuracy)
 
   activateOnMatch: boolean;             // true = activate command when condition met, false = deactivate
   hysteresis?: number;                  // Optional: prevent rapid switching (seconds)

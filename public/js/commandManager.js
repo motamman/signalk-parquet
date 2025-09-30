@@ -665,6 +665,201 @@ export async function unregisterCommand(commandName) {
 
 // Threshold UI functions
 
+// Bounding box UI helpers
+function initializeBoundingBoxUI(valueContainerId) {
+    const anchorGrid = document.getElementById(`${valueContainerId}_anchorGrid`);
+    const boxSizeInput = document.getElementById(`${valueContainerId}_boxSize`);
+
+    if (!anchorGrid) return;
+
+    // Define anchor points (9 positions in a 3x3 grid)
+    const anchors = [
+        { id: 'nw', label: '↖️ NW', row: 0, col: 0, desc: 'Northwest Corner' },
+        { id: 'n', label: '⬆️ N', row: 0, col: 1, desc: 'North Edge' },
+        { id: 'ne', label: '↗️ NE', row: 0, col: 2, desc: 'Northeast Corner' },
+        { id: 'w', label: '⬅️ W', row: 1, col: 0, desc: 'West Edge' },
+        { id: 'center', label: '⏺️ Center', row: 1, col: 1, desc: 'Center' },
+        { id: 'e', label: '➡️ E', row: 1, col: 2, desc: 'East Edge' },
+        { id: 'sw', label: '↙️ SW', row: 2, col: 0, desc: 'Southwest Corner' },
+        { id: 's', label: '⬇️ S', row: 2, col: 1, desc: 'South Edge' },
+        { id: 'se', label: '↘️ SE', row: 2, col: 2, desc: 'Southeast Corner' }
+    ];
+
+    // Create anchor buttons
+    anchors.forEach(anchor => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.id = `${valueContainerId}_anchor_${anchor.id}`;
+        button.textContent = anchor.label;
+        button.title = anchor.desc;
+        button.style.cssText = `
+            padding: 12px 8px;
+            border: 2px solid #ddd;
+            background: white;
+            cursor: pointer;
+            border-radius: 4px;
+            font-size: 1em;
+            transition: all 0.2s;
+        `;
+
+        button.addEventListener('click', function() {
+            // Remove selected state from all buttons
+            anchorGrid.querySelectorAll('button').forEach(btn => {
+                btn.style.background = 'white';
+                btn.style.borderColor = '#ddd';
+                btn.style.borderWidth = '2px';
+            });
+
+            // Mark this button as selected
+            this.style.background = '#4caf50';
+            this.style.borderColor = '#2e7d32';
+            this.style.borderWidth = '3px';
+            this.style.color = 'white';
+
+            // Store selected anchor
+            this.parentElement.dataset.selectedAnchor = anchor.id;
+
+            // Update visualization
+            updateBoundingBoxVisualization(valueContainerId);
+        });
+
+        anchorGrid.appendChild(button);
+    });
+
+    // Select center by default
+    const centerBtn = document.getElementById(`${valueContainerId}_anchor_center`);
+    if (centerBtn) {
+        centerBtn.click();
+    }
+
+    // Update visualization when box size changes
+    if (boxSizeInput) {
+        boxSizeInput.addEventListener('input', () => {
+            updateBoundingBoxVisualization(valueContainerId);
+        });
+    }
+}
+
+function updateBoundingBoxVisualization(valueContainerId) {
+    const vizContainer = document.getElementById(`${valueContainerId}_visualization`);
+    const anchorGrid = document.getElementById(`${valueContainerId}_anchorGrid`);
+    const boxSizeInput = document.getElementById(`${valueContainerId}_boxSize`);
+
+    if (!vizContainer || !anchorGrid) return;
+
+    const selectedAnchor = anchorGrid.dataset.selectedAnchor || 'center';
+    const boxSize = parseFloat(boxSizeInput?.value || 1000);
+
+    // Calculate box dimensions for visualization (scaled)
+    const vizWidth = vizContainer.clientWidth - 30 || 250;
+    const vizHeight = 180;
+    const boxWidth = 120;
+    const boxHeight = 80;
+
+    // Home port is ALWAYS in the center of the visualization
+    const homePortX = vizWidth / 2;
+    const homePortY = vizHeight / 2;
+
+    // Calculate box position based on where home port should be WITHIN the box
+    let boxLeft, boxTop;
+
+    switch (selectedAnchor) {
+        case 'nw':
+            // Home port at northwest corner - box extends south and east
+            boxLeft = homePortX;
+            boxTop = homePortY;
+            break;
+        case 'n':
+            // Home port at north edge - box extends south, centered horizontally
+            boxLeft = homePortX - boxWidth / 2;
+            boxTop = homePortY;
+            break;
+        case 'ne':
+            // Home port at northeast corner - box extends south and west
+            boxLeft = homePortX - boxWidth;
+            boxTop = homePortY;
+            break;
+        case 'w':
+            // Home port at west edge - box extends east, centered vertically
+            boxLeft = homePortX;
+            boxTop = homePortY - boxHeight / 2;
+            break;
+        case 'center':
+            // Home port at center - box extends equally in all directions
+            boxLeft = homePortX - boxWidth / 2;
+            boxTop = homePortY - boxHeight / 2;
+            break;
+        case 'e':
+            // Home port at east edge - box extends west, centered vertically
+            boxLeft = homePortX - boxWidth;
+            boxTop = homePortY - boxHeight / 2;
+            break;
+        case 'sw':
+            // Home port at southwest corner - box extends north and east
+            boxLeft = homePortX;
+            boxTop = homePortY - boxHeight;
+            break;
+        case 's':
+            // Home port at south edge - box extends north, centered horizontally
+            boxLeft = homePortX - boxWidth / 2;
+            boxTop = homePortY - boxHeight;
+            break;
+        case 'se':
+            // Home port at southeast corner - box extends north and west
+            boxLeft = homePortX - boxWidth;
+            boxTop = homePortY - boxHeight;
+            break;
+        default:
+            boxLeft = homePortX - boxWidth / 2;
+            boxTop = homePortY - boxHeight / 2;
+    }
+
+    // Create visualization HTML
+    vizContainer.innerHTML = `
+        <svg width="${vizWidth}" height="${vizHeight}" style="display: block;">
+            <!-- Bounding box -->
+            <rect x="${boxLeft}" y="${boxTop}" width="${boxWidth}" height="${boxHeight}"
+                  fill="rgba(76, 175, 80, 0.1)" stroke="#4caf50" stroke-width="2" stroke-dasharray="5,5"/>
+
+            <!-- Box corners -->
+            <circle cx="${boxLeft}" cy="${boxTop}" r="3" fill="#2196f3"/>
+            <circle cx="${boxLeft + boxWidth}" cy="${boxTop}" r="3" fill="#2196f3"/>
+            <circle cx="${boxLeft}" cy="${boxTop + boxHeight}" r="3" fill="#2196f3"/>
+            <circle cx="${boxLeft + boxWidth}" cy="${boxTop + boxHeight}" r="3" fill="#2196f3"/>
+
+            <!-- Home port marker (always in center of viz) -->
+            <circle cx="${homePortX}" cy="${homePortY}" r="6" fill="#ff5722" stroke="white" stroke-width="2"/>
+            <text x="${homePortX}" y="${homePortY + 20}" text-anchor="middle" font-size="11" fill="#666">
+                🏠 Home Port
+            </text>
+
+            <!-- Distance labels -->
+            <text x="${vizWidth / 2}" y="15" text-anchor="middle" font-size="11" font-weight="bold" fill="#4caf50">
+                ${boxSize}m to edges
+            </text>
+        </svg>
+        <div style="margin-top: 10px; font-size: 0.85em; color: #666;">
+            📍 The green dashed box shows where the bounding area will be placed<br>
+            🏠 Home port is at the <strong>${getAnchorName(selectedAnchor)}</strong> of the box
+        </div>
+    `;
+}
+
+function getAnchorName(anchorId) {
+    const names = {
+        'nw': 'Northwest Corner',
+        'n': 'North Edge (centered)',
+        'ne': 'Northeast Corner',
+        'w': 'West Edge (centered)',
+        'center': 'Center',
+        'e': 'East Edge (centered)',
+        'sw': 'Southwest Corner',
+        's': 'South Edge (centered)',
+        'se': 'Southeast Corner'
+    };
+    return names[anchorId] || 'Center';
+}
+
 // Path type detection
 async function detectPathType(path) {
     try {
@@ -791,6 +986,17 @@ function updateValueFields(operatorSelectId, valueContainerId, dataType) {
 
     // Geographic operators
     if (['withinRadius', 'outsideRadius'].includes(operator)) {
+        // Check if home port is configured
+        const checkHomePortConfigured = async () => {
+            try {
+                const response = await fetch(`${getPluginPath()}/api/config/homeport`);
+                const data = await response.json();
+                return data.success && data.latitude !== null && data.longitude !== null;
+            } catch (error) {
+                return false;
+            }
+        };
+
         container.innerHTML = `
             <div style="margin-bottom: 10px;">
                 <label>
@@ -817,16 +1023,45 @@ function updateValueFields(operatorSelectId, valueContainerId, dataType) {
         // Add event listener to toggle custom location fields
         const checkbox = document.getElementById(`${valueContainerId}_useHomePort`);
         const customLocation = document.getElementById(`${valueContainerId}_customLocation`);
+
         checkbox.addEventListener('change', function() {
             customLocation.style.display = this.checked ? 'none' : 'grid';
+        });
+
+        // Check home port and set default
+        checkHomePortConfigured().then(isConfigured => {
+            if (isConfigured) {
+                checkbox.checked = true;
+                customLocation.style.display = 'none';
+            } else {
+                checkbox.checked = false;
+                customLocation.style.display = 'grid';
+            }
         });
 
         return;
     }
 
     if (['inBoundingBox', 'outsideBoundingBox'].includes(operator)) {
+        // Check if home port is configured
+        const checkHomePortConfigured = async () => {
+            try {
+                const response = await fetch(`${getPluginPath()}/api/config/homeport`);
+                const data = await response.json();
+                return data.success && data.latitude !== null && data.longitude !== null;
+            } catch (error) {
+                return false;
+            }
+        };
+
         container.innerHTML = `
-            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+            <div style="margin-bottom: 10px;">
+                <label>
+                    <input type="checkbox" id="${valueContainerId}_useHomePort">
+                    Use Home Port as reference
+                </label>
+            </div>
+            <div id="${valueContainerId}_manualBox" style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 10px;">
                 <div>
                     <label>North (lat):</label>
                     <input type="number" id="${valueContainerId}_north" step="0.000001" style="width: 100%;">
@@ -844,8 +1079,60 @@ function updateValueFields(operatorSelectId, valueContainerId, dataType) {
                     <input type="number" id="${valueContainerId}_west" step="0.000001" style="width: 100%;">
                 </div>
             </div>
+            <div id="${valueContainerId}_homePortBox" style="display: none;">
+                <div style="margin-bottom: 15px;">
+                    <label>Box Size (meters):</label>
+                    <input type="number" id="${valueContainerId}_boxSize" value="1000" step="100" min="100" placeholder="e.g., 1000" style="width: 100%;">
+                    <div style="font-size: 0.85em; color: #666; margin-top: 3px;">Distance from home port to edges</div>
+                </div>
+                <div style="margin-bottom: 15px;">
+                    <label>Buffer (meters):</label>
+                    <input type="number" id="${valueContainerId}_buffer" value="5" step="1" min="0" max="50" placeholder="e.g., 5" style="width: 100%;">
+                    <div style="font-size: 0.85em; color: #666; margin-top: 3px;">Extra margin to accommodate GPS accuracy (default: 5m)</div>
+                </div>
+                <div style="margin-bottom: 15px;">
+                    <label>Anchor Point:</label>
+                    <div id="${valueContainerId}_anchorGrid" style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px; margin-top: 5px;">
+                        <!-- Visual grid will be inserted here -->
+                    </div>
+                </div>
+                <div id="${valueContainerId}_visualization" style="border: 1px solid #ddd; background: #f9f9f9; padding: 15px; border-radius: 4px; min-height: 200px; position: relative;">
+                    <!-- Visualization will be drawn here -->
+                </div>
+            </div>
             <div style="font-size: 0.85em; color: #666; margin-top: 5px;">💡 Box can cross 180° meridian</div>
         `;
+
+        // Setup toggle between manual and home port modes
+        const checkbox = document.getElementById(`${valueContainerId}_useHomePort`);
+        const manualBox = document.getElementById(`${valueContainerId}_manualBox`);
+        const homePortBox = document.getElementById(`${valueContainerId}_homePortBox`);
+
+        checkbox.addEventListener('change', function() {
+            if (this.checked) {
+                manualBox.style.display = 'none';
+                homePortBox.style.display = 'block';
+                initializeBoundingBoxUI(valueContainerId);
+            } else {
+                manualBox.style.display = 'grid';
+                homePortBox.style.display = 'none';
+            }
+        });
+
+        // Check home port and set default
+        checkHomePortConfigured().then(isConfigured => {
+            if (isConfigured) {
+                checkbox.checked = true;
+                manualBox.style.display = 'none';
+                homePortBox.style.display = 'block';
+                initializeBoundingBoxUI(valueContainerId);
+            } else {
+                checkbox.checked = false;
+                manualBox.style.display = 'grid';
+                homePortBox.style.display = 'none';
+            }
+        });
+
         return;
     }
 
@@ -1065,22 +1352,43 @@ export function saveNewThreshold() {
             threshold.longitude = parseFloat(lon);
         }
     } else if (operator === 'inBoundingBox' || operator === 'outsideBoundingBox') {
-        const north = document.getElementById('newThresholdValueGroup_north')?.value;
-        const south = document.getElementById('newThresholdValueGroup_south')?.value;
-        const east = document.getElementById('newThresholdValueGroup_east')?.value;
-        const west = document.getElementById('newThresholdValueGroup_west')?.value;
+        const useHomePort = document.getElementById('newThresholdValueGroup_useHomePort')?.checked;
 
-        if (!north || !south || !east || !west) {
-            alert('Please enter all bounding box coordinates');
-            return;
+        if (useHomePort) {
+            // Home port-based bounding box
+            const boxSize = document.getElementById('newThresholdValueGroup_boxSize')?.value;
+            const buffer = document.getElementById('newThresholdValueGroup_buffer')?.value;
+            const anchorGrid = document.getElementById('newThresholdValueGroup_anchorGrid');
+            const anchor = anchorGrid?.dataset.selectedAnchor || 'center';
+
+            if (!boxSize) {
+                alert('Please enter a box size');
+                return;
+            }
+
+            threshold.useHomePort = true;
+            threshold.boxSize = parseFloat(boxSize);
+            threshold.boxAnchor = anchor;
+            threshold.boxBuffer = buffer ? parseFloat(buffer) : 5; // Default 5m buffer
+        } else {
+            // Manual bounding box
+            const north = document.getElementById('newThresholdValueGroup_north')?.value;
+            const south = document.getElementById('newThresholdValueGroup_south')?.value;
+            const east = document.getElementById('newThresholdValueGroup_east')?.value;
+            const west = document.getElementById('newThresholdValueGroup_west')?.value;
+
+            if (!north || !south || !east || !west) {
+                alert('Please enter all bounding box coordinates');
+                return;
+            }
+
+            threshold.boundingBox = {
+                north: parseFloat(north),
+                south: parseFloat(south),
+                east: parseFloat(east),
+                west: parseFloat(west)
+            };
         }
-
-        threshold.boundingBox = {
-            north: parseFloat(north),
-            south: parseFloat(south),
-            east: parseFloat(east),
-            west: parseFloat(west)
-        };
     } else if (operator !== 'true' && operator !== 'false') {
         // String or numeric value
         const valueInput = document.getElementById('newThresholdValueGroup_value');
@@ -1146,7 +1454,14 @@ function displayThresholdsList() {
             description = `${op} ${threshold.radius}m of ${location}`;
         } else if (threshold.operator === 'inBoundingBox' || threshold.operator === 'outsideBoundingBox') {
             const op = threshold.operator === 'inBoundingBox' ? 'inside' : 'outside';
-            description = `${op} box [${threshold.boundingBox.north}°N, ${threshold.boundingBox.south}°S, ${threshold.boundingBox.east}°E, ${threshold.boundingBox.west}°W]`;
+            if (threshold.useHomePort && threshold.boxSize && threshold.boxAnchor) {
+                const anchorName = getAnchorName(threshold.boxAnchor);
+                const buffer = threshold.boxBuffer !== undefined ? threshold.boxBuffer : 5;
+                const bufferText = buffer > 0 ? ` +${buffer}m buffer` : '';
+                description = `${op} ${threshold.boxSize}m box${bufferText} from home port (${anchorName})`;
+            } else if (threshold.boundingBox) {
+                description = `${op} box [${threshold.boundingBox.north}°N, ${threshold.boundingBox.south}°S, ${threshold.boundingBox.east}°E, ${threshold.boundingBox.west}°W]`;
+            }
         } else if (threshold.operator === 'true' || threshold.operator === 'false') {
             description = threshold.operator === 'true' ? 'is true' : 'is false';
         } else {
@@ -1380,22 +1695,43 @@ export function saveAddCmdThreshold() {
             threshold.longitude = parseFloat(lon);
         }
     } else if (operator === 'inBoundingBox' || operator === 'outsideBoundingBox') {
-        const north = document.getElementById('addCmdThresholdValueGroup_north')?.value;
-        const south = document.getElementById('addCmdThresholdValueGroup_south')?.value;
-        const east = document.getElementById('addCmdThresholdValueGroup_east')?.value;
-        const west = document.getElementById('addCmdThresholdValueGroup_west')?.value;
+        const useHomePort = document.getElementById('addCmdThresholdValueGroup_useHomePort')?.checked;
 
-        if (!north || !south || !east || !west) {
-            alert('Please enter all bounding box coordinates');
-            return;
+        if (useHomePort) {
+            // Home port-based bounding box
+            const boxSize = document.getElementById('addCmdThresholdValueGroup_boxSize')?.value;
+            const buffer = document.getElementById('addCmdThresholdValueGroup_buffer')?.value;
+            const anchorGrid = document.getElementById('addCmdThresholdValueGroup_anchorGrid');
+            const anchor = anchorGrid?.dataset.selectedAnchor || 'center';
+
+            if (!boxSize) {
+                alert('Please enter a box size');
+                return;
+            }
+
+            threshold.useHomePort = true;
+            threshold.boxSize = parseFloat(boxSize);
+            threshold.boxAnchor = anchor;
+            threshold.boxBuffer = buffer ? parseFloat(buffer) : 5; // Default 5m buffer
+        } else {
+            // Manual bounding box
+            const north = document.getElementById('addCmdThresholdValueGroup_north')?.value;
+            const south = document.getElementById('addCmdThresholdValueGroup_south')?.value;
+            const east = document.getElementById('addCmdThresholdValueGroup_east')?.value;
+            const west = document.getElementById('addCmdThresholdValueGroup_west')?.value;
+
+            if (!north || !south || !east || !west) {
+                alert('Please enter all bounding box coordinates');
+                return;
+            }
+
+            threshold.boundingBox = {
+                north: parseFloat(north),
+                south: parseFloat(south),
+                east: parseFloat(east),
+                west: parseFloat(west)
+            };
         }
-
-        threshold.boundingBox = {
-            north: parseFloat(north),
-            south: parseFloat(south),
-            east: parseFloat(east),
-            west: parseFloat(west)
-        };
     } else if (operator !== 'true' && operator !== 'false') {
         // String or numeric value
         const valueInput = document.getElementById('addCmdThresholdValueGroup_value');
@@ -1464,7 +1800,14 @@ function displayAddCommandThresholdsList() {
             description = `${op} ${threshold.radius}m of ${location}`;
         } else if (threshold.operator === 'inBoundingBox' || threshold.operator === 'outsideBoundingBox') {
             const op = threshold.operator === 'inBoundingBox' ? 'inside' : 'outside';
-            description = `${op} box [${threshold.boundingBox.north}°N, ${threshold.boundingBox.south}°S, ${threshold.boundingBox.east}°E, ${threshold.boundingBox.west}°W]`;
+            if (threshold.useHomePort && threshold.boxSize && threshold.boxAnchor) {
+                const anchorName = getAnchorName(threshold.boxAnchor);
+                const buffer = threshold.boxBuffer !== undefined ? threshold.boxBuffer : 5;
+                const bufferText = buffer > 0 ? ` +${buffer}m buffer` : '';
+                description = `${op} ${threshold.boxSize}m box${bufferText} from home port (${anchorName})`;
+            } else if (threshold.boundingBox) {
+                description = `${op} box [${threshold.boundingBox.north}°N, ${threshold.boundingBox.south}°S, ${threshold.boundingBox.east}°E, ${threshold.boundingBox.west}°W]`;
+            }
         } else if (threshold.operator === 'true' || threshold.operator === 'false') {
             description = threshold.operator === 'true' ? 'is true' : 'is false';
         } else {

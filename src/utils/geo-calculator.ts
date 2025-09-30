@@ -156,3 +156,59 @@ export function calculateDestinationPoint(
     longitude: (λ2 * 180) / Math.PI,
   };
 }
+
+/**
+ * Calculate bounding box from home port with anchor point
+ * @param homePortLat - Home port latitude in degrees
+ * @param homePortLon - Home port longitude in degrees
+ * @param boxSizeMeters - Distance from home port to edges in meters
+ * @param anchor - Anchor point position (nw, n, ne, w, center, e, sw, s, se)
+ * @returns Bounding box
+ */
+export function calculateBoundingBoxFromHomePort(
+  homePortLat: number,
+  homePortLon: number,
+  boxSizeMeters: number,
+  anchor: string
+): BoundingBox {
+  // Calculate the box center based on anchor point
+  let centerLat = homePortLat;
+  let centerLon = homePortLon;
+
+  // Special case: if anchor is "center", home port IS the center
+  if (anchor === 'center') {
+    return createBoundingBoxFromRadius(homePortLat, homePortLon, boxSizeMeters);
+  }
+
+  // Determine offsets based on anchor position (exact match)
+  let latOffset = 0; // -1 = south, 0 = middle, 1 = north
+  let lonOffset = 0; // -1 = west, 0 = middle, 1 = east
+
+  if (anchor === 'nw' || anchor === 'n' || anchor === 'ne') {
+    latOffset = 1; // Home port is on north edge, box extends south
+  } else if (anchor === 'sw' || anchor === 's' || anchor === 'se') {
+    latOffset = -1; // Home port is on south edge, box extends north
+  }
+
+  if (anchor === 'nw' || anchor === 'w' || anchor === 'sw') {
+    lonOffset = 1; // Home port is on west edge, box extends east
+  } else if (anchor === 'ne' || anchor === 'e' || anchor === 'se') {
+    lonOffset = -1; // Home port is on east edge, box extends west
+  }
+
+  // Calculate center point by moving from home port
+  if (latOffset !== 0) {
+    // Move north or south
+    const point = calculateDestinationPoint(homePortLat, homePortLon, latOffset > 0 ? 180 : 0, boxSizeMeters);
+    centerLat = point.latitude;
+  }
+
+  if (lonOffset !== 0) {
+    // Move east or west
+    const point = calculateDestinationPoint(centerLat, homePortLon, lonOffset > 0 ? 270 : 90, boxSizeMeters);
+    centerLon = point.longitude;
+  }
+
+  // Create bounding box around the center point
+  return createBoundingBoxFromRadius(centerLat, centerLon, boxSizeMeters);
+}

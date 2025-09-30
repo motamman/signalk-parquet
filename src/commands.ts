@@ -20,7 +20,8 @@ import {
 import * as fs from 'fs-extra';
 import * as path from 'path';
 import { degreesToRadians, radiansToDegrees } from './utils/angle-converter';
-import { calculateDistance, isPointInBoundingBox } from './utils/geo-calculator';
+import { calculateDistance, isPointInBoundingBox, calculateBoundingBoxFromHomePort } from './utils/geo-calculator';
+import { BoundingBox } from './types';
 
 // Global variables for command management
 let currentCommands: CommandConfig[] = [];
@@ -931,7 +932,24 @@ function processThresholdValue(command: CommandConfig, threshold: ThresholdConfi
       : undefined;
 
     const shouldActivate = evaluateThreshold(threshold, normalizedValue, homePort);
-    appInstance?.debug(`📉 Threshold evaluation for ${commandName}:${threshold.watchPath} operator=${threshold.operator} threshold=${threshold.value} result=${shouldActivate}`);
+
+    // Better debug logging for different threshold types
+    let thresholdDesc = '';
+    if (threshold.operator === 'inBoundingBox' || threshold.operator === 'outsideBoundingBox') {
+      if (threshold.useHomePort && threshold.boxSize && threshold.boxAnchor) {
+        thresholdDesc = `homePort-based box: size=${threshold.boxSize}m anchor=${threshold.boxAnchor} homePort=${JSON.stringify(homePort)}`;
+      } else if (threshold.boundingBox) {
+        thresholdDesc = `manual box: ${JSON.stringify(threshold.boundingBox)}`;
+      } else {
+        thresholdDesc = 'NO BOX CONFIGURED';
+      }
+    } else if (threshold.operator === 'withinRadius' || threshold.operator === 'outsideRadius') {
+      thresholdDesc = `radius=${threshold.radius}m useHomePort=${threshold.useHomePort} lat=${threshold.latitude} lon=${threshold.longitude}`;
+    } else {
+      thresholdDesc = `value=${threshold.value}`;
+    }
+
+    appInstance?.debug(`📉 Threshold evaluation for ${commandName}:${threshold.watchPath} operator=${threshold.operator} ${thresholdDesc} result=${shouldActivate}`);
 
     // Apply hysteresis for numeric values
     if (threshold.hysteresis && typeof normalizedValue === 'number' && typeof state.lastValue === 'number') {
@@ -1066,7 +1084,30 @@ function evaluateThreshold(
         return false;
       }
 
-      if (!threshold.boundingBox) {
+      let boundingBox: BoundingBox;
+
+      // Check if using home port-based bounding box
+      if (threshold.useHomePort && threshold.boxSize && threshold.boxAnchor) {
+        if (!homePort) {
+          appInstance?.error(`❌ Threshold ${threshold.watchPath}: Home port not configured`);
+          return false;
+        }
+
+        // Calculate bounding box from home port, box size, and anchor
+        // Add buffer for GPS accuracy (default 5m)
+        const buffer = threshold.boxBuffer !== undefined ? threshold.boxBuffer : 5;
+        const effectiveBoxSize = threshold.boxSize + buffer;
+
+        boundingBox = calculateBoundingBoxFromHomePort(
+          homePort.latitude,
+          homePort.longitude,
+          effectiveBoxSize,
+          threshold.boxAnchor
+        );
+      } else if (threshold.boundingBox) {
+        // Use manual bounding box
+        boundingBox = threshold.boundingBox;
+      } else {
         appInstance?.error(`❌ Threshold ${threshold.watchPath}: Bounding box not configured`);
         return false;
       }
@@ -1074,7 +1115,7 @@ function evaluateThreshold(
       const inBox = isPointInBoundingBox(
         currentValue.latitude,
         currentValue.longitude,
-        threshold.boundingBox
+        boundingBox
       );
 
       return threshold.operator === 'inBoundingBox' ? inBox : !inBox;
