@@ -128,13 +128,64 @@ export interface PathConfig {
 }
 
 // Command Registration Types
+/**
+ * Threshold operator types based on data type
+ */
+export type ThresholdOperator =
+  // Numeric/Angular operators
+  | 'gt'              // Greater than
+  | 'lt'              // Less than
+  | 'eq'              // Equal to
+  | 'ne'              // Not equal to
+  | 'range'           // Within range (min/max)
+  // String operators
+  | 'contains'        // String contains substring
+  | 'startsWith'      // String starts with
+  | 'endsWith'        // String ends with
+  | 'stringEquals'    // String equals (case-sensitive)
+  // Boolean operators
+  | 'true'            // Is true
+  | 'false'           // Is false
+  // Position operators
+  | 'withinRadius'    // Within radius of point
+  | 'outsideRadius'   // Outside radius of point
+  | 'inBoundingBox'   // Inside bounding box
+  | 'outsideBoundingBox'; // Outside bounding box
+
+/**
+ * Bounding box for geographic area thresholds
+ */
+export interface BoundingBox {
+  north: number;      // Northern latitude boundary
+  south: number;      // Southern latitude boundary
+  east: number;       // Eastern longitude boundary
+  west: number;       // Western longitude boundary
+}
+
+/**
+ * Type-aware threshold configuration
+ */
 export interface ThresholdConfig {
   enabled: boolean;
   watchPath: string;                    // SignalK path to monitor
-  operator: 'gt' | 'lt' | 'eq' | 'ne' | 'true' | 'false';  // greater than, less than, equal, not equal, true, false
-  value?: number | boolean | string;    // Threshold value (not needed for true/false)
+  operator: ThresholdOperator;          // Threshold operator
+
+  // Simple value (for most operators)
+  value?: number | boolean | string;
+
+  // Range operator values
+  valueMin?: number;                    // Minimum value for range operator
+  valueMax?: number;                    // Maximum value for range operator
+
+  // Position-based threshold values
+  latitude?: number;                    // Target latitude for position operators
+  longitude?: number;                   // Target longitude for position operators
+  radius?: number;                      // Radius in meters for position operators
+  boundingBox?: BoundingBox;            // Bounding box for area operators
+  useHomePort?: boolean;                // Use home port location instead of custom lat/lon
+
   activateOnMatch: boolean;             // true = activate command when condition met, false = deactivate
-  hysteresis?: number;                  // Optional: prevent rapid switching (for numeric values)
+  hysteresis?: number;                  // Optional: prevent rapid switching (seconds)
 }
 
 export interface CommandConfig {

@@ -764,6 +764,152 @@ export function registerApiRoutes(
     }
   );
 
+  // ===========================================
+  // HOME PORT CONFIGURATION ENDPOINTS
+  // ===========================================
+
+  // Get home port configuration
+  router.get('/api/config/homeport', (_req, res) => {
+    try {
+      if (!state.currentConfig) {
+        return res.status(500).json({
+          success: false,
+          error: 'Plugin configuration not available',
+        });
+      }
+
+      return res.json({
+        success: true,
+        latitude: state.currentConfig.homePortLatitude || null,
+        longitude: state.currentConfig.homePortLongitude || null,
+      });
+    } catch (error) {
+      return res.status(500).json({
+        success: false,
+        error: (error as Error).message,
+      });
+    }
+  });
+
+  // Update home port configuration
+  router.put('/api/config/homeport', (req, res): void => {
+    try {
+      const { latitude, longitude } = req.body;
+
+      if (!state.currentConfig) {
+        res.status(500).json({
+          success: false,
+          error: 'Plugin configuration not available',
+        });
+        return;
+      }
+
+      // Validate latitude and longitude
+      if (typeof latitude !== 'number' || typeof longitude !== 'number') {
+        res.status(400).json({
+          success: false,
+          error: 'Latitude and longitude must be numbers',
+        });
+        return;
+      }
+
+      if (latitude < -90 || latitude > 90) {
+        res.status(400).json({
+          success: false,
+          error: 'Latitude must be between -90 and 90',
+        });
+        return;
+      }
+
+      if (longitude < -180 || longitude > 180) {
+        res.status(400).json({
+          success: false,
+          error: 'Longitude must be between -180 and 180',
+        });
+        return;
+      }
+
+      // Update the config
+      state.currentConfig.homePortLatitude = latitude;
+      state.currentConfig.homePortLongitude = longitude;
+
+      // Save to plugin options
+      app.savePluginOptions(state.currentConfig, (err?: unknown) => {
+        if (err) {
+          app.error(`Failed to save home port: ${err}`);
+          res.status(500).json({
+            success: false,
+            error: 'Failed to save home port configuration',
+          });
+          return;
+        }
+
+        app.debug(`✅ Home port updated: ${latitude}, ${longitude}`);
+        res.json({
+          success: true,
+          latitude,
+          longitude,
+        });
+      });
+    } catch (error) {
+      res.status(500).json({
+        success: false,
+        error: (error as Error).message,
+      });
+    }
+  });
+
+  // Get current vessel position
+  router.get('/api/position/current', (_req, res) => {
+    try {
+      const position = app.getSelfPath('navigation.position');
+      if (position && position.value) {
+        return res.json({
+          success: true,
+          latitude: position.value.latitude,
+          longitude: position.value.longitude,
+        });
+      }
+      return res.status(404).json({
+        success: false,
+        error: 'Current position not available',
+      });
+    } catch (error) {
+      return res.status(500).json({
+        success: false,
+        error: (error as Error).message,
+      });
+    }
+  });
+
+  // ===========================================
+  // PATH TYPE DETECTION ENDPOINT
+  // ===========================================
+
+  // Get data type information for a SignalK path
+  router.get('/api/paths/:path/type', async (req, res) => {
+    try {
+      const pathParam = req.params.path;
+      const { detectPathType } = await import('./utils/type-detector');
+
+      const typeInfo = await detectPathType(pathParam, app);
+
+      return res.json({
+        success: true,
+        ...typeInfo,
+      });
+    } catch (error) {
+      return res.status(500).json({
+        success: false,
+        error: (error as Error).message,
+      });
+    }
+  });
+
+  // ===========================================
+  // COMMAND MANAGEMENT ENDPOINTS
+  // ===========================================
+
   // Register a new command
   router.post(
     '/api/commands',

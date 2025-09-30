@@ -6,6 +6,7 @@ import * as PathConfig from './pathConfig.js';
 import * as CommandManager from './commandManager.js';
 import * as LiveConnections from './liveConnections.js';
 import * as Analysis from './analysis.js';
+import * as HomePort from './homePort.js';
 
 function registerGlobals(mapping) {
     Object.entries(mapping).forEach(([name, fn]) => {
@@ -154,6 +155,7 @@ registerGlobals({
 document.addEventListener('DOMContentLoaded', async () => {
     await PathBrowser.loadAvailablePaths();
     await PathConfig.loadPathConfigurations();
+    await HomePort.loadHomePort();
     PathBrowser.generateExampleQueries();
     PathConfig.initPathConfigListeners();
     await LiveConnections.initLiveConnections();

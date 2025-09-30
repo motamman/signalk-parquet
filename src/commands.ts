@@ -19,11 +19,14 @@ import {
 } from '@signalk/server-api';
 import * as fs from 'fs-extra';
 import * as path from 'path';
+import { degreesToRadians, radiansToDegrees } from './utils/angle-converter';
+import { calculateDistance, isPointInBoundingBox } from './utils/geo-calculator';
 
 // Global variables for command management
 let currentCommands: CommandConfig[] = [];
 let commandHistory: CommandHistoryEntry[] = [];
 let appInstance: ServerAPI;
+let pluginConfig: PluginConfig | null = null;
 
 // Threshold processing lock system for first-in rule
 const thresholdProcessingLocks = new Map<string, boolean>();
@@ -768,8 +771,11 @@ export function setCurrentCommands(commands: CommandConfig[]): void {
 }
 
 // Threshold monitoring system
-export function startThresholdMonitoring(app: ServerAPI): void {
+export function startThresholdMonitoring(app: ServerAPI, config?: PluginConfig): void {
   appInstance = app;
+  if (config) {
+    pluginConfig = config;
+  }
   app.debug('🔄 Starting threshold monitoring system');
 
   // Process all commands
@@ -918,7 +924,13 @@ function processThresholdValue(command: CommandConfig, threshold: ThresholdConfi
     }
 
     const now = Date.now();
-    const shouldActivate = evaluateThreshold(threshold, normalizedValue);
+
+    // Get homePort from config for position-based thresholds
+    const homePort = pluginConfig && pluginConfig.homePortLatitude && pluginConfig.homePortLongitude
+      ? { latitude: pluginConfig.homePortLatitude, longitude: pluginConfig.homePortLongitude }
+      : undefined;
+
+    const shouldActivate = evaluateThreshold(threshold, normalizedValue, homePort);
     appInstance?.debug(`📉 Threshold evaluation for ${commandName}:${threshold.watchPath} operator=${threshold.operator} threshold=${threshold.value} result=${shouldActivate}`);
 
     // Apply hysteresis for numeric values
@@ -970,8 +982,13 @@ function processThresholdValue(command: CommandConfig, threshold: ThresholdConfi
   }
 }
 
-function evaluateThreshold(threshold: ThresholdConfig, currentValue: any): boolean {
+function evaluateThreshold(
+  threshold: ThresholdConfig,
+  currentValue: any,
+  homePort?: { latitude: number; longitude: number }
+): boolean {
   switch (threshold.operator) {
+    // Numeric operators
     case 'gt':
       return typeof currentValue === 'number' && typeof threshold.value === 'number' && currentValue > threshold.value;
 
@@ -984,11 +1001,83 @@ function evaluateThreshold(threshold: ThresholdConfig, currentValue: any): boole
     case 'ne':
       return currentValue !== threshold.value;
 
+    case 'range':
+      if (typeof currentValue !== 'number' || typeof threshold.valueMin !== 'number' || typeof threshold.valueMax !== 'number') {
+        return false;
+      }
+      return currentValue >= threshold.valueMin && currentValue <= threshold.valueMax;
+
+    // String operators
+    case 'contains':
+      return typeof currentValue === 'string' && typeof threshold.value === 'string' && currentValue.includes(threshold.value);
+
+    case 'startsWith':
+      return typeof currentValue === 'string' && typeof threshold.value === 'string' && currentValue.startsWith(threshold.value);
+
+    case 'endsWith':
+      return typeof currentValue === 'string' && typeof threshold.value === 'string' && currentValue.endsWith(threshold.value);
+
+    case 'stringEquals':
+      return typeof currentValue === 'string' && typeof threshold.value === 'string' && currentValue === threshold.value;
+
+    // Boolean operators
     case 'true':
       return currentValue === true || currentValue === 'true' || currentValue === 1;
 
     case 'false':
       return currentValue === false || currentValue === 'false' || currentValue === 0;
+
+    // Position operators
+    case 'withinRadius':
+    case 'outsideRadius':
+      if (!currentValue || typeof currentValue.latitude !== 'number' || typeof currentValue.longitude !== 'number') {
+        appInstance?.error(`❌ Threshold ${threshold.watchPath}: Current value is not a valid position`);
+        return false;
+      }
+
+      const targetLat = threshold.useHomePort && homePort ? homePort.latitude : threshold.latitude;
+      const targetLon = threshold.useHomePort && homePort ? homePort.longitude : threshold.longitude;
+
+      if (typeof targetLat !== 'number' || typeof targetLon !== 'number') {
+        appInstance?.error(`❌ Threshold ${threshold.watchPath}: Target position not configured`);
+        return false;
+      }
+
+      if (typeof threshold.radius !== 'number') {
+        appInstance?.error(`❌ Threshold ${threshold.watchPath}: Radius not configured`);
+        return false;
+      }
+
+      const distance = calculateDistance(
+        currentValue.latitude,
+        currentValue.longitude,
+        targetLat,
+        targetLon
+      );
+
+      return threshold.operator === 'withinRadius'
+        ? distance <= threshold.radius
+        : distance > threshold.radius;
+
+    case 'inBoundingBox':
+    case 'outsideBoundingBox':
+      if (!currentValue || typeof currentValue.latitude !== 'number' || typeof currentValue.longitude !== 'number') {
+        appInstance?.error(`❌ Threshold ${threshold.watchPath}: Current value is not a valid position`);
+        return false;
+      }
+
+      if (!threshold.boundingBox) {
+        appInstance?.error(`❌ Threshold ${threshold.watchPath}: Bounding box not configured`);
+        return false;
+      }
+
+      const inBox = isPointInBoundingBox(
+        currentValue.latitude,
+        currentValue.longitude,
+        threshold.boundingBox
+      );
+
+      return threshold.operator === 'inBoundingBox' ? inBox : !inBox;
 
     default:
       appInstance?.error(`❌ Unknown threshold operator: ${threshold.operator}`);

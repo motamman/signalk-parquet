@@ -149,7 +149,7 @@ export default function (app: ServerAPI): SignalKPlugin {
     initializeCommandState(currentPaths, app);
 
     // Start threshold monitoring system
-    startThresholdMonitoring(app);
+    startThresholdMonitoring(app, state.currentConfig);
 
     // Subscribe to data paths based on initial regimen states
     updateDataSubscriptions(currentPaths, state, state.currentConfig, app);
