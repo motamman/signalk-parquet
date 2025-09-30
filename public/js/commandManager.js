@@ -45,9 +45,8 @@ function extractPathsFromSignalK(obj, filterType = 'self') {
             if (node[key] && typeof node[key] === 'object') {
                 if (node[key].value !== undefined) {
                     selfPaths.add(currentPath);
-                } else {
-                    extractRecursive(node[key], currentPath);
                 }
+                extractRecursive(node[key], currentPath);
             }
         }
     }
@@ -73,9 +72,8 @@ function extractPathsFromSignalK(obj, filterType = 'self') {
                         if (node[key] && typeof node[key] === 'object') {
                             if (node[key].value !== undefined) {
                                 tempPaths.add(currentPath);
-                            } else {
-                                extractOtherVessel(node[key], currentPath);
                             }
+                            extractOtherVessel(node[key], currentPath);
                         }
                     }
                 }
@@ -1504,7 +1502,7 @@ export function updateAddCmdThresholdPathFilter() {
 async function populateAddCmdThresholdPaths() {
     ensureEditFormInDom();
     const select = document.getElementById('addCmdThresholdPath');
-    const filterType = document.querySelector('input[name="addCmdPathFilter"]:checked')?.value || 'self';
+    const filterType = 'self';
 
     // Clear existing options except the default ones
     select.innerHTML = '<option value="">-- Select SignalK Path --</option><option value="custom">🖊️ Enter Custom Path</option>';
