@@ -2562,18 +2562,15 @@ export function registerApiRoutes(
                       if (!isExplodedField && signalkPath) {
                         addDebug(`🔍 ${fieldName}: Using metadata fallback (matches repair logic)`);
                         try {
-                          const response = await fetch(`http://localhost:3000/signalk/v1/api/vessels/self/${signalkPath.replace(/\./g, '/')}/meta`);
-                          if (response.ok) {
-                            const metadata = await response.json() as any;
-                            if (metadata && metadata.units &&
-                                (metadata.units === 'm' || metadata.units === 'deg' || metadata.units === 'm/s' ||
-                                 metadata.units === 'rad' || metadata.units === 'K' || metadata.units === 'Pa' ||
-                                 metadata.units === 'V' || metadata.units === 'A' || metadata.units === 'Hz' ||
-                                 metadata.units === 'ratio' || metadata.units === 'kg' || metadata.units === 'J')) {
-                              violations.push(`${fieldName} has numeric units (${metadata.units}) but is ${fieldType}, should be DOUBLE`);
-                              hasViolations = true;
-                              addDebug(`🔍 ${fieldName}: Metadata indicates numeric (${metadata.units}), flagged as violation`);
-                            }
+                          const metadata = app.getMetadata(signalkPath) as any;
+                          if (metadata && metadata.units &&
+                              (metadata.units === 'm' || metadata.units === 'deg' || metadata.units === 'm/s' ||
+                               metadata.units === 'rad' || metadata.units === 'K' || metadata.units === 'Pa' ||
+                               metadata.units === 'V' || metadata.units === 'A' || metadata.units === 'Hz' ||
+                               metadata.units === 'ratio' || metadata.units === 'kg' || metadata.units === 'J')) {
+                            violations.push(`${fieldName} has numeric units (${metadata.units}) but is ${fieldType}, should be DOUBLE`);
+                            hasViolations = true;
+                            addDebug(`🔍 ${fieldName}: Metadata indicates numeric (${metadata.units}), flagged as violation`);
                           }
                         } catch (metadataError) {
                           addDebug(`🔍 ${fieldName}: Metadata lookup failed, no violation flagged`);
@@ -2920,18 +2917,15 @@ export function registerApiRoutes(
 
                     if (!needsRepair && signalkPath && !fieldName.startsWith('value_')) {
                       try {
-                        const response = await fetch(`http://localhost:3000/signalk/v1/api/vessels/self/${signalkPath.replace(/\./g, '/')}/meta`);
-                        if (response.ok) {
-                          const metadata = await response.json() as any;
-                          if (metadata && metadata.units &&
-                              (metadata.units === 'm' || metadata.units === 'deg' || metadata.units === 'm/s' ||
-                               metadata.units === 'rad' || metadata.units === 'K' || metadata.units === 'Pa' ||
-                               metadata.units === 'V' || metadata.units === 'A' || metadata.units === 'Hz' ||
-                               metadata.units === 'ratio' || metadata.units === 'kg' || metadata.units === 'J')) {
-                            needsRepair = true;
-                            app.debug(`🔧 File needs repair: ${relativePath} (${fieldName} should be DOUBLE per metadata, not ${fieldType})`);
-                            break;
-                          }
+                        const metadata = app.getMetadata(signalkPath) as any;
+                        if (metadata && metadata.units &&
+                            (metadata.units === 'm' || metadata.units === 'deg' || metadata.units === 'm/s' ||
+                             metadata.units === 'rad' || metadata.units === 'K' || metadata.units === 'Pa' ||
+                             metadata.units === 'V' || metadata.units === 'A' || metadata.units === 'Hz' ||
+                             metadata.units === 'ratio' || metadata.units === 'kg' || metadata.units === 'J')) {
+                          needsRepair = true;
+                          app.debug(`🔧 File needs repair: ${relativePath} (${fieldName} should be DOUBLE per metadata, not ${fieldType})`);
+                          break;
                         }
                       } catch (metadataError) {
                         app.debug(`🔧 Metadata check failed for ${fieldName}: ${(metadataError as Error).message}`);

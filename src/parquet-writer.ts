@@ -227,20 +227,15 @@ export class ParquetWriter {
 
       if (!metadataCache.has(currentPath)) {
         try {
-          this.app?.debug(`    🔍 Trying HTTP metadata lookup for path: "${currentPath}"`);
+          this.app?.debug(`    🔍 Trying metadata lookup for path: "${currentPath}"`);
 
-          // Use HTTP REST API to get metadata since getMetadata() returns undefined
+          // Use app's getMetadata method
           let metadata = null;
           try {
-            const response = await fetch(`http://localhost:3000/signalk/v1/api/vessels/self/${currentPath.replace(/\./g, '/')}/meta`);
-            if (response.ok) {
-              metadata = await response.json();
-              this.app?.debug(`    📡 HTTP metadata result: ${JSON.stringify(metadata)}`);
-            } else {
-              this.app?.debug(`    ❌ HTTP metadata request failed: ${response.status} ${response.statusText}`);
-            }
+            metadata = this.app.getMetadata(currentPath);
+            this.app?.debug(`    📡 Metadata result: ${metadata ? JSON.stringify(metadata) : 'null'}`);
           } catch (error) {
-            this.app?.debug(`    ❌ HTTP metadata request error: ${(error as Error).message}`);
+            this.app?.debug(`    ❌ Metadata lookup error: ${(error as Error).message}`);
           }
           metadataCache.set(currentPath, metadata);
           this.app?.debug(`    📡 Retrieved metadata: ${metadata ? JSON.stringify(metadata) : 'null'}`);

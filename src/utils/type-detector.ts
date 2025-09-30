@@ -60,24 +60,26 @@ export async function detectPathType(
   app?: ServerAPI
 ): Promise<PathTypeInfo> {
   try {
-    // Special case: position paths
-    if (POSITION_PATHS.includes(path)) {
+    // Special case: all paths ending with "position" are position types
+    if (path.endsWith('position') || POSITION_PATHS.includes(path)) {
       return {
         dataType: 'position',
         description: 'Geographic position (latitude/longitude)',
       };
     }
 
-    // Try to fetch metadata from SignalK API
-    const metadataUrl = `http://localhost:3000/signalk/v1/api/vessels/self/${path.replace(/\./g, '/')}/meta`;
+    // Try to get metadata from SignalK
+    let metadata: Record<string, unknown> | undefined;
 
-    const response = await fetch(metadataUrl);
-    if (!response.ok) {
+    if (app) {
+      // Use app's getMetadata method if available
+      metadata = app.getMetadata(path) as Record<string, unknown> | undefined;
+    }
+
+    if (!metadata) {
       app?.debug(`Type detection: metadata not found for ${path}`);
       return { dataType: 'unknown' };
     }
-
-    const metadata = (await response.json()) as Record<string, unknown>;
 
     // Type guard helpers
     const getStringProperty = (
@@ -152,6 +154,27 @@ export async function detectPathType(
         description,
         rawMetadata: metadata,
       };
+    }
+
+    // Try to sample the actual value to detect boolean
+    if (app) {
+      try {
+        const sampleValue = app.getSelfPath(path as any);
+        // Handle both raw values and SignalK value objects
+        const actualValue = sampleValue && typeof sampleValue === 'object' && 'value' in sampleValue
+          ? sampleValue.value
+          : sampleValue;
+
+        if (typeof actualValue === 'boolean') {
+          return {
+            dataType: 'boolean',
+            description: description || 'Boolean value (detected from sample)',
+            rawMetadata: metadata,
+          };
+        }
+      } catch (sampleError) {
+        // Ignore sampling errors, continue with default detection
+      }
     }
 
     // Default to string if no clear type detected

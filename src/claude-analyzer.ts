@@ -254,8 +254,9 @@ export class ClaudeAnalyzer {
    */
   private async loadDataFromPath(dataPath: string, timeRange?: { start: Date; end: Date }, aggregationMethod?: string, resolution?: string): Promise<DataRecord[]> {
     try {
-      // Use the existing REST API instead of custom query logic  
-      const baseUrl = `http://localhost:3000`; // Use default SignalK port
+      // Use the existing REST API instead of custom query logic
+      const port = process.env.PORT || 3000;
+      const baseUrl = `http://localhost:${port}`;
       
       // Construct paths with aggregation method if provided
       // HistoryAPI supports format: "path:aggregateMethod" (e.g., "environment.outside.tempest.observations.solarRadiation:max")

@@ -30,6 +30,164 @@ function getUpdateCommandButton() {
     return document.getElementById('updateCommandButton');
 }
 
+/**
+ * Build a hierarchical tree structure from flat path list
+ */
+function buildPathTree(paths) {
+    const tree = {};
+
+    paths.forEach(path => {
+        const parts = path.split('.');
+        let current = tree;
+
+        parts.forEach((part, index) => {
+            if (!current[part]) {
+                current[part] = {
+                    _children: {},
+                    _hasValue: index === parts.length - 1,
+                    _fullPath: parts.slice(0, index + 1).join('.')
+                };
+            } else if (index === parts.length - 1) {
+                current[part]._hasValue = true;
+            }
+            current = current[part]._children;
+        });
+    });
+
+    return tree;
+}
+
+/**
+ * Check if node or any descendant matches search term
+ */
+function nodeMatchesSearch(node, searchTerm) {
+    if (!searchTerm) return true;
+
+    const term = searchTerm.toLowerCase();
+
+    // Check if this node's full path contains the search term
+    if (node._fullPath && node._fullPath.toLowerCase().includes(term)) {
+        return true;
+    }
+
+    // Check if any children match
+    for (const childKey in node._children) {
+        if (nodeMatchesSearch(node._children[childKey], searchTerm)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+/**
+ * Render a tree node
+ */
+function renderTreeNode(key, node, level = 0, searchTerm = '') {
+    const hasChildren = Object.keys(node._children).length > 0;
+    const fullPath = node._fullPath;
+
+    // Filter based on search - show node if it or any descendant matches
+    if (searchTerm && !nodeMatchesSearch(node, searchTerm)) {
+        return '';
+    }
+
+    const itemClasses = ['path-tree-item'];
+    if (node._hasValue) itemClasses.push('has-value');
+
+    let html = `<div class="path-tree-node" data-level="${level}">`;
+    html += `<div class="${itemClasses.join(' ')}" data-path="${fullPath}" onclick="selectPathTreeItem(this, '${fullPath}', ${node._hasValue})">`;
+
+    if (hasChildren) {
+        html += `<span class="path-tree-toggle" onclick="event.stopPropagation(); toggleTreeNode(this)">▶</span>`;
+    } else {
+        html += `<span class="path-tree-toggle"></span>`;
+    }
+
+    html += `<span class="path-tree-label">${key}</span>`;
+    html += `</div>`;
+
+    if (hasChildren) {
+        html += `<div class="path-tree-children">`;
+        Object.keys(node._children).sort().forEach(childKey => {
+            html += renderTreeNode(childKey, node._children[childKey], level + 1, searchTerm);
+        });
+        html += `</div>`;
+    }
+
+    html += `</div>`;
+    return html;
+}
+
+/**
+ * Toggle tree node expansion
+ */
+window.toggleTreeNode = function(toggleElement) {
+    const treeNode = toggleElement.closest('.path-tree-node');
+    const children = treeNode.querySelector('.path-tree-children');
+
+    if (children.classList.contains('expanded')) {
+        children.classList.remove('expanded');
+        toggleElement.textContent = '▶';
+    } else {
+        children.classList.add('expanded');
+        toggleElement.textContent = '▼';
+    }
+};
+
+/**
+ * Select a path tree item
+ */
+window.selectPathTreeItem = function(element, fullPath, hasValue) {
+    if (!hasValue) {
+        // If no value, just toggle expansion
+        const toggle = element.querySelector('.path-tree-toggle');
+        if (toggle && toggle.textContent) {
+            toggleTreeNode(toggle);
+        }
+        return;
+    }
+
+    // Remove previous selection
+    const container = element.closest('.path-tree-container');
+    container.querySelectorAll('.path-tree-item.selected').forEach(el => {
+        el.classList.remove('selected');
+    });
+
+    // Add selection
+    element.classList.add('selected');
+
+    // Update hidden input
+    const treeId = container.id;
+    const inputId = treeId.replace('Tree', '');
+    const input = document.getElementById(inputId);
+    if (input) {
+        input.value = fullPath;
+        // Trigger change event for any listeners
+        input.dispatchEvent(new Event('change'));
+    }
+};
+
+/**
+ * Show custom path input
+ */
+window.showCustomPathInput = function(inputId) {
+    const customInput = document.getElementById(inputId + 'Custom');
+    const treeContainer = document.getElementById(inputId + 'Tree');
+    const searchInput = document.getElementById(inputId + 'Search');
+
+    if (customInput.style.display === 'none') {
+        customInput.style.display = 'block';
+        treeContainer.style.display = 'none';
+        searchInput.style.display = 'none';
+        customInput.focus();
+    } else {
+        customInput.style.display = 'none';
+        treeContainer.style.display = 'block';
+        searchInput.style.display = 'block';
+    }
+};
+
 function extractPathsFromSignalK(obj, filterType = 'self') {
     const selfPaths = new Set();
     const nonSelfPaths = new Set();
@@ -38,7 +196,7 @@ function extractPathsFromSignalK(obj, filterType = 'self') {
         if (!node || typeof node !== 'object') return;
 
         for (const key in node) {
-            if (key === 'meta' || key === 'timestamp' || key === 'source' || key === '$source') continue;
+            if (key === 'meta' || key === 'timestamp' || key === 'source' || key === '$source' || key === 'values' || key === 'sentence') continue;
 
             const currentPath = prefix ? `${prefix}.${key}` : key;
 
@@ -67,7 +225,7 @@ function extractPathsFromSignalK(obj, filterType = 'self') {
                 function extractOtherVessel(node, prefix = '') {
                     if (!node || typeof node !== 'object') return;
                     for (const key in node) {
-                        if (key === 'meta' || key === 'timestamp' || key === 'source' || key === '$source') continue;
+                        if (key === 'meta' || key === 'timestamp' || key === 'source' || key === '$source' || key === 'values' || key === 'sentence') continue;
                         const currentPath = prefix ? `${prefix}.${key}` : key;
                         if (node[key] && typeof node[key] === 'object') {
                             if (node[key].value !== undefined) {
@@ -1158,11 +1316,13 @@ export function updateThresholdPathFilter() {
 
 async function populateThresholdPaths() {
     ensureEditFormInDom();
-    const select = document.getElementById('newThresholdPath');
+    const treeContainer = document.getElementById('newThresholdPathTree');
+    const searchInput = document.getElementById('newThresholdPathSearch');
     const filterType = 'self';
 
-    // Clear existing options except the default ones
-    select.innerHTML = '<option value="">-- Select SignalK Path --</option><option value="custom">🖊️ Enter Custom Path</option>';
+    if (!treeContainer) return;
+
+    treeContainer.innerHTML = '<div style="padding: 20px; text-align: center; color: #666;">Loading paths...</div>';
 
     try {
         let allPaths = [];
@@ -1193,38 +1353,54 @@ async function populateThresholdPaths() {
         }
 
         const uniquePaths = Array.from(new Set(allPaths)).sort();
+        const tree = buildPathTree(uniquePaths);
 
-        uniquePaths.forEach(path => {
-            const option = document.createElement('option');
-            option.value = path;
-            option.textContent = path;
-            select.appendChild(option);
+        // Render tree
+        let html = '';
+        Object.keys(tree).sort().forEach(key => {
+            html += renderTreeNode(key, tree[key], 0, '');
         });
+        treeContainer.innerHTML = html || '<div style="padding: 20px; text-align: center; color: #666;">No paths found</div>';
+
+        // Setup search
+        if (searchInput) {
+            searchInput.addEventListener('input', (e) => {
+                const searchTerm = e.target.value;
+                let html = '';
+                Object.keys(tree).sort().forEach(key => {
+                    html += renderTreeNode(key, tree[key], 0, searchTerm);
+                });
+                treeContainer.innerHTML = html || '<div style="padding: 20px; text-align: center; color: #666;">No matches found</div>';
+
+                // Auto-expand all when searching
+                if (searchTerm) {
+                    treeContainer.querySelectorAll('.path-tree-children').forEach(el => {
+                        el.classList.add('expanded');
+                    });
+                    treeContainer.querySelectorAll('.path-tree-toggle').forEach(el => {
+                        if (el.textContent) el.textContent = '▼';
+                    });
+                }
+            });
+        }
 
     } catch (error) {
         console.log('Could not load real-time SignalK paths for thresholds:', error);
+        treeContainer.innerHTML = '<div style="padding: 20px; text-align: center; color: #999;">Error loading paths</div>';
     }
 
-    // Handle custom path selection and path type detection
-    select.onchange = async function() {
-        const customInput = document.getElementById('newThresholdPathCustom');
-        if (this.value === 'custom') {
-            customInput.style.display = 'block';
-            customInput.focus();
-        } else {
-            customInput.style.display = 'none';
-
-            // Detect path type and update operators
+    // Handle path selection for type detection
+    const hiddenInput = document.getElementById('newThresholdPath');
+    if (hiddenInput) {
+        hiddenInput.addEventListener('change', async function() {
             if (this.value) {
                 const typeInfo = await detectPathType(this.value);
                 updateOperatorDropdown('newThresholdOperator', typeInfo.dataType);
                 updateValueFields('newThresholdOperator', 'newThresholdValueGroup', typeInfo.dataType);
-
-                // Store data type for later use
                 document.getElementById('newThresholdOperator').dataset.pathDataType = typeInfo.dataType;
             }
-        }
-    };
+        });
+    }
 
     // Handle custom path input
     const customInput = document.getElementById('newThresholdPathCustom');
@@ -1234,8 +1410,6 @@ async function populateThresholdPaths() {
                 const typeInfo = await detectPathType(this.value);
                 updateOperatorDropdown('newThresholdOperator', typeInfo.dataType);
                 updateValueFields('newThresholdOperator', 'newThresholdValueGroup', typeInfo.dataType);
-
-                // Store data type for later use
                 document.getElementById('newThresholdOperator').dataset.pathDataType = typeInfo.dataType;
             }
         };
@@ -1501,11 +1675,13 @@ export function updateAddCmdThresholdPathFilter() {
 
 async function populateAddCmdThresholdPaths() {
     ensureEditFormInDom();
-    const select = document.getElementById('addCmdThresholdPath');
+    const treeContainer = document.getElementById('addCmdThresholdPathTree');
+    const searchInput = document.getElementById('addCmdThresholdPathSearch');
     const filterType = 'self';
 
-    // Clear existing options except the default ones
-    select.innerHTML = '<option value="">-- Select SignalK Path --</option><option value="custom">🖊️ Enter Custom Path</option>';
+    if (!treeContainer) return;
+
+    treeContainer.innerHTML = '<div style="padding: 20px; text-align: center; color: #666;">Loading paths...</div>';
 
     try {
         let allPaths = [];
@@ -1536,38 +1712,54 @@ async function populateAddCmdThresholdPaths() {
         }
 
         const uniquePaths = Array.from(new Set(allPaths)).sort();
+        const tree = buildPathTree(uniquePaths);
 
-        uniquePaths.forEach(path => {
-            const option = document.createElement('option');
-            option.value = path;
-            option.textContent = path;
-            select.appendChild(option);
+        // Render tree
+        let html = '';
+        Object.keys(tree).sort().forEach(key => {
+            html += renderTreeNode(key, tree[key], 0, '');
         });
+        treeContainer.innerHTML = html || '<div style="padding: 20px; text-align: center; color: #666;">No paths found</div>';
+
+        // Setup search
+        if (searchInput) {
+            searchInput.addEventListener('input', (e) => {
+                const searchTerm = e.target.value;
+                let html = '';
+                Object.keys(tree).sort().forEach(key => {
+                    html += renderTreeNode(key, tree[key], 0, searchTerm);
+                });
+                treeContainer.innerHTML = html || '<div style="padding: 20px; text-align: center; color: #666;">No matches found</div>';
+
+                // Auto-expand all when searching
+                if (searchTerm) {
+                    treeContainer.querySelectorAll('.path-tree-children').forEach(el => {
+                        el.classList.add('expanded');
+                    });
+                    treeContainer.querySelectorAll('.path-tree-toggle').forEach(el => {
+                        if (el.textContent) el.textContent = '▼';
+                    });
+                }
+            });
+        }
 
     } catch (error) {
         console.log('Could not load real-time SignalK paths for add command thresholds:', error);
+        treeContainer.innerHTML = '<div style="padding: 20px; text-align: center; color: #999;">Error loading paths</div>';
     }
 
-    // Handle custom path selection and path type detection
-    select.onchange = async function() {
-        const customInput = document.getElementById('addCmdThresholdPathCustom');
-        if (this.value === 'custom') {
-            customInput.style.display = 'block';
-            customInput.focus();
-        } else {
-            customInput.style.display = 'none';
-
-            // Detect path type and update operators
+    // Handle path selection for type detection
+    const hiddenInput = document.getElementById('addCmdThresholdPath');
+    if (hiddenInput) {
+        hiddenInput.addEventListener('change', async function() {
             if (this.value) {
                 const typeInfo = await detectPathType(this.value);
                 updateOperatorDropdown('addCmdThresholdOperator', typeInfo.dataType);
                 updateValueFields('addCmdThresholdOperator', 'addCmdThresholdValueGroup', typeInfo.dataType);
-
-                // Store data type for later use
                 document.getElementById('addCmdThresholdOperator').dataset.pathDataType = typeInfo.dataType;
             }
-        }
-    };
+        });
+    }
 
     // Handle custom path input
     const customInput = document.getElementById('addCmdThresholdPathCustom');
@@ -1577,8 +1769,6 @@ async function populateAddCmdThresholdPaths() {
                 const typeInfo = await detectPathType(this.value);
                 updateOperatorDropdown('addCmdThresholdOperator', typeInfo.dataType);
                 updateValueFields('addCmdThresholdOperator', 'addCmdThresholdValueGroup', typeInfo.dataType);
-
-                // Store data type for later use
                 document.getElementById('addCmdThresholdOperator').dataset.pathDataType = typeInfo.dataType;
             }
         };
