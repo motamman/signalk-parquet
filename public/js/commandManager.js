@@ -423,10 +423,8 @@ function displayCommands(commands) {
             <td style="text-align: center; min-width: 200px;">
                 <div style="display: flex; flex-direction: column; gap: 3px; align-items: center;">
                     <div style="display: flex; gap: 3px;">
-                        <button id="start-btn-${command.command}" onclick="executeCommand('${command.command}', true)"
-                                style="padding: 4px 8px; font-size: 0.8em;">▶️ Start</button>
-                        <button id="stop-btn-${command.command}" onclick="executeCommand('${command.command}', false)"
-                                style="padding: 4px 8px; font-size: 0.8em;">⏹️ Stop</button>
+                        <button id="toggle-btn-${command.command}" onclick="toggleCommand('${command.command}')"
+                                style="padding: 4px 8px; font-size: 0.8em;">🔴 Turn ON</button>
                     </div>
                     ${hasThresholds ?
                         `<div>
@@ -619,7 +617,6 @@ export async function executeCommand(commandName, value) {
         const result = await response.json();
         
         if (result.success) {
-            await loadCommands();
             await loadCommandHistory();
         } else {
             alert(`Error executing command: ${result.error}`);
@@ -627,6 +624,18 @@ export async function executeCommand(commandName, value) {
     } catch (error) {
         alert(`Network error: ${error.message}`);
     }
+}
+
+export async function toggleCommand(commandName) {
+    // Get current state from the status display
+    const stateElement = document.getElementById(`command-state-${commandName}`);
+    if (!stateElement) return;
+
+    const currentText = stateElement.textContent;
+    const isCurrentlyOn = currentText.includes('🟢 ON');
+
+    // Toggle to opposite state
+    await executeCommand(commandName, !isCurrentlyOn);
 }
 
 export async function unregisterCommand(commandName) {
@@ -1264,44 +1273,42 @@ function updateAutomationUI(commandName, autoEnabled) {
     }
 
     // Update automation toggle button with clear labels
-    const toggleButton = document.getElementById(`auto-toggle-${commandName}`);
-    if (toggleButton) {
+    const autoToggleButton = document.getElementById(`auto-toggle-${commandName}`);
+    if (autoToggleButton) {
         if (autoEnabled) {
-            toggleButton.textContent = '👤 Disable Automation';
-            toggleButton.style.background = '#ff9800';
-            toggleButton.title = 'Disable automation and switch to manual control';
+            autoToggleButton.textContent = '👤 Disable Automation';
+            autoToggleButton.style.background = '#ff9800';
+            autoToggleButton.title = 'Disable automation and switch to manual control';
         } else {
-            toggleButton.textContent = '🤖 Enable Automation';
-            toggleButton.style.background = '#4caf50';
-            toggleButton.title = 'Enable threshold-based automation';
+            autoToggleButton.textContent = '🤖 Enable Automation';
+            autoToggleButton.style.background = '#4caf50';
+            autoToggleButton.title = 'Enable threshold-based automation';
         }
     }
 
-    // Disable/enable Start/Stop buttons based on automation status
-    const startButton = document.getElementById(`start-btn-${commandName}`);
-    const stopButton = document.getElementById(`stop-btn-${commandName}`);
+    // Disable/enable command toggle button based on automation status
+    const commandToggleButton = document.getElementById(`toggle-btn-${commandName}`);
 
-    if (startButton && stopButton) {
+    if (commandToggleButton) {
         if (autoEnabled) {
-            // Automation is ON - disable manual buttons
-            startButton.disabled = true;
-            stopButton.disabled = true;
-            startButton.style.opacity = '0.5';
-            stopButton.style.opacity = '0.5';
-            startButton.style.cursor = 'not-allowed';
-            stopButton.style.cursor = 'not-allowed';
-            startButton.title = 'Command is under automatic control';
-            stopButton.title = 'Command is under automatic control';
+            // Automation is ON - disable manual button
+            commandToggleButton.disabled = true;
+            commandToggleButton.style.opacity = '0.5';
+            commandToggleButton.style.cursor = 'not-allowed';
+            commandToggleButton.title = 'Command is under automatic control';
         } else {
-            // Automation is OFF - enable manual buttons
-            startButton.disabled = false;
-            stopButton.disabled = false;
-            startButton.style.opacity = '1';
-            stopButton.style.opacity = '1';
-            startButton.style.cursor = 'pointer';
-            stopButton.style.cursor = 'pointer';
-            startButton.title = 'Manually start the command';
-            stopButton.title = 'Manually stop the command';
+            // Automation is OFF - enable manual button and update text based on current state
+            commandToggleButton.disabled = false;
+            commandToggleButton.style.opacity = '1';
+            commandToggleButton.style.cursor = 'pointer';
+
+            // Update button text based on current command state
+            const stateElement = document.getElementById(`command-state-${commandName}`);
+            if (stateElement) {
+                const isCurrentlyOn = stateElement.textContent.includes('🟢 ON');
+                commandToggleButton.textContent = isCurrentlyOn ? '🔴 Turn OFF' : '🟢 Turn ON';
+                commandToggleButton.title = isCurrentlyOn ? 'Manually stop the command' : 'Manually start the command';
+            }
         }
     }
 }
@@ -1398,6 +1405,13 @@ function updateCommandStateDisplay(commandName, isOn) {
         } else {
             stateElement.innerHTML = '<span style="color: #f44336; font-weight: bold;">🔴 OFF</span>';
         }
+    }
+
+    // Also update the toggle button text
+    const commandToggleButton = document.getElementById(`toggle-btn-${commandName}`);
+    if (commandToggleButton && !commandToggleButton.disabled) {
+        commandToggleButton.textContent = isOn ? '🔴 Turn OFF' : '🟢 Turn ON';
+        commandToggleButton.title = isOn ? 'Manually stop the command' : 'Manually start the command';
     }
 }
 

@@ -85,6 +85,7 @@ registerGlobals({
     updateCommand: CommandManager.updateCommand,
     registerCommand: CommandManager.registerCommand,
     executeCommand: CommandManager.executeCommand,
+    toggleCommand: CommandManager.toggleCommand,
     unregisterCommand: CommandManager.unregisterCommand,
     updateThresholdPathFilter: CommandManager.updateThresholdPathFilter,
     toggleNewThresholdValueField: CommandManager.toggleNewThresholdValueField,
