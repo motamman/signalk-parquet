@@ -665,6 +665,207 @@ export async function unregisterCommand(commandName) {
 
 // Threshold UI functions
 
+// Path type detection
+async function detectPathType(path) {
+    try {
+        const response = await fetch(`${getPluginPath()}/api/paths/${encodeURIComponent(path)}/type`);
+        const result = await response.json();
+        if (result.success) {
+            return {
+                dataType: result.dataType || 'unknown',
+                unit: result.unit,
+                enumValues: result.enumValues,
+                description: result.description
+            };
+        }
+    } catch (error) {
+        console.log('Could not detect path type:', error);
+    }
+    return { dataType: 'unknown' };
+}
+
+// Update operator dropdown based on detected path type
+function updateOperatorDropdown(operatorSelectId, dataType) {
+    const operatorSelect = document.getElementById(operatorSelectId);
+    if (!operatorSelect) return;
+
+    // Clear existing options
+    operatorSelect.innerHTML = '';
+
+    let operators = [];
+
+    switch (dataType) {
+        case 'numeric':
+        case 'angular':
+            operators = [
+                { value: 'gt', label: '> Greater Than' },
+                { value: 'lt', label: '< Less Than' },
+                { value: 'eq', label: '= Equal To' },
+                { value: 'ne', label: '≠ Not Equal To' },
+                { value: 'range', label: '⇄ Within Range' }
+            ];
+            break;
+        case 'boolean':
+            operators = [
+                { value: 'true', label: 'Is True' },
+                { value: 'false', label: 'Is False' }
+            ];
+            break;
+        case 'string':
+        case 'enum':
+            operators = [
+                { value: 'stringEquals', label: 'Equals' },
+                { value: 'contains', label: 'Contains' },
+                { value: 'startsWith', label: 'Starts With' },
+                { value: 'endsWith', label: 'Ends With' }
+            ];
+            break;
+        case 'position':
+            operators = [
+                { value: 'withinRadius', label: '📍 Within Radius' },
+                { value: 'outsideRadius', label: '📍 Outside Radius' },
+                { value: 'inBoundingBox', label: '🗺️ Inside Bounding Box' },
+                { value: 'outsideBoundingBox', label: '🗺️ Outside Bounding Box' }
+            ];
+            break;
+        default:
+            // Unknown type - show all operators
+            operators = [
+                { value: 'gt', label: '> Greater Than' },
+                { value: 'lt', label: '< Less Than' },
+                { value: 'eq', label: '= Equal To' },
+                { value: 'ne', label: '≠ Not Equal To' },
+                { value: 'range', label: '⇄ Within Range' },
+                { value: 'true', label: 'Is True' },
+                { value: 'false', label: 'Is False' },
+                { value: 'stringEquals', label: 'Equals (String)' },
+                { value: 'contains', label: 'Contains' }
+            ];
+            break;
+    }
+
+    operators.forEach(op => {
+        const option = document.createElement('option');
+        option.value = op.value;
+        option.textContent = op.label;
+        operatorSelect.appendChild(option);
+    });
+}
+
+// Update value fields based on operator and data type
+function updateValueFields(operatorSelectId, valueContainerId, dataType) {
+    const operator = document.getElementById(operatorSelectId)?.value;
+    const container = document.getElementById(valueContainerId);
+    if (!container) return;
+
+    // Clear existing content
+    container.innerHTML = '';
+
+    if (!operator) return;
+
+    // Boolean operators don't need value fields
+    if (operator === 'true' || operator === 'false') {
+        container.style.display = 'none';
+        return;
+    }
+
+    container.style.display = 'block';
+
+    // Range operator needs min/max fields
+    if (operator === 'range') {
+        container.innerHTML = `
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+                <div>
+                    <label>Min Value:</label>
+                    <input type="number" id="${valueContainerId}_min" step="any" style="width: 100%;">
+                </div>
+                <div>
+                    <label>Max Value:</label>
+                    <input type="number" id="${valueContainerId}_max" step="any" style="width: 100%;">
+                </div>
+            </div>
+            ${dataType === 'angular' ? '<div style="font-size: 0.85em; color: #666; margin-top: 5px;">💡 Enter values in degrees (will be converted to radians)</div>' : ''}
+        `;
+        return;
+    }
+
+    // Geographic operators
+    if (['withinRadius', 'outsideRadius'].includes(operator)) {
+        container.innerHTML = `
+            <div style="margin-bottom: 10px;">
+                <label>
+                    <input type="checkbox" id="${valueContainerId}_useHomePort">
+                    Use Home Port as center
+                </label>
+            </div>
+            <div id="${valueContainerId}_customLocation" style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 10px;">
+                <div>
+                    <label>Latitude:</label>
+                    <input type="number" id="${valueContainerId}_lat" step="0.000001" placeholder="e.g., 40.712800" style="width: 100%;">
+                </div>
+                <div>
+                    <label>Longitude:</label>
+                    <input type="number" id="${valueContainerId}_lon" step="0.000001" placeholder="e.g., -74.006000" style="width: 100%;">
+                </div>
+            </div>
+            <div>
+                <label>Radius (meters):</label>
+                <input type="number" id="${valueContainerId}_radius" step="1" min="0" placeholder="e.g., 1000" style="width: 100%;">
+            </div>
+        `;
+
+        // Add event listener to toggle custom location fields
+        const checkbox = document.getElementById(`${valueContainerId}_useHomePort`);
+        const customLocation = document.getElementById(`${valueContainerId}_customLocation`);
+        checkbox.addEventListener('change', function() {
+            customLocation.style.display = this.checked ? 'none' : 'grid';
+        });
+
+        return;
+    }
+
+    if (['inBoundingBox', 'outsideBoundingBox'].includes(operator)) {
+        container.innerHTML = `
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+                <div>
+                    <label>North (lat):</label>
+                    <input type="number" id="${valueContainerId}_north" step="0.000001" style="width: 100%;">
+                </div>
+                <div>
+                    <label>South (lat):</label>
+                    <input type="number" id="${valueContainerId}_south" step="0.000001" style="width: 100%;">
+                </div>
+                <div>
+                    <label>East (lon):</label>
+                    <input type="number" id="${valueContainerId}_east" step="0.000001" style="width: 100%;">
+                </div>
+                <div>
+                    <label>West (lon):</label>
+                    <input type="number" id="${valueContainerId}_west" step="0.000001" style="width: 100%;">
+                </div>
+            </div>
+            <div style="font-size: 0.85em; color: #666; margin-top: 5px;">💡 Box can cross 180° meridian</div>
+        `;
+        return;
+    }
+
+    // String operators
+    if (['contains', 'startsWith', 'endsWith', 'stringEquals'].includes(operator)) {
+        container.innerHTML = `
+            <label>Value:</label>
+            <input type="text" id="${valueContainerId}_value" placeholder="Enter text" style="width: 100%;">
+        `;
+        return;
+    }
+
+    // Numeric operators (gt, lt, eq, ne)
+    const isAngular = dataType === 'angular';
+    container.innerHTML = `
+        <label>Value:</label>
+        <input type="number" id="${valueContainerId}_value" step="any" placeholder="Enter value" style="width: 100%;">
+        ${isAngular ? '<div style="font-size: 0.85em; color: #666; margin-top: 5px;">💡 Enter value in degrees (will be converted to radians)</div>' : ''}
+    `;
+}
 
 export function updateThresholdPathFilter() {
     populateThresholdPaths();
@@ -719,28 +920,47 @@ async function populateThresholdPaths() {
         console.log('Could not load real-time SignalK paths for thresholds:', error);
     }
 
-    // Handle custom path selection
-    select.onchange = function() {
+    // Handle custom path selection and path type detection
+    select.onchange = async function() {
         const customInput = document.getElementById('newThresholdPathCustom');
         if (this.value === 'custom') {
             customInput.style.display = 'block';
             customInput.focus();
         } else {
             customInput.style.display = 'none';
+
+            // Detect path type and update operators
+            if (this.value) {
+                const typeInfo = await detectPathType(this.value);
+                updateOperatorDropdown('newThresholdOperator', typeInfo.dataType);
+                updateValueFields('newThresholdOperator', 'newThresholdValueGroup', typeInfo.dataType);
+
+                // Store data type for later use
+                document.getElementById('newThresholdOperator').dataset.pathDataType = typeInfo.dataType;
+            }
         }
     };
+
+    // Handle custom path input
+    const customInput = document.getElementById('newThresholdPathCustom');
+    if (customInput) {
+        customInput.onblur = async function() {
+            if (this.value) {
+                const typeInfo = await detectPathType(this.value);
+                updateOperatorDropdown('newThresholdOperator', typeInfo.dataType);
+                updateValueFields('newThresholdOperator', 'newThresholdValueGroup', typeInfo.dataType);
+
+                // Store data type for later use
+                document.getElementById('newThresholdOperator').dataset.pathDataType = typeInfo.dataType;
+            }
+        };
+    }
 }
 
 export function toggleNewThresholdValueField() {
-    const operator = document.getElementById('newThresholdOperator').value;
-    const valueGroup = document.getElementById('newThresholdValueGroup');
-
-    // Hide value field for true/false operators
-    if (operator === 'true' || operator === 'false') {
-        valueGroup.style.display = 'none';
-    } else {
-        valueGroup.style.display = 'block';
-    }
+    const operatorSelect = document.getElementById('newThresholdOperator');
+    const dataType = operatorSelect?.dataset.pathDataType || 'unknown';
+    updateValueFields('newThresholdOperator', 'newThresholdValueGroup', dataType);
 }
 
 export function addNewThreshold() {
@@ -783,9 +1003,9 @@ export function saveNewThreshold() {
     const pathSelect = document.getElementById('newThresholdPath');
     const pathCustom = document.getElementById('newThresholdPathCustom');
     const operator = document.getElementById('newThresholdOperator').value;
-    const value = document.getElementById('newThresholdValue').value.trim();
     const action = document.getElementById('newThresholdAction').value === 'true';
     const hysteresis = document.getElementById('newThresholdHysteresis').value.trim();
+    const dataType = document.getElementById('newThresholdOperator')?.dataset.pathDataType || 'unknown';
 
     // Get the path
     let path = pathSelect.value;
@@ -798,12 +1018,6 @@ export function saveNewThreshold() {
         return;
     }
 
-    // Validate value for non-boolean operators
-    if (operator !== 'true' && operator !== 'false' && !value) {
-        alert('Please enter a threshold value');
-        return;
-    }
-
     // Create new threshold
     const threshold = {
         enabled: true,
@@ -812,10 +1026,88 @@ export function saveNewThreshold() {
         activateOnMatch: action
     };
 
-    // Add value if needed
-    if (operator !== 'true' && operator !== 'false' && value) {
-        const numValue = parseFloat(value);
-        threshold.value = isNaN(numValue) ? value : numValue;
+    // Handle different operator types
+    if (operator === 'range') {
+        const min = document.getElementById('newThresholdValueGroup_min')?.value;
+        const max = document.getElementById('newThresholdValueGroup_max')?.value;
+        if (!min || !max) {
+            alert('Please enter both min and max values for range');
+            return;
+        }
+        threshold.valueMin = parseFloat(min);
+        threshold.valueMax = parseFloat(max);
+
+        // Convert degrees to radians for angular values
+        if (dataType === 'angular') {
+            threshold.valueMin = threshold.valueMin * (Math.PI / 180);
+            threshold.valueMax = threshold.valueMax * (Math.PI / 180);
+        }
+    } else if (operator === 'withinRadius' || operator === 'outsideRadius') {
+        const useHomePort = document.getElementById('newThresholdValueGroup_useHomePort')?.checked;
+        const radius = document.getElementById('newThresholdValueGroup_radius')?.value;
+
+        if (!radius) {
+            alert('Please enter a radius value');
+            return;
+        }
+
+        threshold.useHomePort = useHomePort;
+        threshold.radius = parseFloat(radius);
+
+        if (!useHomePort) {
+            const lat = document.getElementById('newThresholdValueGroup_lat')?.value;
+            const lon = document.getElementById('newThresholdValueGroup_lon')?.value;
+            if (!lat || !lon) {
+                alert('Please enter latitude and longitude');
+                return;
+            }
+            threshold.latitude = parseFloat(lat);
+            threshold.longitude = parseFloat(lon);
+        }
+    } else if (operator === 'inBoundingBox' || operator === 'outsideBoundingBox') {
+        const north = document.getElementById('newThresholdValueGroup_north')?.value;
+        const south = document.getElementById('newThresholdValueGroup_south')?.value;
+        const east = document.getElementById('newThresholdValueGroup_east')?.value;
+        const west = document.getElementById('newThresholdValueGroup_west')?.value;
+
+        if (!north || !south || !east || !west) {
+            alert('Please enter all bounding box coordinates');
+            return;
+        }
+
+        threshold.boundingBox = {
+            north: parseFloat(north),
+            south: parseFloat(south),
+            east: parseFloat(east),
+            west: parseFloat(west)
+        };
+    } else if (operator !== 'true' && operator !== 'false') {
+        // String or numeric value
+        const valueInput = document.getElementById('newThresholdValueGroup_value');
+        if (!valueInput || !valueInput.value.trim()) {
+            alert('Please enter a threshold value');
+            return;
+        }
+
+        const value = valueInput.value.trim();
+
+        // String operators
+        if (['contains', 'startsWith', 'endsWith', 'stringEquals'].includes(operator)) {
+            threshold.value = value;
+        } else {
+            // Numeric operators
+            const numValue = parseFloat(value);
+            if (isNaN(numValue)) {
+                alert('Please enter a valid numeric value');
+                return;
+            }
+            threshold.value = numValue;
+
+            // Convert degrees to radians for angular values
+            if (dataType === 'angular') {
+                threshold.value = threshold.value * (Math.PI / 180);
+            }
+        }
     }
 
     // Add hysteresis if specified
@@ -843,18 +1135,35 @@ function displayThresholdsList() {
 
     let html = '';
     editingThresholds.forEach((threshold, index) => {
-        const operator = {
-            'gt': '>', 'lt': '<', 'eq': '=', 'ne': '≠', 'true': 'is true', 'false': 'is false'
-        }[threshold.operator] || threshold.operator;
+        let description = '';
 
-        const value = threshold.value !== undefined ? ` ${threshold.value}` : '';
+        // Format description based on operator type
+        if (threshold.operator === 'range') {
+            description = `${threshold.valueMin} to ${threshold.valueMax}`;
+        } else if (threshold.operator === 'withinRadius' || threshold.operator === 'outsideRadius') {
+            const location = threshold.useHomePort ? 'home port' : `${threshold.latitude}, ${threshold.longitude}`;
+            const op = threshold.operator === 'withinRadius' ? 'within' : 'outside';
+            description = `${op} ${threshold.radius}m of ${location}`;
+        } else if (threshold.operator === 'inBoundingBox' || threshold.operator === 'outsideBoundingBox') {
+            const op = threshold.operator === 'inBoundingBox' ? 'inside' : 'outside';
+            description = `${op} box [${threshold.boundingBox.north}°N, ${threshold.boundingBox.south}°S, ${threshold.boundingBox.east}°E, ${threshold.boundingBox.west}°W]`;
+        } else if (threshold.operator === 'true' || threshold.operator === 'false') {
+            description = threshold.operator === 'true' ? 'is true' : 'is false';
+        } else {
+            const operatorSymbol = {
+                'gt': '>', 'lt': '<', 'eq': '=', 'ne': '≠',
+                'contains': 'contains', 'startsWith': 'starts with', 'endsWith': 'ends with', 'stringEquals': 'equals'
+            }[threshold.operator] || threshold.operator;
+            description = `${operatorSymbol} ${threshold.value !== undefined ? threshold.value : ''}`;
+        }
+
         const action = threshold.activateOnMatch ? 'ON' : 'OFF';
         const hysteresis = threshold.hysteresis ? ` (${threshold.hysteresis}s hysteresis)` : '';
 
         html += `
             <div style="background: white; border: 1px solid #ddd; border-radius: 4px; padding: 10px; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center;">
                 <div>
-                    <strong>${threshold.watchPath}</strong> ${operator}${value} → ${action}${hysteresis}
+                    <strong>${threshold.watchPath}</strong> ${description} → ${action}${hysteresis}
                 </div>
                 <button onclick="removeThreshold(${index})" style="background: #f44336; color: white; border: none; padding: 4px 8px; border-radius: 3px; font-size: 0.8em;">
                     ❌ Remove
@@ -926,28 +1235,47 @@ async function populateAddCmdThresholdPaths() {
         console.log('Could not load real-time SignalK paths for add command thresholds:', error);
     }
 
-    // Handle custom path selection
-    select.onchange = function() {
+    // Handle custom path selection and path type detection
+    select.onchange = async function() {
         const customInput = document.getElementById('addCmdThresholdPathCustom');
         if (this.value === 'custom') {
             customInput.style.display = 'block';
             customInput.focus();
         } else {
             customInput.style.display = 'none';
+
+            // Detect path type and update operators
+            if (this.value) {
+                const typeInfo = await detectPathType(this.value);
+                updateOperatorDropdown('addCmdThresholdOperator', typeInfo.dataType);
+                updateValueFields('addCmdThresholdOperator', 'addCmdThresholdValueGroup', typeInfo.dataType);
+
+                // Store data type for later use
+                document.getElementById('addCmdThresholdOperator').dataset.pathDataType = typeInfo.dataType;
+            }
         }
     };
+
+    // Handle custom path input
+    const customInput = document.getElementById('addCmdThresholdPathCustom');
+    if (customInput) {
+        customInput.onblur = async function() {
+            if (this.value) {
+                const typeInfo = await detectPathType(this.value);
+                updateOperatorDropdown('addCmdThresholdOperator', typeInfo.dataType);
+                updateValueFields('addCmdThresholdOperator', 'addCmdThresholdValueGroup', typeInfo.dataType);
+
+                // Store data type for later use
+                document.getElementById('addCmdThresholdOperator').dataset.pathDataType = typeInfo.dataType;
+            }
+        };
+    }
 }
 
 export function toggleAddCmdThresholdValueField() {
-    const operator = document.getElementById('addCmdThresholdOperator').value;
-    const valueGroup = document.getElementById('addCmdThresholdValueGroup');
-
-    // Hide value field for true/false operators
-    if (operator === 'true' || operator === 'false') {
-        valueGroup.style.display = 'none';
-    } else {
-        valueGroup.style.display = 'block';
-    }
+    const operatorSelect = document.getElementById('addCmdThresholdOperator');
+    const dataType = operatorSelect?.dataset.pathDataType || 'unknown';
+    updateValueFields('addCmdThresholdOperator', 'addCmdThresholdValueGroup', dataType);
 }
 
 export function addNewCommandThreshold() {
@@ -990,9 +1318,9 @@ export function saveAddCmdThreshold() {
     const pathSelect = document.getElementById('addCmdThresholdPath');
     const pathCustom = document.getElementById('addCmdThresholdPathCustom');
     const operator = document.getElementById('addCmdThresholdOperator').value;
-    const value = document.getElementById('addCmdThresholdValue').value.trim();
     const action = document.getElementById('addCmdThresholdAction').value === 'true';
     const hysteresis = document.getElementById('addCmdThresholdHysteresis').value.trim();
+    const dataType = document.getElementById('addCmdThresholdOperator')?.dataset.pathDataType || 'unknown';
 
     // Get the path
     let path = pathSelect.value;
@@ -1005,12 +1333,6 @@ export function saveAddCmdThreshold() {
         return;
     }
 
-    // Validate value for non-boolean operators
-    if (operator !== 'true' && operator !== 'false' && !value) {
-        alert('Please enter a threshold value');
-        return;
-    }
-
     // Create new threshold
     const threshold = {
         enabled: true,
@@ -1019,10 +1341,88 @@ export function saveAddCmdThreshold() {
         activateOnMatch: action
     };
 
-    // Add value if needed
-    if (operator !== 'true' && operator !== 'false' && value) {
-        const numValue = parseFloat(value);
-        threshold.value = isNaN(numValue) ? value : numValue;
+    // Handle different operator types
+    if (operator === 'range') {
+        const min = document.getElementById('addCmdThresholdValueGroup_min')?.value;
+        const max = document.getElementById('addCmdThresholdValueGroup_max')?.value;
+        if (!min || !max) {
+            alert('Please enter both min and max values for range');
+            return;
+        }
+        threshold.valueMin = parseFloat(min);
+        threshold.valueMax = parseFloat(max);
+
+        // Convert degrees to radians for angular values
+        if (dataType === 'angular') {
+            threshold.valueMin = threshold.valueMin * (Math.PI / 180);
+            threshold.valueMax = threshold.valueMax * (Math.PI / 180);
+        }
+    } else if (operator === 'withinRadius' || operator === 'outsideRadius') {
+        const useHomePort = document.getElementById('addCmdThresholdValueGroup_useHomePort')?.checked;
+        const radius = document.getElementById('addCmdThresholdValueGroup_radius')?.value;
+
+        if (!radius) {
+            alert('Please enter a radius value');
+            return;
+        }
+
+        threshold.useHomePort = useHomePort;
+        threshold.radius = parseFloat(radius);
+
+        if (!useHomePort) {
+            const lat = document.getElementById('addCmdThresholdValueGroup_lat')?.value;
+            const lon = document.getElementById('addCmdThresholdValueGroup_lon')?.value;
+            if (!lat || !lon) {
+                alert('Please enter latitude and longitude');
+                return;
+            }
+            threshold.latitude = parseFloat(lat);
+            threshold.longitude = parseFloat(lon);
+        }
+    } else if (operator === 'inBoundingBox' || operator === 'outsideBoundingBox') {
+        const north = document.getElementById('addCmdThresholdValueGroup_north')?.value;
+        const south = document.getElementById('addCmdThresholdValueGroup_south')?.value;
+        const east = document.getElementById('addCmdThresholdValueGroup_east')?.value;
+        const west = document.getElementById('addCmdThresholdValueGroup_west')?.value;
+
+        if (!north || !south || !east || !west) {
+            alert('Please enter all bounding box coordinates');
+            return;
+        }
+
+        threshold.boundingBox = {
+            north: parseFloat(north),
+            south: parseFloat(south),
+            east: parseFloat(east),
+            west: parseFloat(west)
+        };
+    } else if (operator !== 'true' && operator !== 'false') {
+        // String or numeric value
+        const valueInput = document.getElementById('addCmdThresholdValueGroup_value');
+        if (!valueInput || !valueInput.value.trim()) {
+            alert('Please enter a threshold value');
+            return;
+        }
+
+        const value = valueInput.value.trim();
+
+        // String operators
+        if (['contains', 'startsWith', 'endsWith', 'stringEquals'].includes(operator)) {
+            threshold.value = value;
+        } else {
+            // Numeric operators
+            const numValue = parseFloat(value);
+            if (isNaN(numValue)) {
+                alert('Please enter a valid numeric value');
+                return;
+            }
+            threshold.value = numValue;
+
+            // Convert degrees to radians for angular values
+            if (dataType === 'angular') {
+                threshold.value = threshold.value * (Math.PI / 180);
+            }
+        }
     }
 
     // Add hysteresis if specified
@@ -1053,18 +1453,35 @@ function displayAddCommandThresholdsList() {
 
     let html = '';
     addingThresholds.forEach((threshold, index) => {
-        const operator = {
-            'gt': '>', 'lt': '<', 'eq': '=', 'ne': '≠', 'true': 'is true', 'false': 'is false'
-        }[threshold.operator] || threshold.operator;
+        let description = '';
 
-        const value = threshold.value !== undefined ? ` ${threshold.value}` : '';
+        // Format description based on operator type
+        if (threshold.operator === 'range') {
+            description = `${threshold.valueMin} to ${threshold.valueMax}`;
+        } else if (threshold.operator === 'withinRadius' || threshold.operator === 'outsideRadius') {
+            const location = threshold.useHomePort ? 'home port' : `${threshold.latitude}, ${threshold.longitude}`;
+            const op = threshold.operator === 'withinRadius' ? 'within' : 'outside';
+            description = `${op} ${threshold.radius}m of ${location}`;
+        } else if (threshold.operator === 'inBoundingBox' || threshold.operator === 'outsideBoundingBox') {
+            const op = threshold.operator === 'inBoundingBox' ? 'inside' : 'outside';
+            description = `${op} box [${threshold.boundingBox.north}°N, ${threshold.boundingBox.south}°S, ${threshold.boundingBox.east}°E, ${threshold.boundingBox.west}°W]`;
+        } else if (threshold.operator === 'true' || threshold.operator === 'false') {
+            description = threshold.operator === 'true' ? 'is true' : 'is false';
+        } else {
+            const operatorSymbol = {
+                'gt': '>', 'lt': '<', 'eq': '=', 'ne': '≠',
+                'contains': 'contains', 'startsWith': 'starts with', 'endsWith': 'ends with', 'stringEquals': 'equals'
+            }[threshold.operator] || threshold.operator;
+            description = `${operatorSymbol} ${threshold.value !== undefined ? threshold.value : ''}`;
+        }
+
         const action = threshold.activateOnMatch ? 'ON' : 'OFF';
         const hysteresis = threshold.hysteresis ? ` (${threshold.hysteresis}s hysteresis)` : '';
 
         html += `
             <div style="background: white; border: 1px solid #ddd; border-radius: 4px; padding: 10px; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center;">
                 <div>
-                    <strong>${threshold.watchPath}</strong> ${operator}${value} → ${action}${hysteresis}
+                    <strong>${threshold.watchPath}</strong> ${description} → ${action}${hysteresis}
                 </div>
                 <button onclick="removeAddCommandThreshold(${index})" style="background: #f44336; color: white; border: none; padding: 4px 8px; border-radius: 3px; font-size: 0.8em;">
                     ❌ Remove
