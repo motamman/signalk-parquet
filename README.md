@@ -65,6 +65,14 @@ The validation system checks each Parquet file for:
 - **Contextual Data Collection**: Link SignalK paths to regimens for targeted data analysis during specific operations
 - **Web Interface Management**: Create, edit, and manage regimens and command keywords through the web UI
 
+### Threshold Automation
+- **Per-Command Conditions**: Each regimen/command can define one or more thresholds that watch a single SignalK path.
+- **True-Only Actions**: On every path update the condition is evaluated; when it is true the command is set to the threshold's `activateOnMatch` state (ON/OFF). False evaluations leave the command untouched, so use a second threshold if you want a different level to switch it back.
+- **Stable Triggers**: Optional hysteresis (seconds) suppresses re-firing while the condition remains true, preventing rapid toggling in noisy data.
+- **Multiple Thresholds Per Path**: Unique monitor keys allow several thresholds to observe the same SignalK path without cancelling each other.
+- **Unit Handling**: Threshold values must match the live SignalK units (e.g., fractional 0–1 SoC values). Angular thresholds are entered in degrees in the UI and stored as radians automatically.
+- **Manual Overrides**: Any active manual override still pauses automation until it expires or is cleared.
+
 ### Claude AI Integration
 - **AI-Powered Analysis**: Advanced maritime data analysis using Claude AI models (Opus 4, Sonnet 4)
 - **Regimen-Based Analysis**: Context-aware episode detection for operational states (mooring, anchoring, sailing)
@@ -1471,4 +1479,3 @@ curl "http://localhost:3000/signalk/v1/history/contexts"
 - **Enhanced command management**: Automatic path configuration for commands
 - **SignalK API compliance**: Proper subscription patterns for vessel contexts
 - Performance optimizations and better error handling
-
