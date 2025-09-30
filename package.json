@@ -1,6 +1,6 @@
 {
   "name": "signalk-parquet",
-  "version": "0.5.5-beta.2",
+  "version": "0.5.5-beta.3",
   "description": "SignalK plugin and webapp that archives SK data to Parquet files with a regimen control system, advanced querying, Claude integrated AI analysis, spatial capabilities, and REST API.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

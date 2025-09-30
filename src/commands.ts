@@ -7,6 +7,7 @@ import {
   PathConfig,
   WebAppPathConfig,
   PluginConfig,
+  ThresholdConfig,
 } from './types';
 import {
   Context,
@@ -18,17 +19,33 @@ import {
 } from '@signalk/server-api';
 import * as fs from 'fs-extra';
 import * as path from 'path';
+import { degreesToRadians, radiansToDegrees } from './utils/angle-converter';
+import { calculateDistance, isPointInBoundingBox, calculateBoundingBoxFromHomePort } from './utils/geo-calculator';
+import { BoundingBox } from './types';
 
 // Global variables for command management
 let currentCommands: CommandConfig[] = [];
 let commandHistory: CommandHistoryEntry[] = [];
 let appInstance: ServerAPI;
+let pluginConfig: PluginConfig | null = null;
+
+// Threshold processing lock system for first-in rule
+const thresholdProcessingLocks = new Map<string, boolean>();
+const THRESHOLD_PROCESSING_TIMEOUT = 5000; // 5 seconds
 
 // Command state management
 const commandState: CommandRegistrationState = {
   registeredCommands: new Map<string, CommandConfig>(),
   putHandlers: new Map<string, CommandPutHandler>(),
 };
+
+// Threshold monitoring state
+const thresholdState = new Map<string, {
+  lastValue: any;
+  lastTriggered: number;
+  lastConditionMet?: boolean;
+  unsubscribe?: () => void;
+}>();
 
 // Configuration management functions
 export function loadWebAppConfig(app?: ServerAPI): WebAppPathConfig {
@@ -230,7 +247,9 @@ export function initializeCommandState(
     const result = registerCommand(
       commandConfig.command,
       commandConfig.description,
-      commandConfig.keywords
+      commandConfig.keywords,
+      commandConfig.defaultState,
+      commandConfig.thresholds
     );
     if (result.state === 'COMPLETED') {
     } else {
@@ -244,6 +263,9 @@ export function initializeCommandState(
   let addedMissingPaths = false;
   currentCommands.forEach((commandConfig: CommandConfig) => {
     const commandPath = `commands.${commandConfig.command}`;
+    const autoPath = `commands.${commandConfig.command}.auto`;
+
+    // Add main command path if missing
     const existingCommandPath = currentPaths.find(p => p.path === commandPath);
     if (!existingCommandPath) {
       const commandPathConfig: PathConfig = {
@@ -257,6 +279,24 @@ export function initializeCommandState(
       };
       currentPaths.push(commandPathConfig);
       addedMissingPaths = true;
+    }
+
+    // Add .auto path if command has thresholds and path is missing
+    if (commandConfig.thresholds && commandConfig.thresholds.length > 0) {
+      const existingAutoPath = currentPaths.find(p => p.path === autoPath);
+      if (!existingAutoPath) {
+        const autoPathConfig: PathConfig = {
+          path: autoPath as Path,
+          name: `Command Auto: ${commandConfig.command}`,
+          enabled: true,
+          regimen: 'commands',
+          source: undefined,
+          context: 'vessels.self' as Context,
+          excludeMMSI: undefined,
+        };
+        currentPaths.push(autoPathConfig);
+        addedMissingPaths = true;
+      }
     }
   });
 
@@ -276,12 +316,15 @@ export function initializeCommandState(
 export function registerCommand(
   commandName: string,
   description?: string,
-  keywords?: string[]
+  keywords?: string[],
+  defaultState?: boolean,
+  thresholds?: ThresholdConfig[]
 ): CommandExecutionResult {
   try {
     // Validate command name
     if (!isValidCommandName(commandName)) {
       return {
+        success: false,
         state: 'FAILED',
         statusCode: 400,
         message:
@@ -293,6 +336,7 @@ export function registerCommand(
     // Check if command already exists
     if (commandState.registeredCommands.has(commandName)) {
       return {
+        success: false,
         state: 'FAILED',
         statusCode: 409,
         message: `Command '${commandName}' already registered`,
@@ -312,6 +356,8 @@ export function registerCommand(
       keywords: keywords || [],
       active: false,
       lastExecuted: undefined,
+      defaultState: defaultState,
+      thresholds: thresholds,
     };
 
     // Create PUT handler with proper typing
@@ -340,8 +386,68 @@ export function registerCommand(
     commandState.registeredCommands.set(commandName, commandConfig);
     commandState.putHandlers.set(commandName, putHandler);
 
-    // Initialize command value to false
-    initializeCommandValue(commandName, false);
+    // Initialize command value to defaultState or false
+    initializeCommandValue(commandName, defaultState || false);
+
+    // Initialize .auto path for threshold automation control
+    const autoPath = `commands.${commandName}.auto`;
+    const autoEnabled = !!(commandConfig.thresholds && commandConfig.thresholds.length > 0);
+    initializeCommandValue(`${commandName}.auto`, autoEnabled);
+
+    // Register PUT handler for .auto control
+    const autoPutHandler = (
+      _context: string,
+      _path: string,
+      value: any,
+      _callback?: (result: CommandExecutionResult) => void
+    ): CommandExecutionResult => {
+      appInstance.debug(
+        `Handling PUT for ${autoPath} with value: ${JSON.stringify(value)}`
+      );
+
+      // Update the .auto value
+      const autoValue = Boolean(value);
+      const timestamp = new Date().toISOString();
+
+      appInstance.handleMessage('zennora-parquet-commands', {
+        context: 'vessels.self' as Context,
+        updates: [
+          {
+            timestamp: timestamp as Timestamp,
+            values: [
+              {
+                path: autoPath as Path,
+                value: autoValue,
+              },
+            ],
+          },
+        ],
+      });
+
+      return {
+        success: true,
+        state: 'COMPLETED',
+        message: `Automation ${autoValue ? 'enabled' : 'disabled'} for ${commandName}`,
+        timestamp
+      };
+    };
+
+    // Register .auto PUT handler with SignalK
+    appInstance.registerPutHandler(
+      'vessels.self',
+      autoPath,
+      autoPutHandler as any,
+      'zennora-parquet-commands'
+    );
+
+    // Start threshold monitoring for this command if thresholds are defined
+    if (commandConfig.thresholds && commandConfig.thresholds.length > 0) {
+      commandConfig.thresholds.forEach(threshold => {
+        if (threshold.enabled) {
+          setupThresholdMonitoring(commandConfig, threshold);
+        }
+      });
+    }
 
     // Update current commands
     currentCommands = Array.from(commandState.registeredCommands.values());
@@ -352,6 +458,7 @@ export function registerCommand(
     appInstance.debug(`✅ Registered command: ${commandName} at ${fullPath}`);
 
     return {
+      success: true,
       state: 'COMPLETED',
       statusCode: 200,
       message: `Command '${commandName}' registered successfully with automatic path configuration`,
@@ -362,6 +469,7 @@ export function registerCommand(
     appInstance.error(errorMessage);
 
     return {
+      success: false,
       state: 'FAILED',
       statusCode: 500,
       message: errorMessage,
@@ -374,12 +482,15 @@ export function registerCommand(
 export function updateCommand(
   commandName: string,
   description?: string,
-  keywords?: string[]
+  keywords?: string[],
+  defaultState?: boolean,
+  thresholds?: any[]
 ): CommandExecutionResult {
   try {
     // Check if command exists
     if (!commandState.registeredCommands.has(commandName)) {
       return {
+        success: false,
         state: 'FAILED',
         statusCode: 404,
         message: `Command '${commandName}' not found`,
@@ -395,20 +506,46 @@ export function updateCommand(
       ...existingCommand,
       description: description !== undefined ? description : existingCommand.description,
       keywords: keywords !== undefined ? keywords : existingCommand.keywords,
+      defaultState: defaultState !== undefined ? defaultState : existingCommand.defaultState,
+      thresholds: thresholds !== undefined ? thresholds : existingCommand.thresholds,
     };
 
     // Update the command in the registry
     commandState.registeredCommands.set(commandName, updatedCommand);
-    
+
     // Update current commands array
     currentCommands = Array.from(commandState.registeredCommands.values());
-    
+
+    // If thresholds were updated, restart threshold monitoring for this command
+    if (thresholds !== undefined) {
+      // Stop existing threshold monitoring for this command
+      const existingThresholds = existingCommand.thresholds || [];
+      existingThresholds.forEach(threshold => {
+        const monitorKey = `${commandName}_${threshold.watchPath}`;
+        const state = thresholdState.get(monitorKey);
+        if (state?.unsubscribe) {
+          state.unsubscribe();
+          thresholdState.delete(monitorKey);
+        }
+      });
+
+      // Start new threshold monitoring
+      if (updatedCommand.thresholds && updatedCommand.thresholds.length > 0) {
+        updatedCommand.thresholds.forEach(threshold => {
+          if (threshold.enabled) {
+            setupThresholdMonitoring(updatedCommand, threshold);
+          }
+        });
+      }
+    }
+
     // Log the update
     addCommandHistoryEntry(commandName, 'UPDATE', undefined, true);
     
     appInstance.debug(`✅ Updated command: ${commandName}`);
     
     return {
+      success: true,
       state: 'COMPLETED',
       statusCode: 200,
       message: `Command '${commandName}' updated successfully`,
@@ -418,6 +555,7 @@ export function updateCommand(
   } catch (error) {
     appInstance.error(`Failed to update command ${commandName}: ${(error as Error).message}`);
     return {
+      success: false,
       state: 'FAILED',
       statusCode: 500,
       message: `Failed to update command: ${(error as Error).message}`,
@@ -432,6 +570,7 @@ export function unregisterCommand(commandName: string): CommandExecutionResult {
     const commandConfig = commandState.registeredCommands.get(commandName);
     if (!commandConfig) {
       return {
+        success: false,
         state: 'FAILED',
         statusCode: 404,
         message: `Command '${commandName}' not found`,
@@ -452,6 +591,7 @@ export function unregisterCommand(commandName: string): CommandExecutionResult {
     appInstance.debug(`🗑️ Unregistered command: ${commandName}`);
 
     return {
+      success: true,
       state: 'COMPLETED',
       statusCode: 200,
       message: `Command '${commandName}' unregistered successfully with path cleanup`,
@@ -462,6 +602,7 @@ export function unregisterCommand(commandName: string): CommandExecutionResult {
     appInstance.error(errorMessage);
 
     return {
+      success: false,
       state: 'FAILED',
       statusCode: 500,
       message: errorMessage,
@@ -479,6 +620,7 @@ export function executeCommand(
     const commandConfig = commandState.registeredCommands.get(commandName);
     if (!commandConfig) {
       return {
+        success: false,
         state: 'FAILED',
         statusCode: 404,
         message: `Command '${commandName}' not found`,
@@ -506,7 +648,7 @@ export function executeCommand(
 
     // Send delta message
     //FIXME see if delta can be Delta from the beginning
-    appInstance.handleMessage('signalk-parquet', delta as Delta);
+    appInstance.handleMessage('signalk-parquet-commands', delta as Delta);
 
     // Update command state
     commandConfig.active = value;
@@ -522,6 +664,7 @@ export function executeCommand(
     appInstance.debug(`🎮 Executed command: ${commandName} = ${value}`);
 
     return {
+      success: true,
       state: 'COMPLETED',
       statusCode: 200,
       message: `Command '${commandName}' executed: ${value}`,
@@ -540,6 +683,7 @@ export function executeCommand(
     );
 
     return {
+      success: false,
       state: 'FAILED',
       statusCode: 500,
       message: errorMessage,
@@ -577,7 +721,7 @@ function initializeCommandValue(commandName: string, value: boolean): void {
   };
 
   //FIXME
-  appInstance.handleMessage('signalk-parquet', delta as Delta);
+  appInstance.handleMessage('signalk-parquet-commands', delta as Delta);
 }
 
 function addCommandHistoryEntry(
@@ -626,4 +770,532 @@ export function getCommandState(): CommandRegistrationState {
 
 export function setCurrentCommands(commands: CommandConfig[]): void {
   currentCommands = commands;
+}
+
+// Threshold monitoring system
+export function startThresholdMonitoring(app: ServerAPI, config?: PluginConfig): void {
+  appInstance = app;
+  if (config) {
+    pluginConfig = config;
+  }
+  app.debug('🔄 Starting threshold monitoring system');
+
+  // Process all commands
+  currentCommands.forEach(command => {
+    if (command.thresholds && command.thresholds.length > 0) {
+      // Set up monitoring for all enabled thresholds
+      command.thresholds.forEach(threshold => {
+        if (threshold.enabled) {
+          setupThresholdMonitoring(command, threshold);
+        }
+      });
+    } else {
+      // Apply default state for commands without thresholds or manual override
+      applyDefaultState(command);
+    }
+  });
+}
+
+function applyDefaultState(command: CommandConfig): void {
+  // Skip if manual override is active
+  if (command.manualOverride) {
+    return;
+  }
+
+  // Apply default state if specified and command is not already active
+  if (command.defaultState !== undefined && command.active !== command.defaultState) {
+    appInstance?.debug(`🔧 Applying default state for ${command.command}: ${command.defaultState ? 'ON' : 'OFF'}`);
+
+    const result = executeCommand(command.command, command.defaultState);
+    if (result.success) {
+      appInstance?.debug(`✅ Default state applied: ${command.command} = ${command.defaultState}`);
+    } else {
+      appInstance?.error(`❌ Failed to apply default state: ${command.command} - ${result.message}`);
+    }
+  }
+}
+
+export function stopThresholdMonitoring(): void {
+  appInstance?.debug('⏹️ Stopping threshold monitoring system');
+
+  // Unsubscribe from all threshold monitors
+  thresholdState.forEach(state => {
+    if (state.unsubscribe) {
+      state.unsubscribe();
+    }
+  });
+  thresholdState.clear();
+}
+
+function setupThresholdMonitoring(command: CommandConfig, threshold: ThresholdConfig): void {
+  if (threshold?.enabled === false || !threshold.watchPath) {
+    return;
+  }
+  const monitorKey = buildThresholdMonitorKey(command.command, threshold);
+
+  appInstance?.debug(`🎯 Setting up threshold monitoring for ${command.command} watching ${threshold.watchPath}`);
+
+  // Clean up existing monitoring for this command
+  const existingState = thresholdState.get(monitorKey);
+  if (existingState?.unsubscribe) {
+    existingState.unsubscribe();
+  }
+
+  // Subscribe to the watch path
+  const unsubscribe = appInstance?.streambundle?.getSelfStream(threshold.watchPath as Path)?.onValue((value: any) => {
+    try {
+      processThresholdValue(command, threshold, value, monitorKey);
+    } catch (error) {
+      appInstance?.error(`❌ Error processing threshold for ${command.command}: ${(error as Error).message}`);
+    }
+  });
+
+  // Store the monitoring state
+  thresholdState.set(monitorKey, {
+    lastValue: undefined,
+    lastTriggered: 0,
+    lastConditionMet: undefined,
+    unsubscribe
+  });
+
+  // Evaluate immediately with current value if available
+  try {
+    const currentValue = appInstance?.getSelfPath(threshold.watchPath as Path);
+    if (currentValue !== undefined) {
+      processThresholdValue(command, threshold, currentValue, monitorKey);
+    }
+  } catch (error) {
+    appInstance?.debug(`ℹ️ Unable to read current value for ${threshold.watchPath}: ${(error as Error).message}`);
+  }
+}
+
+function processThresholdValue(command: CommandConfig, threshold: ThresholdConfig, value: any, monitorKey: string): void {
+  const state = thresholdState.get(monitorKey);
+  if (!state) return;
+
+  const commandName = command.command;
+
+  // Check if threshold processing is already running for this command (first-in rule)
+  if (thresholdProcessingLocks.get(commandName)) {
+    appInstance?.debug(`🔒 Threshold processing already running for ${commandName}, skipping`);
+    return;
+  }
+
+  // Acquire lock
+  thresholdProcessingLocks.set(commandName, true);
+
+  // Set timeout to prevent deadlocks
+  const timeoutId = setTimeout(() => {
+    if (thresholdProcessingLocks.get(commandName)) {
+      appInstance?.error(`⚠️ Threshold processing timeout for ${commandName}, releasing lock`);
+      thresholdProcessingLocks.set(commandName, false);
+    }
+  }, THRESHOLD_PROCESSING_TIMEOUT);
+
+  try {
+    const normalizedValue = normalizeThresholdValue(value, threshold);
+    appInstance?.debug(`📈 Threshold monitor ${commandName}:${threshold.watchPath} received value: ${JSON.stringify(normalizedValue)}`);
+
+    // Check if automation is enabled for this command
+    const autoEnabledRaw = appInstance?.getSelfPath(`commands.${commandName}.auto` as Path);
+    const autoEnabled = (autoEnabledRaw && typeof autoEnabledRaw === 'object' && 'value' in autoEnabledRaw)
+      ? autoEnabledRaw.value : autoEnabledRaw;
+
+    if (!autoEnabled) {
+      appInstance?.debug(`🚫 Threshold automation disabled for ${commandName} (auto=${autoEnabled})`);
+      return;
+    }
+
+    // Skip processing if manual override is active (backward compatibility)
+    if (command.manualOverride) {
+      // Check if manual override has expired
+      if (command.manualOverrideUntil) {
+        const expiry = new Date(command.manualOverrideUntil);
+        if (new Date() > expiry) {
+          // Override expired, clear it
+          command.manualOverride = false;
+          command.manualOverrideUntil = undefined;
+          appInstance?.debug(`⏰ Manual override expired for ${commandName}`);
+        } else {
+          // Override still active, skip threshold processing
+          return;
+        }
+      } else {
+        // Permanent manual override, skip threshold processing
+        return;
+      }
+    }
+
+    const now = Date.now();
+
+    // Get homePort from config for position-based thresholds
+    const homePort = pluginConfig && pluginConfig.homePortLatitude && pluginConfig.homePortLongitude
+      ? { latitude: pluginConfig.homePortLatitude, longitude: pluginConfig.homePortLongitude }
+      : undefined;
+
+    const conditionMet = evaluateThreshold(threshold, normalizedValue, homePort);
+
+    // Better debug logging for different threshold types
+    let thresholdDesc = '';
+    if (threshold.operator === 'inBoundingBox' || threshold.operator === 'outsideBoundingBox') {
+      if (threshold.useHomePort && threshold.boxSize && threshold.boxAnchor) {
+        thresholdDesc = `homePort-based box: size=${threshold.boxSize}m anchor=${threshold.boxAnchor} homePort=${JSON.stringify(homePort)}`;
+      } else if (threshold.boundingBox) {
+        thresholdDesc = `manual box: ${JSON.stringify(threshold.boundingBox)}`;
+      } else {
+        thresholdDesc = 'NO BOX CONFIGURED';
+      }
+    } else if (threshold.operator === 'withinRadius' || threshold.operator === 'outsideRadius') {
+      thresholdDesc = `radius=${threshold.radius}m useHomePort=${threshold.useHomePort} lat=${threshold.latitude} lon=${threshold.longitude}`;
+    } else {
+      thresholdDesc = `value=${threshold.value}`;
+    }
+
+    appInstance?.debug(`📉 Threshold evaluation for ${commandName}:${threshold.watchPath} operator=${threshold.operator} ${thresholdDesc} conditionMet=${conditionMet}`);
+
+    if (!conditionMet) {
+      state.lastConditionMet = false;
+      state.lastValue = normalizedValue;
+      return;
+    }
+
+    // Apply hysteresis window only when condition remains true
+    if (threshold.hysteresis && state.lastTriggered) {
+      const timeSinceLastTrigger = now - state.lastTriggered;
+      if (timeSinceLastTrigger < (threshold.hysteresis * 1000)) {
+        appInstance?.debug(`⏱️ Hysteresis active for ${commandName}, skipping trigger (${timeSinceLastTrigger}ms < ${threshold.hysteresis * 1000}ms)`);
+        state.lastConditionMet = true;
+        state.lastValue = normalizedValue;
+        return;
+      }
+    }
+
+    const desiredState = Boolean(threshold.activateOnMatch);
+
+    // Determine current command state
+    const currentCommandValue = appInstance?.getSelfPath(`commands.${commandName}` as Path);
+    const actualValue = (currentCommandValue && typeof currentCommandValue === 'object' && 'value' in currentCommandValue)
+      ? currentCommandValue.value
+      : currentCommandValue;
+    const currentlyActive = Boolean(actualValue);
+
+    appInstance?.debug(`🔍 Command state check for ${commandName}: current=${actualValue} (bool=${currentlyActive}), desired=${desiredState}`);
+
+    if (currentlyActive !== desiredState) {
+      appInstance?.debug(`🎯 Threshold condition met for ${commandName}: ${threshold.watchPath} = ${normalizedValue}, setting to ${desiredState ? 'ON' : 'OFF'}`);
+
+      const result = executeCommand(commandName, desiredState);
+      if (result.success) {
+        state.lastTriggered = now;
+        command.active = desiredState;
+        commandState.registeredCommands.set(commandName, command);
+        currentCommands = Array.from(commandState.registeredCommands.values());
+        appInstance?.debug(`✅ Command updated by threshold: ${commandName} = ${desiredState}`);
+      } else {
+        appInstance?.error(`❌ Threshold-triggered command failed: ${commandName} - ${result.message}`);
+      }
+    } else {
+      appInstance?.debug(`ℹ️ Command ${commandName} already ${desiredState ? 'ON' : 'OFF'}, no action taken`);
+    }
+
+    state.lastConditionMet = true;
+    state.lastValue = normalizedValue;
+
+  } catch (error) {
+    appInstance?.error(`❌ Error processing threshold for ${commandName}: ${(error as Error).message}`);
+  } finally {
+    // Always release lock and clear timeout
+    clearTimeout(timeoutId);
+    thresholdProcessingLocks.set(commandName, false);
+  }
+}
+
+function evaluateThreshold(
+  threshold: ThresholdConfig,
+  currentValue: any,
+  homePort?: { latitude: number; longitude: number }
+): boolean {
+  switch (threshold.operator) {
+    // Numeric operators
+    case 'gt':
+      return typeof currentValue === 'number' && typeof threshold.value === 'number' && currentValue > threshold.value;
+
+    case 'lt':
+      return typeof currentValue === 'number' && typeof threshold.value === 'number' && currentValue < threshold.value;
+
+    case 'eq':
+      return currentValue === threshold.value;
+
+    case 'ne':
+      return currentValue !== threshold.value;
+
+    case 'range':
+      if (typeof currentValue !== 'number' || typeof threshold.valueMin !== 'number' || typeof threshold.valueMax !== 'number') {
+        return false;
+      }
+      return currentValue >= threshold.valueMin && currentValue <= threshold.valueMax;
+
+    // String operators
+    case 'contains':
+      return typeof currentValue === 'string' && typeof threshold.value === 'string' && currentValue.includes(threshold.value);
+
+    case 'startsWith':
+      return typeof currentValue === 'string' && typeof threshold.value === 'string' && currentValue.startsWith(threshold.value);
+
+    case 'endsWith':
+      return typeof currentValue === 'string' && typeof threshold.value === 'string' && currentValue.endsWith(threshold.value);
+
+    case 'stringEquals':
+      return typeof currentValue === 'string' && typeof threshold.value === 'string' && currentValue === threshold.value;
+
+    // Boolean operators
+    case 'true':
+      return currentValue === true || currentValue === 'true' || currentValue === 1;
+
+    case 'false':
+      return currentValue === false || currentValue === 'false' || currentValue === 0;
+
+    // Position operators
+    case 'withinRadius':
+    case 'outsideRadius':
+      if (!currentValue || typeof currentValue.latitude !== 'number' || typeof currentValue.longitude !== 'number') {
+        appInstance?.error(`❌ Threshold ${threshold.watchPath}: Current value is not a valid position`);
+        return false;
+      }
+
+      const targetLat = threshold.useHomePort && homePort ? homePort.latitude : threshold.latitude;
+      const targetLon = threshold.useHomePort && homePort ? homePort.longitude : threshold.longitude;
+
+      if (typeof targetLat !== 'number' || typeof targetLon !== 'number') {
+        appInstance?.error(`❌ Threshold ${threshold.watchPath}: Target position not configured`);
+        return false;
+      }
+
+      if (typeof threshold.radius !== 'number') {
+        appInstance?.error(`❌ Threshold ${threshold.watchPath}: Radius not configured`);
+        return false;
+      }
+
+      const distance = calculateDistance(
+        currentValue.latitude,
+        currentValue.longitude,
+        targetLat,
+        targetLon
+      );
+
+      return threshold.operator === 'withinRadius'
+        ? distance <= threshold.radius
+        : distance > threshold.radius;
+
+    case 'inBoundingBox':
+    case 'outsideBoundingBox':
+      if (!currentValue || typeof currentValue.latitude !== 'number' || typeof currentValue.longitude !== 'number') {
+        appInstance?.error(`❌ Threshold ${threshold.watchPath}: Current value is not a valid position`);
+        return false;
+      }
+
+      let boundingBox: BoundingBox;
+
+      // Check if using home port-based bounding box
+      if (threshold.useHomePort && threshold.boxSize && threshold.boxAnchor) {
+        if (!homePort) {
+          appInstance?.error(`❌ Threshold ${threshold.watchPath}: Home port not configured`);
+          return false;
+        }
+
+        // Calculate bounding box from home port, box size, and anchor
+        // Add buffer for GPS accuracy (default 5m)
+        const buffer = threshold.boxBuffer !== undefined ? threshold.boxBuffer : 5;
+        const effectiveBoxSize = threshold.boxSize + buffer;
+
+        boundingBox = calculateBoundingBoxFromHomePort(
+          homePort.latitude,
+          homePort.longitude,
+          effectiveBoxSize,
+          threshold.boxAnchor
+        );
+      } else if (threshold.boundingBox) {
+        // Use manual bounding box
+        boundingBox = threshold.boundingBox;
+      } else {
+        appInstance?.error(`❌ Threshold ${threshold.watchPath}: Bounding box not configured`);
+        return false;
+      }
+
+      const inBox = isPointInBoundingBox(
+        currentValue.latitude,
+        currentValue.longitude,
+        boundingBox
+      );
+
+      return threshold.operator === 'inBoundingBox' ? inBox : !inBox;
+
+    default:
+      appInstance?.error(`❌ Unknown threshold operator: ${threshold.operator}`);
+      return false;
+  }
+}
+
+function normalizeThresholdValue(value: any, threshold: ThresholdConfig): any {
+  if (value === null || value === undefined) {
+    return value;
+  }
+
+  if (typeof value === 'object') {
+    if ('value' in value) {
+      return value.value;
+    }
+    if ('values' in value && value.values && typeof value.values === 'object') {
+      if ('value' in value.values) {
+        return value.values.value;
+      }
+    }
+  }
+
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (trimmed === '') {
+      return value;
+    }
+    const lower = trimmed.toLowerCase();
+    if (lower === 'true' || lower === 'false') {
+      return lower === 'true';
+    }
+    const num = Number(trimmed);
+    if (!Number.isNaN(num)) {
+      return num;
+    }
+  }
+
+  if (typeof value === 'number') {
+    return value;
+  }
+
+  if (typeof value === 'boolean') {
+    return value;
+  }
+
+  // If threshold expects numeric and value is object with number
+  if (typeof threshold.value === 'number') {
+    const extracted = Number(value);
+    if (!Number.isNaN(extracted)) {
+      return extracted;
+    }
+  }
+
+  return value;
+}
+
+function buildThresholdMonitorKey(commandName: string, threshold: ThresholdConfig): string {
+  const parts: string[] = [
+    commandName,
+    threshold.watchPath,
+    threshold.operator,
+  ];
+
+  if (threshold.value !== undefined) {
+    parts.push(`value=${JSON.stringify(threshold.value)}`);
+  }
+
+  if (threshold.valueMin !== undefined) {
+    parts.push(`min=${threshold.valueMin}`);
+  }
+
+  if (threshold.valueMax !== undefined) {
+    parts.push(`max=${threshold.valueMax}`);
+  }
+
+  if (threshold.latitude !== undefined) {
+    parts.push(`lat=${threshold.latitude}`);
+  }
+
+  if (threshold.longitude !== undefined) {
+    parts.push(`lon=${threshold.longitude}`);
+  }
+
+  if (threshold.radius !== undefined) {
+    parts.push(`radius=${threshold.radius}`);
+  }
+
+  if (threshold.useHomePort) {
+    parts.push('useHomePort=true');
+  }
+
+  if (threshold.boxSize !== undefined) {
+    parts.push(`boxSize=${threshold.boxSize}`);
+  }
+
+  if (threshold.boxAnchor) {
+    parts.push(`boxAnchor=${threshold.boxAnchor}`);
+  }
+
+  if (threshold.boundingBox) {
+    const { north, south, east, west } = threshold.boundingBox;
+    parts.push(`boundingBox=${north},${south},${east},${west}`);
+  }
+
+  parts.push(`activateOnMatch=${threshold.activateOnMatch}`);
+
+  if (threshold.hysteresis !== undefined) {
+    parts.push(`hysteresis=${threshold.hysteresis}`);
+  }
+
+  return parts.join('|');
+}
+
+export function updateCommandThreshold(commandName: string, threshold: ThresholdConfig): CommandExecutionResult {
+  const command = commandState.registeredCommands.get(commandName);
+  if (!command) {
+    return { success: false, state: 'FAILED', message: `Command ${commandName} not found`, timestamp: new Date().toISOString() };
+  }
+
+  // Update the thresholds configuration (replace single threshold with array)
+  command.thresholds = [threshold];
+
+  // Restart monitoring for this command
+  if (threshold.enabled) {
+    setupThresholdMonitoring(command, threshold);
+  } else {
+    // Stop monitoring if disabled
+    const monitorKey = buildThresholdMonitorKey(commandName, threshold);
+    const state = thresholdState.get(monitorKey);
+    if (state?.unsubscribe) {
+      state.unsubscribe();
+      thresholdState.delete(monitorKey);
+    }
+  }
+
+  // Save configuration
+  const config = loadWebAppConfig();
+  saveWebAppConfig(config.paths, config.commands, appInstance);
+
+  appInstance?.debug(`🎯 Updated threshold configuration for ${commandName}`);
+  return { success: true, state: 'COMPLETED', message: `Threshold updated for ${commandName}`, timestamp: new Date().toISOString() };
+}
+
+export function setManualOverride(commandName: string, override: boolean, expiryMinutes?: number): CommandExecutionResult {
+  const command = commandState.registeredCommands.get(commandName);
+  if (!command) {
+    return { success: false, state: 'FAILED', message: `Command ${commandName} not found`, timestamp: new Date().toISOString() };
+  }
+
+  command.manualOverride = override;
+
+  if (override && expiryMinutes) {
+    const expiry = new Date(Date.now() + expiryMinutes * 60 * 1000);
+    command.manualOverrideUntil = expiry.toISOString();
+    appInstance?.debug(`🔒 Manual override set for ${commandName} until ${expiry.toISOString()}`);
+  } else if (override) {
+    command.manualOverrideUntil = undefined;
+    appInstance?.debug(`🔒 Permanent manual override set for ${commandName}`);
+  } else {
+    command.manualOverrideUntil = undefined;
+    appInstance?.debug(`🔓 Manual override cleared for ${commandName}`);
+  }
+
+  // Save configuration
+  const config = loadWebAppConfig();
+  saveWebAppConfig(config.paths, config.commands, appInstance);
+
+  return { success: true, state: 'COMPLETED', message: `Manual override ${override ? 'enabled' : 'disabled'} for ${commandName}`, timestamp: new Date().toISOString() };
 }

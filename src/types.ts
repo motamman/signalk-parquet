@@ -41,12 +41,19 @@ export interface PluginConfig {
   s3Upload: S3UploadConfig;
   enableStreaming?: boolean; // Enable WebSocket streaming functionality
   claudeIntegration?: ClaudeIntegrationConfig;
+  homePortLatitude?: number;
+  homePortLongitude?: number;
+  setCurrentLocationAction?: {
+    setCurrentLocation: boolean;
+  };
 }
+
+import type { ClaudeModel } from './claude-models';
 
 export interface ClaudeIntegrationConfig {
   enabled: boolean;
   apiKey?: string;
-  model?: 'claude-opus-4-1-20250805' | 'claude-opus-4-20250514' | 'claude-sonnet-4-20250514';
+  model?: ClaudeModel;
   maxTokens?: number;
   temperature?: number;
   autoAnalysis?: {
@@ -121,6 +128,69 @@ export interface PathConfig {
 }
 
 // Command Registration Types
+/**
+ * Threshold operator types based on data type
+ */
+export type ThresholdOperator =
+  // Numeric/Angular operators
+  | 'gt'              // Greater than
+  | 'lt'              // Less than
+  | 'eq'              // Equal to
+  | 'ne'              // Not equal to
+  | 'range'           // Within range (min/max)
+  // String operators
+  | 'contains'        // String contains substring
+  | 'startsWith'      // String starts with
+  | 'endsWith'        // String ends with
+  | 'stringEquals'    // String equals (case-sensitive)
+  // Boolean operators
+  | 'true'            // Is true
+  | 'false'           // Is false
+  // Position operators
+  | 'withinRadius'    // Within radius of point
+  | 'outsideRadius'   // Outside radius of point
+  | 'inBoundingBox'   // Inside bounding box
+  | 'outsideBoundingBox'; // Outside bounding box
+
+/**
+ * Bounding box for geographic area thresholds
+ */
+export interface BoundingBox {
+  north: number;      // Northern latitude boundary
+  south: number;      // Southern latitude boundary
+  east: number;       // Eastern longitude boundary
+  west: number;       // Western longitude boundary
+}
+
+/**
+ * Type-aware threshold configuration
+ */
+export interface ThresholdConfig {
+  enabled: boolean;
+  watchPath: string;                    // SignalK path to monitor
+  operator: ThresholdOperator;          // Threshold operator
+
+  // Simple value (for most operators)
+  value?: number | boolean | string;
+
+  // Range operator values
+  valueMin?: number;                    // Minimum value for range operator
+  valueMax?: number;                    // Maximum value for range operator
+
+  // Position-based threshold values
+  latitude?: number;                    // Target latitude for position operators
+  longitude?: number;                   // Target longitude for position operators
+  radius?: number;                      // Radius in meters for position operators
+  boundingBox?: BoundingBox;            // Bounding box for area operators (manual mode)
+  useHomePort?: boolean;                // Use home port location instead of custom lat/lon
+  boxSize?: number;                     // Box size in meters (for home port-based bounding box)
+  boxAnchor?: string;                   // Anchor point for home port-based box (nw, n, ne, w, center, e, sw, s, se)
+  boxBuffer?: number;                   // Buffer in meters to add to bounding box (default: 5m for GPS accuracy)
+
+  activateOnMatch: boolean;             // true = activate command when condition met, false = deactivate
+  hysteresis?: number;                  // Optional: prevent rapid switching (seconds)
+}
+
 export interface CommandConfig {
   command: string;
   path: string;
@@ -129,6 +199,10 @@ export interface CommandConfig {
   keywords?: string[];      // For Claude context matching
   active?: boolean;
   lastExecuted?: string;
+  defaultState?: boolean;   // Default on/off state when no threshold or manual override
+  thresholds?: ThresholdConfig[];  // Threshold-based activation (multiple thresholds supported)
+  manualOverride?: boolean;     // True when manually controlled via PUT
+  manualOverrideUntil?: string; // ISO timestamp when override expires (optional)
 }
 
 export interface CommandRegistrationState {
@@ -146,6 +220,8 @@ export interface CommandRegistrationRequest {
   command: string;
   description?: string;
   keywords?: string[];
+  defaultState?: boolean;
+  thresholds?: ThresholdConfig[];
 }
 
 // Web App Configuration (stored separately from plugin config)
@@ -484,6 +560,7 @@ export type CommandPutHandler = (
 ) => CommandExecutionResult;
 
 export interface CommandExecutionResult {
+  success: boolean;
   state: 'COMPLETED' | 'PENDING' | 'FAILED';
   statusCode?: number;
   message?: string;

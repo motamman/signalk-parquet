@@ -161,23 +161,17 @@ export class SchemaService {
         if (!isExplodedField && currentPath) {
           this.app?.debug(`  🔍 ${colName}: Using metadata fallback`);
           try {
-            const response = await fetch(`http://localhost:3000/signalk/v1/api/vessels/self/${currentPath.replace(/\./g, '/')}/meta`);
-            if (response.ok) {
-              const metadata = await response.json() as any;
-              if (metadata && metadata.units &&
-                  (metadata.units === 'm' || metadata.units === 'deg' || metadata.units === 'm/s' ||
-                   metadata.units === 'rad' || metadata.units === 'K' || metadata.units === 'Pa' ||
-                   metadata.units === 'V' || metadata.units === 'A' || metadata.units === 'Hz' ||
-                   metadata.units === 'ratio' || metadata.units === 'kg' || metadata.units === 'J')) {
-                schemaType = 'DOUBLE';
-                this.app?.debug(`  ✅ ${colName}: DOUBLE (from metadata units: ${metadata.units})`);
-              } else {
-                schemaType = 'UTF8';
-                this.app?.debug(`  ✅ ${colName}: UTF8 (metadata has no numeric units)`);
-              }
+            const metadata = this.app?.getMetadata(currentPath) as any;
+            if (metadata && metadata.units &&
+                (metadata.units === 'm' || metadata.units === 'deg' || metadata.units === 'm/s' ||
+                 metadata.units === 'rad' || metadata.units === 'K' || metadata.units === 'Pa' ||
+                 metadata.units === 'V' || metadata.units === 'A' || metadata.units === 'Hz' ||
+                 metadata.units === 'ratio' || metadata.units === 'kg' || metadata.units === 'J')) {
+              schemaType = 'DOUBLE';
+              this.app?.debug(`  ✅ ${colName}: DOUBLE (from metadata units: ${metadata.units})`);
             } else {
               schemaType = 'UTF8';
-              this.app?.debug(`  ✅ ${colName}: UTF8 (metadata request failed)`);
+              this.app?.debug(`  ✅ ${colName}: UTF8 (metadata has no numeric units)`);
             }
           } catch (metadataError) {
             schemaType = 'UTF8';
@@ -329,16 +323,13 @@ export class SchemaService {
 
             if (!isExplodedField && signalkPath) {
               try {
-                const response = await fetch(`http://localhost:3000/signalk/v1/api/vessels/self/${signalkPath.replace(/\./g, '/')}/meta`);
-                if (response.ok) {
-                  const metadata = await response.json() as any;
-                  if (metadata && metadata.units &&
-                      (metadata.units === 'm' || metadata.units === 'deg' || metadata.units === 'm/s' ||
-                       metadata.units === 'rad' || metadata.units === 'K' || metadata.units === 'Pa' ||
-                       metadata.units === 'V' || metadata.units === 'A' || metadata.units === 'Hz' ||
-                       metadata.units === 'ratio' || metadata.units === 'kg' || metadata.units === 'J')) {
-                    violations.push(`${fieldName} has numeric units (${metadata.units}) but is ${fieldType}, should be DOUBLE`);
-                  }
+                const metadata = this.app?.getMetadata(signalkPath) as any;
+                if (metadata && metadata.units &&
+                    (metadata.units === 'm' || metadata.units === 'deg' || metadata.units === 'm/s' ||
+                     metadata.units === 'rad' || metadata.units === 'K' || metadata.units === 'Pa' ||
+                     metadata.units === 'V' || metadata.units === 'A' || metadata.units === 'Hz' ||
+                     metadata.units === 'ratio' || metadata.units === 'kg' || metadata.units === 'J')) {
+                  violations.push(`${fieldName} has numeric units (${metadata.units}) but is ${fieldType}, should be DOUBLE`);
                 }
               } catch (metadataError) {
                 // Metadata lookup failed, no violation flagged

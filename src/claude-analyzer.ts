@@ -6,11 +6,12 @@ import { getAvailablePaths } from './utils/path-discovery';
 import * as fs from 'fs-extra';
 import * as path from 'path';
 import { DuckDBInstance } from '@duckdb/node-api';
+import { ClaudeModel } from './claude-models';
 
 // Claude AI Integration Types
 export interface ClaudeAnalyzerConfig {
   apiKey: string;
-  model: 'claude-opus-4-1-20250805' | 'claude-opus-4-20250514' | 'claude-sonnet-4-20250514';
+  model: ClaudeModel;
   maxTokens: number;
   temperature: number;
 }
@@ -253,8 +254,9 @@ export class ClaudeAnalyzer {
    */
   private async loadDataFromPath(dataPath: string, timeRange?: { start: Date; end: Date }, aggregationMethod?: string, resolution?: string): Promise<DataRecord[]> {
     try {
-      // Use the existing REST API instead of custom query logic  
-      const baseUrl = `http://localhost:3000`; // Use default SignalK port
+      // Use the existing REST API instead of custom query logic
+      const port = process.env.PORT || 3000;
+      const baseUrl = `http://localhost:${port}`;
       
       // Construct paths with aggregation method if provided
       // HistoryAPI supports format: "path:aggregateMethod" (e.g., "environment.outside.tempest.observations.solarRadiation:max")
@@ -986,6 +988,15 @@ The database includes DuckDB spatial extension with advanced geographic function
 - ST_Centroid(ST_Collect(points)): Find center of multiple points
 - ST_ConvexHull(ST_Collect(points)): Create movement boundary polygons
 
+🗺️ **SPATIAL VISUALIZATION PRIORITY**: For position/track analysis, ALWAYS create scattermapbox charts when:
+- Analyzing vessel tracks or routes
+- Showing position data over time
+- Multi-vessel proximity analysis
+- Anchorage or movement pattern analysis
+- Any geographic analysis with lat/lon coordinates
+
+Use scattermapbox for detailed coastal/harbor views, scattergeo for broader geographic context.
+
 SPATIAL QUERY PATTERNS for position analysis:
 - Distance between consecutive positions:
   WITH positions AS (
@@ -1124,8 +1135,65 @@ SUPPORTED CHART TYPES:
 - **Bar Charts**: type: "bar"
 - **Scatter Plots**: type: "scatter", mode: "markers"
 - **Wind Rose/Radar**: type: "scatterpolar" with r and theta values
+- **🗺️ Geographic Maps**: type: "scattermapbox" for vessel tracks and positions
+- **🌍 Basic Maps**: type: "scattergeo" for simple geographic plots
 - **Multiple Series**: Include multiple objects in the data array
 - **Styling**: Use line.color, marker.color, line.width, etc.
+
+GEOGRAPHIC MAP EXAMPLES:
+
+**Vessel Track Map (scattermapbox):**
+\`\`\`json
+{
+  "type": "chart",
+  "title": "Vessel Track",
+  "data": [
+    {
+      "type": "scattermapbox",
+      "lat": [41.2033, 41.2035, 41.2038],
+      "lon": [-72.0833, -72.0830, -72.0825],
+      "mode": "lines+markers",
+      "marker": {"size": 8, "color": "red"},
+      "line": {"color": "blue", "width": 3},
+      "name": "Track"
+    }
+  ],
+  "layout": {
+    "mapbox": {
+      "style": "open-street-map",
+      "center": {"lat": 41.2035, "lon": -72.0829},
+      "zoom": 12
+    },
+    "margin": {"r": 0, "t": 50, "l": 0, "b": 0}
+  }
+}
+\`\`\`
+
+**Multi-vessel Positions (scattergeo):**
+\`\`\`json
+{
+  "type": "chart",
+  "title": "Fleet Positions",
+  "data": [
+    {
+      "type": "scattergeo",
+      "lat": [41.2033, 41.1500],
+      "lon": [-72.0833, -72.1200],
+      "mode": "markers",
+      "marker": {"size": 12, "color": ["red", "blue"]},
+      "text": ["Vessel A", "Vessel B"],
+      "name": "Fleet"
+    }
+  ],
+  "layout": {
+    "geo": {
+      "projection": {"type": "natural earth"},
+      "showland": true,
+      "landcolor": "lightgray"
+    }
+  }
+}
+\`\`\`
 
 Include this JSON when analysis would benefit from visualization.
 
@@ -1776,7 +1844,7 @@ Begin your analysis by querying relevant data within the specified time range.`;
       this.activeConversations.set(request.conversationId, conversationMessages);
 
       const followUpResponse = {
-        id: request.conversationId, // Keep same conversation ID
+        id: `${request.conversationId}_followup_${Date.now()}`, // Unique ID for follow-up
         analysis: analysisResult.trim() || 'Follow-up question answered.',
         insights: [
           'Follow-up question processed',
@@ -1795,7 +1863,10 @@ Begin your analysis by querying relevant data within the specified time range.`;
           dataPath: 'follow_up_question',
           analysisType: 'custom',
           recordCount: queryCount,
-          timeRange: undefined
+          timeRange: undefined,
+          originalConversationId: request.conversationId,
+          followUpQuestion: request.question,
+          isFollowUp: true
         },
         usage: totalTokenUsage
       };

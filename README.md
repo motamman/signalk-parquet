@@ -65,6 +65,14 @@ The validation system checks each Parquet file for:
 - **Contextual Data Collection**: Link SignalK paths to regimens for targeted data analysis during specific operations
 - **Web Interface Management**: Create, edit, and manage regimens and command keywords through the web UI
 
+### NEW Threshold Automation
+- **NEW Per-Command Conditions**: Each regimen/command can define one or more thresholds that watch a single SignalK path.
+- **NEW True-Only Actions**: On every path update the condition is evaluated; when it is true the command is set to the threshold's `activateOnMatch` state (ON/OFF). False evaluations leave the command untouched, so use a second threshold if you want a different level to switch it back.
+- **NEW Stable Triggers**: Optional hysteresis (seconds) suppresses re-firing while the condition remains true, preventing rapid toggling in noisy data.
+- **NEW Multiple Thresholds Per Path**: Unique monitor keys allow several thresholds to observe the same SignalK path without cancelling each other.
+- **NEW Unit Handling**: Threshold values must match the live SignalK units (e.g., fractional 0–1 SoC values). Angular thresholds are entered in degrees in the UI and stored as radians automatically.
+- **NEW Manual Overrides**: Any active manual override still pauses automation until it expires or is cleared.
+
 ### Claude AI Integration
 - **AI-Powered Analysis**: Advanced maritime data analysis using Claude AI models (Opus 4, Sonnet 4)
 - **Regimen-Based Analysis**: Context-aware episode detection for operational states (mooring, anchoring, sailing)
@@ -74,8 +82,6 @@ The validation system checks each Parquet file for:
 - **Conversation Continuity**: Follow-up questions with preserved context and specialized tools
 - **Timezone Intelligence**: Automatic UTC-to-local time conversion based on system timezone
 - **Custom Analysis**: Create custom analysis prompts for specific operational needs
-- **Anomaly Detection**: Intelligent detection of unusual patterns and safety concerns
-- **Performance Insights**: AI-generated insights for fuel efficiency and operational optimization
 
 ## Installation
 
@@ -1113,7 +1119,49 @@ The plugin uses a modular TypeScript architecture for maintainability:
 2. **Data Processing**: Extend `src/data-handler.ts`
 3. **Commands**: Modify `src/commands.ts`
 4. **Types**: Add interfaces to `src/types.ts`
-5. **Update Documentation**: Update README and inline comments
+5. **Claude AI Models**: Update `src/claude-models.ts` (see below)
+6. **Update Documentation**: Update README and inline comments
+
+#### Updating Claude AI Models
+
+When Anthropic releases new models, update the single source of truth in `src/claude-models.ts`:
+
+```typescript
+export const CLAUDE_MODELS = {
+  OPUS_4_1: 'claude-opus-4-1-20250805',
+  OPUS_4: 'claude-opus-4-20250514',
+  SONNET_4: 'claude-sonnet-4-20250514',
+  SONNET_4_5: 'claude-sonnet-4-5-20250929',
+  // Add new models here
+} as const;
+
+export const SUPPORTED_CLAUDE_MODELS = [
+  CLAUDE_MODELS.OPUS_4_1,
+  CLAUDE_MODELS.OPUS_4,
+  CLAUDE_MODELS.SONNET_4,
+  CLAUDE_MODELS.SONNET_4_5,
+  // Add to supported list
+] as const;
+
+export const DEFAULT_CLAUDE_MODEL = CLAUDE_MODELS.SONNET_4_5; // Update default if needed
+
+export const CLAUDE_MODEL_DESCRIPTIONS = {
+  [CLAUDE_MODELS.OPUS_4_1]: 'Claude Opus 4.1 (Most Capable & Intelligent)',
+  [CLAUDE_MODELS.OPUS_4]: 'Claude Opus 4 (Previous Flagship)',
+  [CLAUDE_MODELS.SONNET_4]: 'Claude Sonnet 4 (Balanced Performance)',
+  [CLAUDE_MODELS.SONNET_4_5]: 'Claude Sonnet 4.5 (Latest Sonnet)',
+  // Add descriptions for new models
+} as const;
+```
+
+**Why this matters:**
+- All model definitions are centralized in one file
+- Type safety across the entire codebase
+- Automatic migration of outdated models on plugin startup
+- Prevents form validation errors when users have old model values saved
+- No need to update multiple files when adding new models
+
+The plugin automatically migrates old/invalid model values to the current default on startup, preventing configuration save failures.
 
 ### Type Checking
 
@@ -1238,7 +1286,11 @@ curl "http://localhost:3000/signalk/v1/history/contexts"
 
 ## Changelog
 
-### Version 0.5.5-beta.1 (Latest)
+### Version 0.5.5-beta.3 (Latest)
+- **🧱 Front-end Modularization**: Replaced the 5,000-line inline dashboard script with focused JS modules under `public/js`, improving readability and maintainability.
+- **⚙️ Threshold Automation Fix**: Threshold monitoring now listens to raw SignalK values via `getSelfStream`, so saved trigger conditions reliably toggle their commands.
+
+### Version 0.5.5-beta.1 
 - **🌍 NEW Spatial Analysis System**: Advanced geographic analysis capabilities with DuckDB spatial extension
   - Complete spatial function integration: ST_Point, ST_Distance_Sphere, ST_Centroid, ST_ConvexHull, ST_AsText
   - Automatic spatial extension loading in all DuckDB connections for seamless geographic queries

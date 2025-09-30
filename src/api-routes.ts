@@ -40,6 +40,7 @@ import {
   getCurrentCommands,
   getCommandHistory,
   getCommandState,
+  setManualOverride,
 } from './commands';
 import { updateDataSubscriptions } from './data-handler';
 import { toContextFilePath, toParquetFilePath } from './utils/path-helpers';
@@ -139,39 +140,15 @@ function getSharedAnalyzer(config: any, app: ServerAPI, getDataDir: () => string
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let ListObjectsV2Command: any;
 
+import { getValidClaudeModel } from './claude-models';
+
 // Helper function to migrate deprecated Claude model names
 function migrateClaudeModel(model?: string, app?: ServerAPI): string {
-  const currentModel = model || 'claude-sonnet-4-20250514';
-  
-  // Migration mapping for deprecated models
-  const migrations: Record<string, string> = {
-    'claude-3-sonnet-20240229': 'claude-sonnet-4-20250514',
-    'claude-3-5-sonnet-20241022': 'claude-sonnet-4-20250514',
-    'claude-3-7-sonnet-20250219': 'claude-sonnet-4-20250514',
-    'claude-3-5-haiku-20241022': 'claude-sonnet-4-20250514',
-    'claude-3-haiku-20240307': 'claude-sonnet-4-20250514',
-  };
-  
-  if (migrations[currentModel]) {
-    const newModel = migrations[currentModel];
-    app?.debug(`Auto-migrated deprecated Claude model ${currentModel} to ${newModel}`);
-    return newModel;
+  const validatedModel = getValidClaudeModel(model);
+  if (model && validatedModel !== model) {
+    app?.debug(`Auto-migrated Claude model ${model} to ${validatedModel}`);
   }
-  
-  // Validate that the model is in our supported list
-  const supportedModels = [
-    'claude-opus-4-1-20250805',
-    'claude-opus-4-20250514', 
-    'claude-sonnet-4-20250514'
-  ];
-
-  // If model is not in supported list, fall back to default
-  if (!supportedModels.includes(currentModel)) {
-    app?.debug(`Unknown Claude model ${currentModel}, falling back to default`);
-    return 'claude-sonnet-4-20250514';
-  }
-
-  return currentModel;
+  return validatedModel;
 }
 
 // ===========================================
@@ -787,6 +764,152 @@ export function registerApiRoutes(
     }
   );
 
+  // ===========================================
+  // HOME PORT CONFIGURATION ENDPOINTS
+  // ===========================================
+
+  // Get home port configuration
+  router.get('/api/config/homeport', (_req, res) => {
+    try {
+      if (!state.currentConfig) {
+        return res.status(500).json({
+          success: false,
+          error: 'Plugin configuration not available',
+        });
+      }
+
+      return res.json({
+        success: true,
+        latitude: state.currentConfig.homePortLatitude || null,
+        longitude: state.currentConfig.homePortLongitude || null,
+      });
+    } catch (error) {
+      return res.status(500).json({
+        success: false,
+        error: (error as Error).message,
+      });
+    }
+  });
+
+  // Update home port configuration
+  router.put('/api/config/homeport', (req, res): void => {
+    try {
+      const { latitude, longitude } = req.body;
+
+      if (!state.currentConfig) {
+        res.status(500).json({
+          success: false,
+          error: 'Plugin configuration not available',
+        });
+        return;
+      }
+
+      // Validate latitude and longitude
+      if (typeof latitude !== 'number' || typeof longitude !== 'number') {
+        res.status(400).json({
+          success: false,
+          error: 'Latitude and longitude must be numbers',
+        });
+        return;
+      }
+
+      if (latitude < -90 || latitude > 90) {
+        res.status(400).json({
+          success: false,
+          error: 'Latitude must be between -90 and 90',
+        });
+        return;
+      }
+
+      if (longitude < -180 || longitude > 180) {
+        res.status(400).json({
+          success: false,
+          error: 'Longitude must be between -180 and 180',
+        });
+        return;
+      }
+
+      // Update the config
+      state.currentConfig.homePortLatitude = latitude;
+      state.currentConfig.homePortLongitude = longitude;
+
+      // Save to plugin options
+      app.savePluginOptions(state.currentConfig, (err?: unknown) => {
+        if (err) {
+          app.error(`Failed to save home port: ${err}`);
+          res.status(500).json({
+            success: false,
+            error: 'Failed to save home port configuration',
+          });
+          return;
+        }
+
+        app.debug(`✅ Home port updated: ${latitude}, ${longitude}`);
+        res.json({
+          success: true,
+          latitude,
+          longitude,
+        });
+      });
+    } catch (error) {
+      res.status(500).json({
+        success: false,
+        error: (error as Error).message,
+      });
+    }
+  });
+
+  // Get current vessel position
+  router.get('/api/position/current', (_req, res) => {
+    try {
+      const position = app.getSelfPath('navigation.position');
+      if (position && position.value) {
+        return res.json({
+          success: true,
+          latitude: position.value.latitude,
+          longitude: position.value.longitude,
+        });
+      }
+      return res.status(404).json({
+        success: false,
+        error: 'Current position not available',
+      });
+    } catch (error) {
+      return res.status(500).json({
+        success: false,
+        error: (error as Error).message,
+      });
+    }
+  });
+
+  // ===========================================
+  // PATH TYPE DETECTION ENDPOINT
+  // ===========================================
+
+  // Get data type information for a SignalK path
+  router.get('/api/paths/:path/type', async (req, res) => {
+    try {
+      const pathParam = req.params.path;
+      const { detectPathType } = await import('./utils/type-detector');
+
+      const typeInfo = await detectPathType(pathParam, app);
+
+      return res.json({
+        success: true,
+        ...typeInfo,
+      });
+    } catch (error) {
+      return res.status(500).json({
+        success: false,
+        error: (error as Error).message,
+      });
+    }
+  });
+
+  // ===========================================
+  // COMMAND MANAGEMENT ENDPOINTS
+  // ===========================================
+
   // Register a new command
   router.post(
     '/api/commands',
@@ -795,7 +918,7 @@ export function registerApiRoutes(
       res: TypedResponse<CommandApiResponse>
     ) => {
       try {
-        const { command, description, keywords } = req.body;
+        const { command, description, keywords, defaultState, thresholds } = req.body;
 
         if (!command || !/^[a-zA-Z0-9_]+$/.test(command) || command.length === 0 || command.length > 50) {
           return res.status(400).json({
@@ -805,7 +928,7 @@ export function registerApiRoutes(
           });
         }
 
-        const result = registerCommand(command, description, keywords);
+        const result = registerCommand(command, description, keywords, defaultState, thresholds);
 
         if (result.state === 'COMPLETED') {
           // Update webapp config
@@ -919,14 +1042,19 @@ export function registerApiRoutes(
   router.put(
     '/api/commands/:command',
     (
-      req: TypedRequest<{ description?: string; keywords?: string[] }>,
+      req: TypedRequest<{
+        description?: string;
+        keywords?: string[];
+        defaultState?: boolean;
+        thresholds?: any[];
+      }>,
       res: TypedResponse<CommandApiResponse>
     ) => {
       try {
         const { command } = req.params;
-        const { description, keywords } = req.body;
+        const { description, keywords, defaultState, thresholds } = req.body;
 
-        const result = updateCommand(command, description, keywords);
+        const result = updateCommand(command, description, keywords, defaultState, thresholds);
         if (result.state === 'COMPLETED') {
           // Update webapp config
           const webAppConfig = loadWebAppConfig(app);
@@ -945,6 +1073,44 @@ export function registerApiRoutes(
         }
       } catch (error) {
         app.error(`Error updating command: ${error}`);
+        return res.status(500).json({
+          success: false,
+          error: 'Internal server error',
+        });
+      }
+    }
+  );
+
+  // Manual override endpoint
+  router.put(
+    '/api/commands/:command/override',
+    (
+      req: TypedRequest<{ override: boolean; expiryMinutes?: number }>,
+      res: TypedResponse<CommandApiResponse>
+    ) => {
+      try {
+        const { command } = req.params;
+        const { override, expiryMinutes } = req.body;
+
+        const result = setManualOverride(command, override, expiryMinutes);
+        if (result.success) {
+          // Update webapp config
+          const webAppConfig = loadWebAppConfig(app);
+          const currentCommands = getCurrentCommands();
+          saveWebAppConfig(webAppConfig.paths, currentCommands, app);
+
+          return res.json({
+            success: true,
+            message: result.message,
+          });
+        } else {
+          return res.status(400).json({
+            success: false,
+            error: result.message,
+          });
+        }
+      } catch (error) {
+        app.error(`Error setting manual override: ${error}`);
         return res.status(500).json({
           success: false,
           error: 'Internal server error',
@@ -2396,18 +2562,15 @@ export function registerApiRoutes(
                       if (!isExplodedField && signalkPath) {
                         addDebug(`🔍 ${fieldName}: Using metadata fallback (matches repair logic)`);
                         try {
-                          const response = await fetch(`http://localhost:3000/signalk/v1/api/vessels/self/${signalkPath.replace(/\./g, '/')}/meta`);
-                          if (response.ok) {
-                            const metadata = await response.json() as any;
-                            if (metadata && metadata.units &&
-                                (metadata.units === 'm' || metadata.units === 'deg' || metadata.units === 'm/s' ||
-                                 metadata.units === 'rad' || metadata.units === 'K' || metadata.units === 'Pa' ||
-                                 metadata.units === 'V' || metadata.units === 'A' || metadata.units === 'Hz' ||
-                                 metadata.units === 'ratio' || metadata.units === 'kg' || metadata.units === 'J')) {
-                              violations.push(`${fieldName} has numeric units (${metadata.units}) but is ${fieldType}, should be DOUBLE`);
-                              hasViolations = true;
-                              addDebug(`🔍 ${fieldName}: Metadata indicates numeric (${metadata.units}), flagged as violation`);
-                            }
+                          const metadata = app.getMetadata(signalkPath) as any;
+                          if (metadata && metadata.units &&
+                              (metadata.units === 'm' || metadata.units === 'deg' || metadata.units === 'm/s' ||
+                               metadata.units === 'rad' || metadata.units === 'K' || metadata.units === 'Pa' ||
+                               metadata.units === 'V' || metadata.units === 'A' || metadata.units === 'Hz' ||
+                               metadata.units === 'ratio' || metadata.units === 'kg' || metadata.units === 'J')) {
+                            violations.push(`${fieldName} has numeric units (${metadata.units}) but is ${fieldType}, should be DOUBLE`);
+                            hasViolations = true;
+                            addDebug(`🔍 ${fieldName}: Metadata indicates numeric (${metadata.units}), flagged as violation`);
                           }
                         } catch (metadataError) {
                           addDebug(`🔍 ${fieldName}: Metadata lookup failed, no violation flagged`);
@@ -2754,18 +2917,15 @@ export function registerApiRoutes(
 
                     if (!needsRepair && signalkPath && !fieldName.startsWith('value_')) {
                       try {
-                        const response = await fetch(`http://localhost:3000/signalk/v1/api/vessels/self/${signalkPath.replace(/\./g, '/')}/meta`);
-                        if (response.ok) {
-                          const metadata = await response.json() as any;
-                          if (metadata && metadata.units &&
-                              (metadata.units === 'm' || metadata.units === 'deg' || metadata.units === 'm/s' ||
-                               metadata.units === 'rad' || metadata.units === 'K' || metadata.units === 'Pa' ||
-                               metadata.units === 'V' || metadata.units === 'A' || metadata.units === 'Hz' ||
-                               metadata.units === 'ratio' || metadata.units === 'kg' || metadata.units === 'J')) {
-                            needsRepair = true;
-                            app.debug(`🔧 File needs repair: ${relativePath} (${fieldName} should be DOUBLE per metadata, not ${fieldType})`);
-                            break;
-                          }
+                        const metadata = app.getMetadata(signalkPath) as any;
+                        if (metadata && metadata.units &&
+                            (metadata.units === 'm' || metadata.units === 'deg' || metadata.units === 'm/s' ||
+                             metadata.units === 'rad' || metadata.units === 'K' || metadata.units === 'Pa' ||
+                             metadata.units === 'V' || metadata.units === 'A' || metadata.units === 'Hz' ||
+                             metadata.units === 'ratio' || metadata.units === 'kg' || metadata.units === 'J')) {
+                          needsRepair = true;
+                          app.debug(`🔧 File needs repair: ${relativePath} (${fieldName} should be DOUBLE per metadata, not ${fieldType})`);
+                          break;
                         }
                       } catch (metadataError) {
                         app.debug(`🔧 Metadata check failed for ${fieldName}: ${(metadataError as Error).message}`);
