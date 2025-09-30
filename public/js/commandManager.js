@@ -1159,7 +1159,7 @@ export function updateThresholdPathFilter() {
 async function populateThresholdPaths() {
     ensureEditFormInDom();
     const select = document.getElementById('newThresholdPath');
-    const filterType = document.querySelector('input[name="thresholdPathFilter"]:checked')?.value || 'self';
+    const filterType = 'self';
 
     // Clear existing options except the default ones
     select.innerHTML = '<option value="">-- Select SignalK Path --</option><option value="custom">🖊️ Enter Custom Path</option>';
