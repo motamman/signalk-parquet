@@ -25,6 +25,10 @@ let currentCommands: CommandConfig[] = [];
 let commandHistory: CommandHistoryEntry[] = [];
 let appInstance: ServerAPI;
 
+// Threshold processing lock system for first-in rule
+const thresholdProcessingLocks = new Map<string, boolean>();
+const THRESHOLD_PROCESSING_TIMEOUT = 5000; // 5 seconds
+
 // Command state management
 const commandState: CommandRegistrationState = {
   registeredCommands: new Map<string, CommandConfig>(),
@@ -254,6 +258,9 @@ export function initializeCommandState(
   let addedMissingPaths = false;
   currentCommands.forEach((commandConfig: CommandConfig) => {
     const commandPath = `commands.${commandConfig.command}`;
+    const autoPath = `commands.${commandConfig.command}.auto`;
+
+    // Add main command path if missing
     const existingCommandPath = currentPaths.find(p => p.path === commandPath);
     if (!existingCommandPath) {
       const commandPathConfig: PathConfig = {
@@ -267,6 +274,24 @@ export function initializeCommandState(
       };
       currentPaths.push(commandPathConfig);
       addedMissingPaths = true;
+    }
+
+    // Add .auto path if command has thresholds and path is missing
+    if (commandConfig.thresholds && commandConfig.thresholds.length > 0) {
+      const existingAutoPath = currentPaths.find(p => p.path === autoPath);
+      if (!existingAutoPath) {
+        const autoPathConfig: PathConfig = {
+          path: autoPath as Path,
+          name: `Command Auto: ${commandConfig.command}`,
+          enabled: true,
+          regimen: 'commands',
+          source: undefined,
+          context: 'vessels.self' as Context,
+          excludeMMSI: undefined,
+        };
+        currentPaths.push(autoPathConfig);
+        addedMissingPaths = true;
+      }
     }
   });
 
@@ -358,6 +383,57 @@ export function registerCommand(
 
     // Initialize command value to defaultState or false
     initializeCommandValue(commandName, defaultState || false);
+
+    // Initialize .auto path for threshold automation control
+    const autoPath = `commands.${commandName}.auto`;
+    const autoEnabled = !!(commandConfig.thresholds && commandConfig.thresholds.length > 0);
+    initializeCommandValue(`${commandName}.auto`, autoEnabled);
+
+    // Register PUT handler for .auto control
+    const autoPutHandler = (
+      _context: string,
+      _path: string,
+      value: any,
+      _callback?: (result: CommandExecutionResult) => void
+    ): CommandExecutionResult => {
+      appInstance.debug(
+        `Handling PUT for ${autoPath} with value: ${JSON.stringify(value)}`
+      );
+
+      // Update the .auto value
+      const autoValue = Boolean(value);
+      const timestamp = new Date().toISOString();
+
+      appInstance.handleMessage('zennora-parquet-commands', {
+        context: 'vessels.self' as Context,
+        updates: [
+          {
+            timestamp: timestamp as Timestamp,
+            values: [
+              {
+                path: autoPath as Path,
+                value: autoValue,
+              },
+            ],
+          },
+        ],
+      });
+
+      return {
+        success: true,
+        state: 'COMPLETED',
+        message: `Automation ${autoValue ? 'enabled' : 'disabled'} for ${commandName}`,
+        timestamp
+      };
+    };
+
+    // Register .auto PUT handler with SignalK
+    appInstance.registerPutHandler(
+      'vessels.self',
+      autoPath,
+      autoPutHandler as any,
+      'zennora-parquet-commands'
+    );
 
     // Start threshold monitoring for this command if thresholds are defined
     if (commandConfig.thresholds && commandConfig.thresholds.length > 0) {
@@ -567,7 +643,7 @@ export function executeCommand(
 
     // Send delta message
     //FIXME see if delta can be Delta from the beginning
-    appInstance.handleMessage('signalk-parquet', delta as Delta);
+    appInstance.handleMessage('signalk-parquet-commands', delta as Delta);
 
     // Update command state
     commandConfig.active = value;
@@ -640,7 +716,7 @@ function initializeCommandValue(commandName: string, value: boolean): void {
   };
 
   //FIXME
-  appInstance.handleMessage('signalk-parquet', delta as Delta);
+  appInstance.handleMessage('signalk-parquet-commands', delta as Delta);
 }
 
 function addCommandHistoryEntry(
@@ -788,65 +864,110 @@ function processThresholdValue(command: CommandConfig, threshold: ThresholdConfi
   const state = thresholdState.get(monitorKey);
   if (!state) return;
 
-  const normalizedValue = normalizeThresholdValue(value, threshold);
-  appInstance?.debug(`📈 Threshold monitor ${command.command}:${threshold.watchPath} received value: ${JSON.stringify(normalizedValue)}`);
+  const commandName = command.command;
 
-  // Skip processing if manual override is active
-  if (command.manualOverride) {
-    // Check if manual override has expired
-    if (command.manualOverrideUntil) {
-      const expiry = new Date(command.manualOverrideUntil);
-      if (new Date() > expiry) {
-        // Override expired, clear it
-        command.manualOverride = false;
-        command.manualOverrideUntil = undefined;
-        appInstance?.debug(`⏰ Manual override expired for ${command.command}`);
+  // Check if threshold processing is already running for this command (first-in rule)
+  if (thresholdProcessingLocks.get(commandName)) {
+    appInstance?.debug(`🔒 Threshold processing already running for ${commandName}, skipping`);
+    return;
+  }
+
+  // Acquire lock
+  thresholdProcessingLocks.set(commandName, true);
+
+  // Set timeout to prevent deadlocks
+  const timeoutId = setTimeout(() => {
+    if (thresholdProcessingLocks.get(commandName)) {
+      appInstance?.error(`⚠️ Threshold processing timeout for ${commandName}, releasing lock`);
+      thresholdProcessingLocks.set(commandName, false);
+    }
+  }, THRESHOLD_PROCESSING_TIMEOUT);
+
+  try {
+    const normalizedValue = normalizeThresholdValue(value, threshold);
+    appInstance?.debug(`📈 Threshold monitor ${commandName}:${threshold.watchPath} received value: ${JSON.stringify(normalizedValue)}`);
+
+    // Check if automation is enabled for this command
+    const autoEnabledRaw = appInstance?.getSelfPath(`commands.${commandName}.auto` as Path);
+    const autoEnabled = (autoEnabledRaw && typeof autoEnabledRaw === 'object' && 'value' in autoEnabledRaw)
+      ? autoEnabledRaw.value : autoEnabledRaw;
+
+    if (!autoEnabled) {
+      appInstance?.debug(`🚫 Threshold automation disabled for ${commandName} (auto=${autoEnabled})`);
+      return;
+    }
+
+    // Skip processing if manual override is active (backward compatibility)
+    if (command.manualOverride) {
+      // Check if manual override has expired
+      if (command.manualOverrideUntil) {
+        const expiry = new Date(command.manualOverrideUntil);
+        if (new Date() > expiry) {
+          // Override expired, clear it
+          command.manualOverride = false;
+          command.manualOverrideUntil = undefined;
+          appInstance?.debug(`⏰ Manual override expired for ${commandName}`);
+        } else {
+          // Override still active, skip threshold processing
+          return;
+        }
       } else {
-        // Override still active, skip threshold processing
+        // Permanent manual override, skip threshold processing
         return;
       }
-    } else {
-      // Permanent manual override, skip threshold processing
-      return;
     }
-  }
 
-  const now = Date.now();
-  const shouldActivate = evaluateThreshold(threshold, normalizedValue);
-  appInstance?.debug(`📉 Threshold evaluation for ${command.command}:${threshold.watchPath} operator=${threshold.operator} threshold=${threshold.value} result=${shouldActivate}`);
+    const now = Date.now();
+    const shouldActivate = evaluateThreshold(threshold, normalizedValue);
+    appInstance?.debug(`📉 Threshold evaluation for ${commandName}:${threshold.watchPath} operator=${threshold.operator} threshold=${threshold.value} result=${shouldActivate}`);
 
-  // Apply hysteresis for numeric values
-  if (threshold.hysteresis && typeof normalizedValue === 'number' && typeof state.lastValue === 'number') {
-    const timeSinceLastTrigger = now - state.lastTriggered;
-    if (timeSinceLastTrigger < (threshold.hysteresis * 1000)) {
-      // Within hysteresis period, skip
-      return;
+    // Apply hysteresis for numeric values
+    if (threshold.hysteresis && typeof normalizedValue === 'number' && typeof state.lastValue === 'number') {
+      const timeSinceLastTrigger = now - state.lastTriggered;
+      if (timeSinceLastTrigger < (threshold.hysteresis * 1000)) {
+        // Within hysteresis period, skip
+        return;
+      }
     }
-  }
 
-  // Determine if command state should change
-  const currentlyActive = command.active || false;
-  const shouldBeActive = threshold.activateOnMatch ? shouldActivate : !shouldActivate;
+    // Determine if command state should change
+    const currentCommandValue = appInstance?.getSelfPath(`commands.${commandName}` as Path);
+    // Handle SignalK delta structure - extract .value if it's an object
+    const actualValue = (currentCommandValue && typeof currentCommandValue === 'object' && 'value' in currentCommandValue)
+      ? currentCommandValue.value
+      : currentCommandValue;
+    const currentlyActive = Boolean(actualValue);
+    const shouldBeActive = threshold.activateOnMatch ? shouldActivate : !shouldActivate;
 
-  if (shouldBeActive !== currentlyActive) {
-    appInstance?.debug(`🎯 Threshold triggered for ${command.command}: ${threshold.watchPath} = ${normalizedValue}, switching to ${shouldBeActive ? 'ON' : 'OFF'}`);
+    appInstance?.debug(`🔍 Current state check for ${commandName}: SignalK=${actualValue} (from ${JSON.stringify(currentCommandValue)}), shouldBe=${shouldBeActive}, threshold=${threshold.operator} ${threshold.value}`);
 
-    // Execute the command
-    const result = executeCommand(command.command, shouldBeActive);
-    if (result.success) {
-      state.lastTriggered = now;
-      appInstance?.debug(`✅ Threshold-triggered command executed: ${command.command} = ${shouldBeActive}`);
-    } else {
-      appInstance?.error(`❌ Threshold-triggered command failed: ${command.command} - ${result.message}`);
+    if (shouldBeActive !== currentlyActive) {
+      appInstance?.debug(`🎯 Threshold triggered for ${commandName}: ${threshold.watchPath} = ${normalizedValue}, switching to ${shouldBeActive ? 'ON' : 'OFF'}`);
+
+      // Execute the command
+      const result = executeCommand(commandName, shouldBeActive);
+      if (result.success) {
+        state.lastTriggered = now;
+        appInstance?.debug(`✅ Threshold-triggered command executed: ${commandName} = ${shouldBeActive}`);
+      } else {
+        appInstance?.error(`❌ Threshold-triggered command failed: ${commandName} - ${result.message}`);
+      }
     }
+
+    command.active = shouldBeActive;
+    commandState.registeredCommands.set(commandName, command);
+    currentCommands = Array.from(commandState.registeredCommands.values());
+
+    // Update last value
+    state.lastValue = normalizedValue;
+
+  } catch (error) {
+    appInstance?.error(`❌ Error processing threshold for ${commandName}: ${(error as Error).message}`);
+  } finally {
+    // Always release lock and clear timeout
+    clearTimeout(timeoutId);
+    thresholdProcessingLocks.set(commandName, false);
   }
-
-  command.active = shouldBeActive;
-  commandState.registeredCommands.set(command.command, command);
-  currentCommands = Array.from(commandState.registeredCommands.values());
-
-  // Update last value
-  state.lastValue = normalizedValue;
 }
 
 function evaluateThreshold(threshold: ThresholdConfig, currentValue: any): boolean {

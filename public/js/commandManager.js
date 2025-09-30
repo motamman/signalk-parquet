@@ -325,9 +325,14 @@ export async function loadCommands() {
     try {
         const response = await fetch(`${getPluginPath()}/api/commands`);
         const result = await response.json();
-        
+
         if (result.success) {
             displayCommands(result.commands || []);
+            // Update automation states after displaying commands
+            setTimeout(() => updateAllAutomationStates(), 100);
+
+            // Subscribe to real-time command state updates
+            setTimeout(() => subscribeToCommandStates(result.commands || []), 200);
         } else {
             document.getElementById('commandContainer').innerHTML = `<div class="error">Error loading commands: ${result.error}</div>`;
         }
@@ -345,19 +350,28 @@ function displayCommands(commands) {
     }
 
     let html = '<div class="table-container"><table><thead><tr>';
-    html += '<th>Command</th><th>Path</th><th>Description</th><th>Automation</th><th>Status</th><th>Actions</th>';
+    html += '<th>Command</th><th>Path</th><th>Description</th><th>Status</th><th>Actions</th>';
     html += '</tr></thead><tbody>';
 
     commands.forEach(command => {
-        const status = command.active ? '🟢 Active' : '🔴 Inactive';
+        // Real-time status will be populated by SignalK subscription
+        const status = `<span id="command-state-${command.command}" class="command-state">⏳ Loading...</span>`;
         const registeredDate = new Date(command.registered).toLocaleString();
         const keywords = command.keywords ? command.keywords.join(', ') : '';
 
         // Automation info
         let automationInfo = '<div style="font-size: 0.9em;">';
 
-        // Manual override status
-        if (command.manualOverride) {
+        // Automation status placeholder - will be populated by updateAutomationUI
+        const hasThresholds = command.thresholds && command.thresholds.length > 0;
+        if (hasThresholds) {
+            automationInfo += `<div id="automation-status-${command.command}" style="margin-bottom: 5px;">
+                <!-- Automation status will be updated dynamically -->
+            </div>`;
+        }
+
+        // Manual override status (only for commands without thresholds)
+        if (command.manualOverride && !hasThresholds) {
             const expiry = command.manualOverrideUntil ?
                 ` (expires ${new Date(command.manualOverrideUntil).toLocaleString()})` : ' (permanent)';
             automationInfo += `<div style="color: #ff9800; margin-bottom: 5px;">🔒 Manual Override${expiry}</div>`;
@@ -386,7 +400,7 @@ function displayCommands(commands) {
         } else if (command.defaultState !== undefined) {
             automationInfo += `<div style="color: #4caf50;">⚙️ Default: ${command.defaultState ? 'ON' : 'OFF'}</div>`;
         } else {
-            automationInfo += '<div style="color: #999;">Manual control only</div>';
+            automationInfo += '<div style="color: #999;">📱 Manual control only</div>';
         }
 
         if (keywords) {
@@ -404,26 +418,28 @@ function displayCommands(commands) {
             <td><code style="font-size: 0.8em;">vessels.self.commands.${command.command}</code></td>
             <td>${automationInfo}</td>
             <td style="text-align: center;">
-                <div style="margin-bottom: 5px;">${status}</div>
-                ${command.manualOverride ?
-                    `<button onclick="setManualOverride('${command.command}', false)"
-                            style="background: #ff9800; color: white; border: none; padding: 2px 6px; border-radius: 3px; font-size: 0.8em;">
-                        🔓 Clear Override
-                    </button>` :
-                    `<button onclick="promptManualOverride('${command.command}')"
-                            style="background: #666; color: white; border: none; padding: 2px 6px; border-radius: 3px; font-size: 0.8em;">
-                        🔒 Override
-                    </button>`
-                }
+                ${status}
             </td>
-            <td>
-                <div style="display: flex; flex-direction: column; gap: 3px;">
-                    <div>
-                        <button onclick="executeCommand('${command.command}', true)" style="margin-right: 3px; padding: 4px 8px; font-size: 0.8em;">▶️ Start</button>
-                        <button onclick="executeCommand('${command.command}', false)" style="padding: 4px 8px; font-size: 0.8em;">⏹️ Stop</button>
+            <td style="text-align: center; min-width: 200px;">
+                <div style="display: flex; flex-direction: column; gap: 3px; align-items: center;">
+                    <div style="display: flex; gap: 3px;">
+                        <button id="start-btn-${command.command}" onclick="executeCommand('${command.command}', true)"
+                                style="padding: 4px 8px; font-size: 0.8em;">▶️ Start</button>
+                        <button id="stop-btn-${command.command}" onclick="executeCommand('${command.command}', false)"
+                                style="padding: 4px 8px; font-size: 0.8em;">⏹️ Stop</button>
                     </div>
-                    <div>
-                        <button onclick="showEditCommandForm('${command.command}')" class="btn-secondary" style="margin-right: 3px; padding: 3px 6px; font-size: 0.8em;">✏️ Edit</button>
+                    ${hasThresholds ?
+                        `<div>
+                            <button id="auto-toggle-${command.command}" onclick="toggleAutomation('${command.command}')"
+                                    style="background: #ff9800; color: white; border: none; padding: 2px 6px; border-radius: 3px; font-size: 0.8em;">
+                                👤 Disable Automation
+                            </button>
+                        </div>` :
+                        // No override buttons for commands without thresholds - just use Start/Stop
+                        ''
+                    }
+                    <div style="display: flex; gap: 3px;">
+                        <button onclick="showEditCommandForm('${command.command}')" class="btn-secondary" style="padding: 3px 6px; font-size: 0.8em;">✏️ Edit</button>
                         <button onclick="unregisterCommand('${command.command}')" class="btn-danger" style="padding: 3px 6px; font-size: 0.8em;">❌ Remove</button>
                     </div>
                 </div>
@@ -605,7 +621,6 @@ export async function executeCommand(commandName, value) {
         if (result.success) {
             await loadCommands();
             await loadCommandHistory();
-            alert(`Command '${commandName}' ${value ? 'started' : 'stopped'} successfully`);
         } else {
             alert(`Error executing command: ${result.error}`);
         }
@@ -1140,4 +1155,267 @@ function displayCommandHistory(history) {
 
     html += '</tbody></table></div>';
     container.innerHTML = html;
+}
+
+// Automation control functions
+export async function toggleAutomation(commandName) {
+    const button = document.getElementById(`auto-toggle-${commandName}`);
+    const originalText = button?.textContent;
+
+    try {
+        // Show loading state
+        if (button) {
+            button.textContent = '⏳ Updating...';
+            button.disabled = true;
+        }
+
+        // Get current automation state
+        const currentState = await getAutomationState(commandName);
+        const newState = !currentState;
+
+        console.log(`🔄 Toggling automation for ${commandName}: ${currentState} → ${newState}`);
+
+        // Update automation state
+        const response = await fetch(`/signalk/v1/api/vessels/self/commands/${commandName}/auto`, {
+            method: 'PUT',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+                value: newState
+            })
+        });
+
+        if (response.ok) {
+            // Wait a moment for SignalK to process
+            await new Promise(resolve => setTimeout(resolve, 500));
+
+            // Verify the change took effect
+            const verifyState = await getAutomationState(commandName);
+            if (verifyState === newState) {
+                updateAutomationUI(commandName, newState);
+                console.log(`✅ Automation ${newState ? 'enabled' : 'disabled'} for ${commandName}`);
+
+                // Show success feedback
+                if (button) {
+                    button.style.background = newState ? '#ff9800' : '#4caf50';
+                    button.textContent = newState ? '👤 Disable Automation' : '🤖 Enable Automation';
+                }
+            } else {
+                throw new Error(`State verification failed: expected ${newState}, got ${verifyState}`);
+            }
+        } else {
+            const errorText = await response.text();
+            throw new Error(`HTTP ${response.status}: ${errorText}`);
+        }
+    } catch (error) {
+        console.error(`❌ Automation toggle failed for ${commandName}:`, error);
+        alert(`Failed to update automation: ${error.message}`);
+
+        // Restore button state
+        if (button && originalText) {
+            button.textContent = originalText;
+        }
+    } finally {
+        // Re-enable button
+        if (button) {
+            button.disabled = false;
+        }
+    }
+}
+
+async function getAutomationState(commandName) {
+    try {
+        const response = await fetch(`/signalk/v1/api/vessels/self/commands/${commandName}/auto`);
+        if (response.ok) {
+            const data = await response.json();
+            console.log(`🔍 getAutomationState(${commandName}):`, data);
+            return data.value || false;
+        } else {
+            console.log(`❌ getAutomationState(${commandName}) HTTP ${response.status}`);
+        }
+    } catch (error) {
+        console.log(`❌ getAutomationState(${commandName}) error:`, error);
+    }
+    return false; // Default to false if unable to fetch
+}
+
+function updateAutomationUI(commandName, autoEnabled) {
+    // Update automation status display with clear, non-contradictory states
+    const statusContainer = document.getElementById(`automation-status-${commandName}`);
+    if (statusContainer) {
+        if (autoEnabled) {
+            // Automation is ON - show that thresholds are controlling the command
+            statusContainer.innerHTML = `
+                <div style="color: #4caf50; font-weight: bold; display: flex; align-items: center; gap: 8px;">
+                    <span>🤖 Automated Control</span>
+                    <span style="font-size: 0.8em; color: #666; font-weight: normal;">Controlled by thresholds</span>
+                </div>
+            `;
+        } else {
+            // Automation is OFF - show manual control with option to enable automation
+            statusContainer.innerHTML = `
+                <div style="color: #ff9800; font-weight: bold; display: flex; align-items: center; gap: 8px;">
+                    <span>👤 Manual Control</span>
+                    <span style="font-size: 0.8em; color: #666; font-weight: normal;">Thresholds inactive</span>
+                </div>
+            `;
+        }
+    }
+
+    // Update automation toggle button with clear labels
+    const toggleButton = document.getElementById(`auto-toggle-${commandName}`);
+    if (toggleButton) {
+        if (autoEnabled) {
+            toggleButton.textContent = '👤 Disable Automation';
+            toggleButton.style.background = '#ff9800';
+            toggleButton.title = 'Disable automation and switch to manual control';
+        } else {
+            toggleButton.textContent = '🤖 Enable Automation';
+            toggleButton.style.background = '#4caf50';
+            toggleButton.title = 'Enable threshold-based automation';
+        }
+    }
+
+    // Disable/enable Start/Stop buttons based on automation status
+    const startButton = document.getElementById(`start-btn-${commandName}`);
+    const stopButton = document.getElementById(`stop-btn-${commandName}`);
+
+    if (startButton && stopButton) {
+        if (autoEnabled) {
+            // Automation is ON - disable manual buttons
+            startButton.disabled = true;
+            stopButton.disabled = true;
+            startButton.style.opacity = '0.5';
+            stopButton.style.opacity = '0.5';
+            startButton.style.cursor = 'not-allowed';
+            stopButton.style.cursor = 'not-allowed';
+            startButton.title = 'Command is under automatic control';
+            stopButton.title = 'Command is under automatic control';
+        } else {
+            // Automation is OFF - enable manual buttons
+            startButton.disabled = false;
+            stopButton.disabled = false;
+            startButton.style.opacity = '1';
+            stopButton.style.opacity = '1';
+            startButton.style.cursor = 'pointer';
+            stopButton.style.cursor = 'pointer';
+            startButton.title = 'Manually start the command';
+            stopButton.title = 'Manually stop the command';
+        }
+    }
+}
+
+// Store WebSocket connection for real-time updates
+let signalKWebSocket = null;
+
+// Subscribe to real-time command state updates via SignalK WebSocket
+function subscribeToCommandStates(commands) {
+    // Close existing connection
+    if (signalKWebSocket) {
+        signalKWebSocket.close();
+    }
+
+    // Get SignalK WebSocket URL
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = `${protocol}//${window.location.host}/signalk/v1/stream?subscribe=none`;
+
+    try {
+        signalKWebSocket = new WebSocket(wsUrl);
+
+        signalKWebSocket.onopen = () => {
+            console.log('📡 Connected to SignalK stream for command states');
+
+            // Subscribe to each command path
+            commands.forEach(command => {
+                const subscription = {
+                    context: 'vessels.self',
+                    subscribe: [{
+                        path: `commands.${command.command}`,
+                        period: 1000,
+                        format: 'delta',
+                        policy: 'instant',
+                        minPeriod: 200
+                    }]
+                };
+
+                signalKWebSocket.send(JSON.stringify(subscription));
+                console.log(`📡 Subscribed to commands.${command.command}`);
+            });
+        };
+
+        signalKWebSocket.onmessage = (event) => {
+            try {
+                const data = JSON.parse(event.data);
+
+                if (data.updates) {
+                    data.updates.forEach(update => {
+                        if (update.values) {
+                            update.values.forEach(value => {
+                                if (value.path && value.path.startsWith('commands.')) {
+                                    const commandName = value.path.replace('commands.', '');
+
+                                    // Handle SignalK value extraction properly
+                                    let actualValue = value.value;
+                                    if (actualValue && typeof actualValue === 'object' && 'value' in actualValue) {
+                                        actualValue = actualValue.value;
+                                    }
+
+                                    // Only update if we have a valid value (not null/undefined)
+                                    if (actualValue !== null && actualValue !== undefined) {
+                                        const commandState = Boolean(actualValue);
+                                        updateCommandStateDisplay(commandName, commandState);
+                                    }
+                                }
+                            });
+                        }
+                    });
+                }
+            } catch (error) {
+                console.warn('Failed to parse SignalK message:', error);
+            }
+        };
+
+        signalKWebSocket.onerror = (error) => {
+            console.error('SignalK WebSocket error:', error);
+        };
+
+        signalKWebSocket.onclose = () => {
+            console.log('📡 SignalK stream disconnected');
+        };
+
+    } catch (error) {
+        console.error('Failed to connect to SignalK stream:', error);
+    }
+}
+
+// Update command state display in real-time
+function updateCommandStateDisplay(commandName, isOn) {
+    const stateElement = document.getElementById(`command-state-${commandName}`);
+    if (stateElement) {
+        if (isOn) {
+            stateElement.innerHTML = '<span style="color: #4caf50; font-weight: bold;">🟢 ON</span>';
+        } else {
+            stateElement.innerHTML = '<span style="color: #f44336; font-weight: bold;">🔴 OFF</span>';
+        }
+    }
+}
+
+// Load and update automation states for all commands
+export async function updateAllAutomationStates() {
+    try {
+        const response = await fetch(`${getPluginPath()}/api/commands`);
+        const result = await response.json();
+
+        if (result.success && result.commands) {
+            for (const command of result.commands) {
+                if (command.thresholds && command.thresholds.length > 0) {
+                    const autoState = await getAutomationState(command.command);
+                    updateAutomationUI(command.command, autoState);
+                }
+            }
+        }
+    } catch (error) {
+        console.log('Error updating automation states:', error);
+    }
 }

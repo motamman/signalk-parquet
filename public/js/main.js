@@ -101,6 +101,8 @@ registerGlobals({
     setManualOverride: CommandManager.setManualOverride,
     promptManualOverride: CommandManager.promptManualOverride,
     loadCommandHistory: CommandManager.loadCommandHistory,
+    toggleAutomation: CommandManager.toggleAutomation,
+    updateAllAutomationStates: CommandManager.updateAllAutomationStates,
     // Live connections
     loadStreams: LiveConnections.loadStreams,
     showAddStreamForm: LiveConnections.showAddStreamForm,
