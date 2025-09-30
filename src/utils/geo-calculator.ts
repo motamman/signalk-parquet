@@ -110,8 +110,7 @@ export function calculateBearing(
 
   const y = Math.sin(Δλ) * Math.cos(φ2);
   const x =
-    Math.cos(φ1) * Math.sin(φ2) -
-    Math.sin(φ1) * Math.cos(φ2) * Math.cos(Δλ);
+    Math.cos(φ1) * Math.sin(φ2) - Math.sin(φ1) * Math.cos(φ2) * Math.cos(Δλ);
 
   const θ = Math.atan2(y, x);
   const bearing = ((θ * 180) / Math.PI + 360) % 360; // Convert to degrees and normalize to 0-360
@@ -199,13 +198,23 @@ export function calculateBoundingBoxFromHomePort(
   // Calculate center point by moving from home port
   if (latOffset !== 0) {
     // Move north or south
-    const point = calculateDestinationPoint(homePortLat, homePortLon, latOffset > 0 ? 180 : 0, boxSizeMeters);
+    const point = calculateDestinationPoint(
+      homePortLat,
+      homePortLon,
+      latOffset > 0 ? 180 : 0,
+      boxSizeMeters
+    );
     centerLat = point.latitude;
   }
 
   if (lonOffset !== 0) {
     // Move east or west
-    const point = calculateDestinationPoint(centerLat, homePortLon, lonOffset > 0 ? 270 : 90, boxSizeMeters);
+    const point = calculateDestinationPoint(
+      centerLat,
+      homePortLon,
+      lonOffset > 0 ? 270 : 90,
+      boxSizeMeters
+    );
     centerLon = point.longitude;
   }
 

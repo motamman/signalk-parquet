@@ -44,7 +44,10 @@ export function normalizeRadians(radians: number): number {
  * Result is in range [-180, 180]
  * Positive result means angle2 is clockwise from angle1
  */
-export function angularDifferenceDegrees(angle1: number, angle2: number): number {
+export function angularDifferenceDegrees(
+  angle1: number,
+  angle2: number
+): number {
   let diff = angle2 - angle1;
 
   // Normalize to [-180, 180]
@@ -59,7 +62,10 @@ export function angularDifferenceDegrees(angle1: number, angle2: number): number
  * Result is in range [-π, π]
  * Positive result means angle2 is clockwise from angle1
  */
-export function angularDifferenceRadians(angle1: number, angle2: number): number {
+export function angularDifferenceRadians(
+  angle1: number,
+  angle2: number
+): number {
   let diff = angle2 - angle1;
 
   // Normalize to [-π, π]

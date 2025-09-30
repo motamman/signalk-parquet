@@ -4,36 +4,43 @@ import { ServerAPI } from '@signalk/server-api';
  * Data type information for a SignalK path
  */
 export interface PathTypeInfo {
-  dataType: 'numeric' | 'angular' | 'boolean' | 'string' | 'position' | 'enum' | 'unknown';
+  dataType:
+    | 'numeric'
+    | 'angular'
+    | 'boolean'
+    | 'string'
+    | 'position'
+    | 'enum'
+    | 'unknown';
   unit?: string;
   enumValues?: string[];
   description?: string;
-  rawMetadata?: any;
+  rawMetadata?: Record<string, unknown>;
 }
 
 /**
  * Numeric units that indicate a numeric data type
  */
 const NUMERIC_UNITS = [
-  'm',      // meters
-  'm/s',    // meters per second
-  'knots',  // nautical miles per hour
-  'V',      // volts
-  'A',      // amperes
-  'Hz',     // hertz
-  'K',      // kelvin
-  'Pa',     // pascals
-  'kg',     // kilograms
-  'J',      // joules
-  'ratio',  // dimensionless ratio
-  'deg',    // degrees (non-angular context like temperature)
+  'm', // meters
+  'm/s', // meters per second
+  'knots', // nautical miles per hour
+  'V', // volts
+  'A', // amperes
+  'Hz', // hertz
+  'K', // kelvin
+  'Pa', // pascals
+  'kg', // kilograms
+  'J', // joules
+  'ratio', // dimensionless ratio
+  'deg', // degrees (non-angular context like temperature)
 ];
 
 /**
  * Angular units that require degree/radian conversion
  */
 const ANGULAR_UNITS = [
-  'rad',    // radians
+  'rad', // radians
 ];
 
 /**
@@ -70,18 +77,34 @@ export async function detectPathType(
       return { dataType: 'unknown' };
     }
 
-    const metadata = await response.json() as any;
+    const metadata = (await response.json()) as Record<string, unknown>;
+
+    // Type guard helpers
+    const getStringProperty = (
+      obj: Record<string, unknown>,
+      key: string
+    ): string | undefined => {
+      const value = obj[key];
+      return typeof value === 'string' ? value : undefined;
+    };
+
+    const getArrayProperty = (
+      obj: Record<string, unknown>,
+      key: string
+    ): string[] | undefined => {
+      const value = obj[key];
+      return Array.isArray(value) ? (value as string[]) : undefined;
+    };
 
     // Check for units to determine numeric vs angular
-    if (metadata.units) {
-      const unit = metadata.units;
-
+    const unit = getStringProperty(metadata, 'units');
+    if (unit) {
       // Angular data (radians)
       if (ANGULAR_UNITS.includes(unit)) {
         return {
           dataType: 'angular',
           unit,
-          description: metadata.description,
+          description: getStringProperty(metadata, 'description'),
           rawMetadata: metadata,
         };
       }
@@ -91,48 +114,55 @@ export async function detectPathType(
         return {
           dataType: 'numeric',
           unit,
-          description: metadata.description,
+          description: getStringProperty(metadata, 'description'),
           rawMetadata: metadata,
         };
       }
 
-      app?.debug(`Type detection: unknown unit "${unit}" for ${path}, defaulting to numeric`);
+      app?.debug(
+        `Type detection: unknown unit "${unit}" for ${path}, defaulting to numeric`
+      );
       return {
         dataType: 'numeric',
         unit,
-        description: metadata.description,
+        description: getStringProperty(metadata, 'description'),
         rawMetadata: metadata,
       };
     }
 
     // Check for enum values in metadata
-    if (metadata.enum || (Array.isArray(metadata.values) && metadata.values.length > 0)) {
-      const enumValues = metadata.enum || metadata.values;
+    const enumValues =
+      getArrayProperty(metadata, 'enum') ||
+      getArrayProperty(metadata, 'values');
+    if (enumValues && enumValues.length > 0) {
       return {
         dataType: 'enum',
         enumValues,
-        description: metadata.description,
+        description: getStringProperty(metadata, 'description'),
         rawMetadata: metadata,
       };
     }
 
     // Try to infer from description or type field
-    if (metadata.type === 'boolean' || metadata.description?.toLowerCase().includes('boolean')) {
+    const type = getStringProperty(metadata, 'type');
+    const description = getStringProperty(metadata, 'description');
+    if (type === 'boolean' || description?.toLowerCase().includes('boolean')) {
       return {
         dataType: 'boolean',
-        description: metadata.description,
+        description,
         rawMetadata: metadata,
       };
     }
 
     // Default to string if no clear type detected
-    app?.debug(`Type detection: no clear type for ${path}, defaulting to string`);
+    app?.debug(
+      `Type detection: no clear type for ${path}, defaulting to string`
+    );
     return {
       dataType: 'string',
-      description: metadata.description,
+      description,
       rawMetadata: metadata,
     };
-
   } catch (error) {
     app?.error(`Type detection error for ${path}: ${(error as Error).message}`);
     return { dataType: 'unknown' };
@@ -145,7 +175,7 @@ export async function detectPathType(
  */
 export async function detectPathTypeFromSample(
   path: string,
-  sampleValue: any,
+  sampleValue: unknown,
   app?: ServerAPI
 ): Promise<PathTypeInfo> {
   // Position object detection
