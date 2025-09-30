@@ -129,10 +129,18 @@ function clearAddPathForm() {
     checkboxes.forEach(checkbox => checkbox.checked = false);
 }
 
-// Populate SignalK paths dropdown
+// Store the current tree for search functionality
+let currentPathTree = null;
+
+// Populate SignalK paths tree
 async function populateSignalKPaths() {
-    const dropdown = document.getElementById('pathSignalK');
+    const treeContainer = document.getElementById('pathSignalKTree');
+    const searchInput = document.getElementById('pathSignalKSearch');
     const filterType = document.querySelector('input[name="pathFilter"]:checked')?.value || 'self';
+
+    if (!treeContainer) return;
+
+    treeContainer.innerHTML = '<div style="padding: 20px; text-align: center; color: #666;">Loading paths...</div>';
 
     try {
         const response = await fetch('/signalk/v1/api/');
@@ -155,26 +163,151 @@ async function populateSignalKPaths() {
         // Filter out defined command paths
         const availablePaths = allPaths.filter(path => !definedCommands.has(path));
 
-        // Clear existing options (except default ones)
-        while (dropdown.children.length > 2) {
-            dropdown.removeChild(dropdown.lastChild);
-        }
+        // Build and render tree
+        currentPathTree = buildPathTree(availablePaths);
 
-        // Add available paths
-        availablePaths.forEach(path => {
-            const option = document.createElement('option');
-            option.value = path;
-            option.textContent = path;
-            dropdown.appendChild(option);
-        });
+        const currentSearch = searchInput?.value || '';
+        renderPathTree(currentPathTree, treeContainer, currentSearch);
+
+        // Setup search listener (only once)
+        if (searchInput && !searchInput.dataset.listenerAttached) {
+            searchInput.dataset.listenerAttached = 'true';
+            searchInput.addEventListener('input', (e) => {
+                if (currentPathTree) {
+                    renderPathTree(currentPathTree, treeContainer, e.target.value);
+                }
+            });
+        }
 
     } catch (error) {
         console.log('Could not load real-time SignalK paths:', error);
+        treeContainer.innerHTML = '<div style="padding: 20px; text-align: center; color: #999;">Error loading paths</div>';
     }
+}
+
+// Render the path tree with optional search filter
+function renderPathTree(tree, container, searchTerm = '') {
+    let html = '';
+    Object.keys(tree).sort().forEach(key => {
+        html += renderTreeNode(key, tree[key], 0, searchTerm);
+    });
+    container.innerHTML = html || '<div style="padding: 20px; text-align: center; color: #666;">No matches found</div>';
+
+    // Auto-expand all when searching
+    if (searchTerm) {
+        container.querySelectorAll('.path-tree-children').forEach(el => {
+            el.classList.add('expanded');
+        });
+        container.querySelectorAll('.path-tree-toggle').forEach(el => {
+            if (el.textContent) el.textContent = '▼';
+        });
+    }
+}
+
+/**
+ * Build a hierarchical tree structure from flat path list
+ */
+function buildPathTree(paths) {
+    const tree = {};
+
+    paths.forEach(path => {
+        const parts = path.split('.');
+        let current = tree;
+
+        parts.forEach((part, index) => {
+            if (!current[part]) {
+                current[part] = {
+                    _children: {},
+                    _hasValue: index === parts.length - 1,
+                    _fullPath: parts.slice(0, index + 1).join('.')
+                };
+            } else if (index === parts.length - 1) {
+                current[part]._hasValue = true;
+            }
+            current = current[part]._children;
+        });
+    });
+
+    return tree;
+}
+
+/**
+ * Check if node or any descendant matches search term
+ */
+function nodeMatchesSearch(node, searchTerm) {
+    if (!searchTerm) return true;
+
+    const term = searchTerm.toLowerCase();
+
+    // Check if this node's full path contains the search term
+    if (node._fullPath && node._fullPath.toLowerCase().includes(term)) {
+        return true;
+    }
+
+    // Check if any children match
+    for (const childKey in node._children) {
+        if (nodeMatchesSearch(node._children[childKey], searchTerm)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+/**
+ * Render a tree node
+ */
+function renderTreeNode(key, node, level = 0, searchTerm = '') {
+    const hasChildren = Object.keys(node._children).length > 0;
+    const fullPath = node._fullPath;
+
+    // Filter based on search - show node if it or any descendant matches
+    if (searchTerm && !nodeMatchesSearch(node, searchTerm)) {
+        return '';
+    }
+
+    const itemClasses = ['path-tree-item'];
+    if (node._hasValue) itemClasses.push('has-value');
+
+    let html = `<div class="path-tree-node" data-level="${level}">`;
+    html += `<div class="${itemClasses.join(' ')}" data-path="${fullPath}" onclick="selectPathTreeItem(this, '${fullPath}', ${node._hasValue})">`;
+
+    if (hasChildren) {
+        html += `<span class="path-tree-toggle" onclick="event.stopPropagation(); toggleTreeNode(this)">▶</span>`;
+    } else {
+        html += `<span class="path-tree-toggle"></span>`;
+    }
+
+    html += `<span class="path-tree-label">${key}</span>`;
+    html += `</div>`;
+
+    if (hasChildren) {
+        html += `<div class="path-tree-children">`;
+        Object.keys(node._children).sort().forEach(childKey => {
+            html += renderTreeNode(childKey, node._children[childKey], level + 1, searchTerm);
+        });
+        html += `</div>`;
+    }
+
+    html += `</div>`;
+    return html;
 }
 
 // Update path filter
 export function updatePathFilter() {
+    const filterType = document.querySelector('input[name="pathFilter"]:checked')?.value || 'self';
+    const contextInput = document.getElementById('pathContext');
+
+    // Update context based on filter type
+    if (contextInput) {
+        if (filterType === 'self') {
+            contextInput.value = 'vessels.self';
+        } else {
+            contextInput.value = 'vessels.*';
+        }
+    }
+
+    // Populate paths - search will be automatically preserved and re-applied
     populateSignalKPaths();
 }
 
@@ -187,7 +320,7 @@ function extractPathsFromSignalK(obj, filterType = 'self') {
         if (!obj || typeof obj !== 'object') return;
 
         for (const key in obj) {
-            if (key === 'meta' || key === 'timestamp' || key === 'source') continue;
+            if (key === 'meta' || key === 'timestamp' || key === 'source' || key === '$source' || key === 'values' || key === 'sentence') continue;
 
             const currentPath = prefix ? `${prefix}.${key}` : key;
 
@@ -195,9 +328,9 @@ function extractPathsFromSignalK(obj, filterType = 'self') {
                 if (obj[key].value !== undefined) {
                     // This is a data path with a value
                     selfPaths.add(currentPath);
-                } else {
-                    extractRecursive(obj[key], currentPath);
                 }
+                // Always recurse to find nested paths
+                extractRecursive(obj[key], currentPath);
             }
         }
     }
@@ -222,14 +355,14 @@ function extractPathsFromSignalK(obj, filterType = 'self') {
                 function extractOtherVessel(obj, prefix = '') {
                     if (!obj || typeof obj !== 'object') return;
                     for (const key in obj) {
-                        if (key === 'meta' || key === 'timestamp' || key === 'source') continue;
+                        if (key === 'meta' || key === 'timestamp' || key === 'source' || key === '$source' || key === 'values' || key === 'sentence') continue;
                         const currentPath = prefix ? `${prefix}.${key}` : key;
                         if (obj[key] && typeof obj[key] === 'object') {
                             if (obj[key].value !== undefined) {
                                 tempPaths.add(currentPath);
-                            } else {
-                                extractOtherVessel(obj[key], currentPath);
                             }
+                            // Always recurse to find nested paths
+                            extractOtherVessel(obj[key], currentPath);
                         }
                     }
                 }

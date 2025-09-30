@@ -18,6 +18,9 @@ export async function loadHomePort() {
             document.getElementById('homePortLon').value = data.longitude;
 
             showHomePortStatus(`✅ Loaded: ${data.latitude.toFixed(6)}, ${data.longitude.toFixed(6)}`, 'success');
+
+            // Auto-collapse if values are set
+            autoCollapseHomePortIfSet();
         } else {
             showHomePortStatus('ℹ️ No home port configured', 'info');
         }
@@ -138,6 +141,40 @@ function showHomePortStatus(message, type) {
     }, timeout);
 }
 
+/**
+ * Toggle home port section collapse
+ */
+export function toggleHomePortCollapse() {
+    const details = document.getElementById('homePortDetails');
+    const toggle = document.getElementById('homePortToggle');
+
+    if (details.style.display === 'none') {
+        details.style.display = 'block';
+        toggle.textContent = '▼';
+    } else {
+        details.style.display = 'none';
+        toggle.textContent = '▶';
+    }
+}
+
+/**
+ * Check if home port has values and auto-collapse if it does
+ */
+export function autoCollapseHomePortIfSet() {
+    const latInput = document.getElementById('homePortLat');
+    const lonInput = document.getElementById('homePortLon');
+
+    if (latInput && lonInput && latInput.value && lonInput.value) {
+        const details = document.getElementById('homePortDetails');
+        const toggle = document.getElementById('homePortToggle');
+        if (details && toggle) {
+            details.style.display = 'none';
+            toggle.textContent = '▶';
+        }
+    }
+}
+
 // Make functions available globally for onclick handlers
 window.saveHomePort = saveHomePort;
 window.setCurrentLocationAsHomePort = setCurrentLocationAsHomePort;
+window.toggleHomePortCollapse = toggleHomePortCollapse;

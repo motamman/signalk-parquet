@@ -1,4 +1,4 @@
-import { ServerAPI } from '@signalk/server-api';
+import { ServerAPI, Path } from '@signalk/server-api';
 
 /**
  * Data type information for a SignalK path
@@ -159,11 +159,14 @@ export async function detectPathType(
     // Try to sample the actual value to detect boolean
     if (app) {
       try {
-        const sampleValue = app.getSelfPath(path as any);
+        const sampleValue = app.getSelfPath(path as Path);
         // Handle both raw values and SignalK value objects
-        const actualValue = sampleValue && typeof sampleValue === 'object' && 'value' in sampleValue
-          ? sampleValue.value
-          : sampleValue;
+        const actualValue =
+          sampleValue &&
+          typeof sampleValue === 'object' &&
+          'value' in sampleValue
+            ? sampleValue.value
+            : sampleValue;
 
         if (typeof actualValue === 'boolean') {
           return {
