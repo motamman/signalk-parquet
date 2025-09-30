@@ -43,6 +43,7 @@ const commandState: CommandRegistrationState = {
 const thresholdState = new Map<string, {
   lastValue: any;
   lastTriggered: number;
+  lastConditionMet?: boolean;
   unsubscribe?: () => void;
 }>();
 
@@ -830,7 +831,7 @@ function setupThresholdMonitoring(command: CommandConfig, threshold: ThresholdCo
   if (threshold?.enabled === false || !threshold.watchPath) {
     return;
   }
-  const monitorKey = `${command.command}_${threshold.watchPath}`;
+  const monitorKey = buildThresholdMonitorKey(command.command, threshold);
 
   appInstance?.debug(`🎯 Setting up threshold monitoring for ${command.command} watching ${threshold.watchPath}`);
 
@@ -853,6 +854,7 @@ function setupThresholdMonitoring(command: CommandConfig, threshold: ThresholdCo
   thresholdState.set(monitorKey, {
     lastValue: undefined,
     lastTriggered: 0,
+    lastConditionMet: undefined,
     unsubscribe
   });
 
@@ -931,7 +933,7 @@ function processThresholdValue(command: CommandConfig, threshold: ThresholdConfi
       ? { latitude: pluginConfig.homePortLatitude, longitude: pluginConfig.homePortLongitude }
       : undefined;
 
-    const shouldActivate = evaluateThreshold(threshold, normalizedValue, homePort);
+    const conditionMet = evaluateThreshold(threshold, normalizedValue, homePort);
 
     // Better debug logging for different threshold types
     let thresholdDesc = '';
@@ -949,46 +951,54 @@ function processThresholdValue(command: CommandConfig, threshold: ThresholdConfi
       thresholdDesc = `value=${threshold.value}`;
     }
 
-    appInstance?.debug(`📉 Threshold evaluation for ${commandName}:${threshold.watchPath} operator=${threshold.operator} ${thresholdDesc} result=${shouldActivate}`);
+    appInstance?.debug(`📉 Threshold evaluation for ${commandName}:${threshold.watchPath} operator=${threshold.operator} ${thresholdDesc} conditionMet=${conditionMet}`);
 
-    // Apply hysteresis for numeric values
-    if (threshold.hysteresis && typeof normalizedValue === 'number' && typeof state.lastValue === 'number') {
+    if (!conditionMet) {
+      state.lastConditionMet = false;
+      state.lastValue = normalizedValue;
+      return;
+    }
+
+    // Apply hysteresis window only when condition remains true
+    if (threshold.hysteresis && state.lastTriggered) {
       const timeSinceLastTrigger = now - state.lastTriggered;
       if (timeSinceLastTrigger < (threshold.hysteresis * 1000)) {
-        // Within hysteresis period, skip
+        appInstance?.debug(`⏱️ Hysteresis active for ${commandName}, skipping trigger (${timeSinceLastTrigger}ms < ${threshold.hysteresis * 1000}ms)`);
+        state.lastConditionMet = true;
+        state.lastValue = normalizedValue;
         return;
       }
     }
 
-    // Determine if command state should change
+    const desiredState = Boolean(threshold.activateOnMatch);
+
+    // Determine current command state
     const currentCommandValue = appInstance?.getSelfPath(`commands.${commandName}` as Path);
-    // Handle SignalK delta structure - extract .value if it's an object
     const actualValue = (currentCommandValue && typeof currentCommandValue === 'object' && 'value' in currentCommandValue)
       ? currentCommandValue.value
       : currentCommandValue;
     const currentlyActive = Boolean(actualValue);
-    const shouldBeActive = threshold.activateOnMatch ? shouldActivate : !shouldActivate;
 
-    appInstance?.debug(`🔍 Current state check for ${commandName}: SignalK=${actualValue} (from ${JSON.stringify(currentCommandValue)}), shouldBe=${shouldBeActive}, threshold=${threshold.operator} ${threshold.value}`);
+    appInstance?.debug(`🔍 Command state check for ${commandName}: current=${actualValue} (bool=${currentlyActive}), desired=${desiredState}`);
 
-    if (shouldBeActive !== currentlyActive) {
-      appInstance?.debug(`🎯 Threshold triggered for ${commandName}: ${threshold.watchPath} = ${normalizedValue}, switching to ${shouldBeActive ? 'ON' : 'OFF'}`);
+    if (currentlyActive !== desiredState) {
+      appInstance?.debug(`🎯 Threshold condition met for ${commandName}: ${threshold.watchPath} = ${normalizedValue}, setting to ${desiredState ? 'ON' : 'OFF'}`);
 
-      // Execute the command
-      const result = executeCommand(commandName, shouldBeActive);
+      const result = executeCommand(commandName, desiredState);
       if (result.success) {
         state.lastTriggered = now;
-        appInstance?.debug(`✅ Threshold-triggered command executed: ${commandName} = ${shouldBeActive}`);
+        command.active = desiredState;
+        commandState.registeredCommands.set(commandName, command);
+        currentCommands = Array.from(commandState.registeredCommands.values());
+        appInstance?.debug(`✅ Command updated by threshold: ${commandName} = ${desiredState}`);
       } else {
         appInstance?.error(`❌ Threshold-triggered command failed: ${commandName} - ${result.message}`);
       }
+    } else {
+      appInstance?.debug(`ℹ️ Command ${commandName} already ${desiredState ? 'ON' : 'OFF'}, no action taken`);
     }
 
-    command.active = shouldBeActive;
-    commandState.registeredCommands.set(commandName, command);
-    currentCommands = Array.from(commandState.registeredCommands.values());
-
-    // Update last value
+    state.lastConditionMet = true;
     state.lastValue = normalizedValue;
 
   } catch (error) {
@@ -1176,6 +1186,63 @@ function normalizeThresholdValue(value: any, threshold: ThresholdConfig): any {
   return value;
 }
 
+function buildThresholdMonitorKey(commandName: string, threshold: ThresholdConfig): string {
+  const parts: string[] = [
+    commandName,
+    threshold.watchPath,
+    threshold.operator,
+  ];
+
+  if (threshold.value !== undefined) {
+    parts.push(`value=${JSON.stringify(threshold.value)}`);
+  }
+
+  if (threshold.valueMin !== undefined) {
+    parts.push(`min=${threshold.valueMin}`);
+  }
+
+  if (threshold.valueMax !== undefined) {
+    parts.push(`max=${threshold.valueMax}`);
+  }
+
+  if (threshold.latitude !== undefined) {
+    parts.push(`lat=${threshold.latitude}`);
+  }
+
+  if (threshold.longitude !== undefined) {
+    parts.push(`lon=${threshold.longitude}`);
+  }
+
+  if (threshold.radius !== undefined) {
+    parts.push(`radius=${threshold.radius}`);
+  }
+
+  if (threshold.useHomePort) {
+    parts.push('useHomePort=true');
+  }
+
+  if (threshold.boxSize !== undefined) {
+    parts.push(`boxSize=${threshold.boxSize}`);
+  }
+
+  if (threshold.boxAnchor) {
+    parts.push(`boxAnchor=${threshold.boxAnchor}`);
+  }
+
+  if (threshold.boundingBox) {
+    const { north, south, east, west } = threshold.boundingBox;
+    parts.push(`boundingBox=${north},${south},${east},${west}`);
+  }
+
+  parts.push(`activateOnMatch=${threshold.activateOnMatch}`);
+
+  if (threshold.hysteresis !== undefined) {
+    parts.push(`hysteresis=${threshold.hysteresis}`);
+  }
+
+  return parts.join('|');
+}
+
 export function updateCommandThreshold(commandName: string, threshold: ThresholdConfig): CommandExecutionResult {
   const command = commandState.registeredCommands.get(commandName);
   if (!command) {
@@ -1190,7 +1257,7 @@ export function updateCommandThreshold(commandName: string, threshold: Threshold
     setupThresholdMonitoring(command, threshold);
   } else {
     // Stop monitoring if disabled
-    const monitorKey = `${commandName}_${threshold.watchPath}`;
+    const monitorKey = buildThresholdMonitorKey(commandName, threshold);
     const state = thresholdState.get(monitorKey);
     if (state?.unsubscribe) {
       state.unsubscribe();
