@@ -409,6 +409,38 @@ export function registerCommand(
       const autoValue = Boolean(value);
       const timestamp = new Date().toISOString();
 
+      // One-time transition operations when .auto toggles
+      if (autoValue) {
+        // Enabling automation: 1) Set to OFF, 2) Evaluate thresholds immediately, 3) Thresholds take control (continuous)
+        appInstance.debug(`🤖 Enabling automation for ${commandName}`);
+
+        // 1. Set command state to OFF/false
+        const offResult = executeCommand(commandName, false);
+        if (offResult.success) {
+          appInstance.debug(`🔧 Command ${commandName} set to OFF before threshold evaluation`);
+        } else {
+          appInstance.error(`❌ Failed to set ${commandName} to OFF: ${offResult.message}`);
+        }
+
+        // 2. Immediately evaluate all thresholds
+        if (commandConfig.thresholds && commandConfig.thresholds.length > 0) {
+          commandConfig.thresholds.forEach(threshold => {
+            const currentValue = appInstance.getSelfPath(threshold.watchPath as Path);
+            if (currentValue !== undefined) {
+              const monitorKey = buildThresholdMonitorKey(commandName, threshold);
+              const state = thresholdState.get(monitorKey);
+              if (state) {
+                processThresholdValue(commandConfig, threshold, currentValue, monitorKey);
+                appInstance.debug(`🎯 Evaluated threshold for ${commandName}:${threshold.watchPath}`);
+              }
+            }
+          });
+        }
+      } else {
+        // Disabling automation: 1) Stop monitoring (handled by threshold checks), 2) Leave state as-is, 3) Enable manual control
+        appInstance.debug(`👤 Disabling automation for ${commandName}, state unchanged`);
+      }
+
       appInstance.handleMessage('zennora-parquet-commands', {
         context: 'vessels.self' as Context,
         updates: [
@@ -1289,8 +1321,36 @@ export function setManualOverride(commandName: string, override: boolean, expiry
     command.manualOverrideUntil = undefined;
     appInstance?.debug(`🔒 Permanent manual override set for ${commandName}`);
   } else {
+    // Enabling automation mode: set to OFF then evaluate thresholds
     command.manualOverrideUntil = undefined;
-    appInstance?.debug(`🔓 Manual override cleared for ${commandName}`);
+    appInstance?.debug(`🔓 Manual override cleared for ${commandName}, enabling automation`);
+
+    // Set command to OFF (defaultState = false)
+    const offResult = executeCommand(commandName, false);
+    if (offResult.success) {
+      appInstance?.debug(`🔧 Command ${commandName} set to OFF (default state) before threshold evaluation`);
+    } else {
+      appInstance?.error(`❌ Failed to set ${commandName} to OFF: ${offResult.message}`);
+    }
+
+    // Immediately evaluate all thresholds for this command
+    if (command.thresholds && command.thresholds.length > 0) {
+      command.thresholds.forEach(threshold => {
+        const currentValue = appInstance?.getSelfPath(threshold.watchPath as Path);
+        if (currentValue !== undefined) {
+          const monitorKey = buildThresholdMonitorKey(commandName, threshold);
+          const state = thresholdState.get(monitorKey);
+
+          if (state) {
+            // Threshold monitoring is active, evaluate immediately
+            processThresholdValue(command, threshold, currentValue, monitorKey);
+            appInstance?.debug(`🎯 Immediately evaluated threshold for ${commandName}:${threshold.watchPath}`);
+          } else {
+            appInstance?.debug(`⚠️ Threshold state not found for ${commandName}:${threshold.watchPath}, will evaluate on next update`);
+          }
+        }
+      });
+    }
   }
 
   // Save configuration

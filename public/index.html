@@ -641,16 +641,7 @@
                             <small style="color: #666; font-size: 11px;">Separate multiple keywords with commas</small>
                         </div>
 
-                        <!-- Default State Configuration -->
-                        <div class="form-group">
-                            <label for="addCommandDefaultState">Default State:</label>
-                            <select id="addCommandDefaultState">
-                                <option value="">No default (manual control only)</option>
-                                <option value="true">Default ON</option>
-                                <option value="false">Default OFF</option>
-                            </select>
-                            <small style="color: #666; font-size: 11px;">State when no threshold or manual override is active</small>
-                        </div>
+                        <!-- Default State is now hardcoded to OFF on server side -->
 
                         <!-- Threshold Configuration -->
                         <div style="margin-top: 20px; padding: 15px; background: #f0f8ff; border: 1px solid #b3d9ff; border-radius: 5px;">
@@ -662,59 +653,7 @@
 
                             <button type="button" id="addCommandThresholdButton" onclick="addNewCommandThreshold()" style="background: #4caf50; color: white; border: none; padding: 8px 12px; border-radius: 4px; margin-top: 10px;">➕ Add Threshold</button>
 
-                            <!-- Add Threshold Form for new command (hidden by default) -->
-                            <div id="addCommandThresholdForm" style="display: none; margin-top: 15px; padding: 15px; background: #f8f9fa; border: 1px solid #ddd; border-radius: 5px;">
-                                <h6 style="margin-bottom: 10px; color: #333;">Add New Threshold</h6>
-
-                                <div class="form-group">
-                                    <label for="addCmdThresholdPath">SignalK Path to Monitor:</label>
-                                    <input type="text" id="addCmdThresholdPathSearch" class="path-tree-search" placeholder="🔍 Search paths...">
-                                    <div id="addCmdThresholdPathTree" class="path-tree-container"></div>
-                                    <input type="hidden" id="addCmdThresholdPath">
-                                    <button type="button" onclick="showCustomPathInput('addCmdThresholdPath')" style="margin-top: 5px; padding: 6px 12px; background: #666; color: white; border: none; border-radius: 4px; font-size: 0.9em;">🖊️ Enter Custom Path</button>
-                                    <input type="text" id="addCmdThresholdPathCustom" placeholder="Enter custom SignalK path (e.g., navigation.speedOverGround)" style="width: 100%; padding: 8px; margin-top: 5px; border: 1px solid #ddd; border-radius: 4px; display: none;">
-                                </div>
-
-                                <div style="display: flex; gap: 10px;">
-                                    <div class="form-group" style="flex: 1;">
-                                        <label for="addCmdThresholdOperator">Condition:</label>
-                                        <select id="addCmdThresholdOperator" onchange="toggleAddCmdThresholdValueField()">
-                                            <option value="gt">Greater than (&gt;)</option>
-                                            <option value="lt">Less than (&lt;)</option>
-                                            <option value="eq">Equal to (=)</option>
-                                            <option value="ne">Not equal to (≠)</option>
-                                            <option value="true">Is true</option>
-                                            <option value="false">Is false</option>
-                                        </select>
-                                    </div>
-
-                                    <div class="form-group" style="flex: 1;" id="addCmdThresholdValueGroup">
-                                        <label for="addCmdThresholdValue">Value:</label>
-                                        <input type="text" id="addCmdThresholdValue" placeholder="e.g., 5.0">
-                                    </div>
-                                </div>
-
-                                <div style="display: flex; gap: 10px;">
-                                    <div class="form-group" style="flex: 1;">
-                                        <label for="addCmdThresholdAction">Action when condition met:</label>
-                                        <select id="addCmdThresholdAction">
-                                            <option value="true">Turn command ON</option>
-                                            <option value="false">Turn command OFF</option>
-                                        </select>
-                                    </div>
-
-                                    <div class="form-group" style="flex: 1;">
-                                        <label for="addCmdThresholdHysteresis">Hysteresis (seconds):</label>
-                                        <input type="number" id="addCmdThresholdHysteresis" placeholder="2.0" step="0.1">
-                                        <small style="color: #666; font-size: 11px;">Prevent rapid switching</small>
-                                    </div>
-                                </div>
-
-                                <div style="margin-top: 15px; display: flex; gap: 10px;">
-                                    <button type="button" onclick="saveAddCmdThreshold()" style="background: #4caf50; color: white; border: none; padding: 6px 12px; border-radius: 4px;">✅ Add Threshold</button>
-                                    <button type="button" onclick="cancelAddCmdThreshold()" style="background: #666; color: white; border: none; padding: 6px 12px; border-radius: 4px;">❌ Cancel</button>
-                                </div>
-                            </div>
+                            <!-- Threshold form replaced by unified modal -->
                         </div>
 
                         <div style="margin-top: 20px; padding-top: 15px; border-top: 1px solid #ddd;">
@@ -740,16 +679,7 @@
                             <small style="color: #666; font-size: 11px;">Separate multiple keywords with commas</small>
                         </div>
 
-                        <!-- Default State Configuration -->
-                        <div class="form-group">
-                            <label for="editCommandDefaultState">Default State:</label>
-                            <select id="editCommandDefaultState">
-                                <option value="">No default (manual control only)</option>
-                                <option value="true">Default ON</option>
-                                <option value="false">Default OFF</option>
-                            </select>
-                            <small style="color: #666; font-size: 11px;">State when no threshold or manual override is active</small>
-                        </div>
+                        <!-- Default State is now hardcoded to OFF on server side -->
 
                         <!-- Threshold Configuration -->
                         <div style="margin-top: 20px; padding: 15px; background: #f0f8ff; border: 1px solid #b3d9ff; border-radius: 5px;">
@@ -761,59 +691,7 @@
 
                             <button type="button" id="editCommandAddThresholdButton" onclick="addNewThreshold()" style="background: #4caf50; color: white; border: none; padding: 8px 12px; border-radius: 4px; margin-top: 10px;">➕ Add Threshold</button>
 
-                            <!-- Add Threshold Form (hidden by default) -->
-                            <div id="addThresholdForm" style="display: none; margin-top: 15px; padding: 15px; background: #f8f9fa; border: 1px solid #ddd; border-radius: 5px;">
-                                <h6 style="margin-bottom: 10px; color: #333;">Add New Threshold</h6>
-
-                                <div class="form-group">
-                                    <label for="newThresholdPath">SignalK Path to Monitor:</label>
-                                    <input type="text" id="newThresholdPathSearch" class="path-tree-search" placeholder="🔍 Search paths...">
-                                    <div id="newThresholdPathTree" class="path-tree-container"></div>
-                                    <input type="hidden" id="newThresholdPath">
-                                    <button type="button" onclick="showCustomPathInput('newThresholdPath')" style="margin-top: 5px; padding: 6px 12px; background: #666; color: white; border: none; border-radius: 4px; font-size: 0.9em;">🖊️ Enter Custom Path</button>
-                                    <input type="text" id="newThresholdPathCustom" placeholder="Enter custom SignalK path (e.g., navigation.speedOverGround)" style="width: 100%; padding: 8px; margin-top: 5px; border: 1px solid #ddd; border-radius: 4px; display: none;">
-                                </div>
-
-                                <div style="display: flex; gap: 10px;">
-                                    <div class="form-group" style="flex: 1;">
-                                        <label for="newThresholdOperator">Condition:</label>
-                                        <select id="newThresholdOperator" onchange="toggleNewThresholdValueField()">
-                                            <option value="gt">Greater than (&gt;)</option>
-                                            <option value="lt">Less than (&lt;)</option>
-                                            <option value="eq">Equal to (=)</option>
-                                            <option value="ne">Not equal to (≠)</option>
-                                            <option value="true">Is true</option>
-                                            <option value="false">Is false</option>
-                                        </select>
-                                    </div>
-
-                                    <div class="form-group" style="flex: 1;" id="newThresholdValueGroup">
-                                        <label for="newThresholdValue">Value:</label>
-                                        <input type="text" id="newThresholdValue" placeholder="e.g., 5.0">
-                                    </div>
-                                </div>
-
-                                <div style="display: flex; gap: 10px;">
-                                    <div class="form-group" style="flex: 1;">
-                                        <label for="newThresholdAction">Action when condition met:</label>
-                                        <select id="newThresholdAction">
-                                            <option value="true">Turn command ON</option>
-                                            <option value="false">Turn command OFF</option>
-                                        </select>
-                                    </div>
-
-                                    <div class="form-group" style="flex: 1;">
-                                        <label for="newThresholdHysteresis">Hysteresis (seconds):</label>
-                                        <input type="number" id="newThresholdHysteresis" placeholder="2.0" step="0.1">
-                                        <small style="color: #666; font-size: 11px;">Prevent rapid switching</small>
-                                    </div>
-                                </div>
-
-                                <div style="margin-top: 15px; display: flex; gap: 10px;">
-                                    <button type="button" onclick="saveNewThreshold()" style="background: #4caf50; color: white; border: none; padding: 6px 12px; border-radius: 4px;">✅ Add Threshold</button>
-                                    <button type="button" onclick="cancelNewThreshold()" style="background: #666; color: white; border: none; padding: 6px 12px; border-radius: 4px;">❌ Cancel</button>
-                                </div>
-                            </div>
+                            <!-- Threshold form replaced by unified modal -->
                         </div>
 
                         <div style="margin-top: 20px; padding-top: 15px; border-top: 1px solid #ddd; display: flex; flex-direction: column; gap: 10px;">
@@ -1366,6 +1244,65 @@
             </div>
             <div id="analysisViewContent" style="padding: 20px;">
                 <!-- Individual analysis content will be loaded here -->
+            </div>
+        </div>
+    </div>
+
+    <!-- Unified Threshold Modal -->
+    <div id="thresholdModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 10000; overflow-y: auto;">
+        <div style="max-width: 800px; margin: 50px auto; background: white; border-radius: 10px; padding: 30px; box-shadow: 0 4px 20px rgba(0,0,0,0.3);">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+                <h3 id="thresholdModalTitle" style="margin: 0; color: #333;">Add Threshold</h3>
+                <button onclick="closeThresholdModal()" style="background: none; border: none; font-size: 24px; cursor: pointer; color: #666;">&times;</button>
+            </div>
+
+            <div class="form-group">
+                <label for="thresholdPath">SignalK Path to Monitor:</label>
+                <input type="text" id="thresholdPathSearch" class="path-tree-search" placeholder="🔍 Search paths...">
+                <div id="thresholdPathTree" class="path-tree-container"></div>
+                <input type="hidden" id="thresholdPath">
+                <button type="button" onclick="showCustomPathInput('thresholdPath')" style="margin-top: 5px; padding: 6px 12px; background: #666; color: white; border: none; border-radius: 4px; font-size: 0.9em;">🖊️ Enter Custom Path</button>
+                <input type="text" id="thresholdPathCustom" placeholder="Enter custom SignalK path (e.g., navigation.speedOverGround)" style="width: 100%; padding: 8px; margin-top: 5px; border: 1px solid #ddd; border-radius: 4px; display: none;">
+            </div>
+
+            <div style="display: flex; gap: 10px;">
+                <div class="form-group" style="flex: 1;">
+                    <label for="thresholdOperator">Condition:</label>
+                    <select id="thresholdOperator" onchange="toggleThresholdValueField()">
+                        <option value="gt">Greater than (&gt;)</option>
+                        <option value="lt">Less than (&lt;)</option>
+                        <option value="eq">Equal to (=)</option>
+                        <option value="ne">Not equal to (≠)</option>
+                        <option value="true">Is true</option>
+                        <option value="false">Is false</option>
+                    </select>
+                </div>
+
+                <div class="form-group" style="flex: 1;" id="thresholdValueGroup">
+                    <label for="thresholdValue">Value:</label>
+                    <input type="text" id="thresholdValue" placeholder="e.g., 5.0">
+                </div>
+            </div>
+
+            <div style="display: flex; gap: 10px;">
+                <div class="form-group" style="flex: 1;">
+                    <label for="thresholdAction">Action when condition met:</label>
+                    <select id="thresholdAction">
+                        <option value="true">Turn command ON</option>
+                        <option value="false">Turn command OFF</option>
+                    </select>
+                </div>
+
+                <div class="form-group" style="flex: 1;">
+                    <label for="thresholdHysteresis">Hysteresis (seconds):</label>
+                    <input type="number" id="thresholdHysteresis" placeholder="2.0" step="0.1">
+                    <small style="color: #666; font-size: 11px;">Prevent rapid switching</small>
+                </div>
+            </div>
+
+            <div style="margin-top: 20px; display: flex; gap: 10px; justify-content: flex-end;">
+                <button type="button" onclick="cancelThresholdModal()" style="background: #666; color: white; border: none; padding: 10px 20px; border-radius: 4px; cursor: pointer;">❌ Cancel</button>
+                <button type="button" id="thresholdModalSaveButton" onclick="saveThresholdModal()" style="background: #4caf50; color: white; border: none; padding: 10px 20px; border-radius: 4px; cursor: pointer;">✅ Add Threshold</button>
             </div>
         </div>
     </div>

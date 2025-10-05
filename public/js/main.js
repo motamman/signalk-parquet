@@ -94,6 +94,13 @@ registerGlobals({
     cancelNewThreshold: CommandManager.cancelNewThreshold,
     saveNewThreshold: CommandManager.saveNewThreshold,
     removeThreshold: CommandManager.removeThreshold,
+    editThreshold: CommandManager.editThreshold,
+    // Unified threshold modal
+    openThresholdModal: CommandManager.openThresholdModal,
+    closeThresholdModal: CommandManager.closeThresholdModal,
+    cancelThresholdModal: CommandManager.cancelThresholdModal,
+    saveThresholdModal: CommandManager.saveThresholdModal,
+    toggleThresholdValueField: CommandManager.toggleThresholdValueField,
     updateAddCmdThresholdPathFilter: CommandManager.updateAddCmdThresholdPathFilter,
     toggleAddCmdThresholdValueField: CommandManager.toggleAddCmdThresholdValueField,
     addNewCommandThreshold: CommandManager.addNewCommandThreshold,
