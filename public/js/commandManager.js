@@ -7,6 +7,15 @@ let currentEditingRow = null;
 let editFormDirty = false;
 let editFormPlaceholder = null;
 let editFormRowElement = null;
+let editingThresholdIndex = null; // Track which threshold is being edited
+
+// Unified threshold modal state
+let thresholdModalContext = {
+    mode: null, // 'edit' or 'create'
+    targetArray: null, // editingThresholds or addingThresholds
+    editIndex: null, // Index if editing existing threshold
+    callback: null // Callback when threshold is saved
+};
 
 const editCommandFormElement = document.getElementById('editCommandForm');
 let editFormOriginalParent = editCommandFormElement?.parentNode || null;
@@ -301,10 +310,7 @@ function setupEditFormFieldListeners() {
         }
     });
 
-    const defaultStateSelect = document.getElementById('editCommandDefaultState');
-    if (defaultStateSelect) {
-        defaultStateSelect.addEventListener('change', () => markEditFormDirty());
-    }
+    // defaultState is now hardcoded to false on server side
 
     form.dataset.listenersAttached = 'true';
 }
@@ -430,8 +436,7 @@ async function persistCommandChanges({ silent = false, closeOnSuccess = false, r
         const description = document.getElementById('editCommandDescription').value.trim();
         const keywordsInput = document.getElementById('editCommandKeywords').value.trim();
         const keywords = keywordsInput ? keywordsInput.split(',').map(k => k.trim()).filter(k => k.length > 0) : undefined;
-        const defaultStateValue = document.getElementById('editCommandDefaultState').value;
-        const defaultState = defaultStateValue === '' ? undefined : (defaultStateValue === 'true');
+        const defaultState = false; // Hardcoded to OFF
         const thresholds = editingThresholds.length > 0 ? editingThresholds : [];
 
         const response = await fetch(`${getPluginPath()}/api/commands/${command}`, {
@@ -623,7 +628,7 @@ function clearAddCommandForm() {
     document.getElementById('commandName').value = '';
     document.getElementById('commandDescription').value = '';
     document.getElementById('commandKeywords').value = '';
-    document.getElementById('addCommandDefaultState').value = '';
+    // defaultState is now hardcoded to false
 
     // Clear thresholds
     addingThresholds = [];
@@ -665,15 +670,7 @@ export async function showEditCommandForm(commandName) {
         document.getElementById('editCommandDescription').value = command.description || '';
         document.getElementById('editCommandKeywords').value = command.keywords ? command.keywords.join(', ') : '';
 
-        // Populate default state
-        const defaultStateSelect = document.getElementById('editCommandDefaultState');
-        if (command.defaultState === true) {
-            defaultStateSelect.value = 'true';
-        } else if (command.defaultState === false) {
-            defaultStateSelect.value = 'false';
-        } else {
-            defaultStateSelect.value = '';
-        }
+        // defaultState is now hardcoded to false on server side
 
         // Populate thresholds configuration (multiple thresholds supported)
         editingThresholds = command.thresholds ? [...command.thresholds] : [];
@@ -722,9 +719,8 @@ export async function registerCommand() {
         // Parse keywords from comma-separated string
         const keywords = keywordsInput ? keywordsInput.split(',').map(k => k.trim()).filter(k => k.length > 0) : undefined;
 
-        // Get default state
-        const defaultStateValue = document.getElementById('addCommandDefaultState').value;
-        const defaultState = defaultStateValue === '' ? undefined : (defaultStateValue === 'true');
+        // Default state is hardcoded to OFF
+        const defaultState = false;
 
         // Get thresholds configuration
         const thresholds = addingThresholds.length > 0 ? addingThresholds : undefined;
@@ -1423,39 +1419,32 @@ export function toggleNewThresholdValueField() {
 }
 
 export function addNewThreshold() {
-    const form = document.getElementById('addThresholdForm');
-    form.style.display = 'block';
-
-    const trigger = document.getElementById('editCommandAddThresholdButton');
-    if (trigger) {
-        trigger.style.display = 'none';
-    }
-
-    // Populate the path dropdown
-    populateThresholdPaths();
-
-    // Clear form
-    document.getElementById('newThresholdPath').value = '';
-    document.getElementById('newThresholdPathCustom').value = '';
-    document.getElementById('newThresholdPathCustom').style.display = 'none';
-    document.getElementById('newThresholdOperator').value = 'gt';
-    document.getElementById('newThresholdValue').value = '';
-    document.getElementById('newThresholdAction').value = 'true';
-    document.getElementById('newThresholdHysteresis').value = '';
-
-    toggleNewThresholdValueField();
+    // Use unified modal instead
+    openThresholdModal({
+        mode: 'create',
+        targetArray: editingThresholds
+    });
 }
 
 export function cancelNewThreshold() {
     const form = document.getElementById('addThresholdForm');
     if (form) {
         form.style.display = 'none';
+
+        // Reset button text if it was changed for editing
+        const saveButton = form.querySelector('button[onclick="saveNewThreshold()"]');
+        if (saveButton && saveButton.textContent.includes('Update')) {
+            saveButton.textContent = '✅ Add Threshold';
+        }
     }
 
     const trigger = document.getElementById('editCommandAddThresholdButton');
     if (trigger) {
         trigger.style.display = 'inline-block';
     }
+
+    // Reset edit mode
+    editingThresholdIndex = null;
 }
 
 export function saveNewThreshold() {
@@ -1598,8 +1587,15 @@ export function saveNewThreshold() {
         }
     }
 
-    // Add to thresholds array
-    editingThresholds.push(threshold);
+    // Add or update threshold
+    if (editingThresholdIndex !== null) {
+        // Update existing threshold
+        editingThresholds[editingThresholdIndex] = threshold;
+        editingThresholdIndex = null; // Reset edit mode
+    } else {
+        // Add new threshold
+        editingThresholds.push(threshold);
+    }
     displayThresholdsList();
     cancelNewThreshold();
     markEditFormDirty();
@@ -1652,9 +1648,14 @@ function displayThresholdsList() {
                 <div>
                     <strong>${threshold.watchPath}</strong> ${description} → ${action}${hysteresis}
                 </div>
-                <button onclick="removeThreshold(${index})" style="background: #f44336; color: white; border: none; padding: 4px 8px; border-radius: 3px; font-size: 0.8em;">
-                    ❌ Remove
-                </button>
+                <div style="display: flex; gap: 5px;">
+                    <button onclick="editThreshold(${index})" style="background: #2196F3; color: white; border: none; padding: 4px 8px; border-radius: 3px; font-size: 0.8em;">
+                        ✏️ Edit
+                    </button>
+                    <button onclick="removeThreshold(${index})" style="background: #f44336; color: white; border: none; padding: 4px 8px; border-radius: 3px; font-size: 0.8em;">
+                        ❌ Remove
+                    </button>
+                </div>
             </div>
         `;
     });
@@ -1666,6 +1667,488 @@ export function removeThreshold(index) {
     editingThresholds.splice(index, 1);
     displayThresholdsList();
     markEditFormDirty();
+}
+
+export function editThreshold(index) {
+    const threshold = editingThresholds[index];
+    if (!threshold) return;
+
+    // Use unified modal instead
+    openThresholdModal({
+        mode: 'edit',
+        targetArray: editingThresholds,
+        editIndex: index,
+        threshold: threshold
+    });
+}
+
+// ============================================
+// UNIFIED THRESHOLD MODAL FUNCTIONS
+// ============================================
+
+export function openThresholdModal(options = {}) {
+    const {
+        mode = 'create', // 'create' or 'edit'
+        targetArray = editingThresholds,
+        editIndex = null,
+        threshold = null,
+        callback = null
+    } = options;
+
+    // Store context
+    thresholdModalContext = {
+        mode,
+        targetArray,
+        editIndex,
+        callback
+    };
+
+    // Show modal
+    const modal = document.getElementById('thresholdModal');
+    modal.style.display = 'block';
+
+    // Update title
+    const title = document.getElementById('thresholdModalTitle');
+    const saveButton = document.getElementById('thresholdModalSaveButton');
+
+    if (editIndex !== null && threshold) {
+        title.textContent = 'Edit Threshold';
+        saveButton.textContent = '✅ Update Threshold';
+        // Load existing threshold data
+        loadThresholdIntoModal(threshold);
+    } else {
+        title.textContent = 'Add Threshold';
+        saveButton.textContent = '✅ Add Threshold';
+        // Clear form for new threshold
+        clearThresholdModal();
+    }
+}
+
+export function closeThresholdModal() {
+    const modal = document.getElementById('thresholdModal');
+    modal.style.display = 'none';
+    clearThresholdModal();
+    thresholdModalContext = { mode: null, targetArray: null, editIndex: null, callback: null };
+}
+
+export function cancelThresholdModal() {
+    closeThresholdModal();
+}
+
+function clearThresholdModal() {
+    populateThresholdModalPaths().then(() => {
+        const pathSelect = document.getElementById('thresholdPath');
+        const pathCustom = document.getElementById('thresholdPathCustom');
+
+        if (pathSelect) pathSelect.value = '';
+        if (pathCustom) {
+            pathCustom.value = '';
+            pathCustom.style.display = 'none';
+        }
+
+        setTimeout(() => {
+            const operatorSelect = document.getElementById('thresholdOperator');
+            if (operatorSelect) {
+                operatorSelect.value = 'gt';
+                updateValueFields('thresholdOperator', 'thresholdValueGroup', 'number');
+            }
+
+            const actionSelect = document.getElementById('thresholdAction');
+            if (actionSelect) actionSelect.value = 'true';
+
+            const hysteresisInput = document.getElementById('thresholdHysteresis');
+            if (hysteresisInput) hysteresisInput.value = '';
+        }, 50);
+    });
+}
+
+async function loadThresholdIntoModal(threshold) {
+    await populateThresholdModalPaths();
+
+    // Set path in hidden input
+    const pathSelect = document.getElementById('thresholdPath');
+    const pathCustom = document.getElementById('thresholdPathCustom');
+
+    if (pathSelect) {
+        pathSelect.value = threshold.watchPath;
+    }
+
+    if (pathCustom) {
+        if (threshold.watchPath && !pathSelect?.value) {
+            // Path not in list, use custom
+            pathCustom.value = threshold.watchPath;
+            pathCustom.style.display = 'block';
+        } else {
+            pathCustom.style.display = 'none';
+        }
+    }
+
+    // Detect path type and update dropdown (same logic as add flow)
+    const typeInfo = await detectPathType(threshold.watchPath);
+    updateOperatorDropdown('thresholdOperator', typeInfo.dataType);
+    updateValueFields('thresholdOperator', 'thresholdValueGroup', typeInfo.dataType);
+    const operatorSelect = document.getElementById('thresholdOperator');
+    if (operatorSelect) {
+        operatorSelect.dataset.pathDataType = typeInfo.dataType;
+    }
+
+    // Wait for dropdown to be updated, then set operator
+    setTimeout(() => {
+        if (operatorSelect) {
+            operatorSelect.value = threshold.operator;
+            // Trigger change to update value fields
+            operatorSelect.dispatchEvent(new Event('change'));
+
+            // Populate values after fields are created
+            setTimeout(() => {
+                populateThresholdValues(threshold);
+            }, 100);
+        }
+
+        // Set action
+        const actionSelect = document.getElementById('thresholdAction');
+        if (actionSelect) {
+            actionSelect.value = threshold.activateOnMatch ? 'true' : 'false';
+        }
+
+        // Set hysteresis
+        const hysteresisInput = document.getElementById('thresholdHysteresis');
+        if (hysteresisInput) {
+            hysteresisInput.value = threshold.hysteresis || '';
+        }
+    }, 50);
+}
+
+function populateThresholdValues(threshold) {
+    if (threshold.operator === 'range') {
+        const minInput = document.getElementById('thresholdValueGroup_min');
+        const maxInput = document.getElementById('thresholdValueGroup_max');
+        if (minInput) minInput.value = threshold.valueMin || '';
+        if (maxInput) maxInput.value = threshold.valueMax || '';
+    } else if (threshold.operator === 'withinRadius' || threshold.operator === 'outsideRadius') {
+        const useHomePortCheckbox = document.getElementById('thresholdValueGroup_useHomePort');
+        const customLocation = document.getElementById('thresholdValueGroup_customLocation');
+        if (useHomePortCheckbox) {
+            useHomePortCheckbox.checked = threshold.useHomePort || false;
+            if (customLocation) {
+                customLocation.style.display = useHomePortCheckbox.checked ? 'none' : 'grid';
+            }
+        }
+        const radiusInput = document.getElementById('thresholdValueGroup_radius');
+        if (radiusInput) radiusInput.value = threshold.radius || '';
+        if (!threshold.useHomePort) {
+            const latInput = document.getElementById('thresholdValueGroup_lat');
+            const lonInput = document.getElementById('thresholdValueGroup_lon');
+            if (latInput) latInput.value = threshold.latitude || '';
+            if (lonInput) lonInput.value = threshold.longitude || '';
+        }
+    } else if (threshold.operator === 'inBoundingBox' || threshold.operator === 'outsideBoundingBox') {
+        const useHomePortCheckbox = document.getElementById('thresholdValueGroup_useHomePort');
+        const manualBox = document.getElementById('thresholdValueGroup_manualBox');
+        const homePortBox = document.getElementById('thresholdValueGroup_homePortBox');
+
+        if (useHomePortCheckbox) {
+            useHomePortCheckbox.checked = threshold.useHomePort || false;
+            if (useHomePortCheckbox.checked) {
+                if (manualBox) manualBox.style.display = 'none';
+                if (homePortBox) homePortBox.style.display = 'block';
+            } else {
+                if (manualBox) manualBox.style.display = 'grid';
+                if (homePortBox) homePortBox.style.display = 'none';
+            }
+        }
+
+        if (threshold.useHomePort) {
+            const boxSizeInput = document.getElementById('thresholdValueGroup_boxSize');
+            const bufferInput = document.getElementById('thresholdValueGroup_buffer');
+            if (boxSizeInput) boxSizeInput.value = threshold.boxSize || '';
+            if (bufferInput) bufferInput.value = threshold.boxBuffer || '';
+            const anchorGrid = document.getElementById('thresholdValueGroup_anchorGrid');
+            if (anchorGrid && threshold.boxAnchor) {
+                anchorGrid.value = threshold.boxAnchor;
+            }
+        } else if (threshold.boundingBox) {
+            const northInput = document.getElementById('thresholdValueGroup_north');
+            const southInput = document.getElementById('thresholdValueGroup_south');
+            const eastInput = document.getElementById('thresholdValueGroup_east');
+            const westInput = document.getElementById('thresholdValueGroup_west');
+            if (northInput) northInput.value = threshold.boundingBox.north || '';
+            if (southInput) southInput.value = threshold.boundingBox.south || '';
+            if (eastInput) eastInput.value = threshold.boundingBox.east || '';
+            if (westInput) westInput.value = threshold.boundingBox.west || '';
+        }
+    } else if (threshold.operator !== 'true' && threshold.operator !== 'false' && threshold.value !== undefined) {
+        const valueInput = document.getElementById('thresholdValueGroup_value');
+        if (valueInput) {
+            valueInput.value = threshold.value;
+        }
+    }
+}
+
+export function saveThresholdModal() {
+    const threshold = buildThresholdFromModal();
+    if (!threshold) return;
+
+    const { targetArray, editIndex, callback } = thresholdModalContext;
+
+    if (editIndex !== null) {
+        // Update existing threshold
+        targetArray[editIndex] = threshold;
+    } else {
+        // Add new threshold
+        targetArray.push(threshold);
+    }
+
+    // Call callback if provided
+    if (callback) {
+        callback(threshold, editIndex);
+    }
+
+    // Refresh displays
+    if (targetArray === editingThresholds) {
+        displayThresholdsList();
+        markEditFormDirty();
+    } else if (targetArray === addingThresholds) {
+        displayAddCommandThresholdsList();
+    }
+
+    closeThresholdModal();
+}
+
+function buildThresholdFromModal() {
+    const pathSelect = document.getElementById('thresholdPath');
+    const pathCustom = document.getElementById('thresholdPathCustom');
+    const operator = document.getElementById('thresholdOperator').value;
+    const action = document.getElementById('thresholdAction').value === 'true';
+    const hysteresis = document.getElementById('thresholdHysteresis').value.trim();
+    const dataType = document.getElementById('thresholdOperator')?.dataset.pathDataType || 'unknown';
+
+    let watchPath = pathSelect.value;
+    if (watchPath === '__custom__') {
+        watchPath = pathCustom.value.trim();
+    }
+
+    if (!watchPath) {
+        alert('Please select or enter a SignalK path');
+        return null;
+    }
+
+    const threshold = {
+        watchPath,
+        operator,
+        activateOnMatch: action,
+        enabled: true
+    };
+
+    // Add values based on operator type
+    if (operator === 'range') {
+        const min = document.getElementById('thresholdValueGroup_min')?.value;
+        const max = document.getElementById('thresholdValueGroup_max')?.value;
+        if (!min || !max) {
+            alert('Please enter both minimum and maximum values');
+            return null;
+        }
+        threshold.valueMin = parseFloat(min);
+        threshold.valueMax = parseFloat(max);
+        if (dataType === 'angular') {
+            threshold.valueMin = threshold.valueMin * (Math.PI / 180);
+            threshold.valueMax = threshold.valueMax * (Math.PI / 180);
+        }
+    } else if (operator === 'withinRadius' || operator === 'outsideRadius') {
+        const useHomePort = document.getElementById('thresholdValueGroup_useHomePort')?.checked;
+        const radius = document.getElementById('thresholdValueGroup_radius')?.value;
+        if (!radius) {
+            alert('Please enter a radius value');
+            return null;
+        }
+        threshold.useHomePort = useHomePort;
+        threshold.radius = parseFloat(radius);
+        if (!useHomePort) {
+            const lat = document.getElementById('thresholdValueGroup_lat')?.value;
+            const lon = document.getElementById('thresholdValueGroup_lon')?.value;
+            if (!lat || !lon) {
+                alert('Please enter latitude and longitude');
+                return null;
+            }
+            threshold.latitude = parseFloat(lat);
+            threshold.longitude = parseFloat(lon);
+        }
+    } else if (operator === 'inBoundingBox' || operator === 'outsideBoundingBox') {
+        const useHomePort = document.getElementById('thresholdValueGroup_useHomePort')?.checked;
+        threshold.useHomePort = useHomePort;
+
+        if (useHomePort) {
+            const boxSize = document.getElementById('thresholdValueGroup_boxSize')?.value;
+            const buffer = document.getElementById('thresholdValueGroup_buffer')?.value;
+            const anchorGrid = document.getElementById('thresholdValueGroup_anchorGrid');
+            if (!boxSize) {
+                alert('Please enter a box size');
+                return null;
+            }
+            const anchor = anchorGrid?.value || 'center';
+            threshold.boxSize = parseFloat(boxSize);
+            threshold.boxAnchor = anchor;
+            threshold.boxBuffer = buffer ? parseFloat(buffer) : 5;
+        } else {
+            const north = document.getElementById('thresholdValueGroup_north')?.value;
+            const south = document.getElementById('thresholdValueGroup_south')?.value;
+            const east = document.getElementById('thresholdValueGroup_east')?.value;
+            const west = document.getElementById('thresholdValueGroup_west')?.value;
+            if (!north || !south || !east || !west) {
+                alert('Please enter all bounding box coordinates');
+                return null;
+            }
+            threshold.boundingBox = {
+                north: parseFloat(north),
+                south: parseFloat(south),
+                east: parseFloat(east),
+                west: parseFloat(west)
+            };
+        }
+    } else if (operator === 'contains' || operator === 'startsWith' || operator === 'endsWith' || operator === 'stringEquals') {
+        const valueInput = document.getElementById('thresholdValueGroup_value');
+        if (!valueInput?.value) {
+            alert('Please enter a threshold value');
+            return null;
+        }
+        threshold.value = valueInput.value;
+    } else if (operator !== 'true' && operator !== 'false') {
+        const valueInput = document.getElementById('thresholdValueGroup_value');
+        if (!valueInput?.value) {
+            alert('Please enter a threshold value');
+            return null;
+        }
+        const numValue = parseFloat(valueInput.value);
+        if (isNaN(numValue)) {
+            threshold.value = valueInput.value;
+        } else {
+            threshold.value = numValue;
+            if (dataType === 'angular') {
+                threshold.value = threshold.value * (Math.PI / 180);
+            }
+        }
+    }
+
+    if (hysteresis) {
+        const hysteresisValue = parseFloat(hysteresis);
+        if (!isNaN(hysteresisValue)) {
+            threshold.hysteresis = hysteresisValue;
+        }
+    }
+
+    return threshold;
+}
+
+async function populateThresholdModalPaths() {
+    const treeContainer = document.getElementById('thresholdPathTree');
+    const searchInput = document.getElementById('thresholdPathSearch');
+    const filterType = 'self';
+
+    if (!treeContainer) return;
+
+    treeContainer.innerHTML = '<div style="padding: 20px; text-align: center; color: #666;">Loading paths...</div>';
+
+    try {
+        let allPaths = [];
+        try {
+            const response = await fetch('/signalk/v1/api/');
+            if (response.ok) {
+                const data = await response.json();
+                allPaths = extractPathsFromSignalK(data, filterType);
+            }
+        } catch (error) {
+            console.log('Could not load SignalK API data:', error);
+        }
+
+        if (!allPaths.length) {
+            try {
+                const pluginResponse = await fetch(`${getPluginPath()}/api/paths`);
+                if (pluginResponse.ok) {
+                    const pluginData = await pluginResponse.json();
+                    if (pluginData.success && Array.isArray(pluginData.paths)) {
+                        allPaths = pluginData.paths
+                            .map(pathInfo => pathInfo.path)
+                            .filter(Boolean);
+                    }
+                }
+            } catch (pluginError) {
+                console.log('Failed to load plugin paths:', pluginError);
+            }
+        }
+
+        if (!allPaths.length) {
+            treeContainer.innerHTML = '<div style="padding: 20px; text-align: center; color: #999;">No paths available. Try entering a custom path.</div>';
+            return;
+        }
+
+        const uniquePaths = Array.from(new Set(allPaths)).sort();
+        const tree = buildPathTree(uniquePaths);
+
+        // Render tree using existing renderTreeNode function
+        let html = '';
+        Object.keys(tree).sort().forEach(key => {
+            html += renderTreeNode(key, tree[key], 0, '');
+        });
+        treeContainer.innerHTML = html || '<div style="padding: 20px; text-align: center; color: #666;">No paths found</div>';
+
+        // Setup search
+        if (searchInput) {
+            searchInput.addEventListener('input', (e) => {
+                const searchTerm = e.target.value;
+                let html = '';
+                Object.keys(tree).sort().forEach(key => {
+                    html += renderTreeNode(key, tree[key], 0, searchTerm);
+                });
+                treeContainer.innerHTML = html || '<div style="padding: 20px; text-align: center; color: #666;">No matches found</div>';
+
+                // Auto-expand all when searching
+                if (searchTerm) {
+                    treeContainer.querySelectorAll('.path-tree-children').forEach(el => {
+                        el.classList.add('expanded');
+                    });
+                    treeContainer.querySelectorAll('.path-tree-toggle').forEach(el => {
+                        if (el.textContent) el.textContent = '▼';
+                    });
+                }
+            });
+        }
+
+    } catch (error) {
+        console.log('Could not load real-time SignalK paths:', error);
+        treeContainer.innerHTML = '<div style="padding: 20px; text-align: center; color: #999;">Error loading paths</div>';
+    }
+
+    // Handle path selection for type detection
+    const hiddenInput = document.getElementById('thresholdPath');
+    if (hiddenInput) {
+        hiddenInput.addEventListener('change', async function() {
+            if (this.value) {
+                const typeInfo = await detectPathType(this.value);
+                updateOperatorDropdown('thresholdOperator', typeInfo.dataType);
+                updateValueFields('thresholdOperator', 'thresholdValueGroup', typeInfo.dataType);
+                document.getElementById('thresholdOperator').dataset.pathDataType = typeInfo.dataType;
+            }
+        });
+    }
+
+    // Handle custom path input
+    const customInput = document.getElementById('thresholdPathCustom');
+    if (customInput) {
+        customInput.onblur = async function() {
+            if (this.value) {
+                const typeInfo = await detectPathType(this.value);
+                updateOperatorDropdown('thresholdOperator', typeInfo.dataType);
+                updateValueFields('thresholdOperator', 'thresholdValueGroup', typeInfo.dataType);
+                document.getElementById('thresholdOperator').dataset.pathDataType = typeInfo.dataType;
+            }
+        };
+    }
+}
+
+export function toggleThresholdValueField() {
+    const operatorSelect = document.getElementById('thresholdOperator');
+    const dataType = operatorSelect?.dataset.pathDataType || 'unknown';
+    updateValueFields('thresholdOperator', 'thresholdValueGroup', dataType);
 }
 
 // Add command threshold functions
@@ -1782,27 +2265,11 @@ export function toggleAddCmdThresholdValueField() {
 }
 
 export function addNewCommandThreshold() {
-    const form = document.getElementById('addCommandThresholdForm');
-    form.style.display = 'block';
-
-    const trigger = document.getElementById('addCommandThresholdButton');
-    if (trigger) {
-        trigger.style.display = 'none';
-    }
-
-    // Populate the path dropdown
-    populateAddCmdThresholdPaths();
-
-    // Clear form
-    document.getElementById('addCmdThresholdPath').value = '';
-    document.getElementById('addCmdThresholdPathCustom').value = '';
-    document.getElementById('addCmdThresholdPathCustom').style.display = 'none';
-    document.getElementById('addCmdThresholdOperator').value = 'gt';
-    document.getElementById('addCmdThresholdValue').value = '';
-    document.getElementById('addCmdThresholdAction').value = 'true';
-    document.getElementById('addCmdThresholdHysteresis').value = '';
-
-    toggleAddCmdThresholdValueField();
+    // Use unified modal instead
+    openThresholdModal({
+        mode: 'create',
+        targetArray: addingThresholds
+    });
 }
 
 export function cancelAddCmdThreshold() {
