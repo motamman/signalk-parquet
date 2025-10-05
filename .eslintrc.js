@@ -24,5 +24,23 @@ module.exports = {
     node: true,
     es6: true,
   },
-  ignorePatterns: ['dist/', 'node_modules/', '*.js'],
+  ignorePatterns: ['dist/', 'node_modules/'],
+  overrides: [
+    {
+      files: ['public/**/*.js'],
+      parser: 'espree',
+      parserOptions: {
+        ecmaVersion: 2020,
+        sourceType: 'module',
+      },
+      env: {
+        browser: true,
+        es6: true,
+      },
+      rules: {
+        'no-unused-vars': ['error', { argsIgnorePattern: '^_' }],
+        'no-undef': 'warn',
+      },
+    },
+  ],
 };

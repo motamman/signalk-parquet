@@ -11,566 +11,636 @@ let editingThresholdIndex = null; // Track which threshold is being edited
 
 // Unified threshold modal state
 let thresholdModalContext = {
-    mode: null, // 'edit' or 'create'
-    targetArray: null, // editingThresholds or addingThresholds
-    editIndex: null, // Index if editing existing threshold
-    callback: null // Callback when threshold is saved
+  mode: null, // 'edit' or 'create'
+  targetArray: null, // editingThresholds or addingThresholds
+  editIndex: null, // Index if editing existing threshold
+  callback: null, // Callback when threshold is saved
 };
 
 const editCommandFormElement = document.getElementById('editCommandForm');
 let editFormOriginalParent = editCommandFormElement?.parentNode || null;
 
 if (editCommandFormElement && editFormOriginalParent) {
-    editFormPlaceholder = document.createElement('div');
-    editFormPlaceholder.id = 'editCommandFormPlaceholder';
-    editFormPlaceholder.style.display = 'none';
-    editFormOriginalParent.insertBefore(editFormPlaceholder, editCommandFormElement.nextSibling);
+  editFormPlaceholder = document.createElement('div');
+  editFormPlaceholder.id = 'editCommandFormPlaceholder';
+  editFormPlaceholder.style.display = 'none';
+  editFormOriginalParent.insertBefore(
+    editFormPlaceholder,
+    editCommandFormElement.nextSibling
+  );
 }
 
 function getEditCommandForm() {
-    return editCommandFormElement;
+  return editCommandFormElement;
 }
 
 function getEditCommandStatusElement() {
-    return document.getElementById('editCommandStatus');
+  return document.getElementById('editCommandStatus');
 }
 
 function getUpdateCommandButton() {
-    return document.getElementById('updateCommandButton');
+  return document.getElementById('updateCommandButton');
 }
 
 /**
  * Build a hierarchical tree structure from flat path list
  */
 function buildPathTree(paths) {
-    const tree = {};
+  const tree = {};
 
-    paths.forEach(path => {
-        const parts = path.split('.');
-        let current = tree;
+  paths.forEach(path => {
+    const parts = path.split('.');
+    let current = tree;
 
-        parts.forEach((part, index) => {
-            if (!current[part]) {
-                current[part] = {
-                    _children: {},
-                    _hasValue: index === parts.length - 1,
-                    _fullPath: parts.slice(0, index + 1).join('.')
-                };
-            } else if (index === parts.length - 1) {
-                current[part]._hasValue = true;
-            }
-            current = current[part]._children;
-        });
+    parts.forEach((part, index) => {
+      if (!current[part]) {
+        current[part] = {
+          _children: {},
+          _hasValue: index === parts.length - 1,
+          _fullPath: parts.slice(0, index + 1).join('.'),
+        };
+      } else if (index === parts.length - 1) {
+        current[part]._hasValue = true;
+      }
+      current = current[part]._children;
     });
+  });
 
-    return tree;
+  return tree;
 }
 
 /**
  * Check if node or any descendant matches search term
  */
 function nodeMatchesSearch(node, searchTerm) {
-    if (!searchTerm) return true;
+  if (!searchTerm) return true;
 
-    const term = searchTerm.toLowerCase();
+  const term = searchTerm.toLowerCase();
 
-    // Check if this node's full path contains the search term
-    if (node._fullPath && node._fullPath.toLowerCase().includes(term)) {
-        return true;
+  // Check if this node's full path contains the search term
+  if (node._fullPath && node._fullPath.toLowerCase().includes(term)) {
+    return true;
+  }
+
+  // Check if any children match
+  for (const childKey in node._children) {
+    if (nodeMatchesSearch(node._children[childKey], searchTerm)) {
+      return true;
     }
+  }
 
-    // Check if any children match
-    for (const childKey in node._children) {
-        if (nodeMatchesSearch(node._children[childKey], searchTerm)) {
-            return true;
-        }
-    }
-
-    return false;
+  return false;
 }
 
 /**
  * Render a tree node
  */
 function renderTreeNode(key, node, level = 0, searchTerm = '') {
-    const hasChildren = Object.keys(node._children).length > 0;
-    const fullPath = node._fullPath;
+  const hasChildren = Object.keys(node._children).length > 0;
+  const fullPath = node._fullPath;
 
-    // Filter based on search - show node if it or any descendant matches
-    if (searchTerm && !nodeMatchesSearch(node, searchTerm)) {
-        return '';
-    }
+  // Filter based on search - show node if it or any descendant matches
+  if (searchTerm && !nodeMatchesSearch(node, searchTerm)) {
+    return '';
+  }
 
-    const itemClasses = ['path-tree-item'];
-    if (node._hasValue) itemClasses.push('has-value');
+  const itemClasses = ['path-tree-item'];
+  if (node._hasValue) itemClasses.push('has-value');
 
-    let html = `<div class="path-tree-node" data-level="${level}">`;
-    html += `<div class="${itemClasses.join(' ')}" data-path="${fullPath}" onclick="selectPathTreeItem(this, '${fullPath}', ${node._hasValue})">`;
+  let html = `<div class="path-tree-node" data-level="${level}">`;
+  html += `<div class="${itemClasses.join(' ')}" data-path="${fullPath}" onclick="selectPathTreeItem(this, '${fullPath}', ${node._hasValue})">`;
 
-    if (hasChildren) {
-        html += `<span class="path-tree-toggle" onclick="event.stopPropagation(); toggleTreeNode(this)">▶</span>`;
-    } else {
-        html += `<span class="path-tree-toggle"></span>`;
-    }
+  if (hasChildren) {
+    html += `<span class="path-tree-toggle" onclick="event.stopPropagation(); toggleTreeNode(this)">▶</span>`;
+  } else {
+    html += `<span class="path-tree-toggle"></span>`;
+  }
 
-    html += `<span class="path-tree-label">${key}</span>`;
+  html += `<span class="path-tree-label">${key}</span>`;
+  html += `</div>`;
+
+  if (hasChildren) {
+    html += `<div class="path-tree-children">`;
+    Object.keys(node._children)
+      .sort()
+      .forEach(childKey => {
+        html += renderTreeNode(
+          childKey,
+          node._children[childKey],
+          level + 1,
+          searchTerm
+        );
+      });
     html += `</div>`;
+  }
 
-    if (hasChildren) {
-        html += `<div class="path-tree-children">`;
-        Object.keys(node._children).sort().forEach(childKey => {
-            html += renderTreeNode(childKey, node._children[childKey], level + 1, searchTerm);
-        });
-        html += `</div>`;
-    }
-
-    html += `</div>`;
-    return html;
+  html += `</div>`;
+  return html;
 }
 
 /**
  * Toggle tree node expansion
  */
-window.toggleTreeNode = function(toggleElement) {
-    const treeNode = toggleElement.closest('.path-tree-node');
-    const children = treeNode.querySelector('.path-tree-children');
+window.toggleTreeNode = function (toggleElement) {
+  const treeNode = toggleElement.closest('.path-tree-node');
+  const children = treeNode.querySelector('.path-tree-children');
 
-    if (children.classList.contains('expanded')) {
-        children.classList.remove('expanded');
-        toggleElement.textContent = '▶';
-    } else {
-        children.classList.add('expanded');
-        toggleElement.textContent = '▼';
-    }
+  if (children.classList.contains('expanded')) {
+    children.classList.remove('expanded');
+    toggleElement.textContent = '▶';
+  } else {
+    children.classList.add('expanded');
+    toggleElement.textContent = '▼';
+  }
 };
 
 /**
  * Select a path tree item
  */
-window.selectPathTreeItem = function(element, fullPath, hasValue) {
-    if (!hasValue) {
-        // If no value, just toggle expansion
-        const toggle = element.querySelector('.path-tree-toggle');
-        if (toggle && toggle.textContent) {
-            toggleTreeNode(toggle);
-        }
-        return;
+window.selectPathTreeItem = function (element, fullPath, hasValue) {
+  if (!hasValue) {
+    // If no value, just toggle expansion
+    const toggle = element.querySelector('.path-tree-toggle');
+    if (toggle && toggle.textContent) {
+      toggleTreeNode(toggle);
     }
+    return;
+  }
 
-    // Remove previous selection
-    const container = element.closest('.path-tree-container');
-    container.querySelectorAll('.path-tree-item.selected').forEach(el => {
-        el.classList.remove('selected');
-    });
+  // Remove previous selection
+  const container = element.closest('.path-tree-container');
+  container.querySelectorAll('.path-tree-item.selected').forEach(el => {
+    el.classList.remove('selected');
+  });
 
-    // Add selection
-    element.classList.add('selected');
+  // Add selection
+  element.classList.add('selected');
 
-    // Update hidden input
-    const treeId = container.id;
-    const inputId = treeId.replace('Tree', '');
-    const input = document.getElementById(inputId);
-    if (input) {
-        input.value = fullPath;
-        // Trigger change event for any listeners
-        input.dispatchEvent(new Event('change'));
-    }
+  // Update hidden input
+  const treeId = container.id;
+  const inputId = treeId.replace('Tree', '');
+  const input = document.getElementById(inputId);
+  if (input) {
+    input.value = fullPath;
+    // Trigger change event for any listeners
+    input.dispatchEvent(new Event('change'));
+  }
 };
 
 /**
  * Show custom path input
  */
-window.showCustomPathInput = function(inputId) {
-    const customInput = document.getElementById(inputId + 'Custom');
-    const treeContainer = document.getElementById(inputId + 'Tree');
-    const searchInput = document.getElementById(inputId + 'Search');
+window.showCustomPathInput = function (inputId) {
+  const customInput = document.getElementById(inputId + 'Custom');
+  const treeContainer = document.getElementById(inputId + 'Tree');
+  const searchInput = document.getElementById(inputId + 'Search');
 
-    if (customInput.style.display === 'none') {
-        customInput.style.display = 'block';
-        treeContainer.style.display = 'none';
-        searchInput.style.display = 'none';
-        customInput.focus();
-    } else {
-        customInput.style.display = 'none';
-        treeContainer.style.display = 'block';
-        searchInput.style.display = 'block';
-    }
+  if (customInput.style.display === 'none') {
+    customInput.style.display = 'block';
+    treeContainer.style.display = 'none';
+    searchInput.style.display = 'none';
+    customInput.focus();
+  } else {
+    customInput.style.display = 'none';
+    treeContainer.style.display = 'block';
+    searchInput.style.display = 'block';
+  }
 };
 
 function extractPathsFromSignalK(obj, filterType = 'self') {
-    const selfPaths = new Set();
-    const nonSelfPaths = new Set();
+  const selfPaths = new Set();
+  const nonSelfPaths = new Set();
 
-    function extractRecursive(node, prefix = '') {
-        if (!node || typeof node !== 'object') return;
+  function extractRecursive(node, prefix = '') {
+    if (!node || typeof node !== 'object') return;
 
-        for (const key in node) {
-            if (key === 'meta' || key === 'timestamp' || key === 'source' || key === '$source' || key === 'values' || key === 'sentence') continue;
+    for (const key in node) {
+      if (
+        key === 'meta' ||
+        key === 'timestamp' ||
+        key === 'source' ||
+        key === '$source' ||
+        key === 'values' ||
+        key === 'sentence'
+      )
+        continue;
 
-            const currentPath = prefix ? `${prefix}.${key}` : key;
+      const currentPath = prefix ? `${prefix}.${key}` : key;
 
-            if (node[key] && typeof node[key] === 'object') {
-                if (node[key].value !== undefined) {
-                    selfPaths.add(currentPath);
-                }
-                extractRecursive(node[key], currentPath);
-            }
+      if (node[key] && typeof node[key] === 'object') {
+        if (node[key].value !== undefined) {
+          selfPaths.add(currentPath);
         }
+        extractRecursive(node[key], currentPath);
+      }
+    }
+  }
+
+  function extractOtherVessel(node, prefix, tempPaths) {
+    if (!node || typeof node !== 'object') return;
+    for (const key in node) {
+      if (
+        key === 'meta' ||
+        key === 'timestamp' ||
+        key === 'source' ||
+        key === '$source' ||
+        key === 'values' ||
+        key === 'sentence'
+      )
+        continue;
+      const currentPath = prefix ? `${prefix}.${key}` : key;
+      if (node[key] && typeof node[key] === 'object') {
+        if (node[key].value !== undefined) {
+          tempPaths.add(currentPath);
+        }
+        extractOtherVessel(node[key], currentPath, tempPaths);
+      }
+    }
+  }
+
+  const selfVesselId = obj?.self;
+  const actualSelfId =
+    selfVesselId && selfVesselId.startsWith('vessels.')
+      ? selfVesselId.replace('vessels.', '')
+      : selfVesselId;
+
+  if (obj?.vessels) {
+    if (actualSelfId && obj.vessels[actualSelfId]) {
+      extractRecursive(obj.vessels[actualSelfId], '');
     }
 
-    const selfVesselId = obj?.self;
-    const actualSelfId = selfVesselId && selfVesselId.startsWith('vessels.')
-        ? selfVesselId.replace('vessels.', '')
-        : selfVesselId;
-
-    if (obj?.vessels) {
-        if (actualSelfId && obj.vessels[actualSelfId]) {
-            extractRecursive(obj.vessels[actualSelfId], '');
-        }
-
-        for (const vesselId in obj.vessels) {
-            if (vesselId !== actualSelfId) {
-                const tempPaths = new Set();
-                function extractOtherVessel(node, prefix = '') {
-                    if (!node || typeof node !== 'object') return;
-                    for (const key in node) {
-                        if (key === 'meta' || key === 'timestamp' || key === 'source' || key === '$source' || key === 'values' || key === 'sentence') continue;
-                        const currentPath = prefix ? `${prefix}.${key}` : key;
-                        if (node[key] && typeof node[key] === 'object') {
-                            if (node[key].value !== undefined) {
-                                tempPaths.add(currentPath);
-                            }
-                            extractOtherVessel(node[key], currentPath);
-                        }
-                    }
-                }
-                extractOtherVessel(obj.vessels[vesselId], '');
-                tempPaths.forEach(path => nonSelfPaths.add(path));
-            }
-        }
+    for (const vesselId in obj.vessels) {
+      if (vesselId !== actualSelfId) {
+        const tempPaths = new Set();
+        extractOtherVessel(obj.vessels[vesselId], '', tempPaths);
+        tempPaths.forEach(path => nonSelfPaths.add(path));
+      }
     }
+  }
 
-    for (const key in obj || {}) {
-        if (!['vessels', 'self', 'version', 'sources', 'meta', 'timestamp'].includes(key)) {
-            extractRecursive(obj[key], key);
-        }
+  for (const key in obj || {}) {
+    if (
+      !['vessels', 'self', 'version', 'sources', 'meta', 'timestamp'].includes(
+        key
+      )
+    ) {
+      extractRecursive(obj[key], key);
     }
+  }
 
-    const targetPaths = filterType === 'self' ? selfPaths : nonSelfPaths;
-    return Array.from(targetPaths).sort();
+  const targetPaths = filterType === 'self' ? selfPaths : nonSelfPaths;
+  return Array.from(targetPaths).sort();
 }
 
 function updateEditCommandStatus(message = '', type = 'info') {
-    const statusEl = getEditCommandStatusElement();
-    if (!statusEl) return;
-    if (!message) {
-        statusEl.textContent = '';
-        statusEl.style.display = 'none';
-        return;
-    }
-    statusEl.textContent = message;
-    statusEl.style.display = 'block';
-    statusEl.style.color = type === 'error' ? '#d32f2f' : '#0066cc';
+  const statusEl = getEditCommandStatusElement();
+  if (!statusEl) return;
+  if (!message) {
+    statusEl.textContent = '';
+    statusEl.style.display = 'none';
+    return;
+  }
+  statusEl.textContent = message;
+  statusEl.style.display = 'block';
+  statusEl.style.color = type === 'error' ? '#d32f2f' : '#0066cc';
 }
 
 function setEditSaveButtonState() {
-    const button = getUpdateCommandButton();
-    if (!button) return;
-    button.disabled = !editFormDirty;
-    button.textContent = '✅ Update Command';
-    button.style.opacity = editFormDirty ? '1' : '0.7';
+  const button = getUpdateCommandButton();
+  if (!button) return;
+  button.disabled = !editFormDirty;
+  button.textContent = '✅ Update Command';
+  button.style.opacity = editFormDirty ? '1' : '0.7';
 }
 
 function markEditFormDirty() {
-    editFormDirty = true;
-    setEditSaveButtonState();
-    updateEditCommandStatus('Unsaved changes', 'info');
+  editFormDirty = true;
+  setEditSaveButtonState();
+  updateEditCommandStatus('Unsaved changes', 'info');
 }
 
 function clearEditFormDirtyState(message = '') {
-    editFormDirty = false;
-    setEditSaveButtonState();
-    updateEditCommandStatus(message, 'info');
+  editFormDirty = false;
+  setEditSaveButtonState();
+  updateEditCommandStatus(message, 'info');
 }
 
 function setupEditFormFieldListeners() {
-    const form = getEditCommandForm();
-    if (!form || form.dataset.listenersAttached === 'true') {
-        return;
+  const form = getEditCommandForm();
+  if (!form || form.dataset.listenersAttached === 'true') {
+    return;
+  }
+
+  const inputs = ['editCommandDescription', 'editCommandKeywords'];
+  inputs.forEach(id => {
+    const el = document.getElementById(id);
+    if (el) {
+      el.addEventListener('input', () => markEditFormDirty());
     }
+  });
 
-    const inputs = [
-        'editCommandDescription',
-        'editCommandKeywords'
-    ];
-    inputs.forEach(id => {
-        const el = document.getElementById(id);
-        if (el) {
-            el.addEventListener('input', () => markEditFormDirty());
-        }
-    });
+  // defaultState is now hardcoded to false on server side
 
-    // defaultState is now hardcoded to false on server side
-
-    form.dataset.listenersAttached = 'true';
+  form.dataset.listenersAttached = 'true';
 }
 
 function ensureEditFormInDom() {
-    const form = getEditCommandForm();
-    if (!form) return null;
+  const form = getEditCommandForm();
+  if (!form) return null;
 
-    if (!form.isConnected) {
-        if (editFormPlaceholder && editFormPlaceholder.parentNode) {
-            editFormPlaceholder.parentNode.insertBefore(form, editFormPlaceholder);
-        } else {
-            const parent = editFormOriginalParent || document.getElementById('commandManager') || document.body;
-            parent.appendChild(form);
-        }
+  if (!form.isConnected) {
+    if (editFormPlaceholder && editFormPlaceholder.parentNode) {
+      editFormPlaceholder.parentNode.insertBefore(form, editFormPlaceholder);
+    } else {
+      const parent =
+        editFormOriginalParent ||
+        document.getElementById('commandManager') ||
+        document.body;
+      parent.appendChild(form);
     }
+  }
 
-    return form;
+  return form;
 }
 
 function attachEditFormToRow(commandName, { scroll = true } = {}) {
-    const form = ensureEditFormInDom();
-    if (!form) return;
+  const form = ensureEditFormInDom();
+  if (!form) return;
 
-    const targetRow = document.querySelector(`tr[data-command-row="${commandName}"]`);
-    if (!targetRow || !targetRow.parentNode) {
-        return;
+  const targetRow = document.querySelector(
+    `tr[data-command-row="${commandName}"]`
+  );
+  if (!targetRow || !targetRow.parentNode) {
+    return;
+  }
+
+  const tbody = targetRow.parentNode;
+  if (!tbody) {
+    return;
+  }
+
+  if (currentEditingRow && currentEditingRow !== targetRow) {
+    currentEditingRow.classList.remove('editing-command-row');
+    currentEditingRow.style.outline = '';
+    currentEditingRow.style.outlineOffset = '';
+  }
+
+  targetRow.classList.add('editing-command-row');
+  targetRow.style.outline = '2px solid #ffc107';
+  targetRow.style.outlineOffset = '4px';
+  currentEditingRow = targetRow;
+
+  const columnCount =
+    targetRow.children.length || targetRow.childElementCount || 1;
+
+  if (!editFormRowElement) {
+    editFormRowElement = document.createElement('tr');
+    editFormRowElement.id = 'editCommandFormRow';
+    editFormRowElement.classList.add('edit-command-form-row');
+    const cell = document.createElement('td');
+    cell.colSpan = columnCount;
+    editFormRowElement.appendChild(cell);
+  }
+
+  const cell =
+    editFormRowElement.firstElementChild ||
+    editFormRowElement.appendChild(document.createElement('td'));
+  if (cell.colSpan !== columnCount) {
+    cell.colSpan = columnCount;
+  }
+  cell.style.padding = '0';
+
+  if (form.parentNode !== cell) {
+    while (cell.firstChild) {
+      cell.removeChild(cell.firstChild);
     }
+    cell.appendChild(form);
+  }
 
-    const tbody = targetRow.parentNode;
-    if (!tbody) {
-        return;
-    }
+  tbody.insertBefore(editFormRowElement, targetRow.nextSibling);
 
-    if (currentEditingRow && currentEditingRow !== targetRow) {
-        currentEditingRow.classList.remove('editing-command-row');
-        currentEditingRow.style.outline = '';
-        currentEditingRow.style.outlineOffset = '';
-    }
-
-    targetRow.classList.add('editing-command-row');
-    targetRow.style.outline = '2px solid #ffc107';
-    targetRow.style.outlineOffset = '4px';
-    currentEditingRow = targetRow;
-
-    const columnCount = targetRow.children.length || targetRow.childElementCount || 1;
-
-    if (!editFormRowElement) {
-        editFormRowElement = document.createElement('tr');
-        editFormRowElement.id = 'editCommandFormRow';
-        editFormRowElement.classList.add('edit-command-form-row');
-        const cell = document.createElement('td');
-        cell.colSpan = columnCount;
-        editFormRowElement.appendChild(cell);
-    }
-
-    const cell = editFormRowElement.firstElementChild || editFormRowElement.appendChild(document.createElement('td'));
-    if (cell.colSpan !== columnCount) {
-        cell.colSpan = columnCount;
-    }
-    cell.style.padding = '0';
-
-    if (form.parentNode !== cell) {
-        while (cell.firstChild) {
-            cell.removeChild(cell.firstChild);
-        }
-        cell.appendChild(form);
-    }
-
-    tbody.insertBefore(editFormRowElement, targetRow.nextSibling);
-
-    form.style.display = 'block';
-    form.classList.add('active');
-    form.style.width = '100%';
-    form.style.maxWidth = '100%';
-    form.style.margin = '20px 0';
-    form.style.boxSizing = 'border-box';
-    if (scroll) {
-        targetRow.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    }
+  form.style.display = 'block';
+  form.classList.add('active');
+  form.style.width = '100%';
+  form.style.maxWidth = '100%';
+  form.style.margin = '20px 0';
+  form.style.boxSizing = 'border-box';
+  if (scroll) {
+    targetRow.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }
 }
 
 function detachEditForm() {
-    const form = getEditCommandForm();
-    if (!form) {
-        return;
-    }
+  const form = getEditCommandForm();
+  if (!form) {
+    return;
+  }
 
-    if (currentEditingRow) {
-        currentEditingRow.classList.remove('editing-command-row');
-        currentEditingRow.style.outline = '';
-        currentEditingRow.style.outlineOffset = '';
-        currentEditingRow = null;
-    }
+  if (currentEditingRow) {
+    currentEditingRow.classList.remove('editing-command-row');
+    currentEditingRow.style.outline = '';
+    currentEditingRow.style.outlineOffset = '';
+    currentEditingRow = null;
+  }
 
-    if (editFormRowElement && editFormRowElement.parentNode) {
-        editFormRowElement.parentNode.removeChild(editFormRowElement);
-    }
+  if (editFormRowElement && editFormRowElement.parentNode) {
+    editFormRowElement.parentNode.removeChild(editFormRowElement);
+  }
 
-    if (editFormPlaceholder && editFormPlaceholder.parentNode) {
-        editFormPlaceholder.parentNode.insertBefore(form, editFormPlaceholder);
-    } else if (editFormOriginalParent) {
-        editFormOriginalParent.appendChild(form);
-    }
+  if (editFormPlaceholder && editFormPlaceholder.parentNode) {
+    editFormPlaceholder.parentNode.insertBefore(form, editFormPlaceholder);
+  } else if (editFormOriginalParent) {
+    editFormOriginalParent.appendChild(form);
+  }
 
-    cancelNewThreshold();
+  cancelNewThreshold();
 
-    form.style.display = 'none';
-    form.classList.remove('active');
+  form.style.display = 'none';
+  form.classList.remove('active');
 }
 
-async function persistCommandChanges({ silent = false, closeOnSuccess = false, reason = '' } = {}) {
-    try {
-        const form = ensureEditFormInDom();
-        if (!form) {
-            if (!silent) {
-                alert('Edit form is not available. Please reload the page.');
-            }
-            return false;
-        }
-
-        const command = document.getElementById('editCommandName').value.trim();
-        const description = document.getElementById('editCommandDescription').value.trim();
-        const keywordsInput = document.getElementById('editCommandKeywords').value.trim();
-        const keywords = keywordsInput ? keywordsInput.split(',').map(k => k.trim()).filter(k => k.length > 0) : undefined;
-        const defaultState = false; // Hardcoded to OFF
-        const thresholds = editingThresholds.length > 0 ? editingThresholds : [];
-
-        const response = await fetch(`${getPluginPath()}/api/commands/${command}`, {
-            method: 'PUT',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-                description: description || undefined,
-                keywords: keywords,
-                defaultState: defaultState,
-                thresholds: thresholds
-            })
-        });
-
-        const result = await response.json();
-
-        if (result.success) {
-            clearEditFormDirtyState(reason || (silent ? '' : 'Command updated successfully!'));
-            await loadCommands();
-            if (!closeOnSuccess) {
-                attachEditFormToRow(command, { scroll: false });
-            }
-            if (closeOnSuccess) {
-                hideEditCommandForm(true);
-            }
-            return true;
-        }
-
-        if (silent) {
-            updateEditCommandStatus(result.error || 'Failed to update command', 'error');
-        } else {
-            alert('Failed to update command: ' + result.error);
-        }
-        return false;
-    } catch (error) {
-        if (silent) {
-            updateEditCommandStatus(error.message || 'Error updating command', 'error');
-        } else {
-            alert('Error updating command: ' + error.message);
-        }
-        return false;
+async function persistCommandChanges({
+  silent = false,
+  closeOnSuccess = false,
+  reason = '',
+} = {}) {
+  try {
+    const form = ensureEditFormInDom();
+    if (!form) {
+      if (!silent) {
+        alert('Edit form is not available. Please reload the page.');
+      }
+      return false;
     }
+
+    const command = document.getElementById('editCommandName').value.trim();
+    const description = document
+      .getElementById('editCommandDescription')
+      .value.trim();
+    const keywordsInput = document
+      .getElementById('editCommandKeywords')
+      .value.trim();
+    const keywords = keywordsInput
+      ? keywordsInput
+          .split(',')
+          .map(k => k.trim())
+          .filter(k => k.length > 0)
+      : undefined;
+    const defaultState = false; // Hardcoded to OFF
+    const thresholds = editingThresholds.length > 0 ? editingThresholds : [];
+
+    const response = await fetch(`${getPluginPath()}/api/commands/${command}`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        description: description || undefined,
+        keywords: keywords,
+        defaultState: defaultState,
+        thresholds: thresholds,
+      }),
+    });
+
+    const result = await response.json();
+
+    if (result.success) {
+      clearEditFormDirtyState(
+        reason || (silent ? '' : 'Command updated successfully!')
+      );
+      await loadCommands();
+      if (!closeOnSuccess) {
+        attachEditFormToRow(command, { scroll: false });
+      }
+      if (closeOnSuccess) {
+        hideEditCommandForm(true);
+      }
+      return true;
+    }
+
+    if (silent) {
+      updateEditCommandStatus(
+        result.error || 'Failed to update command',
+        'error'
+      );
+    } else {
+      alert('Failed to update command: ' + result.error);
+    }
+    return false;
+  } catch (error) {
+    if (silent) {
+      updateEditCommandStatus(
+        error.message || 'Error updating command',
+        'error'
+      );
+    } else {
+      alert('Error updating command: ' + error.message);
+    }
+    return false;
+  }
 }
 
 export async function loadCommands() {
-    try {
-        const response = await fetch(`${getPluginPath()}/api/commands`);
-        const result = await response.json();
+  try {
+    const response = await fetch(`${getPluginPath()}/api/commands`);
+    const result = await response.json();
 
-        if (result.success) {
-            displayCommands(result.commands || []);
-            // Update automation states after displaying commands
-            setTimeout(() => updateAllAutomationStates(), 100);
+    if (result.success) {
+      displayCommands(result.commands || []);
+      // Update automation states after displaying commands
+      setTimeout(() => updateAllAutomationStates(), 100);
 
-            // Subscribe to real-time command state updates
-            setTimeout(() => subscribeToCommandStates(result.commands || []), 200);
-        } else {
-            document.getElementById('commandContainer').innerHTML = `<div class="error">Error loading commands: ${result.error}</div>`;
-        }
-    } catch (error) {
-        document.getElementById('commandContainer').innerHTML = `<div class="error">Error loading commands: ${error.message}</div>`;
+      // Subscribe to real-time command state updates
+      setTimeout(() => subscribeToCommandStates(result.commands || []), 200);
+    } else {
+      document.getElementById('commandContainer').innerHTML =
+        `<div class="error">Error loading commands: ${result.error}</div>`;
     }
+  } catch (error) {
+    document.getElementById('commandContainer').innerHTML =
+      `<div class="error">Error loading commands: ${error.message}</div>`;
+  }
 }
 
 function displayCommands(commands) {
-    const container = document.getElementById('commandContainer');
+  const container = document.getElementById('commandContainer');
 
-    if (!commands || commands.length === 0) {
-        container.innerHTML = '<div class="info">No commands registered yet.</div>';
-        return;
-    }
+  if (!commands || commands.length === 0) {
+    container.innerHTML = '<div class="info">No commands registered yet.</div>';
+    return;
+  }
 
-    let html = '<div class="table-container"><table><thead><tr>';
-    html += '<th>Command</th><th>Path</th><th>Description</th><th>Status</th><th>Actions</th>';
-    html += '</tr></thead><tbody>';
+  let html = '<div class="table-container"><table><thead><tr>';
+  html +=
+    '<th>Command</th><th>Path</th><th>Description</th><th>Status</th><th>Actions</th>';
+  html += '</tr></thead><tbody>';
 
-    commands.forEach(command => {
-        // Real-time status will be populated by SignalK subscription
-        const status = `<span id="command-state-${command.command}" class="command-state">⏳ Loading...</span>`;
-        const registeredDate = new Date(command.registered).toLocaleString();
-        const keywords = command.keywords ? command.keywords.join(', ') : '';
+  commands.forEach(command => {
+    // Real-time status will be populated by SignalK subscription
+    const status = `<span id="command-state-${command.command}" class="command-state">⏳ Loading...</span>`;
+    const registeredDate = new Date(command.registered).toLocaleString();
+    const keywords = command.keywords ? command.keywords.join(', ') : '';
 
-        // Automation info
-        let automationInfo = '<div style="font-size: 0.9em;">';
+    // Automation info
+    let automationInfo = '<div style="font-size: 0.9em;">';
 
-        // Automation status placeholder - will be populated by updateAutomationUI
-        const hasThresholds = command.thresholds && command.thresholds.length > 0;
-        if (hasThresholds) {
-            automationInfo += `<div id="automation-status-${command.command}" style="margin-bottom: 5px;">
+    // Automation status placeholder - will be populated by updateAutomationUI
+    const hasThresholds = command.thresholds && command.thresholds.length > 0;
+    if (hasThresholds) {
+      automationInfo += `<div id="automation-status-${command.command}" style="margin-bottom: 5px;">
                 <!-- Automation status will be updated dynamically -->
             </div>`;
-        }
+    }
 
-        // Manual override status (only for commands without thresholds)
-        if (command.manualOverride && !hasThresholds) {
-            const expiry = command.manualOverrideUntil ?
-                ` (expires ${new Date(command.manualOverrideUntil).toLocaleString()})` : ' (permanent)';
-            automationInfo += `<div style="color: #ff9800; margin-bottom: 5px;">🔒 Manual Override${expiry}</div>`;
-        }
+    // Manual override status (only for commands without thresholds)
+    if (command.manualOverride && !hasThresholds) {
+      const expiry = command.manualOverrideUntil
+        ? ` (expires ${new Date(command.manualOverrideUntil).toLocaleString()})`
+        : ' (permanent)';
+      automationInfo += `<div style="color: #ff9800; margin-bottom: 5px;">🔒 Manual Override${expiry}</div>`;
+    }
 
-        // Thresholds configuration (multiple thresholds supported)
-        if (command.thresholds && command.thresholds.length > 0) {
-            command.thresholds.forEach(threshold => {
-                if (threshold.enabled) {
-                    const operator = {
-                        'gt': '>', 'lt': '<', 'eq': '=', 'ne': '≠', 'true': 'is true', 'false': 'is false'
-                    }[threshold.operator] || threshold.operator;
+    // Thresholds configuration (multiple thresholds supported)
+    if (command.thresholds && command.thresholds.length > 0) {
+      command.thresholds.forEach(threshold => {
+        if (threshold.enabled) {
+          const operator =
+            {
+              gt: '>',
+              lt: '<',
+              eq: '=',
+              ne: '≠',
+              true: 'is true',
+              false: 'is false',
+            }[threshold.operator] || threshold.operator;
 
-                    const value = threshold.value !== undefined ? ` ${threshold.value}` : '';
-                    const action = threshold.activateOnMatch ? 'ON' : 'OFF';
+          const value =
+            threshold.value !== undefined ? ` ${threshold.value}` : '';
+          const action = threshold.activateOnMatch ? 'ON' : 'OFF';
 
-                    automationInfo += `<div style="color: #2196f3; margin-bottom: 3px;">
+          automationInfo += `<div style="color: #2196f3; margin-bottom: 3px;">
                         🎯 <strong>${threshold.watchPath}</strong> ${operator}${value} → ${action}
                     </div>`;
 
-                    if (threshold.hysteresis) {
-                        automationInfo += `<div style="color: #666; font-size: 0.8em;">⏱️ ${threshold.hysteresis}s hysteresis</div>`;
-                    }
-                }
-            });
-        } else if (command.defaultState !== undefined) {
-            automationInfo += `<div style="color: #4caf50;">⚙️ Default: ${command.defaultState ? 'ON' : 'OFF'}</div>`;
-        } else {
-            automationInfo += '<div style="color: #999;">📱 Manual control only</div>';
+          if (threshold.hysteresis) {
+            automationInfo += `<div style="color: #666; font-size: 0.8em;">⏱️ ${threshold.hysteresis}s hysteresis</div>`;
+          }
         }
+      });
+    } else if (command.defaultState !== undefined) {
+      automationInfo += `<div style="color: #4caf50;">⚙️ Default: ${command.defaultState ? 'ON' : 'OFF'}</div>`;
+    } else {
+      automationInfo +=
+        '<div style="color: #999;">📱 Manual control only</div>';
+    }
 
-        if (keywords) {
-            automationInfo += `<div style="color: #666; font-size: 0.8em; margin-top: 3px;">🏷️ ${keywords}</div>`;
-        }
+    if (keywords) {
+      automationInfo += `<div style="color: #666; font-size: 0.8em; margin-top: 3px;">🏷️ ${keywords}</div>`;
+    }
 
-        automationInfo += '</div>';
+    automationInfo += '</div>';
 
-        html += `<tr data-command-row="${command.command}">
+    html += `<tr data-command-row="${command.command}">
             <td>
                 <div><strong>${command.command}</strong></div>
                 <div style="font-size: 0.8em; color: #666; margin-top: 2px;">${command.description || 'No description'}</div>
@@ -587,15 +657,16 @@ function displayCommands(commands) {
                         <button id="toggle-btn-${command.command}" onclick="toggleCommand('${command.command}')"
                                 style="padding: 4px 8px; font-size: 0.8em;">🔴 Turn ON</button>
                     </div>
-                    ${hasThresholds ?
-                        `<div>
+                    ${
+                      hasThresholds
+                        ? `<div>
                             <button id="auto-toggle-${command.command}" onclick="toggleAutomation('${command.command}')"
                                     style="background: #ff9800; color: white; border: none; padding: 2px 6px; border-radius: 3px; font-size: 0.8em;">
                                 👤 Disable Automation
                             </button>
-                        </div>` :
-                        // No override buttons for commands without thresholds - just use Start/Stop
-                        ''
+                        </div>`
+                        : // No override buttons for commands without thresholds - just use Start/Stop
+                          ''
                     }
                     <div style="display: flex; gap: 3px;">
                         <button onclick="showEditCommandForm('${command.command}')" class="btn-secondary" style="padding: 3px 6px; font-size: 0.8em;">✏️ Edit</button>
@@ -604,247 +675,284 @@ function displayCommands(commands) {
                 </div>
             </td>
         </tr>`;
-    });
+  });
 
-    html += '</tbody></table></div>';
-    container.innerHTML = html;
+  html += '</tbody></table></div>';
+  container.innerHTML = html;
 
-    const form = getEditCommandForm();
-    if (currentEditingCommand && form && form.style.display !== 'none') {
-        attachEditFormToRow(currentEditingCommand, { scroll: false });
-    }
+  const form = getEditCommandForm();
+  if (currentEditingCommand && form && form.style.display !== 'none') {
+    attachEditFormToRow(currentEditingCommand, { scroll: false });
+  }
 }
 
 export function showAddCommandForm() {
-    document.getElementById('addCommandForm').style.display = 'block';
+  document.getElementById('addCommandForm').style.display = 'block';
 }
 
 export function hideAddCommandForm() {
-    document.getElementById('addCommandForm').style.display = 'none';
-    clearAddCommandForm();
+  document.getElementById('addCommandForm').style.display = 'none';
+  clearAddCommandForm();
 }
 
 function clearAddCommandForm() {
-    document.getElementById('commandName').value = '';
-    document.getElementById('commandDescription').value = '';
-    document.getElementById('commandKeywords').value = '';
-    // defaultState is now hardcoded to false
+  document.getElementById('commandName').value = '';
+  document.getElementById('commandDescription').value = '';
+  document.getElementById('commandKeywords').value = '';
+  // defaultState is now hardcoded to false
 
-    // Clear thresholds
-    addingThresholds = [];
-    displayAddCommandThresholdsList();
+  // Clear thresholds
+  addingThresholds = [];
+  displayAddCommandThresholdsList();
 
-    // Hide threshold form if visible
-    cancelAddCmdThreshold();
+  // Hide threshold form if visible
+  cancelAddCmdThreshold();
 }
 
 // Edit command functions
 export async function showEditCommandForm(commandName) {
-    try {
-        if (currentEditingCommand && currentEditingCommand !== commandName && editFormDirty) {
-            const proceed = confirm(`You have unsaved changes for ${currentEditingCommand}. Discard and edit ${commandName}?`);
-            if (!proceed) {
-                return;
-            }
-        }
-
-        // Find the command in the current commands list
-        const response = await fetch(`${getPluginPath()}/api/commands`).then(r => r.json());
-        const command = response.commands.find(cmd => cmd.command === commandName);
-        
-        if (!command) {
-            alert('Command not found');
-            return;
-        }
-
-        currentEditingCommand = command.command;
-
-        const form = ensureEditFormInDom();
-        if (!form) {
-            alert('Unable to locate the edit form in the document.');
-            return;
-        }
-
-        // Populate the form
-        document.getElementById('editCommandName').value = command.command;
-        document.getElementById('editCommandDescription').value = command.description || '';
-        document.getElementById('editCommandKeywords').value = command.keywords ? command.keywords.join(', ') : '';
-
-        // defaultState is now hardcoded to false on server side
-
-        // Populate thresholds configuration (multiple thresholds supported)
-        editingThresholds = command.thresholds ? [...command.thresholds] : [];
-        displayThresholdsList();
-
-        setupEditFormFieldListeners();
-        attachEditFormToRow(command.command);
-        clearEditFormDirtyState('');
-
-    } catch (error) {
-        alert('Failed to load command details: ' + error.message);
+  try {
+    if (
+      currentEditingCommand &&
+      currentEditingCommand !== commandName &&
+      editFormDirty
+    ) {
+      const proceed = confirm(
+        `You have unsaved changes for ${currentEditingCommand}. Discard and edit ${commandName}?`
+      );
+      if (!proceed) {
+        return;
+      }
     }
+
+    // Find the command in the current commands list
+    const response = await fetch(`${getPluginPath()}/api/commands`).then(r =>
+      r.json()
+    );
+    const command = response.commands.find(cmd => cmd.command === commandName);
+
+    if (!command) {
+      alert('Command not found');
+      return;
+    }
+
+    currentEditingCommand = command.command;
+
+    const form = ensureEditFormInDom();
+    if (!form) {
+      alert('Unable to locate the edit form in the document.');
+      return;
+    }
+
+    // Populate the form
+    document.getElementById('editCommandName').value = command.command;
+    document.getElementById('editCommandDescription').value =
+      command.description || '';
+    document.getElementById('editCommandKeywords').value = command.keywords
+      ? command.keywords.join(', ')
+      : '';
+
+    // defaultState is now hardcoded to false on server side
+
+    // Populate thresholds configuration (multiple thresholds supported)
+    editingThresholds = command.thresholds ? [...command.thresholds] : [];
+    displayThresholdsList();
+
+    setupEditFormFieldListeners();
+    attachEditFormToRow(command.command);
+    clearEditFormDirtyState('');
+  } catch (error) {
+    alert('Failed to load command details: ' + error.message);
+  }
 }
 
 export function hideEditCommandForm(force = false) {
-    if (!force && editFormDirty) {
-        const confirmClose = confirm('You have unsaved changes. Close without saving?');
-        if (!confirmClose) {
-            return;
-        }
+  if (!force && editFormDirty) {
+    const confirmClose = confirm(
+      'You have unsaved changes. Close without saving?'
+    );
+    if (!confirmClose) {
+      return;
     }
+  }
 
-    detachEditForm();
-    currentEditingCommand = null;
-    clearEditFormDirtyState('');
+  detachEditForm();
+  currentEditingCommand = null;
+  clearEditFormDirtyState('');
 }
 
 export async function updateCommand() {
-    const success = await persistCommandChanges({ silent: false, closeOnSuccess: true });
-    if (success) {
-        alert('Command updated successfully!');
-    }
+  const success = await persistCommandChanges({
+    silent: false,
+    closeOnSuccess: true,
+  });
+  if (success) {
+    alert('Command updated successfully!');
+  }
 }
 
 export async function registerCommand() {
-    try {
-        const command = document.getElementById('commandName').value.trim();
-        const description = document.getElementById('commandDescription').value.trim();
-        const keywordsInput = document.getElementById('commandKeywords').value.trim();
-        
-        if (!command) {
-            alert('Command name is required');
-            return;
-        }
-        
-        // Parse keywords from comma-separated string
-        const keywords = keywordsInput ? keywordsInput.split(',').map(k => k.trim()).filter(k => k.length > 0) : undefined;
+  try {
+    const command = document.getElementById('commandName').value.trim();
+    const description = document
+      .getElementById('commandDescription')
+      .value.trim();
+    const keywordsInput = document
+      .getElementById('commandKeywords')
+      .value.trim();
 
-        // Default state is hardcoded to OFF
-        const defaultState = false;
-
-        // Get thresholds configuration
-        const thresholds = addingThresholds.length > 0 ? addingThresholds : undefined;
-
-        const response = await fetch(`${getPluginPath()}/api/commands`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-                command: command,
-                description: description || undefined,
-                keywords: keywords,
-                defaultState: defaultState,
-                thresholds: thresholds
-            })
-        });
-        
-        const result = await response.json();
-        
-        if (result.success) {
-            hideAddCommandForm();
-            await loadCommands();
-            await loadPathConfigurations(); // Refresh paths to show the auto-created path
-            alert(`Command '${command}' registered successfully!\n\nA path configuration has been automatically created and enabled for this command.`);
-        } else {
-            alert(`Error registering command: ${result.error}`);
-        }
-    } catch (error) {
-        alert(`Network error: ${error.message}`);
+    if (!command) {
+      alert('Command name is required');
+      return;
     }
+
+    // Parse keywords from comma-separated string
+    const keywords = keywordsInput
+      ? keywordsInput
+          .split(',')
+          .map(k => k.trim())
+          .filter(k => k.length > 0)
+      : undefined;
+
+    // Default state is hardcoded to OFF
+    const defaultState = false;
+
+    // Get thresholds configuration
+    const thresholds =
+      addingThresholds.length > 0 ? addingThresholds : undefined;
+
+    const response = await fetch(`${getPluginPath()}/api/commands`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        command: command,
+        description: description || undefined,
+        keywords: keywords,
+        defaultState: defaultState,
+        thresholds: thresholds,
+      }),
+    });
+
+    const result = await response.json();
+
+    if (result.success) {
+      hideAddCommandForm();
+      await loadCommands();
+      await loadPathConfigurations(); // Refresh paths to show the auto-created path
+      alert(
+        `Command '${command}' registered successfully!\n\nA path configuration has been automatically created and enabled for this command.`
+      );
+    } else {
+      alert(`Error registering command: ${result.error}`);
+    }
+  } catch (error) {
+    alert(`Network error: ${error.message}`);
+  }
 }
 
 export async function executeCommand(commandName, value) {
-    try {
-        const response = await fetch(`${getPluginPath()}/api/commands/${commandName}/execute`, {
-            method: 'PUT',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-                value: value
-            })
-        });
-        
-        const result = await response.json();
-        
-        if (result.success) {
-            await loadCommandHistory();
-        } else {
-            alert(`Error executing command: ${result.error}`);
-        }
-    } catch (error) {
-        alert(`Network error: ${error.message}`);
+  try {
+    const response = await fetch(
+      `${getPluginPath()}/api/commands/${commandName}/execute`,
+      {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          value: value,
+        }),
+      }
+    );
+
+    const result = await response.json();
+
+    if (result.success) {
+      await loadCommandHistory();
+    } else {
+      alert(`Error executing command: ${result.error}`);
     }
+  } catch (error) {
+    alert(`Network error: ${error.message}`);
+  }
 }
 
 export async function toggleCommand(commandName) {
-    // Get current state from the status display
-    const stateElement = document.getElementById(`command-state-${commandName}`);
-    if (!stateElement) return;
+  // Get current state from the status display
+  const stateElement = document.getElementById(`command-state-${commandName}`);
+  if (!stateElement) return;
 
-    const currentText = stateElement.textContent;
-    const isCurrentlyOn = currentText.includes('🟢 ON');
+  const currentText = stateElement.textContent;
+  const isCurrentlyOn = currentText.includes('🟢 ON');
 
-    // Toggle to opposite state
-    await executeCommand(commandName, !isCurrentlyOn);
+  // Toggle to opposite state
+  await executeCommand(commandName, !isCurrentlyOn);
 }
 
 export async function unregisterCommand(commandName) {
-    if (!confirm(`Are you sure you want to unregister command '${commandName}'?`)) {
-        return;
+  if (
+    !confirm(`Are you sure you want to unregister command '${commandName}'?`)
+  ) {
+    return;
+  }
+
+  try {
+    const response = await fetch(
+      `${getPluginPath()}/api/commands/${commandName}`,
+      {
+        method: 'DELETE',
+      }
+    );
+
+    const result = await response.json();
+
+    if (result.success) {
+      await loadCommands();
+      await loadCommandHistory();
+      await loadPathConfigurations(); // Refresh paths to show the removed path
+      alert(
+        `Command '${commandName}' unregistered successfully!\n\nThe associated path configuration has been automatically removed.`
+      );
+    } else {
+      alert(`Error unregistering command: ${result.error}`);
     }
-    
-    try {
-        const response = await fetch(`${getPluginPath()}/api/commands/${commandName}`, {
-            method: 'DELETE'
-        });
-        
-        const result = await response.json();
-        
-        if (result.success) {
-            await loadCommands();
-            await loadCommandHistory();
-            await loadPathConfigurations(); // Refresh paths to show the removed path
-            alert(`Command '${commandName}' unregistered successfully!\n\nThe associated path configuration has been automatically removed.`);
-        } else {
-            alert(`Error unregistering command: ${result.error}`);
-        }
-    } catch (error) {
-        alert(`Network error: ${error.message}`);
-    }
+  } catch (error) {
+    alert(`Network error: ${error.message}`);
+  }
 }
 
 // Threshold UI functions
 
 // Bounding box UI helpers
 function initializeBoundingBoxUI(valueContainerId) {
-    const anchorGrid = document.getElementById(`${valueContainerId}_anchorGrid`);
-    const boxSizeInput = document.getElementById(`${valueContainerId}_boxSize`);
+  const anchorGrid = document.getElementById(`${valueContainerId}_anchorGrid`);
+  const boxSizeInput = document.getElementById(`${valueContainerId}_boxSize`);
 
-    if (!anchorGrid) return;
+  if (!anchorGrid) return;
 
-    // Define anchor points (9 positions in a 3x3 grid)
-    const anchors = [
-        { id: 'nw', label: '↖️ NW', row: 0, col: 0, desc: 'Northwest Corner' },
-        { id: 'n', label: '⬆️ N', row: 0, col: 1, desc: 'North Edge' },
-        { id: 'ne', label: '↗️ NE', row: 0, col: 2, desc: 'Northeast Corner' },
-        { id: 'w', label: '⬅️ W', row: 1, col: 0, desc: 'West Edge' },
-        { id: 'center', label: '⏺️ Center', row: 1, col: 1, desc: 'Center' },
-        { id: 'e', label: '➡️ E', row: 1, col: 2, desc: 'East Edge' },
-        { id: 'sw', label: '↙️ SW', row: 2, col: 0, desc: 'Southwest Corner' },
-        { id: 's', label: '⬇️ S', row: 2, col: 1, desc: 'South Edge' },
-        { id: 'se', label: '↘️ SE', row: 2, col: 2, desc: 'Southeast Corner' }
-    ];
+  // Define anchor points (9 positions in a 3x3 grid)
+  const anchors = [
+    { id: 'nw', label: '↖️ NW', row: 0, col: 0, desc: 'Northwest Corner' },
+    { id: 'n', label: '⬆️ N', row: 0, col: 1, desc: 'North Edge' },
+    { id: 'ne', label: '↗️ NE', row: 0, col: 2, desc: 'Northeast Corner' },
+    { id: 'w', label: '⬅️ W', row: 1, col: 0, desc: 'West Edge' },
+    { id: 'center', label: '⏺️ Center', row: 1, col: 1, desc: 'Center' },
+    { id: 'e', label: '➡️ E', row: 1, col: 2, desc: 'East Edge' },
+    { id: 'sw', label: '↙️ SW', row: 2, col: 0, desc: 'Southwest Corner' },
+    { id: 's', label: '⬇️ S', row: 2, col: 1, desc: 'South Edge' },
+    { id: 'se', label: '↘️ SE', row: 2, col: 2, desc: 'Southeast Corner' },
+  ];
 
-    // Create anchor buttons
-    anchors.forEach(anchor => {
-        const button = document.createElement('button');
-        button.type = 'button';
-        button.id = `${valueContainerId}_anchor_${anchor.id}`;
-        button.textContent = anchor.label;
-        button.title = anchor.desc;
-        button.style.cssText = `
+  // Create anchor buttons
+  anchors.forEach(anchor => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.id = `${valueContainerId}_anchor_${anchor.id}`;
+    button.textContent = anchor.label;
+    button.title = anchor.desc;
+    button.style.cssText = `
             padding: 12px 8px;
             border: 2px solid #ddd;
             background: white;
@@ -854,120 +962,124 @@ function initializeBoundingBoxUI(valueContainerId) {
             transition: all 0.2s;
         `;
 
-        button.addEventListener('click', function() {
-            // Remove selected state from all buttons
-            anchorGrid.querySelectorAll('button').forEach(btn => {
-                btn.style.background = 'white';
-                btn.style.borderColor = '#ddd';
-                btn.style.borderWidth = '2px';
-            });
+    button.addEventListener('click', function () {
+      // Remove selected state from all buttons
+      anchorGrid.querySelectorAll('button').forEach(btn => {
+        btn.style.background = 'white';
+        btn.style.borderColor = '#ddd';
+        btn.style.borderWidth = '2px';
+      });
 
-            // Mark this button as selected
-            this.style.background = '#4caf50';
-            this.style.borderColor = '#2e7d32';
-            this.style.borderWidth = '3px';
-            this.style.color = 'white';
+      // Mark this button as selected
+      this.style.background = '#4caf50';
+      this.style.borderColor = '#2e7d32';
+      this.style.borderWidth = '3px';
+      this.style.color = 'white';
 
-            // Store selected anchor
-            this.parentElement.dataset.selectedAnchor = anchor.id;
+      // Store selected anchor
+      this.parentElement.dataset.selectedAnchor = anchor.id;
 
-            // Update visualization
-            updateBoundingBoxVisualization(valueContainerId);
-        });
-
-        anchorGrid.appendChild(button);
+      // Update visualization
+      updateBoundingBoxVisualization(valueContainerId);
     });
 
-    // Select center by default
-    const centerBtn = document.getElementById(`${valueContainerId}_anchor_center`);
-    if (centerBtn) {
-        centerBtn.click();
-    }
+    anchorGrid.appendChild(button);
+  });
 
-    // Update visualization when box size changes
-    if (boxSizeInput) {
-        boxSizeInput.addEventListener('input', () => {
-            updateBoundingBoxVisualization(valueContainerId);
-        });
-    }
+  // Select center by default
+  const centerBtn = document.getElementById(
+    `${valueContainerId}_anchor_center`
+  );
+  if (centerBtn) {
+    centerBtn.click();
+  }
+
+  // Update visualization when box size changes
+  if (boxSizeInput) {
+    boxSizeInput.addEventListener('input', () => {
+      updateBoundingBoxVisualization(valueContainerId);
+    });
+  }
 }
 
 function updateBoundingBoxVisualization(valueContainerId) {
-    const vizContainer = document.getElementById(`${valueContainerId}_visualization`);
-    const anchorGrid = document.getElementById(`${valueContainerId}_anchorGrid`);
-    const boxSizeInput = document.getElementById(`${valueContainerId}_boxSize`);
+  const vizContainer = document.getElementById(
+    `${valueContainerId}_visualization`
+  );
+  const anchorGrid = document.getElementById(`${valueContainerId}_anchorGrid`);
+  const boxSizeInput = document.getElementById(`${valueContainerId}_boxSize`);
 
-    if (!vizContainer || !anchorGrid) return;
+  if (!vizContainer || !anchorGrid) return;
 
-    const selectedAnchor = anchorGrid.dataset.selectedAnchor || 'center';
-    const boxSize = parseFloat(boxSizeInput?.value || 1000);
+  const selectedAnchor = anchorGrid.dataset.selectedAnchor || 'center';
+  const boxSize = parseFloat(boxSizeInput?.value || 1000);
 
-    // Calculate box dimensions for visualization (scaled)
-    const vizWidth = vizContainer.clientWidth - 30 || 250;
-    const vizHeight = 180;
-    const boxWidth = 120;
-    const boxHeight = 80;
+  // Calculate box dimensions for visualization (scaled)
+  const vizWidth = vizContainer.clientWidth - 30 || 250;
+  const vizHeight = 180;
+  const boxWidth = 120;
+  const boxHeight = 80;
 
-    // Home port is ALWAYS in the center of the visualization
-    const homePortX = vizWidth / 2;
-    const homePortY = vizHeight / 2;
+  // Home port is ALWAYS in the center of the visualization
+  const homePortX = vizWidth / 2;
+  const homePortY = vizHeight / 2;
 
-    // Calculate box position based on where home port should be WITHIN the box
-    let boxLeft, boxTop;
+  // Calculate box position based on where home port should be WITHIN the box
+  let boxLeft, boxTop;
 
-    switch (selectedAnchor) {
-        case 'nw':
-            // Home port at northwest corner - box extends south and east
-            boxLeft = homePortX;
-            boxTop = homePortY;
-            break;
-        case 'n':
-            // Home port at north edge - box extends south, centered horizontally
-            boxLeft = homePortX - boxWidth / 2;
-            boxTop = homePortY;
-            break;
-        case 'ne':
-            // Home port at northeast corner - box extends south and west
-            boxLeft = homePortX - boxWidth;
-            boxTop = homePortY;
-            break;
-        case 'w':
-            // Home port at west edge - box extends east, centered vertically
-            boxLeft = homePortX;
-            boxTop = homePortY - boxHeight / 2;
-            break;
-        case 'center':
-            // Home port at center - box extends equally in all directions
-            boxLeft = homePortX - boxWidth / 2;
-            boxTop = homePortY - boxHeight / 2;
-            break;
-        case 'e':
-            // Home port at east edge - box extends west, centered vertically
-            boxLeft = homePortX - boxWidth;
-            boxTop = homePortY - boxHeight / 2;
-            break;
-        case 'sw':
-            // Home port at southwest corner - box extends north and east
-            boxLeft = homePortX;
-            boxTop = homePortY - boxHeight;
-            break;
-        case 's':
-            // Home port at south edge - box extends north, centered horizontally
-            boxLeft = homePortX - boxWidth / 2;
-            boxTop = homePortY - boxHeight;
-            break;
-        case 'se':
-            // Home port at southeast corner - box extends north and west
-            boxLeft = homePortX - boxWidth;
-            boxTop = homePortY - boxHeight;
-            break;
-        default:
-            boxLeft = homePortX - boxWidth / 2;
-            boxTop = homePortY - boxHeight / 2;
-    }
+  switch (selectedAnchor) {
+    case 'nw':
+      // Home port at northwest corner - box extends south and east
+      boxLeft = homePortX;
+      boxTop = homePortY;
+      break;
+    case 'n':
+      // Home port at north edge - box extends south, centered horizontally
+      boxLeft = homePortX - boxWidth / 2;
+      boxTop = homePortY;
+      break;
+    case 'ne':
+      // Home port at northeast corner - box extends south and west
+      boxLeft = homePortX - boxWidth;
+      boxTop = homePortY;
+      break;
+    case 'w':
+      // Home port at west edge - box extends east, centered vertically
+      boxLeft = homePortX;
+      boxTop = homePortY - boxHeight / 2;
+      break;
+    case 'center':
+      // Home port at center - box extends equally in all directions
+      boxLeft = homePortX - boxWidth / 2;
+      boxTop = homePortY - boxHeight / 2;
+      break;
+    case 'e':
+      // Home port at east edge - box extends west, centered vertically
+      boxLeft = homePortX - boxWidth;
+      boxTop = homePortY - boxHeight / 2;
+      break;
+    case 'sw':
+      // Home port at southwest corner - box extends north and east
+      boxLeft = homePortX;
+      boxTop = homePortY - boxHeight;
+      break;
+    case 's':
+      // Home port at south edge - box extends north, centered horizontally
+      boxLeft = homePortX - boxWidth / 2;
+      boxTop = homePortY - boxHeight;
+      break;
+    case 'se':
+      // Home port at southeast corner - box extends north and west
+      boxLeft = homePortX - boxWidth;
+      boxTop = homePortY - boxHeight;
+      break;
+    default:
+      boxLeft = homePortX - boxWidth / 2;
+      boxTop = homePortY - boxHeight / 2;
+  }
 
-    // Create visualization HTML
-    vizContainer.innerHTML = `
+  // Create visualization HTML
+  vizContainer.innerHTML = `
         <svg width="${vizWidth}" height="${vizHeight}" style="display: block;">
             <!-- Bounding box -->
             <rect x="${boxLeft}" y="${boxTop}" width="${boxWidth}" height="${boxHeight}"
@@ -998,129 +1110,131 @@ function updateBoundingBoxVisualization(valueContainerId) {
 }
 
 function getAnchorName(anchorId) {
-    const names = {
-        'nw': 'Northwest Corner',
-        'n': 'North Edge (centered)',
-        'ne': 'Northeast Corner',
-        'w': 'West Edge (centered)',
-        'center': 'Center',
-        'e': 'East Edge (centered)',
-        'sw': 'Southwest Corner',
-        's': 'South Edge (centered)',
-        'se': 'Southeast Corner'
-    };
-    return names[anchorId] || 'Center';
+  const names = {
+    nw: 'Northwest Corner',
+    n: 'North Edge (centered)',
+    ne: 'Northeast Corner',
+    w: 'West Edge (centered)',
+    center: 'Center',
+    e: 'East Edge (centered)',
+    sw: 'Southwest Corner',
+    s: 'South Edge (centered)',
+    se: 'Southeast Corner',
+  };
+  return names[anchorId] || 'Center';
 }
 
 // Path type detection
 async function detectPathType(path) {
-    try {
-        const response = await fetch(`${getPluginPath()}/api/paths/${encodeURIComponent(path)}/type`);
-        const result = await response.json();
-        if (result.success) {
-            return {
-                dataType: result.dataType || 'unknown',
-                unit: result.unit,
-                enumValues: result.enumValues,
-                description: result.description
-            };
-        }
-    } catch (error) {
-        console.log('Could not detect path type:', error);
+  try {
+    const response = await fetch(
+      `${getPluginPath()}/api/paths/${encodeURIComponent(path)}/type`
+    );
+    const result = await response.json();
+    if (result.success) {
+      return {
+        dataType: result.dataType || 'unknown',
+        unit: result.unit,
+        enumValues: result.enumValues,
+        description: result.description,
+      };
     }
-    return { dataType: 'unknown' };
+  } catch (error) {
+    console.log('Could not detect path type:', error);
+  }
+  return { dataType: 'unknown' };
 }
 
 // Update operator dropdown based on detected path type
 function updateOperatorDropdown(operatorSelectId, dataType) {
-    const operatorSelect = document.getElementById(operatorSelectId);
-    if (!operatorSelect) return;
+  const operatorSelect = document.getElementById(operatorSelectId);
+  if (!operatorSelect) return;
 
-    // Clear existing options
-    operatorSelect.innerHTML = '';
+  // Clear existing options
+  operatorSelect.innerHTML = '';
 
-    let operators = [];
+  let operators = [];
 
-    switch (dataType) {
-        case 'numeric':
-        case 'angular':
-            operators = [
-                { value: 'gt', label: '> Greater Than' },
-                { value: 'lt', label: '< Less Than' },
-                { value: 'eq', label: '= Equal To' },
-                { value: 'ne', label: '≠ Not Equal To' },
-                { value: 'range', label: '⇄ Within Range' }
-            ];
-            break;
-        case 'boolean':
-            operators = [
-                { value: 'true', label: 'Is True' },
-                { value: 'false', label: 'Is False' }
-            ];
-            break;
-        case 'string':
-        case 'enum':
-            operators = [
-                { value: 'stringEquals', label: 'Equals' },
-                { value: 'contains', label: 'Contains' },
-                { value: 'startsWith', label: 'Starts With' },
-                { value: 'endsWith', label: 'Ends With' }
-            ];
-            break;
-        case 'position':
-            operators = [
-                { value: 'withinRadius', label: '📍 Within Radius' },
-                { value: 'outsideRadius', label: '📍 Outside Radius' },
-                { value: 'inBoundingBox', label: '🗺️ Inside Bounding Box' },
-                { value: 'outsideBoundingBox', label: '🗺️ Outside Bounding Box' }
-            ];
-            break;
-        default:
-            // Unknown type - show all operators
-            operators = [
-                { value: 'gt', label: '> Greater Than' },
-                { value: 'lt', label: '< Less Than' },
-                { value: 'eq', label: '= Equal To' },
-                { value: 'ne', label: '≠ Not Equal To' },
-                { value: 'range', label: '⇄ Within Range' },
-                { value: 'true', label: 'Is True' },
-                { value: 'false', label: 'Is False' },
-                { value: 'stringEquals', label: 'Equals (String)' },
-                { value: 'contains', label: 'Contains' }
-            ];
-            break;
-    }
+  switch (dataType) {
+    case 'numeric':
+    case 'angular':
+      operators = [
+        { value: 'gt', label: '> Greater Than' },
+        { value: 'lt', label: '< Less Than' },
+        { value: 'eq', label: '= Equal To' },
+        { value: 'ne', label: '≠ Not Equal To' },
+        { value: 'range', label: '⇄ Within Range' },
+      ];
+      break;
+    case 'boolean':
+      operators = [
+        { value: 'true', label: 'Is True' },
+        { value: 'false', label: 'Is False' },
+      ];
+      break;
+    case 'string':
+    case 'enum':
+      operators = [
+        { value: 'stringEquals', label: 'Equals' },
+        { value: 'contains', label: 'Contains' },
+        { value: 'startsWith', label: 'Starts With' },
+        { value: 'endsWith', label: 'Ends With' },
+      ];
+      break;
+    case 'position':
+      operators = [
+        { value: 'withinRadius', label: '📍 Within Radius' },
+        { value: 'outsideRadius', label: '📍 Outside Radius' },
+        { value: 'inBoundingBox', label: '🗺️ Inside Bounding Box' },
+        { value: 'outsideBoundingBox', label: '🗺️ Outside Bounding Box' },
+      ];
+      break;
+    default:
+      // Unknown type - show all operators
+      operators = [
+        { value: 'gt', label: '> Greater Than' },
+        { value: 'lt', label: '< Less Than' },
+        { value: 'eq', label: '= Equal To' },
+        { value: 'ne', label: '≠ Not Equal To' },
+        { value: 'range', label: '⇄ Within Range' },
+        { value: 'true', label: 'Is True' },
+        { value: 'false', label: 'Is False' },
+        { value: 'stringEquals', label: 'Equals (String)' },
+        { value: 'contains', label: 'Contains' },
+      ];
+      break;
+  }
 
-    operators.forEach(op => {
-        const option = document.createElement('option');
-        option.value = op.value;
-        option.textContent = op.label;
-        operatorSelect.appendChild(option);
-    });
+  operators.forEach(op => {
+    const option = document.createElement('option');
+    option.value = op.value;
+    option.textContent = op.label;
+    operatorSelect.appendChild(option);
+  });
 }
 
 // Update value fields based on operator and data type
 function updateValueFields(operatorSelectId, valueContainerId, dataType) {
-    const operator = document.getElementById(operatorSelectId)?.value;
-    const container = document.getElementById(valueContainerId);
-    if (!container) return;
+  const operator = document.getElementById(operatorSelectId)?.value;
+  const container = document.getElementById(valueContainerId);
+  if (!container) return;
 
-    // Clear existing content
-    container.innerHTML = '';
+  // Clear existing content
+  container.innerHTML = '';
 
-    if (!operator) return;
+  if (!operator) return;
 
-    // Boolean operators don't need value fields
-    if (operator === 'true' || operator === 'false') {
-        container.style.display = 'none';
-        return;
-    }
+  // Boolean operators don't need value fields
+  if (operator === 'true' || operator === 'false') {
+    container.style.display = 'none';
+    return;
+  }
 
-    container.style.display = 'block';
+  container.style.display = 'block';
 
-    // Range operator needs min/max fields
-    if (operator === 'range') {
-        container.innerHTML = `
+  // Range operator needs min/max fields
+  if (operator === 'range') {
+    container.innerHTML = `
             <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
                 <div>
                     <label>Min Value:</label>
@@ -1133,23 +1247,25 @@ function updateValueFields(operatorSelectId, valueContainerId, dataType) {
             </div>
             ${dataType === 'angular' ? '<div style="font-size: 0.85em; color: #666; margin-top: 5px;">💡 Enter values in degrees (will be converted to radians)</div>' : ''}
         `;
-        return;
-    }
+    return;
+  }
 
-    // Geographic operators
-    if (['withinRadius', 'outsideRadius'].includes(operator)) {
-        // Check if home port is configured
-        const checkHomePortConfigured = async () => {
-            try {
-                const response = await fetch(`${getPluginPath()}/api/config/homeport`);
-                const data = await response.json();
-                return data.success && data.latitude !== null && data.longitude !== null;
-            } catch (error) {
-                return false;
-            }
-        };
+  // Geographic operators
+  if (['withinRadius', 'outsideRadius'].includes(operator)) {
+    // Check if home port is configured
+    const checkHomePortConfigured = async () => {
+      try {
+        const response = await fetch(`${getPluginPath()}/api/config/homeport`);
+        const data = await response.json();
+        return (
+          data.success && data.latitude !== null && data.longitude !== null
+        );
+      } catch (error) {
+        return false;
+      }
+    };
 
-        container.innerHTML = `
+    container.innerHTML = `
             <div style="margin-bottom: 10px;">
                 <label>
                     <input type="checkbox" id="${valueContainerId}_useHomePort">
@@ -1172,41 +1288,45 @@ function updateValueFields(operatorSelectId, valueContainerId, dataType) {
             </div>
         `;
 
-        // Add event listener to toggle custom location fields
-        const checkbox = document.getElementById(`${valueContainerId}_useHomePort`);
-        const customLocation = document.getElementById(`${valueContainerId}_customLocation`);
+    // Add event listener to toggle custom location fields
+    const checkbox = document.getElementById(`${valueContainerId}_useHomePort`);
+    const customLocation = document.getElementById(
+      `${valueContainerId}_customLocation`
+    );
 
-        checkbox.addEventListener('change', function() {
-            customLocation.style.display = this.checked ? 'none' : 'grid';
-        });
+    checkbox.addEventListener('change', function () {
+      customLocation.style.display = this.checked ? 'none' : 'grid';
+    });
 
-        // Check home port and set default
-        checkHomePortConfigured().then(isConfigured => {
-            if (isConfigured) {
-                checkbox.checked = true;
-                customLocation.style.display = 'none';
-            } else {
-                checkbox.checked = false;
-                customLocation.style.display = 'grid';
-            }
-        });
+    // Check home port and set default
+    checkHomePortConfigured().then(isConfigured => {
+      if (isConfigured) {
+        checkbox.checked = true;
+        customLocation.style.display = 'none';
+      } else {
+        checkbox.checked = false;
+        customLocation.style.display = 'grid';
+      }
+    });
 
-        return;
-    }
+    return;
+  }
 
-    if (['inBoundingBox', 'outsideBoundingBox'].includes(operator)) {
-        // Check if home port is configured
-        const checkHomePortConfigured = async () => {
-            try {
-                const response = await fetch(`${getPluginPath()}/api/config/homeport`);
-                const data = await response.json();
-                return data.success && data.latitude !== null && data.longitude !== null;
-            } catch (error) {
-                return false;
-            }
-        };
+  if (['inBoundingBox', 'outsideBoundingBox'].includes(operator)) {
+    // Check if home port is configured
+    const checkHomePortConfigured = async () => {
+      try {
+        const response = await fetch(`${getPluginPath()}/api/config/homeport`);
+        const data = await response.json();
+        return (
+          data.success && data.latitude !== null && data.longitude !== null
+        );
+      } catch (error) {
+        return false;
+      }
+    };
 
-        container.innerHTML = `
+    container.innerHTML = `
             <div style="margin-bottom: 10px;">
                 <label>
                     <input type="checkbox" id="${valueContainerId}_useHomePort">
@@ -1255,51 +1375,55 @@ function updateValueFields(operatorSelectId, valueContainerId, dataType) {
             <div style="font-size: 0.85em; color: #666; margin-top: 5px;">💡 Box can cross 180° meridian</div>
         `;
 
-        // Setup toggle between manual and home port modes
-        const checkbox = document.getElementById(`${valueContainerId}_useHomePort`);
-        const manualBox = document.getElementById(`${valueContainerId}_manualBox`);
-        const homePortBox = document.getElementById(`${valueContainerId}_homePortBox`);
+    // Setup toggle between manual and home port modes
+    const checkbox = document.getElementById(`${valueContainerId}_useHomePort`);
+    const manualBox = document.getElementById(`${valueContainerId}_manualBox`);
+    const homePortBox = document.getElementById(
+      `${valueContainerId}_homePortBox`
+    );
 
-        checkbox.addEventListener('change', function() {
-            if (this.checked) {
-                manualBox.style.display = 'none';
-                homePortBox.style.display = 'block';
-                initializeBoundingBoxUI(valueContainerId);
-            } else {
-                manualBox.style.display = 'grid';
-                homePortBox.style.display = 'none';
-            }
-        });
+    checkbox.addEventListener('change', function () {
+      if (this.checked) {
+        manualBox.style.display = 'none';
+        homePortBox.style.display = 'block';
+        initializeBoundingBoxUI(valueContainerId);
+      } else {
+        manualBox.style.display = 'grid';
+        homePortBox.style.display = 'none';
+      }
+    });
 
-        // Check home port and set default
-        checkHomePortConfigured().then(isConfigured => {
-            if (isConfigured) {
-                checkbox.checked = true;
-                manualBox.style.display = 'none';
-                homePortBox.style.display = 'block';
-                initializeBoundingBoxUI(valueContainerId);
-            } else {
-                checkbox.checked = false;
-                manualBox.style.display = 'grid';
-                homePortBox.style.display = 'none';
-            }
-        });
+    // Check home port and set default
+    checkHomePortConfigured().then(isConfigured => {
+      if (isConfigured) {
+        checkbox.checked = true;
+        manualBox.style.display = 'none';
+        homePortBox.style.display = 'block';
+        initializeBoundingBoxUI(valueContainerId);
+      } else {
+        checkbox.checked = false;
+        manualBox.style.display = 'grid';
+        homePortBox.style.display = 'none';
+      }
+    });
 
-        return;
-    }
+    return;
+  }
 
-    // String operators
-    if (['contains', 'startsWith', 'endsWith', 'stringEquals'].includes(operator)) {
-        container.innerHTML = `
+  // String operators
+  if (
+    ['contains', 'startsWith', 'endsWith', 'stringEquals'].includes(operator)
+  ) {
+    container.innerHTML = `
             <label>Value:</label>
             <input type="text" id="${valueContainerId}_value" placeholder="Enter text" style="width: 100%;">
         `;
-        return;
-    }
+    return;
+  }
 
-    // Numeric operators (gt, lt, eq, ne)
-    const isAngular = dataType === 'angular';
-    container.innerHTML = `
+  // Numeric operators (gt, lt, eq, ne)
+  const isAngular = dataType === 'angular';
+  container.innerHTML = `
         <label>Value:</label>
         <input type="number" id="${valueContainerId}_value" step="any" placeholder="Enter value" style="width: 100%;">
         ${isAngular ? '<div style="font-size: 0.85em; color: #666; margin-top: 5px;">💡 Enter value in degrees (will be converted to radians)</div>' : ''}
@@ -1307,343 +1431,421 @@ function updateValueFields(operatorSelectId, valueContainerId, dataType) {
 }
 
 export function updateThresholdPathFilter() {
-    populateThresholdPaths();
+  populateThresholdPaths();
 }
 
 async function populateThresholdPaths() {
-    ensureEditFormInDom();
-    const treeContainer = document.getElementById('newThresholdPathTree');
-    const searchInput = document.getElementById('newThresholdPathSearch');
-    const filterType = 'self';
+  ensureEditFormInDom();
+  const treeContainer = document.getElementById('newThresholdPathTree');
+  const searchInput = document.getElementById('newThresholdPathSearch');
+  const filterType = 'self';
 
-    if (!treeContainer) return;
+  if (!treeContainer) return;
 
-    treeContainer.innerHTML = '<div style="padding: 20px; text-align: center; color: #666;">Loading paths...</div>';
+  treeContainer.innerHTML =
+    '<div style="padding: 20px; text-align: center; color: #666;">Loading paths...</div>';
 
+  try {
+    let allPaths = [];
     try {
-        let allPaths = [];
-        try {
-            const response = await fetch('/signalk/v1/api/');
-            if (response.ok) {
-                const data = await response.json();
-                allPaths = extractPathsFromSignalK(data, filterType);
-            }
-        } catch (error) {
-            console.log('Could not load SignalK API data, falling back to plugin paths:', error);
-        }
-
-        if (!allPaths.length) {
-            try {
-                const pluginResponse = await fetch(`${getPluginPath()}/api/paths`);
-                if (pluginResponse.ok) {
-                    const pluginData = await pluginResponse.json();
-                    if (pluginData.success && Array.isArray(pluginData.paths)) {
-                        allPaths = pluginData.paths
-                            .map(pathInfo => pathInfo.path)
-                            .filter(Boolean);
-                    }
-                }
-            } catch (pluginError) {
-                console.log('Failed to load plugin paths for thresholds:', pluginError);
-            }
-        }
-
-        const uniquePaths = Array.from(new Set(allPaths)).sort();
-        const tree = buildPathTree(uniquePaths);
-
-        // Render tree
-        let html = '';
-        Object.keys(tree).sort().forEach(key => {
-            html += renderTreeNode(key, tree[key], 0, '');
-        });
-        treeContainer.innerHTML = html || '<div style="padding: 20px; text-align: center; color: #666;">No paths found</div>';
-
-        // Setup search
-        if (searchInput) {
-            searchInput.addEventListener('input', (e) => {
-                const searchTerm = e.target.value;
-                let html = '';
-                Object.keys(tree).sort().forEach(key => {
-                    html += renderTreeNode(key, tree[key], 0, searchTerm);
-                });
-                treeContainer.innerHTML = html || '<div style="padding: 20px; text-align: center; color: #666;">No matches found</div>';
-
-                // Auto-expand all when searching
-                if (searchTerm) {
-                    treeContainer.querySelectorAll('.path-tree-children').forEach(el => {
-                        el.classList.add('expanded');
-                    });
-                    treeContainer.querySelectorAll('.path-tree-toggle').forEach(el => {
-                        if (el.textContent) el.textContent = '▼';
-                    });
-                }
-            });
-        }
-
+      const response = await fetch('/signalk/v1/api/');
+      if (response.ok) {
+        const data = await response.json();
+        allPaths = extractPathsFromSignalK(data, filterType);
+      }
     } catch (error) {
-        console.log('Could not load real-time SignalK paths for thresholds:', error);
-        treeContainer.innerHTML = '<div style="padding: 20px; text-align: center; color: #999;">Error loading paths</div>';
+      console.log(
+        'Could not load SignalK API data, falling back to plugin paths:',
+        error
+      );
     }
 
-    // Handle path selection for type detection
-    const hiddenInput = document.getElementById('newThresholdPath');
-    if (hiddenInput) {
-        hiddenInput.addEventListener('change', async function() {
-            if (this.value) {
-                const typeInfo = await detectPathType(this.value);
-                updateOperatorDropdown('newThresholdOperator', typeInfo.dataType);
-                updateValueFields('newThresholdOperator', 'newThresholdValueGroup', typeInfo.dataType);
-                document.getElementById('newThresholdOperator').dataset.pathDataType = typeInfo.dataType;
-            }
-        });
+    if (!allPaths.length) {
+      try {
+        const pluginResponse = await fetch(`${getPluginPath()}/api/paths`);
+        if (pluginResponse.ok) {
+          const pluginData = await pluginResponse.json();
+          if (pluginData.success && Array.isArray(pluginData.paths)) {
+            allPaths = pluginData.paths
+              .map(pathInfo => pathInfo.path)
+              .filter(Boolean);
+          }
+        }
+      } catch (pluginError) {
+        console.log('Failed to load plugin paths for thresholds:', pluginError);
+      }
     }
 
-    // Handle custom path input
-    const customInput = document.getElementById('newThresholdPathCustom');
-    if (customInput) {
-        customInput.onblur = async function() {
-            if (this.value) {
-                const typeInfo = await detectPathType(this.value);
-                updateOperatorDropdown('newThresholdOperator', typeInfo.dataType);
-                updateValueFields('newThresholdOperator', 'newThresholdValueGroup', typeInfo.dataType);
-                document.getElementById('newThresholdOperator').dataset.pathDataType = typeInfo.dataType;
-            }
-        };
+    const uniquePaths = Array.from(new Set(allPaths)).sort();
+    const tree = buildPathTree(uniquePaths);
+
+    // Render tree
+    let html = '';
+    Object.keys(tree)
+      .sort()
+      .forEach(key => {
+        html += renderTreeNode(key, tree[key], 0, '');
+      });
+    treeContainer.innerHTML =
+      html ||
+      '<div style="padding: 20px; text-align: center; color: #666;">No paths found</div>';
+
+    // Setup search
+    if (searchInput) {
+      searchInput.addEventListener('input', e => {
+        const searchTerm = e.target.value;
+        let html = '';
+        Object.keys(tree)
+          .sort()
+          .forEach(key => {
+            html += renderTreeNode(key, tree[key], 0, searchTerm);
+          });
+        treeContainer.innerHTML =
+          html ||
+          '<div style="padding: 20px; text-align: center; color: #666;">No matches found</div>';
+
+        // Auto-expand all when searching
+        if (searchTerm) {
+          treeContainer.querySelectorAll('.path-tree-children').forEach(el => {
+            el.classList.add('expanded');
+          });
+          treeContainer.querySelectorAll('.path-tree-toggle').forEach(el => {
+            if (el.textContent) el.textContent = '▼';
+          });
+        }
+      });
     }
+  } catch (error) {
+    console.log(
+      'Could not load real-time SignalK paths for thresholds:',
+      error
+    );
+    treeContainer.innerHTML =
+      '<div style="padding: 20px; text-align: center; color: #999;">Error loading paths</div>';
+  }
+
+  // Handle path selection for type detection
+  const hiddenInput = document.getElementById('newThresholdPath');
+  if (hiddenInput) {
+    hiddenInput.addEventListener('change', async function () {
+      if (this.value) {
+        const typeInfo = await detectPathType(this.value);
+        updateOperatorDropdown('newThresholdOperator', typeInfo.dataType);
+        updateValueFields(
+          'newThresholdOperator',
+          'newThresholdValueGroup',
+          typeInfo.dataType
+        );
+        document.getElementById('newThresholdOperator').dataset.pathDataType =
+          typeInfo.dataType;
+      }
+    });
+  }
+
+  // Handle custom path input
+  const customInput = document.getElementById('newThresholdPathCustom');
+  if (customInput) {
+    customInput.onblur = async function () {
+      if (this.value) {
+        const typeInfo = await detectPathType(this.value);
+        updateOperatorDropdown('newThresholdOperator', typeInfo.dataType);
+        updateValueFields(
+          'newThresholdOperator',
+          'newThresholdValueGroup',
+          typeInfo.dataType
+        );
+        document.getElementById('newThresholdOperator').dataset.pathDataType =
+          typeInfo.dataType;
+      }
+    };
+  }
 }
 
 export function toggleNewThresholdValueField() {
-    const operatorSelect = document.getElementById('newThresholdOperator');
-    const dataType = operatorSelect?.dataset.pathDataType || 'unknown';
-    updateValueFields('newThresholdOperator', 'newThresholdValueGroup', dataType);
+  const operatorSelect = document.getElementById('newThresholdOperator');
+  const dataType = operatorSelect?.dataset.pathDataType || 'unknown';
+  updateValueFields('newThresholdOperator', 'newThresholdValueGroup', dataType);
 }
 
 export function addNewThreshold() {
-    // Use unified modal instead
-    openThresholdModal({
-        mode: 'create',
-        targetArray: editingThresholds
-    });
+  // Use unified modal instead
+  openThresholdModal({
+    mode: 'create',
+    targetArray: editingThresholds,
+  });
 }
 
 export function cancelNewThreshold() {
-    const form = document.getElementById('addThresholdForm');
-    if (form) {
-        form.style.display = 'none';
+  const form = document.getElementById('addThresholdForm');
+  if (form) {
+    form.style.display = 'none';
 
-        // Reset button text if it was changed for editing
-        const saveButton = form.querySelector('button[onclick="saveNewThreshold()"]');
-        if (saveButton && saveButton.textContent.includes('Update')) {
-            saveButton.textContent = '✅ Add Threshold';
-        }
+    // Reset button text if it was changed for editing
+    const saveButton = form.querySelector(
+      'button[onclick="saveNewThreshold()"]'
+    );
+    if (saveButton && saveButton.textContent.includes('Update')) {
+      saveButton.textContent = '✅ Add Threshold';
     }
+  }
 
-    const trigger = document.getElementById('editCommandAddThresholdButton');
-    if (trigger) {
-        trigger.style.display = 'inline-block';
-    }
+  const trigger = document.getElementById('editCommandAddThresholdButton');
+  if (trigger) {
+    trigger.style.display = 'inline-block';
+  }
 
-    // Reset edit mode
-    editingThresholdIndex = null;
+  // Reset edit mode
+  editingThresholdIndex = null;
 }
 
 export function saveNewThreshold() {
-    const pathSelect = document.getElementById('newThresholdPath');
-    const pathCustom = document.getElementById('newThresholdPathCustom');
-    const operator = document.getElementById('newThresholdOperator').value;
-    const action = document.getElementById('newThresholdAction').value === 'true';
-    const hysteresis = document.getElementById('newThresholdHysteresis').value.trim();
-    const dataType = document.getElementById('newThresholdOperator')?.dataset.pathDataType || 'unknown';
+  const pathSelect = document.getElementById('newThresholdPath');
+  const pathCustom = document.getElementById('newThresholdPathCustom');
+  const operator = document.getElementById('newThresholdOperator').value;
+  const action = document.getElementById('newThresholdAction').value === 'true';
+  const hysteresis = document
+    .getElementById('newThresholdHysteresis')
+    .value.trim();
+  const dataType =
+    document.getElementById('newThresholdOperator')?.dataset.pathDataType ||
+    'unknown';
 
-    // Get the path
-    let path = pathSelect.value;
-    if (path === 'custom') {
-        path = pathCustom.value.trim();
+  // Get the path
+  let path = pathSelect.value;
+  if (path === 'custom') {
+    path = pathCustom.value.trim();
+  }
+
+  if (!path) {
+    alert('Please select or enter a SignalK path');
+    return;
+  }
+
+  // Create new threshold
+  const threshold = {
+    enabled: true,
+    watchPath: path,
+    operator: operator,
+    activateOnMatch: action,
+  };
+
+  // Handle different operator types
+  if (operator === 'range') {
+    const min = document.getElementById('newThresholdValueGroup_min')?.value;
+    const max = document.getElementById('newThresholdValueGroup_max')?.value;
+    if (!min || !max) {
+      alert('Please enter both min and max values for range');
+      return;
+    }
+    threshold.valueMin = parseFloat(min);
+    threshold.valueMax = parseFloat(max);
+
+    // Convert degrees to radians for angular values
+    if (dataType === 'angular') {
+      threshold.valueMin = threshold.valueMin * (Math.PI / 180);
+      threshold.valueMax = threshold.valueMax * (Math.PI / 180);
+    }
+  } else if (operator === 'withinRadius' || operator === 'outsideRadius') {
+    const useHomePort = document.getElementById(
+      'newThresholdValueGroup_useHomePort'
+    )?.checked;
+    const radius = document.getElementById(
+      'newThresholdValueGroup_radius'
+    )?.value;
+
+    if (!radius) {
+      alert('Please enter a radius value');
+      return;
     }
 
-    if (!path) {
-        alert('Please select or enter a SignalK path');
+    threshold.useHomePort = useHomePort;
+    threshold.radius = parseFloat(radius);
+
+    if (!useHomePort) {
+      const lat = document.getElementById('newThresholdValueGroup_lat')?.value;
+      const lon = document.getElementById('newThresholdValueGroup_lon')?.value;
+      if (!lat || !lon) {
+        alert('Please enter latitude and longitude');
         return;
+      }
+      threshold.latitude = parseFloat(lat);
+      threshold.longitude = parseFloat(lon);
     }
+  } else if (
+    operator === 'inBoundingBox' ||
+    operator === 'outsideBoundingBox'
+  ) {
+    const useHomePort = document.getElementById(
+      'newThresholdValueGroup_useHomePort'
+    )?.checked;
 
-    // Create new threshold
-    const threshold = {
-        enabled: true,
-        watchPath: path,
-        operator: operator,
-        activateOnMatch: action
-    };
+    if (useHomePort) {
+      // Home port-based bounding box
+      const boxSize = document.getElementById(
+        'newThresholdValueGroup_boxSize'
+      )?.value;
+      const buffer = document.getElementById(
+        'newThresholdValueGroup_buffer'
+      )?.value;
+      const anchorGrid = document.getElementById(
+        'newThresholdValueGroup_anchorGrid'
+      );
+      const anchor = anchorGrid?.dataset.selectedAnchor || 'center';
 
-    // Handle different operator types
-    if (operator === 'range') {
-        const min = document.getElementById('newThresholdValueGroup_min')?.value;
-        const max = document.getElementById('newThresholdValueGroup_max')?.value;
-        if (!min || !max) {
-            alert('Please enter both min and max values for range');
-            return;
-        }
-        threshold.valueMin = parseFloat(min);
-        threshold.valueMax = parseFloat(max);
+      if (!boxSize) {
+        alert('Please enter a box size');
+        return;
+      }
 
-        // Convert degrees to radians for angular values
-        if (dataType === 'angular') {
-            threshold.valueMin = threshold.valueMin * (Math.PI / 180);
-            threshold.valueMax = threshold.valueMax * (Math.PI / 180);
-        }
-    } else if (operator === 'withinRadius' || operator === 'outsideRadius') {
-        const useHomePort = document.getElementById('newThresholdValueGroup_useHomePort')?.checked;
-        const radius = document.getElementById('newThresholdValueGroup_radius')?.value;
-
-        if (!radius) {
-            alert('Please enter a radius value');
-            return;
-        }
-
-        threshold.useHomePort = useHomePort;
-        threshold.radius = parseFloat(radius);
-
-        if (!useHomePort) {
-            const lat = document.getElementById('newThresholdValueGroup_lat')?.value;
-            const lon = document.getElementById('newThresholdValueGroup_lon')?.value;
-            if (!lat || !lon) {
-                alert('Please enter latitude and longitude');
-                return;
-            }
-            threshold.latitude = parseFloat(lat);
-            threshold.longitude = parseFloat(lon);
-        }
-    } else if (operator === 'inBoundingBox' || operator === 'outsideBoundingBox') {
-        const useHomePort = document.getElementById('newThresholdValueGroup_useHomePort')?.checked;
-
-        if (useHomePort) {
-            // Home port-based bounding box
-            const boxSize = document.getElementById('newThresholdValueGroup_boxSize')?.value;
-            const buffer = document.getElementById('newThresholdValueGroup_buffer')?.value;
-            const anchorGrid = document.getElementById('newThresholdValueGroup_anchorGrid');
-            const anchor = anchorGrid?.dataset.selectedAnchor || 'center';
-
-            if (!boxSize) {
-                alert('Please enter a box size');
-                return;
-            }
-
-            threshold.useHomePort = true;
-            threshold.boxSize = parseFloat(boxSize);
-            threshold.boxAnchor = anchor;
-            threshold.boxBuffer = buffer ? parseFloat(buffer) : 5; // Default 5m buffer
-        } else {
-            // Manual bounding box
-            const north = document.getElementById('newThresholdValueGroup_north')?.value;
-            const south = document.getElementById('newThresholdValueGroup_south')?.value;
-            const east = document.getElementById('newThresholdValueGroup_east')?.value;
-            const west = document.getElementById('newThresholdValueGroup_west')?.value;
-
-            if (!north || !south || !east || !west) {
-                alert('Please enter all bounding box coordinates');
-                return;
-            }
-
-            threshold.boundingBox = {
-                north: parseFloat(north),
-                south: parseFloat(south),
-                east: parseFloat(east),
-                west: parseFloat(west)
-            };
-        }
-    } else if (operator !== 'true' && operator !== 'false') {
-        // String or numeric value
-        const valueInput = document.getElementById('newThresholdValueGroup_value');
-        if (!valueInput || !valueInput.value.trim()) {
-            alert('Please enter a threshold value');
-            return;
-        }
-
-        const value = valueInput.value.trim();
-
-        // String operators
-        if (['contains', 'startsWith', 'endsWith', 'stringEquals'].includes(operator)) {
-            threshold.value = value;
-        } else {
-            // Numeric operators
-            const numValue = parseFloat(value);
-            if (isNaN(numValue)) {
-                alert('Please enter a valid numeric value');
-                return;
-            }
-            threshold.value = numValue;
-
-            // Convert degrees to radians for angular values
-            if (dataType === 'angular') {
-                threshold.value = threshold.value * (Math.PI / 180);
-            }
-        }
-    }
-
-    // Add hysteresis if specified
-    if (hysteresis) {
-        const hysteresisValue = parseFloat(hysteresis);
-        if (!isNaN(hysteresisValue)) {
-            threshold.hysteresis = hysteresisValue;
-        }
-    }
-
-    // Add or update threshold
-    if (editingThresholdIndex !== null) {
-        // Update existing threshold
-        editingThresholds[editingThresholdIndex] = threshold;
-        editingThresholdIndex = null; // Reset edit mode
+      threshold.useHomePort = true;
+      threshold.boxSize = parseFloat(boxSize);
+      threshold.boxAnchor = anchor;
+      threshold.boxBuffer = buffer ? parseFloat(buffer) : 5; // Default 5m buffer
     } else {
-        // Add new threshold
-        editingThresholds.push(threshold);
+      // Manual bounding box
+      const north = document.getElementById(
+        'newThresholdValueGroup_north'
+      )?.value;
+      const south = document.getElementById(
+        'newThresholdValueGroup_south'
+      )?.value;
+      const east = document.getElementById(
+        'newThresholdValueGroup_east'
+      )?.value;
+      const west = document.getElementById(
+        'newThresholdValueGroup_west'
+      )?.value;
+
+      if (!north || !south || !east || !west) {
+        alert('Please enter all bounding box coordinates');
+        return;
+      }
+
+      threshold.boundingBox = {
+        north: parseFloat(north),
+        south: parseFloat(south),
+        east: parseFloat(east),
+        west: parseFloat(west),
+      };
     }
-    displayThresholdsList();
-    cancelNewThreshold();
-    markEditFormDirty();
+  } else if (operator !== 'true' && operator !== 'false') {
+    // String or numeric value
+    const valueInput = document.getElementById('newThresholdValueGroup_value');
+    if (!valueInput || !valueInput.value.trim()) {
+      alert('Please enter a threshold value');
+      return;
+    }
+
+    const value = valueInput.value.trim();
+
+    // String operators
+    if (
+      ['contains', 'startsWith', 'endsWith', 'stringEquals'].includes(operator)
+    ) {
+      threshold.value = value;
+    } else {
+      // Numeric operators
+      const numValue = parseFloat(value);
+      if (isNaN(numValue)) {
+        alert('Please enter a valid numeric value');
+        return;
+      }
+      threshold.value = numValue;
+
+      // Convert degrees to radians for angular values
+      if (dataType === 'angular') {
+        threshold.value = threshold.value * (Math.PI / 180);
+      }
+    }
+  }
+
+  // Add hysteresis if specified
+  if (hysteresis) {
+    const hysteresisValue = parseFloat(hysteresis);
+    if (!isNaN(hysteresisValue)) {
+      threshold.hysteresis = hysteresisValue;
+    }
+  }
+
+  // Add or update threshold
+  if (editingThresholdIndex !== null) {
+    // Update existing threshold
+    editingThresholds[editingThresholdIndex] = threshold;
+    editingThresholdIndex = null; // Reset edit mode
+  } else {
+    // Add new threshold
+    editingThresholds.push(threshold);
+  }
+  displayThresholdsList();
+  cancelNewThreshold();
+  markEditFormDirty();
 }
 
 function displayThresholdsList() {
-    const container = document.getElementById('thresholdsList');
+  const container = document.getElementById('thresholdsList');
 
-    if (!editingThresholds || editingThresholds.length === 0) {
-        container.innerHTML = '<div style="color: #999; font-style: italic; padding: 10px;">No thresholds configured</div>';
-        return;
+  if (!editingThresholds || editingThresholds.length === 0) {
+    container.innerHTML =
+      '<div style="color: #999; font-style: italic; padding: 10px;">No thresholds configured</div>';
+    return;
+  }
+
+  let html = '';
+  editingThresholds.forEach((threshold, index) => {
+    let description = '';
+
+    // Format description based on operator type
+    if (threshold.operator === 'range') {
+      description = `${threshold.valueMin} to ${threshold.valueMax}`;
+    } else if (
+      threshold.operator === 'withinRadius' ||
+      threshold.operator === 'outsideRadius'
+    ) {
+      const location = threshold.useHomePort
+        ? 'home port'
+        : `${threshold.latitude}, ${threshold.longitude}`;
+      const op = threshold.operator === 'withinRadius' ? 'within' : 'outside';
+      description = `${op} ${threshold.radius}m of ${location}`;
+    } else if (
+      threshold.operator === 'inBoundingBox' ||
+      threshold.operator === 'outsideBoundingBox'
+    ) {
+      const op = threshold.operator === 'inBoundingBox' ? 'inside' : 'outside';
+      if (threshold.useHomePort && threshold.boxSize && threshold.boxAnchor) {
+        const anchorName = getAnchorName(threshold.boxAnchor);
+        const buffer =
+          threshold.boxBuffer !== undefined ? threshold.boxBuffer : 5;
+        const bufferText = buffer > 0 ? ` +${buffer}m buffer` : '';
+        description = `${op} ${threshold.boxSize}m box${bufferText} from home port (${anchorName})`;
+      } else if (threshold.boundingBox) {
+        description = `${op} box [${threshold.boundingBox.north}°N, ${threshold.boundingBox.south}°S, ${threshold.boundingBox.east}°E, ${threshold.boundingBox.west}°W]`;
+      }
+    } else if (
+      threshold.operator === 'true' ||
+      threshold.operator === 'false'
+    ) {
+      description = threshold.operator === 'true' ? 'is true' : 'is false';
+    } else {
+      const operatorSymbol =
+        {
+          gt: '>',
+          lt: '<',
+          eq: '=',
+          ne: '≠',
+          contains: 'contains',
+          startsWith: 'starts with',
+          endsWith: 'ends with',
+          stringEquals: 'equals',
+        }[threshold.operator] || threshold.operator;
+      description = `${operatorSymbol} ${threshold.value !== undefined ? threshold.value : ''}`;
     }
 
-    let html = '';
-    editingThresholds.forEach((threshold, index) => {
-        let description = '';
+    const action = threshold.activateOnMatch ? 'ON' : 'OFF';
+    const hysteresis = threshold.hysteresis
+      ? ` (${threshold.hysteresis}s hysteresis)`
+      : '';
 
-        // Format description based on operator type
-        if (threshold.operator === 'range') {
-            description = `${threshold.valueMin} to ${threshold.valueMax}`;
-        } else if (threshold.operator === 'withinRadius' || threshold.operator === 'outsideRadius') {
-            const location = threshold.useHomePort ? 'home port' : `${threshold.latitude}, ${threshold.longitude}`;
-            const op = threshold.operator === 'withinRadius' ? 'within' : 'outside';
-            description = `${op} ${threshold.radius}m of ${location}`;
-        } else if (threshold.operator === 'inBoundingBox' || threshold.operator === 'outsideBoundingBox') {
-            const op = threshold.operator === 'inBoundingBox' ? 'inside' : 'outside';
-            if (threshold.useHomePort && threshold.boxSize && threshold.boxAnchor) {
-                const anchorName = getAnchorName(threshold.boxAnchor);
-                const buffer = threshold.boxBuffer !== undefined ? threshold.boxBuffer : 5;
-                const bufferText = buffer > 0 ? ` +${buffer}m buffer` : '';
-                description = `${op} ${threshold.boxSize}m box${bufferText} from home port (${anchorName})`;
-            } else if (threshold.boundingBox) {
-                description = `${op} box [${threshold.boundingBox.north}°N, ${threshold.boundingBox.south}°S, ${threshold.boundingBox.east}°E, ${threshold.boundingBox.west}°W]`;
-            }
-        } else if (threshold.operator === 'true' || threshold.operator === 'false') {
-            description = threshold.operator === 'true' ? 'is true' : 'is false';
-        } else {
-            const operatorSymbol = {
-                'gt': '>', 'lt': '<', 'eq': '=', 'ne': '≠',
-                'contains': 'contains', 'startsWith': 'starts with', 'endsWith': 'ends with', 'stringEquals': 'equals'
-            }[threshold.operator] || threshold.operator;
-            description = `${operatorSymbol} ${threshold.value !== undefined ? threshold.value : ''}`;
-        }
-
-        const action = threshold.activateOnMatch ? 'ON' : 'OFF';
-        const hysteresis = threshold.hysteresis ? ` (${threshold.hysteresis}s hysteresis)` : '';
-
-        html += `
+    html += `
             <div style="background: white; border: 1px solid #ddd; border-radius: 4px; padding: 10px; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center;">
                 <div>
                     <strong>${threshold.watchPath}</strong> ${description} → ${action}${hysteresis}
@@ -1658,28 +1860,28 @@ function displayThresholdsList() {
                 </div>
             </div>
         `;
-    });
+  });
 
-    container.innerHTML = html;
+  container.innerHTML = html;
 }
 
 export function removeThreshold(index) {
-    editingThresholds.splice(index, 1);
-    displayThresholdsList();
-    markEditFormDirty();
+  editingThresholds.splice(index, 1);
+  displayThresholdsList();
+  markEditFormDirty();
 }
 
 export function editThreshold(index) {
-    const threshold = editingThresholds[index];
-    if (!threshold) return;
+  const threshold = editingThresholds[index];
+  if (!threshold) return;
 
-    // Use unified modal instead
-    openThresholdModal({
-        mode: 'edit',
-        targetArray: editingThresholds,
-        editIndex: index,
-        threshold: threshold
-    });
+  // Use unified modal instead
+  openThresholdModal({
+    mode: 'edit',
+    targetArray: editingThresholds,
+    editIndex: index,
+    threshold: threshold,
+  });
 }
 
 // ============================================
@@ -1687,796 +1889,963 @@ export function editThreshold(index) {
 // ============================================
 
 export function openThresholdModal(options = {}) {
-    const {
-        mode = 'create', // 'create' or 'edit'
-        targetArray = editingThresholds,
-        editIndex = null,
-        threshold = null,
-        callback = null
-    } = options;
+  const {
+    mode = 'create', // 'create' or 'edit'
+    targetArray = editingThresholds,
+    editIndex = null,
+    threshold = null,
+    callback = null,
+  } = options;
 
-    // Store context
-    thresholdModalContext = {
-        mode,
-        targetArray,
-        editIndex,
-        callback
-    };
+  // Store context
+  thresholdModalContext = {
+    mode,
+    targetArray,
+    editIndex,
+    callback,
+  };
 
-    // Show modal
-    const modal = document.getElementById('thresholdModal');
-    modal.style.display = 'block';
+  // Show modal
+  const modal = document.getElementById('thresholdModal');
+  modal.style.display = 'block';
 
-    // Update title
-    const title = document.getElementById('thresholdModalTitle');
-    const saveButton = document.getElementById('thresholdModalSaveButton');
+  // Update title
+  const title = document.getElementById('thresholdModalTitle');
+  const saveButton = document.getElementById('thresholdModalSaveButton');
 
-    if (editIndex !== null && threshold) {
-        title.textContent = 'Edit Threshold';
-        saveButton.textContent = '✅ Update Threshold';
-        // Load existing threshold data
-        loadThresholdIntoModal(threshold);
-    } else {
-        title.textContent = 'Add Threshold';
-        saveButton.textContent = '✅ Add Threshold';
-        // Clear form for new threshold
-        clearThresholdModal();
-    }
+  if (editIndex !== null && threshold) {
+    title.textContent = 'Edit Threshold';
+    saveButton.textContent = '✅ Update Threshold';
+    // Load existing threshold data
+    loadThresholdIntoModal(threshold);
+  } else {
+    title.textContent = 'Add Threshold';
+    saveButton.textContent = '✅ Add Threshold';
+    // Clear form for new threshold
+    clearThresholdModal();
+  }
 }
 
 export function closeThresholdModal() {
-    const modal = document.getElementById('thresholdModal');
-    modal.style.display = 'none';
-    clearThresholdModal();
-    thresholdModalContext = { mode: null, targetArray: null, editIndex: null, callback: null };
+  const modal = document.getElementById('thresholdModal');
+  modal.style.display = 'none';
+  clearThresholdModal();
+  thresholdModalContext = {
+    mode: null,
+    targetArray: null,
+    editIndex: null,
+    callback: null,
+  };
 }
 
 export function cancelThresholdModal() {
-    closeThresholdModal();
+  closeThresholdModal();
 }
 
 function clearThresholdModal() {
-    populateThresholdModalPaths().then(() => {
-        const pathSelect = document.getElementById('thresholdPath');
-        const pathCustom = document.getElementById('thresholdPathCustom');
+  populateThresholdModalPaths().then(() => {
+    const pathSelect = document.getElementById('thresholdPath');
+    const pathCustom = document.getElementById('thresholdPathCustom');
 
-        if (pathSelect) pathSelect.value = '';
-        if (pathCustom) {
-            pathCustom.value = '';
-            pathCustom.style.display = 'none';
-        }
+    if (pathSelect) pathSelect.value = '';
+    if (pathCustom) {
+      pathCustom.value = '';
+      pathCustom.style.display = 'none';
+    }
 
-        setTimeout(() => {
-            const operatorSelect = document.getElementById('thresholdOperator');
-            if (operatorSelect) {
-                operatorSelect.value = 'gt';
-                updateValueFields('thresholdOperator', 'thresholdValueGroup', 'number');
-            }
+    setTimeout(() => {
+      const operatorSelect = document.getElementById('thresholdOperator');
+      if (operatorSelect) {
+        operatorSelect.value = 'gt';
+        updateValueFields('thresholdOperator', 'thresholdValueGroup', 'number');
+      }
 
-            const actionSelect = document.getElementById('thresholdAction');
-            if (actionSelect) actionSelect.value = 'true';
+      const actionSelect = document.getElementById('thresholdAction');
+      if (actionSelect) actionSelect.value = 'true';
 
-            const hysteresisInput = document.getElementById('thresholdHysteresis');
-            if (hysteresisInput) hysteresisInput.value = '';
-        }, 50);
-    });
+      const hysteresisInput = document.getElementById('thresholdHysteresis');
+      if (hysteresisInput) hysteresisInput.value = '';
+    }, 50);
+  });
 }
 
 async function loadThresholdIntoModal(threshold) {
-    await populateThresholdModalPaths();
+  await populateThresholdModalPaths();
 
-    // Set path in hidden input
-    const pathSelect = document.getElementById('thresholdPath');
-    const pathCustom = document.getElementById('thresholdPathCustom');
+  // Set path in hidden input
+  const pathSelect = document.getElementById('thresholdPath');
+  const pathCustom = document.getElementById('thresholdPathCustom');
 
-    if (pathSelect) {
-        pathSelect.value = threshold.watchPath;
+  if (pathSelect) {
+    pathSelect.value = threshold.watchPath;
+  }
+
+  if (pathCustom) {
+    if (threshold.watchPath && !pathSelect?.value) {
+      // Path not in list, use custom
+      pathCustom.value = threshold.watchPath;
+      pathCustom.style.display = 'block';
+    } else {
+      pathCustom.style.display = 'none';
     }
+  }
 
-    if (pathCustom) {
-        if (threshold.watchPath && !pathSelect?.value) {
-            // Path not in list, use custom
-            pathCustom.value = threshold.watchPath;
-            pathCustom.style.display = 'block';
-        } else {
-            pathCustom.style.display = 'none';
-        }
-    }
+  // Detect path type and update dropdown (same logic as add flow)
+  const typeInfo = await detectPathType(threshold.watchPath);
+  updateOperatorDropdown('thresholdOperator', typeInfo.dataType);
+  updateValueFields(
+    'thresholdOperator',
+    'thresholdValueGroup',
+    typeInfo.dataType
+  );
+  const operatorSelect = document.getElementById('thresholdOperator');
+  if (operatorSelect) {
+    operatorSelect.dataset.pathDataType = typeInfo.dataType;
+  }
 
-    // Detect path type and update dropdown (same logic as add flow)
-    const typeInfo = await detectPathType(threshold.watchPath);
-    updateOperatorDropdown('thresholdOperator', typeInfo.dataType);
-    updateValueFields('thresholdOperator', 'thresholdValueGroup', typeInfo.dataType);
-    const operatorSelect = document.getElementById('thresholdOperator');
+  // Wait for dropdown to be updated, then set operator
+  setTimeout(() => {
     if (operatorSelect) {
-        operatorSelect.dataset.pathDataType = typeInfo.dataType;
+      operatorSelect.value = threshold.operator;
+      // Trigger change to update value fields
+      operatorSelect.dispatchEvent(new Event('change'));
+
+      // Populate values after fields are created
+      setTimeout(() => {
+        populateThresholdValues(threshold);
+      }, 100);
     }
 
-    // Wait for dropdown to be updated, then set operator
-    setTimeout(() => {
-        if (operatorSelect) {
-            operatorSelect.value = threshold.operator;
-            // Trigger change to update value fields
-            operatorSelect.dispatchEvent(new Event('change'));
+    // Set action
+    const actionSelect = document.getElementById('thresholdAction');
+    if (actionSelect) {
+      actionSelect.value = threshold.activateOnMatch ? 'true' : 'false';
+    }
 
-            // Populate values after fields are created
-            setTimeout(() => {
-                populateThresholdValues(threshold);
-            }, 100);
-        }
-
-        // Set action
-        const actionSelect = document.getElementById('thresholdAction');
-        if (actionSelect) {
-            actionSelect.value = threshold.activateOnMatch ? 'true' : 'false';
-        }
-
-        // Set hysteresis
-        const hysteresisInput = document.getElementById('thresholdHysteresis');
-        if (hysteresisInput) {
-            hysteresisInput.value = threshold.hysteresis || '';
-        }
-    }, 50);
+    // Set hysteresis
+    const hysteresisInput = document.getElementById('thresholdHysteresis');
+    if (hysteresisInput) {
+      hysteresisInput.value = threshold.hysteresis || '';
+    }
+  }, 50);
 }
 
 function populateThresholdValues(threshold) {
-    if (threshold.operator === 'range') {
-        const minInput = document.getElementById('thresholdValueGroup_min');
-        const maxInput = document.getElementById('thresholdValueGroup_max');
-        if (minInput) minInput.value = threshold.valueMin || '';
-        if (maxInput) maxInput.value = threshold.valueMax || '';
-    } else if (threshold.operator === 'withinRadius' || threshold.operator === 'outsideRadius') {
-        const useHomePortCheckbox = document.getElementById('thresholdValueGroup_useHomePort');
-        const customLocation = document.getElementById('thresholdValueGroup_customLocation');
-        if (useHomePortCheckbox) {
-            useHomePortCheckbox.checked = threshold.useHomePort || false;
-            if (customLocation) {
-                customLocation.style.display = useHomePortCheckbox.checked ? 'none' : 'grid';
-            }
-        }
-        const radiusInput = document.getElementById('thresholdValueGroup_radius');
-        if (radiusInput) radiusInput.value = threshold.radius || '';
-        if (!threshold.useHomePort) {
-            const latInput = document.getElementById('thresholdValueGroup_lat');
-            const lonInput = document.getElementById('thresholdValueGroup_lon');
-            if (latInput) latInput.value = threshold.latitude || '';
-            if (lonInput) lonInput.value = threshold.longitude || '';
-        }
-    } else if (threshold.operator === 'inBoundingBox' || threshold.operator === 'outsideBoundingBox') {
-        const useHomePortCheckbox = document.getElementById('thresholdValueGroup_useHomePort');
-        const manualBox = document.getElementById('thresholdValueGroup_manualBox');
-        const homePortBox = document.getElementById('thresholdValueGroup_homePortBox');
-
-        if (useHomePortCheckbox) {
-            useHomePortCheckbox.checked = threshold.useHomePort || false;
-            if (useHomePortCheckbox.checked) {
-                if (manualBox) manualBox.style.display = 'none';
-                if (homePortBox) homePortBox.style.display = 'block';
-            } else {
-                if (manualBox) manualBox.style.display = 'grid';
-                if (homePortBox) homePortBox.style.display = 'none';
-            }
-        }
-
-        if (threshold.useHomePort) {
-            const boxSizeInput = document.getElementById('thresholdValueGroup_boxSize');
-            const bufferInput = document.getElementById('thresholdValueGroup_buffer');
-            if (boxSizeInput) boxSizeInput.value = threshold.boxSize || '';
-            if (bufferInput) bufferInput.value = threshold.boxBuffer || '';
-            const anchorGrid = document.getElementById('thresholdValueGroup_anchorGrid');
-            if (anchorGrid && threshold.boxAnchor) {
-                anchorGrid.value = threshold.boxAnchor;
-            }
-        } else if (threshold.boundingBox) {
-            const northInput = document.getElementById('thresholdValueGroup_north');
-            const southInput = document.getElementById('thresholdValueGroup_south');
-            const eastInput = document.getElementById('thresholdValueGroup_east');
-            const westInput = document.getElementById('thresholdValueGroup_west');
-            if (northInput) northInput.value = threshold.boundingBox.north || '';
-            if (southInput) southInput.value = threshold.boundingBox.south || '';
-            if (eastInput) eastInput.value = threshold.boundingBox.east || '';
-            if (westInput) westInput.value = threshold.boundingBox.west || '';
-        }
-    } else if (threshold.operator !== 'true' && threshold.operator !== 'false' && threshold.value !== undefined) {
-        const valueInput = document.getElementById('thresholdValueGroup_value');
-        if (valueInput) {
-            valueInput.value = threshold.value;
-        }
+  if (threshold.operator === 'range') {
+    const minInput = document.getElementById('thresholdValueGroup_min');
+    const maxInput = document.getElementById('thresholdValueGroup_max');
+    if (minInput) minInput.value = threshold.valueMin || '';
+    if (maxInput) maxInput.value = threshold.valueMax || '';
+  } else if (
+    threshold.operator === 'withinRadius' ||
+    threshold.operator === 'outsideRadius'
+  ) {
+    const useHomePortCheckbox = document.getElementById(
+      'thresholdValueGroup_useHomePort'
+    );
+    const customLocation = document.getElementById(
+      'thresholdValueGroup_customLocation'
+    );
+    if (useHomePortCheckbox) {
+      useHomePortCheckbox.checked = threshold.useHomePort || false;
+      if (customLocation) {
+        customLocation.style.display = useHomePortCheckbox.checked
+          ? 'none'
+          : 'grid';
+      }
     }
+    const radiusInput = document.getElementById('thresholdValueGroup_radius');
+    if (radiusInput) radiusInput.value = threshold.radius || '';
+    if (!threshold.useHomePort) {
+      const latInput = document.getElementById('thresholdValueGroup_lat');
+      const lonInput = document.getElementById('thresholdValueGroup_lon');
+      if (latInput) latInput.value = threshold.latitude || '';
+      if (lonInput) lonInput.value = threshold.longitude || '';
+    }
+  } else if (
+    threshold.operator === 'inBoundingBox' ||
+    threshold.operator === 'outsideBoundingBox'
+  ) {
+    const useHomePortCheckbox = document.getElementById(
+      'thresholdValueGroup_useHomePort'
+    );
+    const manualBox = document.getElementById('thresholdValueGroup_manualBox');
+    const homePortBox = document.getElementById(
+      'thresholdValueGroup_homePortBox'
+    );
+
+    if (useHomePortCheckbox) {
+      useHomePortCheckbox.checked = threshold.useHomePort || false;
+      if (useHomePortCheckbox.checked) {
+        if (manualBox) manualBox.style.display = 'none';
+        if (homePortBox) homePortBox.style.display = 'block';
+      } else {
+        if (manualBox) manualBox.style.display = 'grid';
+        if (homePortBox) homePortBox.style.display = 'none';
+      }
+    }
+
+    if (threshold.useHomePort) {
+      const boxSizeInput = document.getElementById(
+        'thresholdValueGroup_boxSize'
+      );
+      const bufferInput = document.getElementById('thresholdValueGroup_buffer');
+      if (boxSizeInput) boxSizeInput.value = threshold.boxSize || '';
+      if (bufferInput) bufferInput.value = threshold.boxBuffer || '';
+      const anchorGrid = document.getElementById(
+        'thresholdValueGroup_anchorGrid'
+      );
+      if (anchorGrid && threshold.boxAnchor) {
+        anchorGrid.value = threshold.boxAnchor;
+      }
+    } else if (threshold.boundingBox) {
+      const northInput = document.getElementById('thresholdValueGroup_north');
+      const southInput = document.getElementById('thresholdValueGroup_south');
+      const eastInput = document.getElementById('thresholdValueGroup_east');
+      const westInput = document.getElementById('thresholdValueGroup_west');
+      if (northInput) northInput.value = threshold.boundingBox.north || '';
+      if (southInput) southInput.value = threshold.boundingBox.south || '';
+      if (eastInput) eastInput.value = threshold.boundingBox.east || '';
+      if (westInput) westInput.value = threshold.boundingBox.west || '';
+    }
+  } else if (
+    threshold.operator !== 'true' &&
+    threshold.operator !== 'false' &&
+    threshold.value !== undefined
+  ) {
+    const valueInput = document.getElementById('thresholdValueGroup_value');
+    if (valueInput) {
+      valueInput.value = threshold.value;
+    }
+  }
 }
 
 export function saveThresholdModal() {
-    const threshold = buildThresholdFromModal();
-    if (!threshold) return;
+  const threshold = buildThresholdFromModal();
+  if (!threshold) return;
 
-    const { targetArray, editIndex, callback } = thresholdModalContext;
+  const { targetArray, editIndex, callback } = thresholdModalContext;
 
-    if (editIndex !== null) {
-        // Update existing threshold
-        targetArray[editIndex] = threshold;
-    } else {
-        // Add new threshold
-        targetArray.push(threshold);
-    }
+  if (editIndex !== null) {
+    // Update existing threshold
+    targetArray[editIndex] = threshold;
+  } else {
+    // Add new threshold
+    targetArray.push(threshold);
+  }
 
-    // Call callback if provided
-    if (callback) {
-        callback(threshold, editIndex);
-    }
+  // Call callback if provided
+  if (callback) {
+    callback(threshold, editIndex);
+  }
 
-    // Refresh displays
-    if (targetArray === editingThresholds) {
-        displayThresholdsList();
-        markEditFormDirty();
-    } else if (targetArray === addingThresholds) {
-        displayAddCommandThresholdsList();
-    }
+  // Refresh displays
+  if (targetArray === editingThresholds) {
+    displayThresholdsList();
+    markEditFormDirty();
+  } else if (targetArray === addingThresholds) {
+    displayAddCommandThresholdsList();
+  }
 
-    closeThresholdModal();
+  closeThresholdModal();
 }
 
 function buildThresholdFromModal() {
-    const pathSelect = document.getElementById('thresholdPath');
-    const pathCustom = document.getElementById('thresholdPathCustom');
-    const operator = document.getElementById('thresholdOperator').value;
-    const action = document.getElementById('thresholdAction').value === 'true';
-    const hysteresis = document.getElementById('thresholdHysteresis').value.trim();
-    const dataType = document.getElementById('thresholdOperator')?.dataset.pathDataType || 'unknown';
+  const pathSelect = document.getElementById('thresholdPath');
+  const pathCustom = document.getElementById('thresholdPathCustom');
+  const operator = document.getElementById('thresholdOperator').value;
+  const action = document.getElementById('thresholdAction').value === 'true';
+  const hysteresis = document
+    .getElementById('thresholdHysteresis')
+    .value.trim();
+  const dataType =
+    document.getElementById('thresholdOperator')?.dataset.pathDataType ||
+    'unknown';
 
-    let watchPath = pathSelect.value;
-    if (watchPath === '__custom__') {
-        watchPath = pathCustom.value.trim();
+  let watchPath = pathSelect.value;
+  if (watchPath === '__custom__') {
+    watchPath = pathCustom.value.trim();
+  }
+
+  if (!watchPath) {
+    alert('Please select or enter a SignalK path');
+    return null;
+  }
+
+  const threshold = {
+    watchPath,
+    operator,
+    activateOnMatch: action,
+    enabled: true,
+  };
+
+  // Add values based on operator type
+  if (operator === 'range') {
+    const min = document.getElementById('thresholdValueGroup_min')?.value;
+    const max = document.getElementById('thresholdValueGroup_max')?.value;
+    if (!min || !max) {
+      alert('Please enter both minimum and maximum values');
+      return null;
     }
-
-    if (!watchPath) {
-        alert('Please select or enter a SignalK path');
+    threshold.valueMin = parseFloat(min);
+    threshold.valueMax = parseFloat(max);
+    if (dataType === 'angular') {
+      threshold.valueMin = threshold.valueMin * (Math.PI / 180);
+      threshold.valueMax = threshold.valueMax * (Math.PI / 180);
+    }
+  } else if (operator === 'withinRadius' || operator === 'outsideRadius') {
+    const useHomePort = document.getElementById(
+      'thresholdValueGroup_useHomePort'
+    )?.checked;
+    const radius = document.getElementById('thresholdValueGroup_radius')?.value;
+    if (!radius) {
+      alert('Please enter a radius value');
+      return null;
+    }
+    threshold.useHomePort = useHomePort;
+    threshold.radius = parseFloat(radius);
+    if (!useHomePort) {
+      const lat = document.getElementById('thresholdValueGroup_lat')?.value;
+      const lon = document.getElementById('thresholdValueGroup_lon')?.value;
+      if (!lat || !lon) {
+        alert('Please enter latitude and longitude');
         return null;
+      }
+      threshold.latitude = parseFloat(lat);
+      threshold.longitude = parseFloat(lon);
     }
+  } else if (
+    operator === 'inBoundingBox' ||
+    operator === 'outsideBoundingBox'
+  ) {
+    const useHomePort = document.getElementById(
+      'thresholdValueGroup_useHomePort'
+    )?.checked;
+    threshold.useHomePort = useHomePort;
 
-    const threshold = {
-        watchPath,
-        operator,
-        activateOnMatch: action,
-        enabled: true
-    };
-
-    // Add values based on operator type
-    if (operator === 'range') {
-        const min = document.getElementById('thresholdValueGroup_min')?.value;
-        const max = document.getElementById('thresholdValueGroup_max')?.value;
-        if (!min || !max) {
-            alert('Please enter both minimum and maximum values');
-            return null;
-        }
-        threshold.valueMin = parseFloat(min);
-        threshold.valueMax = parseFloat(max);
-        if (dataType === 'angular') {
-            threshold.valueMin = threshold.valueMin * (Math.PI / 180);
-            threshold.valueMax = threshold.valueMax * (Math.PI / 180);
-        }
-    } else if (operator === 'withinRadius' || operator === 'outsideRadius') {
-        const useHomePort = document.getElementById('thresholdValueGroup_useHomePort')?.checked;
-        const radius = document.getElementById('thresholdValueGroup_radius')?.value;
-        if (!radius) {
-            alert('Please enter a radius value');
-            return null;
-        }
-        threshold.useHomePort = useHomePort;
-        threshold.radius = parseFloat(radius);
-        if (!useHomePort) {
-            const lat = document.getElementById('thresholdValueGroup_lat')?.value;
-            const lon = document.getElementById('thresholdValueGroup_lon')?.value;
-            if (!lat || !lon) {
-                alert('Please enter latitude and longitude');
-                return null;
-            }
-            threshold.latitude = parseFloat(lat);
-            threshold.longitude = parseFloat(lon);
-        }
-    } else if (operator === 'inBoundingBox' || operator === 'outsideBoundingBox') {
-        const useHomePort = document.getElementById('thresholdValueGroup_useHomePort')?.checked;
-        threshold.useHomePort = useHomePort;
-
-        if (useHomePort) {
-            const boxSize = document.getElementById('thresholdValueGroup_boxSize')?.value;
-            const buffer = document.getElementById('thresholdValueGroup_buffer')?.value;
-            const anchorGrid = document.getElementById('thresholdValueGroup_anchorGrid');
-            if (!boxSize) {
-                alert('Please enter a box size');
-                return null;
-            }
-            const anchor = anchorGrid?.value || 'center';
-            threshold.boxSize = parseFloat(boxSize);
-            threshold.boxAnchor = anchor;
-            threshold.boxBuffer = buffer ? parseFloat(buffer) : 5;
-        } else {
-            const north = document.getElementById('thresholdValueGroup_north')?.value;
-            const south = document.getElementById('thresholdValueGroup_south')?.value;
-            const east = document.getElementById('thresholdValueGroup_east')?.value;
-            const west = document.getElementById('thresholdValueGroup_west')?.value;
-            if (!north || !south || !east || !west) {
-                alert('Please enter all bounding box coordinates');
-                return null;
-            }
-            threshold.boundingBox = {
-                north: parseFloat(north),
-                south: parseFloat(south),
-                east: parseFloat(east),
-                west: parseFloat(west)
-            };
-        }
-    } else if (operator === 'contains' || operator === 'startsWith' || operator === 'endsWith' || operator === 'stringEquals') {
-        const valueInput = document.getElementById('thresholdValueGroup_value');
-        if (!valueInput?.value) {
-            alert('Please enter a threshold value');
-            return null;
-        }
-        threshold.value = valueInput.value;
-    } else if (operator !== 'true' && operator !== 'false') {
-        const valueInput = document.getElementById('thresholdValueGroup_value');
-        if (!valueInput?.value) {
-            alert('Please enter a threshold value');
-            return null;
-        }
-        const numValue = parseFloat(valueInput.value);
-        if (isNaN(numValue)) {
-            threshold.value = valueInput.value;
-        } else {
-            threshold.value = numValue;
-            if (dataType === 'angular') {
-                threshold.value = threshold.value * (Math.PI / 180);
-            }
-        }
+    if (useHomePort) {
+      const boxSize = document.getElementById(
+        'thresholdValueGroup_boxSize'
+      )?.value;
+      const buffer = document.getElementById(
+        'thresholdValueGroup_buffer'
+      )?.value;
+      const anchorGrid = document.getElementById(
+        'thresholdValueGroup_anchorGrid'
+      );
+      if (!boxSize) {
+        alert('Please enter a box size');
+        return null;
+      }
+      const anchor = anchorGrid?.value || 'center';
+      threshold.boxSize = parseFloat(boxSize);
+      threshold.boxAnchor = anchor;
+      threshold.boxBuffer = buffer ? parseFloat(buffer) : 5;
+    } else {
+      const north = document.getElementById('thresholdValueGroup_north')?.value;
+      const south = document.getElementById('thresholdValueGroup_south')?.value;
+      const east = document.getElementById('thresholdValueGroup_east')?.value;
+      const west = document.getElementById('thresholdValueGroup_west')?.value;
+      if (!north || !south || !east || !west) {
+        alert('Please enter all bounding box coordinates');
+        return null;
+      }
+      threshold.boundingBox = {
+        north: parseFloat(north),
+        south: parseFloat(south),
+        east: parseFloat(east),
+        west: parseFloat(west),
+      };
     }
-
-    if (hysteresis) {
-        const hysteresisValue = parseFloat(hysteresis);
-        if (!isNaN(hysteresisValue)) {
-            threshold.hysteresis = hysteresisValue;
-        }
+  } else if (
+    operator === 'contains' ||
+    operator === 'startsWith' ||
+    operator === 'endsWith' ||
+    operator === 'stringEquals'
+  ) {
+    const valueInput = document.getElementById('thresholdValueGroup_value');
+    if (!valueInput?.value) {
+      alert('Please enter a threshold value');
+      return null;
     }
+    threshold.value = valueInput.value;
+  } else if (operator !== 'true' && operator !== 'false') {
+    const valueInput = document.getElementById('thresholdValueGroup_value');
+    if (!valueInput?.value) {
+      alert('Please enter a threshold value');
+      return null;
+    }
+    const numValue = parseFloat(valueInput.value);
+    if (isNaN(numValue)) {
+      threshold.value = valueInput.value;
+    } else {
+      threshold.value = numValue;
+      if (dataType === 'angular') {
+        threshold.value = threshold.value * (Math.PI / 180);
+      }
+    }
+  }
 
-    return threshold;
+  if (hysteresis) {
+    const hysteresisValue = parseFloat(hysteresis);
+    if (!isNaN(hysteresisValue)) {
+      threshold.hysteresis = hysteresisValue;
+    }
+  }
+
+  return threshold;
 }
 
 async function populateThresholdModalPaths() {
-    const treeContainer = document.getElementById('thresholdPathTree');
-    const searchInput = document.getElementById('thresholdPathSearch');
-    const filterType = 'self';
+  const treeContainer = document.getElementById('thresholdPathTree');
+  const searchInput = document.getElementById('thresholdPathSearch');
+  const filterType = 'self';
 
-    if (!treeContainer) return;
+  if (!treeContainer) return;
 
-    treeContainer.innerHTML = '<div style="padding: 20px; text-align: center; color: #666;">Loading paths...</div>';
+  treeContainer.innerHTML =
+    '<div style="padding: 20px; text-align: center; color: #666;">Loading paths...</div>';
 
+  try {
+    let allPaths = [];
     try {
-        let allPaths = [];
-        try {
-            const response = await fetch('/signalk/v1/api/');
-            if (response.ok) {
-                const data = await response.json();
-                allPaths = extractPathsFromSignalK(data, filterType);
-            }
-        } catch (error) {
-            console.log('Could not load SignalK API data:', error);
-        }
-
-        if (!allPaths.length) {
-            try {
-                const pluginResponse = await fetch(`${getPluginPath()}/api/paths`);
-                if (pluginResponse.ok) {
-                    const pluginData = await pluginResponse.json();
-                    if (pluginData.success && Array.isArray(pluginData.paths)) {
-                        allPaths = pluginData.paths
-                            .map(pathInfo => pathInfo.path)
-                            .filter(Boolean);
-                    }
-                }
-            } catch (pluginError) {
-                console.log('Failed to load plugin paths:', pluginError);
-            }
-        }
-
-        if (!allPaths.length) {
-            treeContainer.innerHTML = '<div style="padding: 20px; text-align: center; color: #999;">No paths available. Try entering a custom path.</div>';
-            return;
-        }
-
-        const uniquePaths = Array.from(new Set(allPaths)).sort();
-        const tree = buildPathTree(uniquePaths);
-
-        // Render tree using existing renderTreeNode function
-        let html = '';
-        Object.keys(tree).sort().forEach(key => {
-            html += renderTreeNode(key, tree[key], 0, '');
-        });
-        treeContainer.innerHTML = html || '<div style="padding: 20px; text-align: center; color: #666;">No paths found</div>';
-
-        // Setup search
-        if (searchInput) {
-            searchInput.addEventListener('input', (e) => {
-                const searchTerm = e.target.value;
-                let html = '';
-                Object.keys(tree).sort().forEach(key => {
-                    html += renderTreeNode(key, tree[key], 0, searchTerm);
-                });
-                treeContainer.innerHTML = html || '<div style="padding: 20px; text-align: center; color: #666;">No matches found</div>';
-
-                // Auto-expand all when searching
-                if (searchTerm) {
-                    treeContainer.querySelectorAll('.path-tree-children').forEach(el => {
-                        el.classList.add('expanded');
-                    });
-                    treeContainer.querySelectorAll('.path-tree-toggle').forEach(el => {
-                        if (el.textContent) el.textContent = '▼';
-                    });
-                }
-            });
-        }
-
+      const response = await fetch('/signalk/v1/api/');
+      if (response.ok) {
+        const data = await response.json();
+        allPaths = extractPathsFromSignalK(data, filterType);
+      }
     } catch (error) {
-        console.log('Could not load real-time SignalK paths:', error);
-        treeContainer.innerHTML = '<div style="padding: 20px; text-align: center; color: #999;">Error loading paths</div>';
+      console.log('Could not load SignalK API data:', error);
     }
 
-    // Handle path selection for type detection
-    const hiddenInput = document.getElementById('thresholdPath');
-    if (hiddenInput) {
-        hiddenInput.addEventListener('change', async function() {
-            if (this.value) {
-                const typeInfo = await detectPathType(this.value);
-                updateOperatorDropdown('thresholdOperator', typeInfo.dataType);
-                updateValueFields('thresholdOperator', 'thresholdValueGroup', typeInfo.dataType);
-                document.getElementById('thresholdOperator').dataset.pathDataType = typeInfo.dataType;
-            }
-        });
+    if (!allPaths.length) {
+      try {
+        const pluginResponse = await fetch(`${getPluginPath()}/api/paths`);
+        if (pluginResponse.ok) {
+          const pluginData = await pluginResponse.json();
+          if (pluginData.success && Array.isArray(pluginData.paths)) {
+            allPaths = pluginData.paths
+              .map(pathInfo => pathInfo.path)
+              .filter(Boolean);
+          }
+        }
+      } catch (pluginError) {
+        console.log('Failed to load plugin paths:', pluginError);
+      }
     }
 
-    // Handle custom path input
-    const customInput = document.getElementById('thresholdPathCustom');
-    if (customInput) {
-        customInput.onblur = async function() {
-            if (this.value) {
-                const typeInfo = await detectPathType(this.value);
-                updateOperatorDropdown('thresholdOperator', typeInfo.dataType);
-                updateValueFields('thresholdOperator', 'thresholdValueGroup', typeInfo.dataType);
-                document.getElementById('thresholdOperator').dataset.pathDataType = typeInfo.dataType;
-            }
-        };
+    if (!allPaths.length) {
+      treeContainer.innerHTML =
+        '<div style="padding: 20px; text-align: center; color: #999;">No paths available. Try entering a custom path.</div>';
+      return;
     }
+
+    const uniquePaths = Array.from(new Set(allPaths)).sort();
+    const tree = buildPathTree(uniquePaths);
+
+    // Render tree using existing renderTreeNode function
+    let html = '';
+    Object.keys(tree)
+      .sort()
+      .forEach(key => {
+        html += renderTreeNode(key, tree[key], 0, '');
+      });
+    treeContainer.innerHTML =
+      html ||
+      '<div style="padding: 20px; text-align: center; color: #666;">No paths found</div>';
+
+    // Setup search
+    if (searchInput) {
+      searchInput.addEventListener('input', e => {
+        const searchTerm = e.target.value;
+        let html = '';
+        Object.keys(tree)
+          .sort()
+          .forEach(key => {
+            html += renderTreeNode(key, tree[key], 0, searchTerm);
+          });
+        treeContainer.innerHTML =
+          html ||
+          '<div style="padding: 20px; text-align: center; color: #666;">No matches found</div>';
+
+        // Auto-expand all when searching
+        if (searchTerm) {
+          treeContainer.querySelectorAll('.path-tree-children').forEach(el => {
+            el.classList.add('expanded');
+          });
+          treeContainer.querySelectorAll('.path-tree-toggle').forEach(el => {
+            if (el.textContent) el.textContent = '▼';
+          });
+        }
+      });
+    }
+  } catch (error) {
+    console.log('Could not load real-time SignalK paths:', error);
+    treeContainer.innerHTML =
+      '<div style="padding: 20px; text-align: center; color: #999;">Error loading paths</div>';
+  }
+
+  // Handle path selection for type detection
+  const hiddenInput = document.getElementById('thresholdPath');
+  if (hiddenInput) {
+    hiddenInput.addEventListener('change', async function () {
+      if (this.value) {
+        const typeInfo = await detectPathType(this.value);
+        updateOperatorDropdown('thresholdOperator', typeInfo.dataType);
+        updateValueFields(
+          'thresholdOperator',
+          'thresholdValueGroup',
+          typeInfo.dataType
+        );
+        document.getElementById('thresholdOperator').dataset.pathDataType =
+          typeInfo.dataType;
+      }
+    });
+  }
+
+  // Handle custom path input
+  const customInput = document.getElementById('thresholdPathCustom');
+  if (customInput) {
+    customInput.onblur = async function () {
+      if (this.value) {
+        const typeInfo = await detectPathType(this.value);
+        updateOperatorDropdown('thresholdOperator', typeInfo.dataType);
+        updateValueFields(
+          'thresholdOperator',
+          'thresholdValueGroup',
+          typeInfo.dataType
+        );
+        document.getElementById('thresholdOperator').dataset.pathDataType =
+          typeInfo.dataType;
+      }
+    };
+  }
 }
 
 export function toggleThresholdValueField() {
-    const operatorSelect = document.getElementById('thresholdOperator');
-    const dataType = operatorSelect?.dataset.pathDataType || 'unknown';
-    updateValueFields('thresholdOperator', 'thresholdValueGroup', dataType);
+  const operatorSelect = document.getElementById('thresholdOperator');
+  const dataType = operatorSelect?.dataset.pathDataType || 'unknown';
+  updateValueFields('thresholdOperator', 'thresholdValueGroup', dataType);
 }
 
 // Add command threshold functions
 export function updateAddCmdThresholdPathFilter() {
-    populateAddCmdThresholdPaths();
+  populateAddCmdThresholdPaths();
 }
 
 async function populateAddCmdThresholdPaths() {
-    ensureEditFormInDom();
-    const treeContainer = document.getElementById('addCmdThresholdPathTree');
-    const searchInput = document.getElementById('addCmdThresholdPathSearch');
-    const filterType = 'self';
+  ensureEditFormInDom();
+  const treeContainer = document.getElementById('addCmdThresholdPathTree');
+  const searchInput = document.getElementById('addCmdThresholdPathSearch');
+  const filterType = 'self';
 
-    if (!treeContainer) return;
+  if (!treeContainer) return;
 
-    treeContainer.innerHTML = '<div style="padding: 20px; text-align: center; color: #666;">Loading paths...</div>';
+  treeContainer.innerHTML =
+    '<div style="padding: 20px; text-align: center; color: #666;">Loading paths...</div>';
 
+  try {
+    let allPaths = [];
     try {
-        let allPaths = [];
-        try {
-            const response = await fetch('/signalk/v1/api/');
-            if (response.ok) {
-                const data = await response.json();
-                allPaths = extractPathsFromSignalK(data, filterType);
-            }
-        } catch (error) {
-            console.log('Could not load SignalK API data for add command thresholds:', error);
-        }
-
-        if (!allPaths.length) {
-            try {
-                const pluginResponse = await fetch(`${getPluginPath()}/api/paths`);
-                if (pluginResponse.ok) {
-                    const pluginData = await pluginResponse.json();
-                    if (pluginData.success && Array.isArray(pluginData.paths)) {
-                        allPaths = pluginData.paths
-                            .map(pathInfo => pathInfo.path)
-                            .filter(Boolean);
-                    }
-                }
-            } catch (pluginError) {
-                console.log('Failed to load plugin paths for add command thresholds:', pluginError);
-            }
-        }
-
-        const uniquePaths = Array.from(new Set(allPaths)).sort();
-        const tree = buildPathTree(uniquePaths);
-
-        // Render tree
-        let html = '';
-        Object.keys(tree).sort().forEach(key => {
-            html += renderTreeNode(key, tree[key], 0, '');
-        });
-        treeContainer.innerHTML = html || '<div style="padding: 20px; text-align: center; color: #666;">No paths found</div>';
-
-        // Setup search
-        if (searchInput) {
-            searchInput.addEventListener('input', (e) => {
-                const searchTerm = e.target.value;
-                let html = '';
-                Object.keys(tree).sort().forEach(key => {
-                    html += renderTreeNode(key, tree[key], 0, searchTerm);
-                });
-                treeContainer.innerHTML = html || '<div style="padding: 20px; text-align: center; color: #666;">No matches found</div>';
-
-                // Auto-expand all when searching
-                if (searchTerm) {
-                    treeContainer.querySelectorAll('.path-tree-children').forEach(el => {
-                        el.classList.add('expanded');
-                    });
-                    treeContainer.querySelectorAll('.path-tree-toggle').forEach(el => {
-                        if (el.textContent) el.textContent = '▼';
-                    });
-                }
-            });
-        }
-
+      const response = await fetch('/signalk/v1/api/');
+      if (response.ok) {
+        const data = await response.json();
+        allPaths = extractPathsFromSignalK(data, filterType);
+      }
     } catch (error) {
-        console.log('Could not load real-time SignalK paths for add command thresholds:', error);
-        treeContainer.innerHTML = '<div style="padding: 20px; text-align: center; color: #999;">Error loading paths</div>';
+      console.log(
+        'Could not load SignalK API data for add command thresholds:',
+        error
+      );
     }
 
-    // Handle path selection for type detection
-    const hiddenInput = document.getElementById('addCmdThresholdPath');
-    if (hiddenInput) {
-        hiddenInput.addEventListener('change', async function() {
-            if (this.value) {
-                const typeInfo = await detectPathType(this.value);
-                updateOperatorDropdown('addCmdThresholdOperator', typeInfo.dataType);
-                updateValueFields('addCmdThresholdOperator', 'addCmdThresholdValueGroup', typeInfo.dataType);
-                document.getElementById('addCmdThresholdOperator').dataset.pathDataType = typeInfo.dataType;
-            }
-        });
+    if (!allPaths.length) {
+      try {
+        const pluginResponse = await fetch(`${getPluginPath()}/api/paths`);
+        if (pluginResponse.ok) {
+          const pluginData = await pluginResponse.json();
+          if (pluginData.success && Array.isArray(pluginData.paths)) {
+            allPaths = pluginData.paths
+              .map(pathInfo => pathInfo.path)
+              .filter(Boolean);
+          }
+        }
+      } catch (pluginError) {
+        console.log(
+          'Failed to load plugin paths for add command thresholds:',
+          pluginError
+        );
+      }
     }
 
-    // Handle custom path input
-    const customInput = document.getElementById('addCmdThresholdPathCustom');
-    if (customInput) {
-        customInput.onblur = async function() {
-            if (this.value) {
-                const typeInfo = await detectPathType(this.value);
-                updateOperatorDropdown('addCmdThresholdOperator', typeInfo.dataType);
-                updateValueFields('addCmdThresholdOperator', 'addCmdThresholdValueGroup', typeInfo.dataType);
-                document.getElementById('addCmdThresholdOperator').dataset.pathDataType = typeInfo.dataType;
-            }
-        };
+    const uniquePaths = Array.from(new Set(allPaths)).sort();
+    const tree = buildPathTree(uniquePaths);
+
+    // Render tree
+    let html = '';
+    Object.keys(tree)
+      .sort()
+      .forEach(key => {
+        html += renderTreeNode(key, tree[key], 0, '');
+      });
+    treeContainer.innerHTML =
+      html ||
+      '<div style="padding: 20px; text-align: center; color: #666;">No paths found</div>';
+
+    // Setup search
+    if (searchInput) {
+      searchInput.addEventListener('input', e => {
+        const searchTerm = e.target.value;
+        let html = '';
+        Object.keys(tree)
+          .sort()
+          .forEach(key => {
+            html += renderTreeNode(key, tree[key], 0, searchTerm);
+          });
+        treeContainer.innerHTML =
+          html ||
+          '<div style="padding: 20px; text-align: center; color: #666;">No matches found</div>';
+
+        // Auto-expand all when searching
+        if (searchTerm) {
+          treeContainer.querySelectorAll('.path-tree-children').forEach(el => {
+            el.classList.add('expanded');
+          });
+          treeContainer.querySelectorAll('.path-tree-toggle').forEach(el => {
+            if (el.textContent) el.textContent = '▼';
+          });
+        }
+      });
     }
+  } catch (error) {
+    console.log(
+      'Could not load real-time SignalK paths for add command thresholds:',
+      error
+    );
+    treeContainer.innerHTML =
+      '<div style="padding: 20px; text-align: center; color: #999;">Error loading paths</div>';
+  }
+
+  // Handle path selection for type detection
+  const hiddenInput = document.getElementById('addCmdThresholdPath');
+  if (hiddenInput) {
+    hiddenInput.addEventListener('change', async function () {
+      if (this.value) {
+        const typeInfo = await detectPathType(this.value);
+        updateOperatorDropdown('addCmdThresholdOperator', typeInfo.dataType);
+        updateValueFields(
+          'addCmdThresholdOperator',
+          'addCmdThresholdValueGroup',
+          typeInfo.dataType
+        );
+        document.getElementById(
+          'addCmdThresholdOperator'
+        ).dataset.pathDataType = typeInfo.dataType;
+      }
+    });
+  }
+
+  // Handle custom path input
+  const customInput = document.getElementById('addCmdThresholdPathCustom');
+  if (customInput) {
+    customInput.onblur = async function () {
+      if (this.value) {
+        const typeInfo = await detectPathType(this.value);
+        updateOperatorDropdown('addCmdThresholdOperator', typeInfo.dataType);
+        updateValueFields(
+          'addCmdThresholdOperator',
+          'addCmdThresholdValueGroup',
+          typeInfo.dataType
+        );
+        document.getElementById(
+          'addCmdThresholdOperator'
+        ).dataset.pathDataType = typeInfo.dataType;
+      }
+    };
+  }
 }
 
 export function toggleAddCmdThresholdValueField() {
-    const operatorSelect = document.getElementById('addCmdThresholdOperator');
-    const dataType = operatorSelect?.dataset.pathDataType || 'unknown';
-    updateValueFields('addCmdThresholdOperator', 'addCmdThresholdValueGroup', dataType);
+  const operatorSelect = document.getElementById('addCmdThresholdOperator');
+  const dataType = operatorSelect?.dataset.pathDataType || 'unknown';
+  updateValueFields(
+    'addCmdThresholdOperator',
+    'addCmdThresholdValueGroup',
+    dataType
+  );
 }
 
 export function addNewCommandThreshold() {
-    // Use unified modal instead
-    openThresholdModal({
-        mode: 'create',
-        targetArray: addingThresholds
-    });
+  // Use unified modal instead
+  openThresholdModal({
+    mode: 'create',
+    targetArray: addingThresholds,
+  });
 }
 
 export function cancelAddCmdThreshold() {
-    const form = document.getElementById('addCommandThresholdForm');
-    if (form) {
-        form.style.display = 'none';
-    }
+  const form = document.getElementById('addCommandThresholdForm');
+  if (form) {
+    form.style.display = 'none';
+  }
 
-    const trigger = document.getElementById('addCommandThresholdButton');
-    if (trigger) {
-        trigger.style.display = 'inline-block';
-    }
+  const trigger = document.getElementById('addCommandThresholdButton');
+  if (trigger) {
+    trigger.style.display = 'inline-block';
+  }
 }
 
 export function saveAddCmdThreshold() {
-    const pathSelect = document.getElementById('addCmdThresholdPath');
-    const pathCustom = document.getElementById('addCmdThresholdPathCustom');
-    const operator = document.getElementById('addCmdThresholdOperator').value;
-    const action = document.getElementById('addCmdThresholdAction').value === 'true';
-    const hysteresis = document.getElementById('addCmdThresholdHysteresis').value.trim();
-    const dataType = document.getElementById('addCmdThresholdOperator')?.dataset.pathDataType || 'unknown';
+  const pathSelect = document.getElementById('addCmdThresholdPath');
+  const pathCustom = document.getElementById('addCmdThresholdPathCustom');
+  const operator = document.getElementById('addCmdThresholdOperator').value;
+  const action =
+    document.getElementById('addCmdThresholdAction').value === 'true';
+  const hysteresis = document
+    .getElementById('addCmdThresholdHysteresis')
+    .value.trim();
+  const dataType =
+    document.getElementById('addCmdThresholdOperator')?.dataset.pathDataType ||
+    'unknown';
 
-    // Get the path
-    let path = pathSelect.value;
-    if (path === 'custom') {
-        path = pathCustom.value.trim();
+  // Get the path
+  let path = pathSelect.value;
+  if (path === 'custom') {
+    path = pathCustom.value.trim();
+  }
+
+  if (!path) {
+    alert('Please select or enter a SignalK path');
+    return;
+  }
+
+  // Create new threshold
+  const threshold = {
+    enabled: true,
+    watchPath: path,
+    operator: operator,
+    activateOnMatch: action,
+  };
+
+  // Handle different operator types
+  if (operator === 'range') {
+    const min = document.getElementById('addCmdThresholdValueGroup_min')?.value;
+    const max = document.getElementById('addCmdThresholdValueGroup_max')?.value;
+    if (!min || !max) {
+      alert('Please enter both min and max values for range');
+      return;
+    }
+    threshold.valueMin = parseFloat(min);
+    threshold.valueMax = parseFloat(max);
+
+    // Convert degrees to radians for angular values
+    if (dataType === 'angular') {
+      threshold.valueMin = threshold.valueMin * (Math.PI / 180);
+      threshold.valueMax = threshold.valueMax * (Math.PI / 180);
+    }
+  } else if (operator === 'withinRadius' || operator === 'outsideRadius') {
+    const useHomePort = document.getElementById(
+      'addCmdThresholdValueGroup_useHomePort'
+    )?.checked;
+    const radius = document.getElementById(
+      'addCmdThresholdValueGroup_radius'
+    )?.value;
+
+    if (!radius) {
+      alert('Please enter a radius value');
+      return;
     }
 
-    if (!path) {
-        alert('Please select or enter a SignalK path');
+    threshold.useHomePort = useHomePort;
+    threshold.radius = parseFloat(radius);
+
+    if (!useHomePort) {
+      const lat = document.getElementById(
+        'addCmdThresholdValueGroup_lat'
+      )?.value;
+      const lon = document.getElementById(
+        'addCmdThresholdValueGroup_lon'
+      )?.value;
+      if (!lat || !lon) {
+        alert('Please enter latitude and longitude');
         return;
+      }
+      threshold.latitude = parseFloat(lat);
+      threshold.longitude = parseFloat(lon);
+    }
+  } else if (
+    operator === 'inBoundingBox' ||
+    operator === 'outsideBoundingBox'
+  ) {
+    const useHomePort = document.getElementById(
+      'addCmdThresholdValueGroup_useHomePort'
+    )?.checked;
+
+    if (useHomePort) {
+      // Home port-based bounding box
+      const boxSize = document.getElementById(
+        'addCmdThresholdValueGroup_boxSize'
+      )?.value;
+      const buffer = document.getElementById(
+        'addCmdThresholdValueGroup_buffer'
+      )?.value;
+      const anchorGrid = document.getElementById(
+        'addCmdThresholdValueGroup_anchorGrid'
+      );
+      const anchor = anchorGrid?.dataset.selectedAnchor || 'center';
+
+      if (!boxSize) {
+        alert('Please enter a box size');
+        return;
+      }
+
+      threshold.useHomePort = true;
+      threshold.boxSize = parseFloat(boxSize);
+      threshold.boxAnchor = anchor;
+      threshold.boxBuffer = buffer ? parseFloat(buffer) : 5; // Default 5m buffer
+    } else {
+      // Manual bounding box
+      const north = document.getElementById(
+        'addCmdThresholdValueGroup_north'
+      )?.value;
+      const south = document.getElementById(
+        'addCmdThresholdValueGroup_south'
+      )?.value;
+      const east = document.getElementById(
+        'addCmdThresholdValueGroup_east'
+      )?.value;
+      const west = document.getElementById(
+        'addCmdThresholdValueGroup_west'
+      )?.value;
+
+      if (!north || !south || !east || !west) {
+        alert('Please enter all bounding box coordinates');
+        return;
+      }
+
+      threshold.boundingBox = {
+        north: parseFloat(north),
+        south: parseFloat(south),
+        east: parseFloat(east),
+        west: parseFloat(west),
+      };
+    }
+  } else if (operator !== 'true' && operator !== 'false') {
+    // String or numeric value
+    const valueInput = document.getElementById(
+      'addCmdThresholdValueGroup_value'
+    );
+    if (!valueInput || !valueInput.value.trim()) {
+      alert('Please enter a threshold value');
+      return;
     }
 
-    // Create new threshold
-    const threshold = {
-        enabled: true,
-        watchPath: path,
-        operator: operator,
-        activateOnMatch: action
-    };
+    const value = valueInput.value.trim();
 
-    // Handle different operator types
-    if (operator === 'range') {
-        const min = document.getElementById('addCmdThresholdValueGroup_min')?.value;
-        const max = document.getElementById('addCmdThresholdValueGroup_max')?.value;
-        if (!min || !max) {
-            alert('Please enter both min and max values for range');
-            return;
-        }
-        threshold.valueMin = parseFloat(min);
-        threshold.valueMax = parseFloat(max);
+    // String operators
+    if (
+      ['contains', 'startsWith', 'endsWith', 'stringEquals'].includes(operator)
+    ) {
+      threshold.value = value;
+    } else {
+      // Numeric operators
+      const numValue = parseFloat(value);
+      if (isNaN(numValue)) {
+        alert('Please enter a valid numeric value');
+        return;
+      }
+      threshold.value = numValue;
 
-        // Convert degrees to radians for angular values
-        if (dataType === 'angular') {
-            threshold.valueMin = threshold.valueMin * (Math.PI / 180);
-            threshold.valueMax = threshold.valueMax * (Math.PI / 180);
-        }
-    } else if (operator === 'withinRadius' || operator === 'outsideRadius') {
-        const useHomePort = document.getElementById('addCmdThresholdValueGroup_useHomePort')?.checked;
-        const radius = document.getElementById('addCmdThresholdValueGroup_radius')?.value;
-
-        if (!radius) {
-            alert('Please enter a radius value');
-            return;
-        }
-
-        threshold.useHomePort = useHomePort;
-        threshold.radius = parseFloat(radius);
-
-        if (!useHomePort) {
-            const lat = document.getElementById('addCmdThresholdValueGroup_lat')?.value;
-            const lon = document.getElementById('addCmdThresholdValueGroup_lon')?.value;
-            if (!lat || !lon) {
-                alert('Please enter latitude and longitude');
-                return;
-            }
-            threshold.latitude = parseFloat(lat);
-            threshold.longitude = parseFloat(lon);
-        }
-    } else if (operator === 'inBoundingBox' || operator === 'outsideBoundingBox') {
-        const useHomePort = document.getElementById('addCmdThresholdValueGroup_useHomePort')?.checked;
-
-        if (useHomePort) {
-            // Home port-based bounding box
-            const boxSize = document.getElementById('addCmdThresholdValueGroup_boxSize')?.value;
-            const buffer = document.getElementById('addCmdThresholdValueGroup_buffer')?.value;
-            const anchorGrid = document.getElementById('addCmdThresholdValueGroup_anchorGrid');
-            const anchor = anchorGrid?.dataset.selectedAnchor || 'center';
-
-            if (!boxSize) {
-                alert('Please enter a box size');
-                return;
-            }
-
-            threshold.useHomePort = true;
-            threshold.boxSize = parseFloat(boxSize);
-            threshold.boxAnchor = anchor;
-            threshold.boxBuffer = buffer ? parseFloat(buffer) : 5; // Default 5m buffer
-        } else {
-            // Manual bounding box
-            const north = document.getElementById('addCmdThresholdValueGroup_north')?.value;
-            const south = document.getElementById('addCmdThresholdValueGroup_south')?.value;
-            const east = document.getElementById('addCmdThresholdValueGroup_east')?.value;
-            const west = document.getElementById('addCmdThresholdValueGroup_west')?.value;
-
-            if (!north || !south || !east || !west) {
-                alert('Please enter all bounding box coordinates');
-                return;
-            }
-
-            threshold.boundingBox = {
-                north: parseFloat(north),
-                south: parseFloat(south),
-                east: parseFloat(east),
-                west: parseFloat(west)
-            };
-        }
-    } else if (operator !== 'true' && operator !== 'false') {
-        // String or numeric value
-        const valueInput = document.getElementById('addCmdThresholdValueGroup_value');
-        if (!valueInput || !valueInput.value.trim()) {
-            alert('Please enter a threshold value');
-            return;
-        }
-
-        const value = valueInput.value.trim();
-
-        // String operators
-        if (['contains', 'startsWith', 'endsWith', 'stringEquals'].includes(operator)) {
-            threshold.value = value;
-        } else {
-            // Numeric operators
-            const numValue = parseFloat(value);
-            if (isNaN(numValue)) {
-                alert('Please enter a valid numeric value');
-                return;
-            }
-            threshold.value = numValue;
-
-            // Convert degrees to radians for angular values
-            if (dataType === 'angular') {
-                threshold.value = threshold.value * (Math.PI / 180);
-            }
-        }
+      // Convert degrees to radians for angular values
+      if (dataType === 'angular') {
+        threshold.value = threshold.value * (Math.PI / 180);
+      }
     }
+  }
 
-    // Add hysteresis if specified
-    if (hysteresis) {
-        const hysteresisValue = parseFloat(hysteresis);
-        if (!isNaN(hysteresisValue)) {
-            threshold.hysteresis = hysteresisValue;
-        }
+  // Add hysteresis if specified
+  if (hysteresis) {
+    const hysteresisValue = parseFloat(hysteresis);
+    if (!isNaN(hysteresisValue)) {
+      threshold.hysteresis = hysteresisValue;
     }
+  }
 
-    // Add to thresholds array
-    addingThresholds.push(threshold);
+  // Add to thresholds array
+  addingThresholds.push(threshold);
 
-    // Refresh the thresholds display
-    displayAddCommandThresholdsList();
+  // Refresh the thresholds display
+  displayAddCommandThresholdsList();
 
-    // Hide the form
-    cancelAddCmdThreshold();
+  // Hide the form
+  cancelAddCmdThreshold();
 }
 
 function displayAddCommandThresholdsList() {
-    const container = document.getElementById('addCommandThresholdsList');
+  const container = document.getElementById('addCommandThresholdsList');
 
-    if (!addingThresholds || addingThresholds.length === 0) {
-        container.innerHTML = '<div style="color: #999; font-style: italic; padding: 10px;">No thresholds configured</div>';
-        return;
+  if (!addingThresholds || addingThresholds.length === 0) {
+    container.innerHTML =
+      '<div style="color: #999; font-style: italic; padding: 10px;">No thresholds configured</div>';
+    return;
+  }
+
+  let html = '';
+  addingThresholds.forEach((threshold, index) => {
+    let description = '';
+
+    // Format description based on operator type
+    if (threshold.operator === 'range') {
+      description = `${threshold.valueMin} to ${threshold.valueMax}`;
+    } else if (
+      threshold.operator === 'withinRadius' ||
+      threshold.operator === 'outsideRadius'
+    ) {
+      const location = threshold.useHomePort
+        ? 'home port'
+        : `${threshold.latitude}, ${threshold.longitude}`;
+      const op = threshold.operator === 'withinRadius' ? 'within' : 'outside';
+      description = `${op} ${threshold.radius}m of ${location}`;
+    } else if (
+      threshold.operator === 'inBoundingBox' ||
+      threshold.operator === 'outsideBoundingBox'
+    ) {
+      const op = threshold.operator === 'inBoundingBox' ? 'inside' : 'outside';
+      if (threshold.useHomePort && threshold.boxSize && threshold.boxAnchor) {
+        const anchorName = getAnchorName(threshold.boxAnchor);
+        const buffer =
+          threshold.boxBuffer !== undefined ? threshold.boxBuffer : 5;
+        const bufferText = buffer > 0 ? ` +${buffer}m buffer` : '';
+        description = `${op} ${threshold.boxSize}m box${bufferText} from home port (${anchorName})`;
+      } else if (threshold.boundingBox) {
+        description = `${op} box [${threshold.boundingBox.north}°N, ${threshold.boundingBox.south}°S, ${threshold.boundingBox.east}°E, ${threshold.boundingBox.west}°W]`;
+      }
+    } else if (
+      threshold.operator === 'true' ||
+      threshold.operator === 'false'
+    ) {
+      description = threshold.operator === 'true' ? 'is true' : 'is false';
+    } else {
+      const operatorSymbol =
+        {
+          gt: '>',
+          lt: '<',
+          eq: '=',
+          ne: '≠',
+          contains: 'contains',
+          startsWith: 'starts with',
+          endsWith: 'ends with',
+          stringEquals: 'equals',
+        }[threshold.operator] || threshold.operator;
+      description = `${operatorSymbol} ${threshold.value !== undefined ? threshold.value : ''}`;
     }
 
-    let html = '';
-    addingThresholds.forEach((threshold, index) => {
-        let description = '';
+    const action = threshold.activateOnMatch ? 'ON' : 'OFF';
+    const hysteresis = threshold.hysteresis
+      ? ` (${threshold.hysteresis}s hysteresis)`
+      : '';
 
-        // Format description based on operator type
-        if (threshold.operator === 'range') {
-            description = `${threshold.valueMin} to ${threshold.valueMax}`;
-        } else if (threshold.operator === 'withinRadius' || threshold.operator === 'outsideRadius') {
-            const location = threshold.useHomePort ? 'home port' : `${threshold.latitude}, ${threshold.longitude}`;
-            const op = threshold.operator === 'withinRadius' ? 'within' : 'outside';
-            description = `${op} ${threshold.radius}m of ${location}`;
-        } else if (threshold.operator === 'inBoundingBox' || threshold.operator === 'outsideBoundingBox') {
-            const op = threshold.operator === 'inBoundingBox' ? 'inside' : 'outside';
-            if (threshold.useHomePort && threshold.boxSize && threshold.boxAnchor) {
-                const anchorName = getAnchorName(threshold.boxAnchor);
-                const buffer = threshold.boxBuffer !== undefined ? threshold.boxBuffer : 5;
-                const bufferText = buffer > 0 ? ` +${buffer}m buffer` : '';
-                description = `${op} ${threshold.boxSize}m box${bufferText} from home port (${anchorName})`;
-            } else if (threshold.boundingBox) {
-                description = `${op} box [${threshold.boundingBox.north}°N, ${threshold.boundingBox.south}°S, ${threshold.boundingBox.east}°E, ${threshold.boundingBox.west}°W]`;
-            }
-        } else if (threshold.operator === 'true' || threshold.operator === 'false') {
-            description = threshold.operator === 'true' ? 'is true' : 'is false';
-        } else {
-            const operatorSymbol = {
-                'gt': '>', 'lt': '<', 'eq': '=', 'ne': '≠',
-                'contains': 'contains', 'startsWith': 'starts with', 'endsWith': 'ends with', 'stringEquals': 'equals'
-            }[threshold.operator] || threshold.operator;
-            description = `${operatorSymbol} ${threshold.value !== undefined ? threshold.value : ''}`;
-        }
-
-        const action = threshold.activateOnMatch ? 'ON' : 'OFF';
-        const hysteresis = threshold.hysteresis ? ` (${threshold.hysteresis}s hysteresis)` : '';
-
-        html += `
+    html += `
             <div style="background: white; border: 1px solid #ddd; border-radius: 4px; padding: 10px; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center;">
                 <div>
                     <strong>${threshold.watchPath}</strong> ${description} → ${action}${hysteresis}
@@ -2486,88 +2855,106 @@ function displayAddCommandThresholdsList() {
                 </button>
             </div>
         `;
-    });
+  });
 
-    container.innerHTML = html;
+  container.innerHTML = html;
 }
 
 export function removeAddCommandThreshold(index) {
-    addingThresholds.splice(index, 1);
-    displayAddCommandThresholdsList();
+  addingThresholds.splice(index, 1);
+  displayAddCommandThresholdsList();
 }
 
 // Manual override functions
-export async function setManualOverride(commandName, override, expiryMinutes = null) {
-    try {
-        const body = { override: override };
-        if (expiryMinutes) {
-            body.expiryMinutes = expiryMinutes;
-        }
-
-        const response = await fetch(`${getPluginPath()}/api/commands/${commandName}/override`, {
-            method: 'PUT',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify(body)
-        });
-
-        const result = await response.json();
-
-        if (result.success) {
-            await loadCommands();
-            alert(`Manual override ${override ? 'enabled' : 'disabled'} for ${commandName}`);
-        } else {
-            alert(`Failed to set manual override: ${result.error}`);
-        }
-    } catch (error) {
-        alert(`Network error: ${error.message}`);
+export async function setManualOverride(
+  commandName,
+  override,
+  expiryMinutes = null
+) {
+  try {
+    const body = { override: override };
+    if (expiryMinutes) {
+      body.expiryMinutes = expiryMinutes;
     }
+
+    const response = await fetch(
+      `${getPluginPath()}/api/commands/${commandName}/override`,
+      {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(body),
+      }
+    );
+
+    const result = await response.json();
+
+    if (result.success) {
+      await loadCommands();
+      alert(
+        `Manual override ${override ? 'enabled' : 'disabled'} for ${commandName}`
+      );
+    } else {
+      alert(`Failed to set manual override: ${result.error}`);
+    }
+  } catch (error) {
+    alert(`Network error: ${error.message}`);
+  }
 }
 
 export async function promptManualOverride(commandName) {
-    const override = confirm(`Enable manual override for command '${commandName}'?\n\nThis will ignore threshold conditions until manually cleared.`);
+  const override = confirm(
+    `Enable manual override for command '${commandName}'?\n\nThis will ignore threshold conditions until manually cleared.`
+  );
 
-    if (override) {
-        const expiry = prompt(`Override duration in minutes (leave empty for permanent):`);
-        const expiryMinutes = expiry && !isNaN(expiry) ? parseInt(expiry) : null;
+  if (override) {
+    const expiry = prompt(
+      `Override duration in minutes (leave empty for permanent):`
+    );
+    const expiryMinutes = expiry && !isNaN(expiry) ? parseInt(expiry) : null;
 
-        await setManualOverride(commandName, true, expiryMinutes);
-    }
+    await setManualOverride(commandName, true, expiryMinutes);
+  }
 }
 
 export async function loadCommandHistory() {
-    try {
-        const response = await fetch(`${getPluginPath()}/api/commands/history`);
-        const result = await response.json();
-        
-        if (result.success) {
-            displayCommandHistory(result.data || []);
-        } else {
-            document.getElementById('commandHistoryContainer').innerHTML = `<div class="error">Error loading command history: ${result.error}</div>`;
-        }
-    } catch (error) {
-        document.getElementById('commandHistoryContainer').innerHTML = `<div class="error">Error loading command history: ${error.message}</div>`;
+  try {
+    const response = await fetch(`${getPluginPath()}/api/commands/history`);
+    const result = await response.json();
+
+    if (result.success) {
+      displayCommandHistory(result.data || []);
+    } else {
+      document.getElementById('commandHistoryContainer').innerHTML =
+        `<div class="error">Error loading command history: ${result.error}</div>`;
     }
+  } catch (error) {
+    document.getElementById('commandHistoryContainer').innerHTML =
+      `<div class="error">Error loading command history: ${error.message}</div>`;
+  }
 }
 
 function displayCommandHistory(history) {
-    const container = document.getElementById('commandHistoryContainer');
+  const container = document.getElementById('commandHistoryContainer');
 
-    if (!history || history.length === 0) {
-        container.innerHTML = '<div class="info">No command history available.</div>';
-        return;
-    }
+  if (!history || history.length === 0) {
+    container.innerHTML =
+      '<div class="info">No command history available.</div>';
+    return;
+  }
 
-    let html = '<div class="table-container"><table><thead><tr>';
-    html += '<th>Command</th><th>Action</th><th>Value</th><th>Status</th><th>Time</th><th>Error</th>';
-    html += '</tr></thead><tbody>';
+  let html = '<div class="table-container"><table><thead><tr>';
+  html +=
+    '<th>Command</th><th>Action</th><th>Value</th><th>Status</th><th>Time</th><th>Error</th>';
+  html += '</tr></thead><tbody>';
 
-    history.forEach(entry => {
-        const status = entry.success ? '✅ Success' : '❌ Failed';
-        const timestamp = new Date(entry.timestamp).toLocaleString();
-        const value = entry.value !== undefined ? (entry.value ? 'true' : 'false') : '-';
-        html += `<tr>
+  history.forEach(entry => {
+    const status = entry.success ? '✅ Success' : '❌ Failed';
+    const timestamp = new Date(entry.timestamp).toLocaleString();
+    const value =
+      entry.value !== undefined ? (entry.value ? 'true' : 'false') : '-';
+    html += `<tr>
             <td><strong>${entry.command}</strong></td>
             <td>${entry.action}</td>
             <td>${value}</td>
@@ -2575,157 +2962,185 @@ function displayCommandHistory(history) {
             <td>${timestamp}</td>
             <td>${entry.error || '-'}</td>
         </tr>`;
-    });
+  });
 
-    html += '</tbody></table></div>';
-    container.innerHTML = html;
+  html += '</tbody></table></div>';
+  container.innerHTML = html;
 }
 
 // Automation control functions
 export async function toggleAutomation(commandName) {
-    const button = document.getElementById(`auto-toggle-${commandName}`);
-    const originalText = button?.textContent;
+  const button = document.getElementById(`auto-toggle-${commandName}`);
+  const originalText = button?.textContent;
 
-    try {
-        // Show loading state
-        if (button) {
-            button.textContent = '⏳ Updating...';
-            button.disabled = true;
-        }
-
-        // Get current automation state
-        const currentState = await getAutomationState(commandName);
-        const newState = !currentState;
-
-        console.log(`🔄 Toggling automation for ${commandName}: ${currentState} → ${newState}`);
-
-        // Update automation state
-        const response = await fetch(`/signalk/v1/api/vessels/self/commands/${commandName}/auto`, {
-            method: 'PUT',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-                value: newState
-            })
-        });
-
-        if (response.ok) {
-            // Wait a moment for SignalK to process
-            await new Promise(resolve => setTimeout(resolve, 500));
-
-            // Verify the change took effect
-            const verifyState = await getAutomationState(commandName);
-            if (verifyState === newState) {
-                updateAutomationUI(commandName, newState);
-                console.log(`✅ Automation ${newState ? 'enabled' : 'disabled'} for ${commandName}`);
-
-                // Show success feedback
-                if (button) {
-                    button.style.background = newState ? '#ff9800' : '#4caf50';
-                    button.textContent = newState ? '👤 Disable Automation' : '🤖 Enable Automation';
-                }
-            } else {
-                throw new Error(`State verification failed: expected ${newState}, got ${verifyState}`);
-            }
-        } else {
-            const errorText = await response.text();
-            throw new Error(`HTTP ${response.status}: ${errorText}`);
-        }
-    } catch (error) {
-        console.error(`❌ Automation toggle failed for ${commandName}:`, error);
-        alert(`Failed to update automation: ${error.message}`);
-
-        // Restore button state
-        if (button && originalText) {
-            button.textContent = originalText;
-        }
-    } finally {
-        // Re-enable button
-        if (button) {
-            button.disabled = false;
-        }
+  try {
+    // Show loading state
+    if (button) {
+      button.textContent = '⏳ Updating...';
+      button.disabled = true;
     }
+
+    // Get current automation state
+    const currentState = await getAutomationState(commandName);
+    const newState = !currentState;
+
+    console.log(
+      `🔄 Toggling automation for ${commandName}: ${currentState} → ${newState}`
+    );
+
+    // Update automation state
+    const response = await fetch(
+      `/signalk/v1/api/vessels/self/commands/${commandName}/auto`,
+      {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          value: newState,
+        }),
+      }
+    );
+
+    if (response.ok) {
+      // Wait a moment for SignalK to process
+      await new Promise(resolve => setTimeout(resolve, 500));
+
+      // Verify the change took effect
+      const verifyState = await getAutomationState(commandName);
+      if (verifyState === newState) {
+        updateAutomationUI(commandName, newState);
+        console.log(
+          `✅ Automation ${newState ? 'enabled' : 'disabled'} for ${commandName}`
+        );
+
+        // Show success feedback
+        if (button) {
+          button.style.background = newState ? '#ff9800' : '#4caf50';
+          button.textContent = newState
+            ? '👤 Disable Automation'
+            : '🤖 Enable Automation';
+        }
+      } else {
+        throw new Error(
+          `State verification failed: expected ${newState}, got ${verifyState}`
+        );
+      }
+    } else {
+      const errorText = await response.text();
+      throw new Error(`HTTP ${response.status}: ${errorText}`);
+    }
+  } catch (error) {
+    console.error(`❌ Automation toggle failed for ${commandName}:`, error);
+    alert(`Failed to update automation: ${error.message}`);
+
+    // Restore button state
+    if (button && originalText) {
+      button.textContent = originalText;
+    }
+  } finally {
+    // Re-enable button
+    if (button) {
+      button.disabled = false;
+    }
+  }
 }
 
 async function getAutomationState(commandName) {
-    try {
-        const response = await fetch(`/signalk/v1/api/vessels/self/commands/${commandName}/auto`);
-        if (response.ok) {
-            const data = await response.json();
-            console.log(`🔍 getAutomationState(${commandName}):`, data);
-            return data.value || false;
-        } else {
-            console.log(`❌ getAutomationState(${commandName}) HTTP ${response.status}`);
-        }
-    } catch (error) {
-        console.log(`❌ getAutomationState(${commandName}) error:`, error);
+  try {
+    const response = await fetch(
+      `/signalk/v1/api/vessels/self/commands/${commandName}/auto`
+    );
+    if (response.ok) {
+      const data = await response.json();
+      console.log(`🔍 getAutomationState(${commandName}):`, data);
+      return data.value || false;
+    } else {
+      console.log(
+        `❌ getAutomationState(${commandName}) HTTP ${response.status}`
+      );
     }
-    return false; // Default to false if unable to fetch
+  } catch (error) {
+    console.log(`❌ getAutomationState(${commandName}) error:`, error);
+  }
+  return false; // Default to false if unable to fetch
 }
 
 function updateAutomationUI(commandName, autoEnabled) {
-    // Update automation status display with clear, non-contradictory states
-    const statusContainer = document.getElementById(`automation-status-${commandName}`);
-    if (statusContainer) {
-        if (autoEnabled) {
-            // Automation is ON - show that thresholds are controlling the command
-            statusContainer.innerHTML = `
+  // Update automation status display with clear, non-contradictory states
+  const statusContainer = document.getElementById(
+    `automation-status-${commandName}`
+  );
+  if (statusContainer) {
+    if (autoEnabled) {
+      // Automation is ON - show that thresholds are controlling the command
+      statusContainer.innerHTML = `
                 <div style="color: #4caf50; font-weight: bold; display: flex; align-items: center; gap: 8px;">
                     <span>🤖 Automated Control</span>
                     <span style="font-size: 0.8em; color: #666; font-weight: normal;">Controlled by thresholds</span>
                 </div>
             `;
-        } else {
-            // Automation is OFF - show manual control with option to enable automation
-            statusContainer.innerHTML = `
+    } else {
+      // Automation is OFF - show manual control with option to enable automation
+      statusContainer.innerHTML = `
                 <div style="color: #ff9800; font-weight: bold; display: flex; align-items: center; gap: 8px;">
                     <span>👤 Manual Control</span>
                     <span style="font-size: 0.8em; color: #666; font-weight: normal;">Thresholds inactive</span>
                 </div>
             `;
-        }
     }
+  }
 
-    // Update automation toggle button with clear labels
-    const autoToggleButton = document.getElementById(`auto-toggle-${commandName}`);
-    if (autoToggleButton) {
-        if (autoEnabled) {
-            autoToggleButton.textContent = '👤 Disable Automation';
-            autoToggleButton.style.background = '#ff9800';
-            autoToggleButton.title = 'Disable automation and switch to manual control';
-        } else {
-            autoToggleButton.textContent = '🤖 Enable Automation';
-            autoToggleButton.style.background = '#4caf50';
-            autoToggleButton.title = 'Enable threshold-based automation';
-        }
+  // Update automation toggle button with clear labels
+  const autoToggleButton = document.getElementById(
+    `auto-toggle-${commandName}`
+  );
+  if (autoToggleButton) {
+    if (autoEnabled) {
+      autoToggleButton.textContent = '👤 Disable Automation';
+      autoToggleButton.style.background = '#ff9800';
+      autoToggleButton.title =
+        'Disable automation and switch to manual control';
+    } else {
+      autoToggleButton.textContent = '🤖 Enable Automation';
+      autoToggleButton.style.background = '#4caf50';
+      autoToggleButton.title = 'Enable threshold-based automation';
     }
+  }
 
-    // Disable/enable command toggle button based on automation status
-    const commandToggleButton = document.getElementById(`toggle-btn-${commandName}`);
+  // Disable/enable command toggle button based on automation status
+  const commandToggleButton = document.getElementById(
+    `toggle-btn-${commandName}`
+  );
 
-    if (commandToggleButton) {
-        if (autoEnabled) {
-            // Automation is ON - disable manual button
-            commandToggleButton.disabled = true;
-            commandToggleButton.style.opacity = '0.5';
-            commandToggleButton.style.cursor = 'not-allowed';
-            commandToggleButton.title = 'Command is under automatic control';
-        } else {
-            // Automation is OFF - enable manual button and update text based on current state
-            commandToggleButton.disabled = false;
-            commandToggleButton.style.opacity = '1';
-            commandToggleButton.style.cursor = 'pointer';
+  if (commandToggleButton) {
+    if (autoEnabled) {
+      // Automation is ON - disable manual button
+      commandToggleButton.disabled = true;
+      commandToggleButton.style.opacity = '0.5';
+      commandToggleButton.style.cursor = 'not-allowed';
+      commandToggleButton.title = 'Command is under automatic control';
+    } else {
+      // Automation is OFF - enable manual button and update text based on current state
+      commandToggleButton.disabled = false;
+      commandToggleButton.style.opacity = '1';
+      commandToggleButton.style.cursor = 'pointer';
 
-            // Update button text based on current command state
-            const stateElement = document.getElementById(`command-state-${commandName}`);
-            if (stateElement) {
-                const isCurrentlyOn = stateElement.textContent.includes('🟢 ON');
-                commandToggleButton.textContent = isCurrentlyOn ? '🔴 Turn OFF' : '🟢 Turn ON';
-                commandToggleButton.title = isCurrentlyOn ? 'Manually stop the command' : 'Manually start the command';
-            }
-        }
+      // Update button text based on current command state
+      const stateElement = document.getElementById(
+        `command-state-${commandName}`
+      );
+      if (stateElement) {
+        const isCurrentlyOn = stateElement.textContent.includes('🟢 ON');
+        commandToggleButton.textContent = isCurrentlyOn
+          ? '🔴 Turn OFF'
+          : '🟢 Turn ON';
+        commandToggleButton.title = isCurrentlyOn
+          ? 'Manually stop the command'
+          : 'Manually start the command';
+      }
     }
+  }
 }
 
 // Store WebSocket connection for real-time updates
@@ -2733,118 +3148,129 @@ let signalKWebSocket = null;
 
 // Subscribe to real-time command state updates via SignalK WebSocket
 function subscribeToCommandStates(commands) {
-    // Close existing connection
-    if (signalKWebSocket) {
-        signalKWebSocket.close();
-    }
+  // Close existing connection
+  if (signalKWebSocket) {
+    signalKWebSocket.close();
+  }
 
-    // Get SignalK WebSocket URL
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${protocol}//${window.location.host}/signalk/v1/stream?subscribe=none`;
+  // Get SignalK WebSocket URL
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const wsUrl = `${protocol}//${window.location.host}/signalk/v1/stream?subscribe=none`;
 
-    try {
-        signalKWebSocket = new WebSocket(wsUrl);
+  try {
+    signalKWebSocket = new WebSocket(wsUrl);
 
-        signalKWebSocket.onopen = () => {
-            console.log('📡 Connected to SignalK stream for command states');
+    signalKWebSocket.onopen = () => {
+      console.log('📡 Connected to SignalK stream for command states');
 
-            // Subscribe to each command path
-            commands.forEach(command => {
-                const subscription = {
-                    context: 'vessels.self',
-                    subscribe: [{
-                        path: `commands.${command.command}`,
-                        period: 1000,
-                        format: 'delta',
-                        policy: 'instant',
-                        minPeriod: 200
-                    }]
-                };
-
-                signalKWebSocket.send(JSON.stringify(subscription));
-                console.log(`📡 Subscribed to commands.${command.command}`);
-            });
+      // Subscribe to each command path
+      commands.forEach(command => {
+        const subscription = {
+          context: 'vessels.self',
+          subscribe: [
+            {
+              path: `commands.${command.command}`,
+              period: 1000,
+              format: 'delta',
+              policy: 'instant',
+              minPeriod: 200,
+            },
+          ],
         };
 
-        signalKWebSocket.onmessage = (event) => {
-            try {
-                const data = JSON.parse(event.data);
+        signalKWebSocket.send(JSON.stringify(subscription));
+        console.log(`📡 Subscribed to commands.${command.command}`);
+      });
+    };
 
-                if (data.updates) {
-                    data.updates.forEach(update => {
-                        if (update.values) {
-                            update.values.forEach(value => {
-                                if (value.path && value.path.startsWith('commands.')) {
-                                    const commandName = value.path.replace('commands.', '');
+    signalKWebSocket.onmessage = event => {
+      try {
+        const data = JSON.parse(event.data);
 
-                                    // Handle SignalK value extraction properly
-                                    let actualValue = value.value;
-                                    if (actualValue && typeof actualValue === 'object' && 'value' in actualValue) {
-                                        actualValue = actualValue.value;
-                                    }
+        if (data.updates) {
+          data.updates.forEach(update => {
+            if (update.values) {
+              update.values.forEach(value => {
+                if (value.path && value.path.startsWith('commands.')) {
+                  const commandName = value.path.replace('commands.', '');
 
-                                    // Only update if we have a valid value (not null/undefined)
-                                    if (actualValue !== null && actualValue !== undefined) {
-                                        const commandState = Boolean(actualValue);
-                                        updateCommandStateDisplay(commandName, commandState);
-                                    }
-                                }
-                            });
-                        }
-                    });
+                  // Handle SignalK value extraction properly
+                  let actualValue = value.value;
+                  if (
+                    actualValue &&
+                    typeof actualValue === 'object' &&
+                    'value' in actualValue
+                  ) {
+                    actualValue = actualValue.value;
+                  }
+
+                  // Only update if we have a valid value (not null/undefined)
+                  if (actualValue !== null && actualValue !== undefined) {
+                    const commandState = Boolean(actualValue);
+                    updateCommandStateDisplay(commandName, commandState);
+                  }
                 }
-            } catch (error) {
-                console.warn('Failed to parse SignalK message:', error);
+              });
             }
-        };
+          });
+        }
+      } catch (error) {
+        console.warn('Failed to parse SignalK message:', error);
+      }
+    };
 
-        signalKWebSocket.onerror = (error) => {
-            console.error('SignalK WebSocket error:', error);
-        };
+    signalKWebSocket.onerror = error => {
+      console.error('SignalK WebSocket error:', error);
+    };
 
-        signalKWebSocket.onclose = () => {
-            console.log('📡 SignalK stream disconnected');
-        };
-
-    } catch (error) {
-        console.error('Failed to connect to SignalK stream:', error);
-    }
+    signalKWebSocket.onclose = () => {
+      console.log('📡 SignalK stream disconnected');
+    };
+  } catch (error) {
+    console.error('Failed to connect to SignalK stream:', error);
+  }
 }
 
 // Update command state display in real-time
 function updateCommandStateDisplay(commandName, isOn) {
-    const stateElement = document.getElementById(`command-state-${commandName}`);
-    if (stateElement) {
-        if (isOn) {
-            stateElement.innerHTML = '<span style="color: #4caf50; font-weight: bold;">🟢 ON</span>';
-        } else {
-            stateElement.innerHTML = '<span style="color: #f44336; font-weight: bold;">🔴 OFF</span>';
-        }
+  const stateElement = document.getElementById(`command-state-${commandName}`);
+  if (stateElement) {
+    if (isOn) {
+      stateElement.innerHTML =
+        '<span style="color: #4caf50; font-weight: bold;">🟢 ON</span>';
+    } else {
+      stateElement.innerHTML =
+        '<span style="color: #f44336; font-weight: bold;">🔴 OFF</span>';
     }
+  }
 
-    // Also update the toggle button text
-    const commandToggleButton = document.getElementById(`toggle-btn-${commandName}`);
-    if (commandToggleButton && !commandToggleButton.disabled) {
-        commandToggleButton.textContent = isOn ? '🔴 Turn OFF' : '🟢 Turn ON';
-        commandToggleButton.title = isOn ? 'Manually stop the command' : 'Manually start the command';
-    }
+  // Also update the toggle button text
+  const commandToggleButton = document.getElementById(
+    `toggle-btn-${commandName}`
+  );
+  if (commandToggleButton && !commandToggleButton.disabled) {
+    commandToggleButton.textContent = isOn ? '🔴 Turn OFF' : '🟢 Turn ON';
+    commandToggleButton.title = isOn
+      ? 'Manually stop the command'
+      : 'Manually start the command';
+  }
 }
 
 // Load and update automation states for all commands
 export async function updateAllAutomationStates() {
-    try {
-        const response = await fetch(`${getPluginPath()}/api/commands`);
-        const result = await response.json();
+  try {
+    const response = await fetch(`${getPluginPath()}/api/commands`);
+    const result = await response.json();
 
-        if (result.success && result.commands) {
-            for (const command of result.commands) {
-                if (command.thresholds && command.thresholds.length > 0) {
-                    const autoState = await getAutomationState(command.command);
-                    updateAutomationUI(command.command, autoState);
-                }
-            }
+    if (result.success && result.commands) {
+      for (const command of result.commands) {
+        if (command.thresholds && command.thresholds.length > 0) {
+          const autoState = await getAutomationState(command.command);
+          updateAutomationUI(command.command, autoState);
         }
-    } catch (error) {
-        console.log('Error updating automation states:', error);
+      }
     }
+  } catch (error) {
+    console.log('Error updating automation states:', error);
+  }
 }
