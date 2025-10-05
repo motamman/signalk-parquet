@@ -257,7 +257,7 @@ async function loadVersionInfo() {
             if (headerElement) {
                 const versionSpan = document.createElement('span');
                 versionSpan.style.fontSize = '0.4em';
-                versionSpan.style.color = '#666';
+                versionSpan.style.color = 'rgb(200, 200, 200)';
                 versionSpan.style.fontWeight = 'normal';
                 versionSpan.style.marginLeft = '10px';
                 versionSpan.textContent = `v${versionData.version}`;

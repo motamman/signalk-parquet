@@ -33,11 +33,13 @@
             margin-bottom: 20px;
             border-radius: 10px;
             text-align: center;
+            position: relative;
         }
 
         .header h1 {
             font-size: 2.5rem;
             margin-bottom: 10px;
+            margin: 0 0 10px 0;
         }
 
         .header p {
@@ -487,9 +489,10 @@
 <body>
     <div class="container">
         <div class="header">
-            <h1>
-                <img src="parquet.png" alt="Parquet" style="height: 80px; vertical-align: middle; margin-right: 10px; border-radius: 5px;"> 
-                SignalK Parquet Data Store</h1>
+            <img src="parquet.png" alt="Parquet" style="height: 80px; position: absolute; left: 20px; top: 20px; border-radius: 5px;">
+            <h1 style="margin: 0 0 10px 0;">
+                SignalK Parquet Data Store
+            </h1>
             <p>Export, query, and explore your SignalK data archived as Parquet files</p>
         </div>
 

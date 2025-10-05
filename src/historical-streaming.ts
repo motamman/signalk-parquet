@@ -19,6 +19,7 @@ export class HistoricalStreamingService {
   private streamsAlreadyLoaded = false;
   private lastSubscriptionCheck = 0;
   private readonly SUBSCRIPTION_CHECK_INTERVAL = 1000; // 1 second
+  private streamTimeouts = new Map<string, NodeJS.Timeout[]>();
 
   constructor(app: ServerAPI, dataDir?: string) {
     this.app = app;
@@ -238,18 +239,24 @@ export class HistoricalStreamingService {
 
   public shutdown() {
     this.activeSubscriptions.clear();
-    
+
     // Clear all stream intervals
     this.streamIntervals.forEach((interval, streamId) => {
       clearInterval(interval);
     });
     this.streamIntervals.clear();
-    
+
+    // Clear all pending timeouts
+    this.streamTimeouts.forEach((timeouts, streamId) => {
+      timeouts.forEach(timeout => clearTimeout(timeout));
+    });
+    this.streamTimeouts.clear();
+
     // Clear stream buffers and timestamps
     this.streamBuffers.clear();
     this.streamLastTimestamps.clear();
     this.streamTimeSeriesData.clear();
-    
+
     // Close all WebSocket connections
     this.connectedClients.forEach(client => {
       if (client.readyState === WebSocket.OPEN) {
@@ -257,7 +264,7 @@ export class HistoricalStreamingService {
       }
     });
     this.connectedClients.clear();
-    
+
     // Close WebSocket server if exists
     if (this.wsServer) {
       this.wsServer.close();
@@ -569,8 +576,11 @@ export class HistoricalStreamingService {
       batches.push(timeSeriesData.dataPoints.slice(i, i + BATCH_SIZE));
     }
 
+    // Track timeouts for this stream
+    const timeouts: NodeJS.Timeout[] = [];
+
     batches.forEach((batch, batchIndex) => {
-      setTimeout(() => {
+      const timeout = setTimeout(() => {
         batch.forEach((point: any) => {
           // Create a SignalK path for the stream data
           const streamPath = `streaming.${stream.name.replace(/[^a-zA-Z0-9]/g, '_').toLowerCase()}.${stream.aggregateMethod}` as Path;
@@ -610,7 +620,12 @@ export class HistoricalStreamingService {
           }
         });
       }, batchIndex * 100); // 100ms between batches
+      timeouts.push(timeout);
     });
+
+    // Store or append timeouts for this stream
+    const existingTimeouts = this.streamTimeouts.get(streamId) || [];
+    this.streamTimeouts.set(streamId, [...existingTimeouts, ...timeouts]);
 
     // Also emit stream status/metadata as a separate path
     const statusPath = `streaming.${stream.name.replace(/[^a-zA-Z0-9]/g, '_').toLowerCase()}.status` as Path;
@@ -814,9 +829,9 @@ export class HistoricalStreamingService {
     if (!stream) {
       return { success: false, error: 'Stream not found' };
     }
-    
+
     const wasPaused = stream.status === 'paused';
-    
+
     if (wasPaused) {
       // Resume streaming
       stream.status = 'running';
@@ -831,11 +846,18 @@ export class HistoricalStreamingService {
         clearInterval(interval);
         this.streamIntervals.delete(streamId);
       }
+
+      // Clear any pending timeouts for this stream
+      const timeouts = this.streamTimeouts.get(streamId);
+      if (timeouts) {
+        timeouts.forEach(timeout => clearTimeout(timeout));
+        this.streamTimeouts.delete(streamId);
+      }
     }
-    
+
     stream.lastToggled = new Date().toISOString();
     this.streams.set(streamId, stream);
-    
+
     return { success: true, paused: !wasPaused };
   }
 
@@ -844,18 +866,25 @@ export class HistoricalStreamingService {
     if (!stream) {
       return { success: false, error: 'Stream not found' };
     }
-    
+
     // Clear streaming interval
     const interval = this.streamIntervals.get(streamId);
     if (interval) {
       clearInterval(interval);
       this.streamIntervals.delete(streamId);
     }
-    
+
+    // Clear any pending timeouts for this stream
+    const timeouts = this.streamTimeouts.get(streamId);
+    if (timeouts) {
+      timeouts.forEach(timeout => clearTimeout(timeout));
+      this.streamTimeouts.delete(streamId);
+    }
+
     stream.status = 'stopped';
     stream.stoppedAt = new Date().toISOString();
     this.saveStreamsConfig();
-    
+
     // Update time window to show final range
     if (stream.actualStartTime) {
       const startTime = new Date(stream.actualStartTime);
@@ -863,9 +892,9 @@ export class HistoricalStreamingService {
       stream.startTime = startTime.toLocaleTimeString();
       stream.endTime = endTime.toLocaleTimeString();
     }
-    
+
     this.streams.set(streamId, stream);
-    
+
     return { success: true };
   }
 
