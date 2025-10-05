@@ -71,7 +71,7 @@ The validation system checks each Parquet file for:
 - **NEW Stable Triggers**: Optional hysteresis (seconds) suppresses re-firing while the condition remains true, preventing rapid toggling in noisy data.
 - **NEW Multiple Thresholds Per Path**: Unique monitor keys allow several thresholds to observe the same SignalK path without cancelling each other.
 - **NEW Unit Handling**: Threshold values must match the live SignalK units (e.g., fractional 0–1 SoC values). Angular thresholds are entered in degrees in the UI and stored as radians automatically.
-- **NEW Manual Overrides**: Any active manual override still pauses automation until it expires or is cleared.
+- **NEW Automation State Machine**: When enabling automation, command is set to OFF then all thresholds are immediately evaluated. When disabling automation, threshold monitoring stops and command state remains unchanged. Default state is hardcoded to OFF on server side.
 
 ### Claude AI Integration
 - **AI-Powered Analysis**: Advanced maritime data analysis using Claude AI models (Opus 4, Sonnet 4)
@@ -1286,7 +1286,16 @@ curl "http://localhost:3000/signalk/v1/history/contexts"
 
 ## Changelog
 
-### Version 0.5.5-beta.3 (Latest)
+### Version 0.5.5-beta.4 (Latest)
+- **🔧 Threshold Automation State Machine Fix**: Fixed automation enable/disable transitions to properly execute state changes
+  - When enabling automation (`.auto = true`): Command is now set to OFF, then all thresholds are immediately evaluated
+  - When disabling automation (`.auto = false`): Threshold monitoring stops and command state remains unchanged
+  - Default command state is hardcoded to OFF on server side
+  - Fixed `autoPutHandler` in `src/commands.ts` to execute one-time transition operations when `.auto` path toggles
+  - Ensures thresholds take control immediately upon automation enable instead of waiting for next SignalK delta update
+  - Removed user-configurable default state dropdown from UI (both add and edit command forms)
+
+### Version 0.5.5-beta.3
 - **🧱 Front-end Modularization**: Replaced the 5,000-line inline dashboard script with focused JS modules under `public/js`, improving readability and maintainability.
 - **⚙️ Threshold Automation Fix**: Threshold monitoring now listens to raw SignalK values via `getSelfStream`, so saved trigger conditions reliably toggle their commands.
 
