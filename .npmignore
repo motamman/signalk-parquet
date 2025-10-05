@@ -36,7 +36,8 @@ rollup.config.js
 docs/
 CONTRIBUTING.md
 CHANGELOG.md
-TODO.md
+TODO.md|
+MEMORY-LEAK-ANALYSIS.md
 
 
 # Development dependencies

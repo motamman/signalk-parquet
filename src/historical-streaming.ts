@@ -29,42 +29,14 @@ export class HistoricalStreamingService {
   }
 
   private setupSubscriptionInterceptor() {
-
-    // Try to hook into WebSocket data stream
-    const wsInterface = (this.app as any).interfaces?.ws;
-    if (wsInterface && wsInterface.data) {
-      
-      try {
-        // Hook into the data stream to catch subscription messages
-        const originalDataEmit = wsInterface.data.emit;
-        wsInterface.data.emit = (event: string, ...args: any[]) => {
-          // Look for subscription-related events
-          if (event === 'message' || event === 'subscription') {
-            
-            // Check if any of the args contain subscription data
-            args.forEach(arg => {
-              if (this.isSubscriptionMessage(arg)) {
-                this.handleSubscriptionRequest(arg);
-              }
-            });
-          }
-          
-          // Call original emit
-          return originalDataEmit.apply(wsInterface.data, [event, ...args]);
-        };
-        
-      } catch (error) {
-      }
-    }
-
-    // Also register delta handler as fallback
+    // Only register delta handler for actual subscription messages
     this.app.registerDeltaInputHandler((delta, next) => {
-      if (this.isSubscriptionMessage(delta)) {
+      // Only process if it's actually a subscription message
+      if (delta && ((delta as any).subscribe || (delta as any).unsubscribe)) {
         this.handleSubscriptionRequest(delta);
       }
       next(delta);
     });
-
   }
   
 

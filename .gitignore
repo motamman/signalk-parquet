@@ -19,6 +19,7 @@ route-planning-with-claude-plan.md
 DUCKDB_CODE_REVIEW.md
 COMMAND_SYSTEM_FIXES.md
 CLAUDE_API_IMPLEMENTATIONS.md
+XMEMORY-LEAK-ANALYSIS.md
 
 *-backup
 
