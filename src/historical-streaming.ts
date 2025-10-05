@@ -166,34 +166,41 @@ export class HistoricalStreamingService {
       return;
     }
 
+    // Batch setTimeout calls to reduce overhead
+    const BATCH_SIZE = 10;
+    const batches = [];
 
-    // Stream the historical data points
-    historyResponse.data.forEach((dataPoint: any, index: number) => {
-      const [timestamp, ...values] = dataPoint;
-      const value = values[0]; // Get first value for this path
+    for (let i = 0; i < historyResponse.data.length; i += BATCH_SIZE) {
+      batches.push(historyResponse.data.slice(i, i + BATCH_SIZE));
+    }
 
-      if (value !== null && value !== undefined) {
-        const delta = {
-          context: this.app.selfContext as Context,
-          updates: [{
-            $source: 'signalk-parquet-historical' as SourceRef,
-            timestamp: timestamp as Timestamp,
-            values: [{
-              path: path as Path,
-              value: value
-            }]
-          }]
-        };
+    batches.forEach((batch, batchIndex) => {
+      setTimeout(() => {
+        batch.forEach((dataPoint: any) => {
+          const [timestamp, ...values] = dataPoint;
+          const value = values[0]; // Get first value for this path
 
-        // Inject with small delays to avoid overwhelming
-        setTimeout(() => {
-          try {
-            this.app.handleMessage('signalk-parquet-historical', delta);
-          } catch (error) {
-            this.app.error(`❌ Error injecting historical data point: ${error}`);
+          if (value !== null && value !== undefined) {
+            const delta = {
+              context: this.app.selfContext as Context,
+              updates: [{
+                $source: 'signalk-parquet-historical' as SourceRef,
+                timestamp: timestamp as Timestamp,
+                values: [{
+                  path: path as Path,
+                  value: value
+                }]
+              }]
+            };
+
+            try {
+              this.app.handleMessage('signalk-parquet-historical', delta);
+            } catch (error) {
+              this.app.error(`❌ Error injecting historical data point: ${error}`);
+            }
           }
-        }, index * 100); // 100ms between each data point
-      }
+        });
+      }, batchIndex * 100); // 100ms between batches
     });
 
   }
@@ -554,47 +561,55 @@ export class HistoricalStreamingService {
     const stream = this.streams.get(streamId);
     if (!stream) return;
 
-    // Emit each data point as a SignalK delta message
-    timeSeriesData.dataPoints.forEach((point: any, index: number) => {
-      // Create a SignalK path for the stream data
-      const streamPath = `streaming.${stream.name.replace(/[^a-zA-Z0-9]/g, '_').toLowerCase()}.${stream.aggregateMethod}` as Path;
-      
-      const delta = {
-        context: this.app.selfContext as Context,
-        updates: [{
-          $source: `signalk-parquet-stream-${streamId}` as SourceRef,
-          timestamp: point.timestamp as Timestamp,
-          values: [{
-            path: streamPath,
-            value: {
-              // Original path being streamed
-              sourcePath: timeSeriesData.path,
-              // Statistical aggregate value
-              statisticalValue: point.value,
-              // Aggregation method used
-              method: timeSeriesData.aggregateMethod,
-              // Time bucket information
-              bucketIndex: point.bucketIndex,
-              resolution: timeSeriesData.resolution,
-              // Stream metadata
-              streamId: streamId,
-              streamName: stream.name,
-              isIncremental: timeSeriesData.isIncremental || false,
-              // Time range info
-              windowFrom: timeSeriesData.from,
-              windowTo: timeSeriesData.to
-            }
-          }]
-        }]
-      };
+    // Batch setTimeout calls to reduce overhead
+    const BATCH_SIZE = 10;
+    const batches = [];
 
-      // Emit with small delay to avoid overwhelming the SignalK bus
+    for (let i = 0; i < timeSeriesData.dataPoints.length; i += BATCH_SIZE) {
+      batches.push(timeSeriesData.dataPoints.slice(i, i + BATCH_SIZE));
+    }
+
+    batches.forEach((batch, batchIndex) => {
       setTimeout(() => {
-        try {
-          this.app.handleMessage(`signalk-parquet-stream-${streamId}`, delta);
-        } catch (error) {
-        }
-      }, index * 10); // 10ms delay between points to avoid overwhelming
+        batch.forEach((point: any) => {
+          // Create a SignalK path for the stream data
+          const streamPath = `streaming.${stream.name.replace(/[^a-zA-Z0-9]/g, '_').toLowerCase()}.${stream.aggregateMethod}` as Path;
+
+          const delta = {
+            context: this.app.selfContext as Context,
+            updates: [{
+              $source: `signalk-parquet-stream-${streamId}` as SourceRef,
+              timestamp: point.timestamp as Timestamp,
+              values: [{
+                path: streamPath,
+                value: {
+                  // Original path being streamed
+                  sourcePath: timeSeriesData.path,
+                  // Statistical aggregate value
+                  statisticalValue: point.value,
+                  // Aggregation method used
+                  method: timeSeriesData.aggregateMethod,
+                  // Time bucket information
+                  bucketIndex: point.bucketIndex,
+                  resolution: timeSeriesData.resolution,
+                  // Stream metadata
+                  streamId: streamId,
+                  streamName: stream.name,
+                  isIncremental: timeSeriesData.isIncremental || false,
+                  // Time range info
+                  windowFrom: timeSeriesData.from,
+                  windowTo: timeSeriesData.to
+                }
+              }]
+            }]
+          };
+
+          try {
+            this.app.handleMessage(`signalk-parquet-stream-${streamId}`, delta);
+          } catch (error) {
+          }
+        });
+      }, batchIndex * 100); // 100ms between batches
     });
 
     // Also emit stream status/metadata as a separate path
