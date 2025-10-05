@@ -17,6 +17,8 @@ export class HistoricalStreamingService {
   private streamTimeSeriesData = new Map<string, any[]>();
   private streamsConfigPath: string;
   private streamsAlreadyLoaded = false;
+  private lastSubscriptionCheck = 0;
+  private readonly SUBSCRIPTION_CHECK_INTERVAL = 1000; // 1 second
 
   constructor(app: ServerAPI, dataDir?: string) {
     this.app = app;
@@ -31,9 +33,13 @@ export class HistoricalStreamingService {
   private setupSubscriptionInterceptor() {
     // Only register delta handler for actual subscription messages
     this.app.registerDeltaInputHandler((delta, next) => {
-      // Only process if it's actually a subscription message
+      const now = Date.now();
       if (delta && ((delta as any).subscribe || (delta as any).unsubscribe)) {
-        this.handleSubscriptionRequest(delta);
+        // Only process subscription checks once per second
+        if (now - this.lastSubscriptionCheck > this.SUBSCRIPTION_CHECK_INTERVAL) {
+          this.handleSubscriptionRequest(delta);
+          this.lastSubscriptionCheck = now;
+        }
       }
       next(delta);
     });
