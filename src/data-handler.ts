@@ -654,12 +654,12 @@ export async function consolidateMissedDays(config: PluginConfig, state: PluginS
       return;
     }
 
-    // Find all non-consolidated files from the last 7 days (excluding today)
+    // Find all non-consolidated files from the last 1 day (excluding today)
     const today = new Date();
     today.setUTCHours(0, 0, 0, 0);
 
     const sevenDaysAgo = new Date(today);
-    sevenDaysAgo.setUTCDate(today.getUTCDate() - 7);
+    sevenDaysAgo.setUTCDate(today.getUTCDate() - 1);
 
     const pattern = path.join(outputDir, '**/*.parquet');
     const files = await glob(pattern);
