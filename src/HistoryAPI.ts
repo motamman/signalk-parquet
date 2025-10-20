@@ -281,6 +281,7 @@ export class HistoryAPI {
             '*.parquet'
           );
 
+          debug(`Querying parquet files at: ${filePath}`);
 
           // Convert ZonedDateTime to ISO string format matching parquet schema
           const fromIso = from.toInstant().toString();
