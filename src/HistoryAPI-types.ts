@@ -20,6 +20,21 @@ export interface DataResult {
   values: ValueList;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   data: Datarow[];
+  units?: {
+    converted: boolean;
+    conversions: Array<{
+      path: Path;
+      baseUnit: string;
+      targetUnit: string;
+      symbol: string;
+    }>;
+  };
+  timezone?: {
+    converted: boolean;
+    targetTimezone: string;
+    offset: string;
+    description: string;
+  };
 }
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 const _demo: DataResult = {
@@ -77,6 +92,9 @@ export type FromToContextRequest = Request<
     refresh?: string;
     useUTC?: string;
     includeMovingAverages?: string; // 'true' | '1' to enable EMA/SMA
+    convertUnits?: string; // 'true' | '1' to convert to user's preferred units
+    convertTimesToLocal?: string; // 'true' | '1' to convert timestamps to local time
+    timezone?: string; // Optional timezone ID (e.g., 'America/New_York', 'Europe/London'). If not specified, uses server local time
   }
 >;
 
@@ -85,4 +103,24 @@ export interface PathSpec {
   queryResultName: string;
   aggregateMethod: AggregateMethod;
   aggregateFunction: string;
+}
+
+// Unit conversion types
+export interface ConversionMetadata {
+  path: string;
+  baseUnit: string;
+  targetUnit: string;
+  formula: string;
+  inverseFormula: string;
+  displayFormat: string;
+  symbol: string;
+  category: string;
+  valueType: string;
+}
+
+export interface UnitConversionInfo {
+  path: Path;
+  targetUnit: string;
+  symbol: string;
+  displayFormat: string;
 }

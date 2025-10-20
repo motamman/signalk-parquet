@@ -4,8 +4,10 @@ import {
   DataResult,
   FromToContextRequest,
   PathSpec,
+  ConversionMetadata,
+  UnitConversionInfo,
 } from './HistoryAPI-types';
-import { ZonedDateTime, ZoneOffset, ZoneId, LocalDateTime } from '@js-joda/core';
+import { ZonedDateTime, ZoneOffset, ZoneId } from '@js-joda/core';
 import { Context, Path, Timestamp } from '@signalk/server-api';
 import { ParamsDictionary } from 'express-serve-static-core';
 import { ParsedQs } from 'qs';
@@ -17,13 +19,255 @@ import { getCachedPaths, setCachedPaths, getCachedContexts, setCachedContexts } 
 import { getAvailableContextsForTimeRange } from './utils/context-discovery';
 import { getPathComponentSchema, PathComponentSchema, ComponentInfo } from './utils/schema-cache';
 
+// ============================================================================
+// Unit Conversion Helper Functions
+// ============================================================================
+
+// Cache for all paths conversion metadata - loaded once when available
+let allPathsConversions: Map<string, ConversionMetadata> | null = null;
+let conversionsLoadedAt: number = 0;
+let hasLoggedUnavailable = false; // Track if we've already logged the unavailable message
+
+// Cache TTL in milliseconds - configurable, defaults to 5 minutes
+let CONVERSIONS_CACHE_TTL_MS = 5 * 60 * 1000;
+
+/**
+ * Load all paths conversion metadata from units-preference plugin
+ * This is called lazily and will retry until successful or permanently unavailable
+ * Cache expires after 5 minutes to allow unit preference changes to take effect
+ */
+async function loadAllPathsConversions(app: any): Promise<void> {
+  const now = Date.now();
+
+  // Reload if cache is older than TTL
+  if (allPathsConversions !== null && (now - conversionsLoadedAt) > CONVERSIONS_CACHE_TTL_MS) {
+    console.log('[Unit Conversion] Cache expired, reloading conversions...');
+    allPathsConversions = null;
+    hasLoggedUnavailable = false; // Reset logging flag
+  }
+
+  // If already successfully loaded and fresh, don't reload
+  if (allPathsConversions !== null && allPathsConversions.size > 0) {
+    return;
+  }
+
+  try {
+    // Debug: Log what we see on the app object
+    console.log('[Unit Conversion] DEBUG: Checking app object...');
+    console.log('[Unit Conversion] DEBUG: typeof app.getAllUnitsConversions =', typeof app.getAllUnitsConversions);
+    console.log('[Unit Conversion] DEBUG: typeof app.getUnitsConversion =', typeof app.getUnitsConversion);
+
+    // Try to find the functions in multiple locations (different plugins may receive different app instances)
+    let getAllUnitsConversions = app.getAllUnitsConversions;
+
+    // Check server instance
+    if (!getAllUnitsConversions) {
+      const serverInstance = (app as any).server || (app as any)._server;
+      if (serverInstance) {
+        console.log('[Unit Conversion] DEBUG: Checking server instance...');
+        getAllUnitsConversions = serverInstance.getAllUnitsConversions;
+        console.log('[Unit Conversion] DEBUG: server.getAllUnitsConversions =', typeof getAllUnitsConversions);
+      }
+    }
+
+    // Check global
+    if (!getAllUnitsConversions && (global as any).signalkApp) {
+      console.log('[Unit Conversion] DEBUG: Checking global.signalkApp...');
+      getAllUnitsConversions = (global as any).signalkApp.getAllUnitsConversions;
+      console.log('[Unit Conversion] DEBUG: global.signalkApp.getAllUnitsConversions =', typeof getAllUnitsConversions);
+    }
+
+    // Check if the units-preference plugin has exposed its conversion functions
+    if (typeof getAllUnitsConversions === 'function') {
+      console.log('[Unit Conversion] ✅ Found units-preference plugin, loading conversions...');
+
+      const pathsData = await getAllUnitsConversions() as Record<string, any>;
+      console.log(`[Unit Conversion] Successfully loaded ${Object.keys(pathsData).length} paths via direct call`);
+
+      // Convert to our ConversionMetadata format
+      allPathsConversions = new Map();
+
+      for (const [pathName, pathInfo] of Object.entries(pathsData)) {
+        const info = pathInfo;
+
+        // Find the user's preferred target unit from the categories endpoint
+        // For now, we'll just use the first available conversion
+        const conversions = info.conversions || {};
+        const firstConversionKey = Object.keys(conversions)[0];
+
+        if (firstConversionKey) {
+          const conversion = conversions[firstConversionKey];
+          allPathsConversions.set(pathName, {
+            path: pathName,
+            baseUnit: info.baseUnit,
+            targetUnit: firstConversionKey,
+            formula: conversion.formula,
+            inverseFormula: conversion.inverseFormula,
+            symbol: conversion.symbol,
+            displayFormat: '0.0', // Default format
+            category: info.category,
+            valueType: 'number',
+          });
+        }
+      }
+
+      console.log(`[Unit Conversion] ✅ Successfully initialized ${allPathsConversions.size} conversions`);
+
+      // If we got 0 conversions, the units-preference plugin may not be fully initialized yet
+      // Reset to null so we retry on the next request
+      if (allPathsConversions.size === 0) {
+        console.log('[Unit Conversion] No conversions loaded - units-preference may still be initializing. Will retry on next request.');
+        allPathsConversions = null;
+      } else {
+        // Update the cache timestamp
+        conversionsLoadedAt = Date.now();
+      }
+    } else {
+      // Only log once to avoid spamming the logs
+      if (!hasLoggedUnavailable) {
+        console.log('[Unit Conversion] Units preference plugin not yet available (getAllUnitsConversions function not found)');
+        console.log('[Unit Conversion] Will retry on next request. Make sure signalk-units-preference plugin is installed.');
+        hasLoggedUnavailable = true;
+      }
+    }
+  } catch (error) {
+    console.error('[Unit Conversion] Error loading paths conversions:', error);
+  }
+}
+
+/**
+ * Check if the signalk-units-preference plugin is available
+ */
+async function isUnitsPreferencePluginAvailable(app: any): Promise<boolean> {
+  await loadAllPathsConversions(app);
+  return allPathsConversions !== null && allPathsConversions.size > 0;
+}
+
+/**
+ * Fetch conversion metadata for a specific path from the cached conversions
+ */
+async function getConversionMetadata(
+  signalkPath: string,
+  app: any
+): Promise<ConversionMetadata | null> {
+  // Ensure conversions are loaded
+  await loadAllPathsConversions(app);
+
+  if (!allPathsConversions) {
+    return null;
+  }
+
+  // Look up the path in our cached conversions
+  const conversion = allPathsConversions.get(signalkPath);
+
+  if (conversion) {
+    console.log(`[Unit Conversion] Found cached conversion for ${signalkPath}: ${conversion.baseUnit} → ${conversion.targetUnit}`);
+  }
+
+  return conversion || null;
+}
+
+/**
+ * Apply conversion formula to a numeric value
+ * Uses a safe eval approach similar to the units-preference plugin
+ */
+function applyConversionFormula(value: number, formula: string): number {
+  try {
+    // Simple formula evaluation - replace 'value' with the actual value
+    // This is safe because the formula comes from the trusted units-preference plugin
+    const result = eval(formula.replace(/value/g, String(value)));
+    return typeof result === 'number' ? result : value;
+  } catch (error) {
+    console.error(`Error applying conversion formula "${formula}" to value ${value}:`, error);
+    return value;
+  }
+}
+
+/**
+ * Format a number according to the display format (e.g., "0.0", "0.00", "0")
+ */
+function formatNumber(value: number, displayFormat: string): string {
+  if (displayFormat === '0') {
+    return Math.round(value).toString();
+  }
+
+  const decimals = displayFormat.includes('.')
+    ? displayFormat.split('.')[1].length
+    : 0;
+
+  return value.toFixed(decimals);
+}
+
+/**
+ * Convert a single numeric value using conversion metadata
+ */
+function convertNumericValue(
+  value: number,
+  metadata: ConversionMetadata
+): { converted: number; formatted: string } {
+  const converted = applyConversionFormula(value, metadata.formula);
+  const formatted = formatNumber(converted, metadata.displayFormat);
+
+  return { converted, formatted };
+}
+
+// ============================================================================
+// Timestamp Conversion Helper Functions
+// ============================================================================
+
+/**
+ * Get the target timezone ID
+ * @param timezoneParam - Optional timezone from query parameter
+ * @returns ZoneId object for the target timezone
+ */
+function getTargetTimezone(timezoneParam?: string): ZoneId {
+  if (timezoneParam) {
+    try {
+      return ZoneId.of(timezoneParam);
+    } catch (error) {
+      console.error(`[Timestamp Conversion] Invalid timezone '${timezoneParam}', falling back to system default`);
+    }
+  }
+
+  // Use system default timezone
+  return ZoneId.systemDefault();
+}
+
+/**
+ * Convert a UTC timestamp string to a target timezone
+ * @param utcTimestamp - UTC timestamp string (e.g., "2025-10-18T20:44:09Z")
+ * @param targetZone - Target timezone
+ * @returns Converted timestamp string in target timezone (ISO 8601 format with offset)
+ */
+function convertTimestampToTimezone(utcTimestamp: Timestamp, targetZone: ZoneId): Timestamp {
+  try {
+    // Parse the UTC timestamp
+    const zonedDateTime = ZonedDateTime.parse(utcTimestamp);
+
+    // Convert to target timezone
+    const converted = zonedDateTime.withZoneSameInstant(targetZone);
+
+    // Format to ISO 8601 with offset (e.g., "2025-10-20T08:12:14-04:00")
+    // Use toOffsetDateTime() to get clean ISO format without [SYSTEM] suffix
+    const offsetDateTime = converted.toOffsetDateTime();
+    return offsetDateTime.toString() as Timestamp;
+  } catch (error) {
+    console.error(`[Timestamp Conversion] Error converting timestamp ${utcTimestamp}:`, error);
+    return utcTimestamp; // Return original on error
+  }
+}
+
 export function registerHistoryApiRoute(
   router: Pick<Router, 'get'>,
   selfId: string,
   dataDir: string,
   debug: (k: string) => void,
-  app: any
+  app: any,
+  unitConversionCacheMinutes: number = 5
 ) {
+  // Set the cache TTL from configuration
+  CONVERSIONS_CACHE_TTL_MS = unitConversionCacheMinutes * 60 * 1000;
+  console.log(`[Unit Conversion] Cache TTL set to ${unitConversionCacheMinutes} minutes`);
   const historyApi = new HistoryAPI(selfId, dataDir);
   router.get('/signalk/v1/history/values', (req: Request, res: Response) => {
     const { from, to, context, shouldRefresh } = getRequestParams(
@@ -33,7 +277,14 @@ export function registerHistoryApiRoute(
     const includeMovingAverages =
       req.query.includeMovingAverages === 'true' ||
       req.query.includeMovingAverages === '1';
-    historyApi.getValues(context, from, to, shouldRefresh, includeMovingAverages, debug, req, res);
+    const convertUnits =
+      req.query.convertUnits === 'true' ||
+      req.query.convertUnits === '1';
+    const convertTimesToLocal =
+      req.query.convertTimesToLocal === 'true' ||
+      req.query.convertTimesToLocal === '1';
+    const timezone = req.query.timezone as string | undefined;
+    historyApi.getValues(context, from, to, shouldRefresh, includeMovingAverages, convertUnits, convertTimesToLocal, timezone, app, debug, req, res);
   });
   router.get('/signalk/v1/history/contexts', async (req: Request, res: Response) => {
     try {
@@ -110,7 +361,14 @@ export function registerHistoryApiRoute(
     const includeMovingAverages =
       req.query.includeMovingAverages === 'true' ||
       req.query.includeMovingAverages === '1';
-    historyApi.getValues(context, from, to, shouldRefresh, includeMovingAverages, debug, req, res);
+    const convertUnits =
+      req.query.convertUnits === 'true' ||
+      req.query.convertUnits === '1';
+    const convertTimesToLocal =
+      req.query.convertTimesToLocal === 'true' ||
+      req.query.convertTimesToLocal === '1';
+    const timezone = req.query.timezone as string | undefined;
+    historyApi.getValues(context, from, to, shouldRefresh, includeMovingAverages, convertUnits, convertTimesToLocal, timezone, app, debug, req, res);
   });
   router.get('/api/history/contexts', async (req: Request, res: Response) => {
     try {
@@ -371,6 +629,10 @@ export class HistoryAPI {
     to: ZonedDateTime,
     shouldRefresh: boolean,
     includeMovingAverages: boolean,
+    convertUnits: boolean,
+    convertTimesToLocal: boolean,
+    timezone: string | undefined,
+    app: any,
     debug: (k: string) => void,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     req: Request<ParamsDictionary, any, any, ParsedQs, Record<string, any>>,
@@ -388,7 +650,7 @@ export class HistoryAPI {
       const pathSpecs: PathSpec[] = pathExpressions.map(splitPathExpression);
 
       // Handle position and numeric paths together
-      const allResult = pathSpecs.length
+      let allResult = pathSpecs.length
         ? await this.getNumericValues(
             context,
             from,
@@ -398,7 +660,7 @@ export class HistoryAPI {
             includeMovingAverages,
             debug
           )
-        : Promise.resolve({
+        : {
             context,
             range: {
               from: from.toString() as Timestamp,
@@ -406,7 +668,17 @@ export class HistoryAPI {
             },
             values: [],
             data: [],
-          });
+          };
+
+      // Apply unit conversions if requested
+      if (convertUnits) {
+        allResult = await this.applyUnitConversions(allResult, pathSpecs, app, debug);
+      }
+
+      // Apply timestamp conversions if requested
+      if (convertTimesToLocal) {
+        allResult = this.convertTimestamps(allResult, timezone, debug);
+      }
 
       // Add refresh headers if shouldRefresh is enabled
       if (shouldRefresh) {
@@ -774,6 +1046,192 @@ export class HistoryAPI {
     });
 
     return result;
+  }
+
+  /**
+   * Apply unit conversions to the data result
+   */
+  private async applyUnitConversions(
+    result: DataResult,
+    pathSpecs: PathSpec[],
+    app: any,
+    debug: (k: string) => void
+  ): Promise<DataResult> {
+    try {
+      debug('[Unit Conversion] Starting unit conversion process');
+
+      // Check if the units-preference plugin is available
+      const pluginAvailable = await isUnitsPreferencePluginAvailable(app);
+      debug(`[Unit Conversion] Plugin available: ${pluginAvailable}`);
+
+      if (!pluginAvailable) {
+        console.log('[Unit Conversion] Units preference plugin not available, skipping conversions');
+        debug('Units preference plugin not available, skipping conversions');
+        return result;
+      }
+
+      debug('[Unit Conversion] Applying unit conversions to history data');
+      console.log(`[Unit Conversion] Processing ${pathSpecs.length} paths for conversion`);
+
+      // Fetch conversion metadata for all paths
+      const conversions: Map<string, ConversionMetadata> = new Map();
+      await Promise.all(
+        pathSpecs.map(async (pathSpec) => {
+          debug(`[Unit Conversion] Fetching metadata for ${pathSpec.path}`);
+          const metadata = await getConversionMetadata(pathSpec.path, app);
+
+          if (metadata) {
+            debug(`[Unit Conversion] Metadata received for ${pathSpec.path}: type=${metadata.valueType}`);
+            console.log(`[Unit Conversion] Metadata for ${pathSpec.path}:`, JSON.stringify(metadata, null, 2));
+
+            if (metadata.valueType === 'number') {
+              conversions.set(pathSpec.path, metadata);
+              debug(`[Unit Conversion] Conversion available for ${pathSpec.path}: ${metadata.baseUnit} → ${metadata.targetUnit}`);
+            } else {
+              debug(`[Unit Conversion] Skipping ${pathSpec.path}: not a numeric type (${metadata.valueType})`);
+            }
+          } else {
+            debug(`[Unit Conversion] No metadata available for ${pathSpec.path}`);
+            console.log(`[Unit Conversion] No metadata returned for ${pathSpec.path}`);
+          }
+        })
+      );
+
+      // If no conversions available, return original result
+      if (conversions.size === 0) {
+        console.log('[Unit Conversion] No unit conversions available for any requested paths');
+        debug('No unit conversions available for any requested paths');
+        return result;
+      }
+
+      console.log(`[Unit Conversion] Successfully loaded ${conversions.size} conversions`);
+
+      // Apply conversions to data array
+      const convertedData = result.data.map((row) => {
+        const [timestamp, ...values] = row;
+        const convertedValues = values.map((value, index) => {
+          // Get the path for this column index
+          const pathSpec = pathSpecs[Math.floor(index / (result.values.length / pathSpecs.length))];
+          const metadata = conversions.get(pathSpec.path);
+
+          // Only convert numeric values
+          if (metadata && typeof value === 'number' && !isNaN(value)) {
+            const { converted } = convertNumericValue(value, metadata);
+            return converted;
+          }
+
+          // Return non-numeric values unchanged
+          return value;
+        });
+
+        return [timestamp, ...convertedValues] as [Timestamp, ...unknown[]];
+      });
+
+      // Update values metadata to include unit information
+      const updatedValues = result.values.map((valueSpec) => {
+        const pathWithoutSuffix = valueSpec.path.replace(/\.(ema|sma)$/, '') as Path;
+        const metadata = conversions.get(pathWithoutSuffix);
+
+        if (metadata) {
+          return {
+            ...valueSpec,
+            unit: metadata.symbol,
+            displayFormat: metadata.displayFormat,
+          };
+        }
+
+        return valueSpec;
+      });
+
+      const convertedResult = {
+        ...result,
+        data: convertedData,
+        values: updatedValues,
+        units: {
+          converted: true,
+          conversions: Array.from(conversions.entries()).map(([path, metadata]) => ({
+            path: path as Path,
+            baseUnit: metadata.baseUnit,
+            targetUnit: metadata.targetUnit,
+            symbol: metadata.symbol,
+          })),
+        },
+      };
+
+      console.log(`[Unit Conversion] Successfully converted ${convertedData.length} data rows`);
+      debug(`[Unit Conversion] Conversion complete with ${conversions.size} conversions applied`);
+
+      return convertedResult;
+    } catch (error) {
+      console.error('[Unit Conversion] Error applying unit conversions:', error);
+      debug(`Error applying unit conversions: ${error}`);
+      // Return original result if conversion fails
+      return result;
+    }
+  }
+
+  /**
+   * Convert all timestamps in the data result to a target timezone
+   */
+  private convertTimestamps(
+    result: DataResult,
+    timezoneParam: string | undefined,
+    debug: (k: string) => void
+  ): DataResult {
+    try {
+      const targetZone = getTargetTimezone(timezoneParam);
+      const targetZoneName = targetZone.toString();
+
+      // Get current time in both UTC and target zone for verification
+      const now = ZonedDateTime.now(ZoneOffset.UTC);
+      const nowInTarget = now.withZoneSameInstant(targetZone);
+      const offset = nowInTarget.offset().toString();
+
+      debug(`[Timestamp Conversion] Converting timestamps to timezone: ${targetZoneName}`);
+      console.log(`[Timestamp Conversion] Target timezone: ${targetZoneName}`);
+      console.log(`[Timestamp Conversion] Current UTC time: ${now.toString()}`);
+      console.log(`[Timestamp Conversion] Current local time: ${nowInTarget.toOffsetDateTime().toString()} (offset: ${offset})`);
+      console.log(`[Timestamp Conversion] Converting ${result.data.length} rows`);
+
+      // Convert all timestamps in the data array
+      const convertedData = result.data.map((row) => {
+        const [timestamp, ...values] = row;
+        const convertedTimestamp = convertTimestampToTimezone(timestamp, targetZone);
+        return [convertedTimestamp, ...values] as [Timestamp, ...unknown[]];
+      });
+
+      // Also convert the range timestamps
+      const convertedRange = {
+        from: convertTimestampToTimezone(result.range.from, targetZone),
+        to: convertTimestampToTimezone(result.range.to, targetZone),
+      };
+
+      console.log(`[Timestamp Conversion] ✅ Successfully converted timestamps to ${targetZoneName}`);
+
+      // Get a sample timestamp to show the conversion
+      const sampleOriginal = result.data.length > 0 ? result.data[0][0] : result.range.from;
+      const sampleConverted = convertedData.length > 0 ? convertedData[0][0] : convertedRange.from;
+      console.log(`[Timestamp Conversion] Example: ${sampleOriginal} → ${sampleConverted}`);
+
+      return {
+        ...result,
+        data: convertedData,
+        range: convertedRange,
+        timezone: {
+          converted: true,
+          targetTimezone: targetZoneName,
+          offset: offset,
+          description: timezoneParam
+            ? `Converted to user-specified timezone: ${targetZoneName} (${offset})`
+            : `Converted to server local timezone: ${targetZoneName} (${offset}). To use a different timezone, add &timezone=America/New_York (or other IANA timezone ID)`,
+        },
+      };
+    } catch (error) {
+      console.error('[Timestamp Conversion] Error converting timestamps:', error);
+      debug(`Error converting timestamps: ${error}`);
+      // Return original result if conversion fails
+      return result;
+    }
   }
 }
 

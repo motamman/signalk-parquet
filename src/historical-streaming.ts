@@ -148,6 +148,10 @@ export class HistoricalStreamingService {
         to,
         false, // shouldRefresh
         false, // includeMovingAverages
+        false, // convertUnits
+        false, // convertTimesToLocal
+        undefined, // timezone
+        this.app, // app
         this.app.debug.bind(this.app),
         mockReq,
         mockRes
@@ -773,6 +777,10 @@ export class HistoricalStreamingService {
           to,
           false, // shouldRefresh
           false, // includeMovingAverages
+          false, // convertUnits
+          false, // convertTimesToLocal
+          undefined, // timezone
+          this.app, // app
           this.app.debug.bind(this.app),
           mockReq,
           mockRes
