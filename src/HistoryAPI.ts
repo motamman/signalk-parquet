@@ -15,6 +15,7 @@ import path from 'path';
 import { getAvailablePathsArray, getAvailablePathsForTimeRange } from './utils/path-discovery';
 import { getCachedPaths, setCachedPaths, getCachedContexts, setCachedContexts } from './utils/path-cache';
 import { getAvailableContextsForTimeRange } from './utils/context-discovery';
+import { getPathComponentSchema, PathComponentSchema, ComponentInfo } from './utils/schema-cache';
 
 export function registerHistoryApiRoute(
   router: Pick<Router, 'get'>,
@@ -443,6 +444,7 @@ export class HistoryAPI {
     debug: (k: string) => void
   ): Promise<DataResult> {
     const allData: { [path: string]: Array<[Timestamp, unknown]> } = {};
+    const objectPaths = new Set<string>(); // Track which paths are object paths
 
     // Process each path and collect data
     await Promise.all(
@@ -475,67 +477,116 @@ export class HistoryAPI {
           await connection.runAndReadAll("LOAD spatial;");
 
           try {
-            // First, check if value_json column exists in the parquet files
-            const schemaQuery = `SELECT * FROM parquet_schema('${filePath}') WHERE name = 'value_json'`;
-            const schemaResult = await connection.runAndReadAll(schemaQuery);
-            const hasValueJson = schemaResult.getRowObjects().length > 0;
+            // Check if this path has object components (value_latitude, value_longitude, etc.)
+            const componentSchema = await getPathComponentSchema(this.dataDir, context, pathSpec.path);
 
-            debug(`Path ${pathSpec.path}: value_json column ${hasValueJson ? 'exists' : 'does not exist'}`);
+            if (componentSchema && componentSchema.components.size > 0) {
+              // Object path with multiple components - aggregate each component separately
+              debug(`Path ${pathSpec.path}: Object path with ${componentSchema.components.size} components`);
+              objectPaths.add(pathSpec.path); // Mark as object path
 
-            // Rebuild the query based on actual column availability
-            const valueJsonSelect = hasValueJson ? ', FIRST(value_json) as value_json' : '';
-            const whereClause = hasValueJson
-              ? '(value IS NOT NULL OR value_json IS NOT NULL)'
-              : 'value IS NOT NULL';
+              // Build SELECT clause with one aggregate per component
+              const componentSelects = Array.from(componentSchema.components.values()).map(comp => {
+                const aggFunc = getComponentAggregateFunction(pathSpec.aggregateMethod, comp.dataType);
+                return `${aggFunc}(${comp.columnName}) as ${comp.name}`;
+              }).join(',\n              ');
 
-            const dynamicQuery = `
-            SELECT
-              strftime(DATE_TRUNC('seconds',
-                EPOCH_MS(CAST(FLOOR(EPOCH_MS(signalk_timestamp::TIMESTAMP) / ${timeResolutionMillis}) * ${timeResolutionMillis} AS BIGINT))
-              ), '%Y-%m-%dT%H:%M:%SZ') as timestamp,
-              ${getAggregateExpression(pathSpec.aggregateMethod, pathSpec.path, hasValueJson)} as value${valueJsonSelect}
-            FROM read_parquet('${filePath}', union_by_name=true)
-            WHERE
-              signalk_timestamp >= '${fromIso}'
-              AND
-              signalk_timestamp < '${toIso}'
-              AND ${whereClause}
-            GROUP BY timestamp
-            ORDER BY timestamp
-            `;
+              // Build WHERE clause to check for at least one non-null component
+              const componentWhereConditions = Array.from(componentSchema.components.values())
+                .map(comp => `${comp.columnName} IS NOT NULL`)
+                .join(' OR ');
 
-            const result = await connection.runAndReadAll(dynamicQuery);
-            const rows = result.getRowObjects();
+              const dynamicQuery = `
+              SELECT
+                strftime(DATE_TRUNC('seconds',
+                  EPOCH_MS(CAST(FLOOR(EPOCH_MS(signalk_timestamp::TIMESTAMP) / ${timeResolutionMillis}) * ${timeResolutionMillis} AS BIGINT))
+                ), '%Y-%m-%dT%H:%M:%SZ') as timestamp,
+                ${componentSelects}
+              FROM read_parquet('${filePath}', union_by_name=true)
+              WHERE
+                signalk_timestamp >= '${fromIso}'
+                AND
+                signalk_timestamp < '${toIso}'
+                AND (${componentWhereConditions})
+              GROUP BY timestamp
+              ORDER BY timestamp
+              `;
 
-            // Convert rows to the expected format using bucketed timestamps
-            const pathData: Array<[Timestamp, unknown]> = rows.map(
-              (row) => {
-                const rowData = row as {
-                  timestamp: Timestamp;
-                  value: unknown;
-                  value_json?: string;
-                };
-                const { timestamp } = rowData;
-                // Handle both JSON values (like position objects) and simple values
-                const value = rowData.value_json
-                  ? JSON.parse(String(rowData.value_json))
-                  : rowData.value;
+              const result = await connection.runAndReadAll(dynamicQuery);
+              const rows = result.getRowObjects();
 
-                // For position paths, ensure we return the full position object
-                if (
-                  pathSpec.path === 'navigation.position' &&
-                  value &&
-                  typeof value === 'object'
-                ) {
-                  // Position data is already an object with latitude/longitude
-                  // No reassignment needed, keeping original value
+              // Reconstruct objects from aggregated components
+              const pathData: Array<[Timestamp, unknown]> = rows.map(row => {
+                const timestamp = row.timestamp as Timestamp;
+                const reconstructedObject: any = {};
+
+                // Build object from component values
+                componentSchema.components.forEach((comp, componentName) => {
+                  const value = (row as any)[componentName];
+                  if (value !== null && value !== undefined) {
+                    reconstructedObject[componentName] = value;
+                  }
+                });
+
+                return [timestamp, reconstructedObject];
+              });
+
+              allData[pathSpec.path] = pathData;
+
+            } else {
+              // Scalar path - use original logic
+              // First, check if value_json column exists in the parquet files
+              const schemaQuery = `SELECT * FROM parquet_schema('${filePath}') WHERE name = 'value_json'`;
+              const schemaResult = await connection.runAndReadAll(schemaQuery);
+              const hasValueJson = schemaResult.getRowObjects().length > 0;
+
+              debug(`Path ${pathSpec.path}: value_json column ${hasValueJson ? 'exists' : 'does not exist'}`);
+
+              // Rebuild the query based on actual column availability
+              const valueJsonSelect = hasValueJson ? ', FIRST(value_json) as value_json' : '';
+              const whereClause = hasValueJson
+                ? '(value IS NOT NULL OR value_json IS NOT NULL)'
+                : 'value IS NOT NULL';
+
+              const dynamicQuery = `
+              SELECT
+                strftime(DATE_TRUNC('seconds',
+                  EPOCH_MS(CAST(FLOOR(EPOCH_MS(signalk_timestamp::TIMESTAMP) / ${timeResolutionMillis}) * ${timeResolutionMillis} AS BIGINT))
+                ), '%Y-%m-%dT%H:%M:%SZ') as timestamp,
+                ${getAggregateExpression(pathSpec.aggregateMethod, pathSpec.path, hasValueJson)} as value${valueJsonSelect}
+              FROM read_parquet('${filePath}', union_by_name=true)
+              WHERE
+                signalk_timestamp >= '${fromIso}'
+                AND
+                signalk_timestamp < '${toIso}'
+                AND ${whereClause}
+              GROUP BY timestamp
+              ORDER BY timestamp
+              `;
+
+              const result = await connection.runAndReadAll(dynamicQuery);
+              const rows = result.getRowObjects();
+
+              // Convert rows to the expected format using bucketed timestamps
+              const pathData: Array<[Timestamp, unknown]> = rows.map(
+                (row) => {
+                  const rowData = row as {
+                    timestamp: Timestamp;
+                    value: unknown;
+                    value_json?: string;
+                  };
+                  const { timestamp } = rowData;
+                  // Handle both JSON values (like position objects) and simple values
+                  const value = rowData.value_json
+                    ? JSON.parse(String(rowData.value_json))
+                    : rowData.value;
+
+                  return [timestamp, value];
                 }
+              );
 
-                return [timestamp, value];
-              }
-            );
-
-            allData[pathSpec.path] = pathData;
+              allData[pathSpec.path] = pathData;
+            }
           } finally {
             connection.disconnectSync();
           }
@@ -556,7 +607,7 @@ export class HistoryAPI {
       : mergedData;
 
     const finalValues = includeMovingAverages
-      ? this.buildValuesWithMovingAverages(pathSpecs)
+      ? this.buildValuesWithMovingAverages(pathSpecs, objectPaths)
       : pathSpecs.map(({ path, aggregateMethod }) => ({ path, method: aggregateMethod }));
 
     return {
@@ -604,39 +655,96 @@ export class HistoryAPI {
 
     const smaPeriod = 10;
     const emaAlpha = 0.2;
-    
+
     // For each column, track EMA and SMA state
-    const columnEMAs: (number | null)[] = new Array(pathSpecs.length).fill(null);
-    const columnSMAWindows: number[][] = pathSpecs.map(() => []);
+    // For objects, we need to track per-component state
+    interface ComponentState {
+      ema: number | null;
+      smaWindow: number[];
+    }
+
+    const columnStates: Map<number, Map<string, ComponentState>> = new Map();
+
+    // Initialize state for each column
+    pathSpecs.forEach((_, colIndex) => {
+      columnStates.set(colIndex, new Map());
+    });
 
     return data.map((row, rowIndex) => {
       const [timestamp, ...values] = row;
       const enhancedValues: unknown[] = [];
 
       values.forEach((value, colIndex) => {
-        enhancedValues.push(value);
+        // Check if this is an object value (like navigation.position)
+        if (value && typeof value === 'object' && !Array.isArray(value)) {
+          // Object with components - calculate EMA/SMA for each numeric component
+          const enhancedObject: any = { ...value };
+          const colState = columnStates.get(colIndex)!;
 
-        // Calculate EMA and SMA for numeric values only
-        if (typeof value === 'number' && !isNaN(value)) {
+          Object.entries(value).forEach(([componentName, componentValue]) => {
+            if (typeof componentValue === 'number' && !isNaN(componentValue)) {
+              // Get or create state for this component
+              if (!colState.has(componentName)) {
+                colState.set(componentName, { ema: null, smaWindow: [] });
+              }
+              const componentState = colState.get(componentName)!;
+
+              // Calculate EMA
+              if (componentState.ema === null) {
+                componentState.ema = componentValue;
+              } else {
+                componentState.ema = emaAlpha * componentValue + (1 - emaAlpha) * componentState.ema;
+              }
+
+              // Calculate SMA
+              componentState.smaWindow.push(componentValue);
+              if (componentState.smaWindow.length > smaPeriod) {
+                componentState.smaWindow = componentState.smaWindow.slice(-smaPeriod);
+              }
+              const sma = componentState.smaWindow.reduce((sum, val) => sum + val, 0) / componentState.smaWindow.length;
+
+              // Add EMA and SMA to the object with _ema and _sma suffixes
+              enhancedObject[`${componentName}_ema`] = Math.round(componentState.ema * 1000) / 1000;
+              enhancedObject[`${componentName}_sma`] = Math.round(sma * 1000) / 1000;
+            }
+            // Non-numeric components don't get EMA/SMA
+          });
+
+          enhancedValues.push(enhancedObject);
+
+        } else if (typeof value === 'number' && !isNaN(value)) {
+          // Scalar numeric value - use simple column-based tracking
+          enhancedValues.push(value);
+
+          const colState = columnStates.get(colIndex)!;
+          const scalarKey = '__scalar__';
+
+          if (!colState.has(scalarKey)) {
+            colState.set(scalarKey, { ema: null, smaWindow: [] });
+          }
+          const componentState = colState.get(scalarKey)!;
+
           // Calculate EMA
-          if (columnEMAs[colIndex] === null) {
-            columnEMAs[colIndex] = value; // First value
+          if (componentState.ema === null) {
+            componentState.ema = value;
           } else {
-            columnEMAs[colIndex] = emaAlpha * value + (1 - emaAlpha) * columnEMAs[colIndex]!;
+            componentState.ema = emaAlpha * value + (1 - emaAlpha) * componentState.ema;
           }
 
           // Calculate SMA
-          columnSMAWindows[colIndex].push(value);
-          if (columnSMAWindows[colIndex].length > smaPeriod) {
-            columnSMAWindows[colIndex] = columnSMAWindows[colIndex].slice(-smaPeriod);
+          componentState.smaWindow.push(value);
+          if (componentState.smaWindow.length > smaPeriod) {
+            componentState.smaWindow = componentState.smaWindow.slice(-smaPeriod);
           }
-          const sma = columnSMAWindows[colIndex].reduce((sum, val) => sum + val, 0) / columnSMAWindows[colIndex].length;
+          const sma = componentState.smaWindow.reduce((sum, val) => sum + val, 0) / componentState.smaWindow.length;
 
-          // Add EMA and SMA as additional values (rounded to 3 decimal places)
-          enhancedValues.push(Math.round(columnEMAs[colIndex]! * 1000) / 1000); // EMA
+          // Add EMA and SMA as additional values
+          enhancedValues.push(Math.round(componentState.ema * 1000) / 1000); // EMA
           enhancedValues.push(Math.round(sma * 1000) / 1000); // SMA
+
         } else {
-          // Non-numeric values get null for EMA/SMA
+          // Non-numeric, non-object values (null, string, etc.)
+          enhancedValues.push(value);
           enhancedValues.push(null); // EMA
           enhancedValues.push(null); // SMA
         }
@@ -646,18 +754,25 @@ export class HistoryAPI {
     });
   }
 
-  private buildValuesWithMovingAverages(pathSpecs: PathSpec[]): Array<{path: Path; method: AggregateMethod}> {
+  private buildValuesWithMovingAverages(
+    pathSpecs: PathSpec[],
+    objectPaths: Set<string>
+  ): Array<{path: Path; method: AggregateMethod}> {
     const result: Array<{path: Path; method: AggregateMethod}> = [];
-    
+
     pathSpecs.forEach(({ path, aggregateMethod }) => {
-      // Add original path
-      result.push({ path, method: aggregateMethod });
-      
-      // Add EMA and SMA paths for this column
-      result.push({ path: `${path}.ema` as Path, method: 'ema' as AggregateMethod });
-      result.push({ path: `${path}.sma` as Path, method: 'sma' as AggregateMethod });
+      if (objectPaths.has(path)) {
+        // Object path - EMA/SMA are embedded in the object as component properties
+        // Just add the single path entry
+        result.push({ path, method: aggregateMethod });
+      } else {
+        // Scalar path - add separate entries for value, EMA, and SMA
+        result.push({ path, method: aggregateMethod });
+        result.push({ path: `${path}.ema` as Path, method: 'ema' as AggregateMethod });
+        result.push({ path: `${path}.sma` as Path, method: 'sma' as AggregateMethod });
+      }
     });
-    
+
     return result;
   }
 }
@@ -665,18 +780,13 @@ export class HistoryAPI {
 function splitPathExpression(pathExpression: string): PathSpec {
   const parts = pathExpression.split(':');
   let aggregateMethod = (parts[1] || 'average') as AggregateMethod;
-  
-  // Auto-select appropriate default method for complex data types
-  if (parts[0] === 'navigation.position' && !parts[1]) {
-    aggregateMethod = 'first' as AggregateMethod;
-  }
-  
+
   // Validate the aggregation method
   const validMethods = ['average', 'min', 'max', 'first', 'last', 'mid', 'middle_index'];
   if (parts[1] && !validMethods.includes(parts[1])) {
     aggregateMethod = 'average' as AggregateMethod;
   }
-  
+
   return {
     path: parts[0] as Path,
     queryResultName: parts[0].replace(/\./g, '_'),
@@ -737,4 +847,27 @@ function getAggregateExpression(method: AggregateMethod, pathName: string, hasVa
   }
 
   return `${getAggregateFunction(method)}(${valueExpr})`;
+}
+
+/**
+ * Get the appropriate aggregate function for a component based on its data type
+ * Numeric components use the requested method, non-numeric use middle_index
+ */
+function getComponentAggregateFunction(
+  requestedMethod: AggregateMethod,
+  dataType: ComponentInfo['dataType']
+): string {
+  // For numeric components, use the requested aggregation method
+  if (dataType === 'numeric') {
+    // Special case: middle_index requires window functions (NTH_VALUE)
+    // Use FIRST as fallback, matching scalar path behavior
+    if (requestedMethod === 'middle_index') {
+      return 'FIRST';
+    }
+    return getAggregateFunction(requestedMethod);
+  }
+
+  // For non-numeric components (string, boolean, unknown), use FIRST
+  // This ensures we get a representative value from the bucket
+  return 'FIRST';
 }
