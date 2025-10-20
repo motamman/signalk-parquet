@@ -3,7 +3,4 @@
 ## [Unreleased]
 
 ### Fixed
-- Reverted incorrect outputDirectory path resolution that was causing data to be written to `.signalk/plugin-config-data/signalk-parquet/data/` instead of the user-configured location. The plugin now correctly uses the outputDirectory value as specified in the configuration without additional path manipulation.
-
-### Changed
-- Removed automatic path resolution for relative outputDirectory values - paths are now used exactly as configured by the user
+- Fixed HistoryAPI failing to return data when parquet files don't have `value_json` column. The query now only selects `value_json` for paths that actually need it (like navigation.position), preventing "column not found" errors on numeric data paths like wind speed.
