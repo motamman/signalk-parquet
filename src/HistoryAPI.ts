@@ -12,7 +12,9 @@ import { ParsedQs } from 'qs';
 import { DuckDBInstance } from '@duckdb/node-api';
 import { toContextFilePath } from '.';
 import path from 'path';
-import { getAvailablePathsArray } from './utils/path-discovery';
+import { getAvailablePathsArray, getAvailablePathsForTimeRange } from './utils/path-discovery';
+import { getCachedPaths, setCachedPaths, getCachedContexts, setCachedContexts } from './utils/path-cache';
+import { getAvailableContextsForTimeRange } from './utils/context-discovery';
 
 export function registerHistoryApiRoute(
   router: Pick<Router, 'get'>,
@@ -32,15 +34,68 @@ export function registerHistoryApiRoute(
       req.query.includeMovingAverages === '1';
     historyApi.getValues(context, from, to, shouldRefresh, includeMovingAverages, debug, req, res);
   });
-  router.get('/signalk/v1/history/contexts', (req: Request, res: Response) => {
-    //TODO implement retrieval of contexts for the given period
-    res.json([`vessels.${selfId}`] as Context[]);
-  });
-  router.get('/signalk/v1/history/paths', (req: Request, res: Response) => {
+  router.get('/signalk/v1/history/contexts', async (req: Request, res: Response) => {
     try {
-      const paths = getAvailablePathsArray(dataDir, app);
-      res.json(paths);
+      // Check if time range parameters are provided
+      const hasTimeParams = req.query.duration || req.query.from || req.query.to || req.query.start;
+
+      if (hasTimeParams) {
+        // Time-range-aware: return only contexts with data in the specified time range
+        const { from, to } = getRequestParams(
+          req as FromToContextRequest,
+          selfId
+        );
+
+        // Check cache first
+        let contexts = getCachedContexts(from, to);
+
+        if (!contexts) {
+          // Cache miss - query the parquet files
+          contexts = await getAvailableContextsForTimeRange(dataDir, from, to);
+          // Cache the result
+          setCachedContexts(from, to, contexts);
+        }
+
+        res.json(contexts);
+      } else {
+        // No time range specified: return only self context (legacy behavior)
+        res.json([`vessels.${selfId}`] as Context[]);
+      }
     } catch (error) {
+      debug(`Error in /contexts: ${error}`);
+      res.status(500).json({ error: (error as Error).message });
+    }
+  });
+  router.get('/signalk/v1/history/paths', async (req: Request, res: Response) => {
+    try {
+      // Check if time range parameters are provided
+      const hasTimeParams = req.query.duration || req.query.from || req.query.to || req.query.start;
+
+      if (hasTimeParams) {
+        // Time-range-aware: return only paths with data in the specified time range
+        const { from, to, context } = getRequestParams(
+          req as FromToContextRequest,
+          selfId
+        );
+
+        // Check cache first
+        let paths = getCachedPaths(context, from, to);
+
+        if (!paths) {
+          // Cache miss - query the parquet files
+          paths = await getAvailablePathsForTimeRange(dataDir, context, from, to);
+          // Cache the result
+          setCachedPaths(context, from, to, paths);
+        }
+
+        res.json(paths);
+      } else {
+        // No time range specified: return all available paths (legacy behavior)
+        const paths = getAvailablePathsArray(dataDir, app);
+        res.json(paths);
+      }
+    } catch (error) {
+      debug(`Error in /paths: ${error}`);
       res.status(500).json({ error: (error as Error).message });
     }
   });
@@ -56,11 +111,70 @@ export function registerHistoryApiRoute(
       req.query.includeMovingAverages === '1';
     historyApi.getValues(context, from, to, shouldRefresh, includeMovingAverages, debug, req, res);
   });
-  router.get('/api/history/contexts', (req: Request, res: Response) => {
-    res.json([`vessels.${selfId}`] as Context[]);
+  router.get('/api/history/contexts', async (req: Request, res: Response) => {
+    try {
+      // Check if time range parameters are provided
+      const hasTimeParams = req.query.duration || req.query.from || req.query.to || req.query.start;
+
+      if (hasTimeParams) {
+        // Time-range-aware: return only contexts with data in the specified time range
+        const { from, to } = getRequestParams(
+          req as FromToContextRequest,
+          selfId
+        );
+
+        // Check cache first
+        let contexts = getCachedContexts(from, to);
+
+        if (!contexts) {
+          // Cache miss - query the parquet files
+          contexts = await getAvailableContextsForTimeRange(dataDir, from, to);
+          // Cache the result
+          setCachedContexts(from, to, contexts);
+        }
+
+        res.json(contexts);
+      } else {
+        // No time range specified: return only self context (legacy behavior)
+        res.json([`vessels.${selfId}`] as Context[]);
+      }
+    } catch (error) {
+      debug(`Error in /api/history/contexts: ${error}`);
+      res.status(500).json({ error: (error as Error).message });
+    }
   });
-  router.get('/api/history/paths', (req: Request, res: Response) => {
-    res.json(['navigation.speedOverGround']);
+  router.get('/api/history/paths', async (req: Request, res: Response) => {
+    try {
+      // Check if time range parameters are provided
+      const hasTimeParams = req.query.duration || req.query.from || req.query.to || req.query.start;
+
+      if (hasTimeParams) {
+        // Time-range-aware: return only paths with data in the specified time range
+        const { from, to, context } = getRequestParams(
+          req as FromToContextRequest,
+          selfId
+        );
+
+        // Check cache first
+        let paths = getCachedPaths(context, from, to);
+
+        if (!paths) {
+          // Cache miss - query the parquet files
+          paths = await getAvailablePathsForTimeRange(dataDir, context, from, to);
+          // Cache the result
+          setCachedPaths(context, from, to, paths);
+        }
+
+        res.json(paths);
+      } else {
+        // No time range specified: return all available paths (legacy behavior)
+        const paths = getAvailablePathsArray(dataDir, app);
+        res.json(paths);
+      }
+    } catch (error) {
+      debug(`Error in /api/history/paths: ${error}`);
+      res.status(500).json({ error: (error as Error).message });
+    }
   });
 }
 
