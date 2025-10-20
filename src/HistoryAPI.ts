@@ -289,19 +289,25 @@ export class HistoryAPI {
           
 
           // Build query with time bucketing - fix type casting
+          // Only include value_json for paths that need it (like navigation.position)
+          const needsValueJson = pathSpec.path === 'navigation.position';
+          const valueJsonSelect = needsValueJson ? ', FIRST(value_json) as value_json' : '';
+          const whereClause = needsValueJson
+            ? '(value IS NOT NULL OR value_json IS NOT NULL)'
+            : 'value IS NOT NULL';
+
           const query = `
           SELECT
             strftime(DATE_TRUNC('seconds',
               EPOCH_MS(CAST(FLOOR(EPOCH_MS(signalk_timestamp::TIMESTAMP) / ${timeResolutionMillis}) * ${timeResolutionMillis} AS BIGINT))
             ), '%Y-%m-%dT%H:%M:%SZ') as timestamp,
-            ${getAggregateExpression(pathSpec.aggregateMethod, pathSpec.path)} as value,
-            FIRST(value_json) as value_json
+            ${getAggregateExpression(pathSpec.aggregateMethod, pathSpec.path)} as value${valueJsonSelect}
           FROM read_parquet('${filePath}', union_by_name=true)
           WHERE
             signalk_timestamp >= '${fromIso}'
-            AND 
+            AND
             signalk_timestamp < '${toIso}'
-            AND (value IS NOT NULL OR value_json IS NOT NULL)
+            AND ${whereClause}
           GROUP BY timestamp
           ORDER BY timestamp
           `;
