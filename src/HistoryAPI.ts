@@ -350,6 +350,7 @@ export class HistoryAPI {
             connection.disconnectSync();
           }
         } catch (error) {
+          console.error(`[HistoryAPI] Error querying path ${pathSpec.path}:`, error);
           debug(`Error querying path ${pathSpec.path}: ${error}`);
           allData[pathSpec.path] = [];
         }
