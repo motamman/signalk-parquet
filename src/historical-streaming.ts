@@ -140,13 +140,14 @@ export class HistoricalStreamingService {
         })
       } as any;
 
-      
+
       // Call the HistoryAPI to get real historical data
       await this.historyAPI.getValues(
         this.app.selfContext as Context,
         from,
         to,
         false, // shouldRefresh
+        false, // includeMovingAverages
         this.app.debug.bind(this.app),
         mockReq,
         mockRes
@@ -770,7 +771,8 @@ export class HistoricalStreamingService {
           this.app.selfContext as Context,
           from,
           to,
-          false,
+          false, // shouldRefresh
+          false, // includeMovingAverages
           this.app.debug.bind(this.app),
           mockReq,
           mockRes

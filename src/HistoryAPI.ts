@@ -27,7 +27,10 @@ export function registerHistoryApiRoute(
       req as FromToContextRequest,
       selfId
     );
-    historyApi.getValues(context, from, to, shouldRefresh, debug, req, res);
+    const includeMovingAverages =
+      req.query.includeMovingAverages === 'true' ||
+      req.query.includeMovingAverages === '1';
+    historyApi.getValues(context, from, to, shouldRefresh, includeMovingAverages, debug, req, res);
   });
   router.get('/signalk/v1/history/contexts', (req: Request, res: Response) => {
     //TODO implement retrieval of contexts for the given period
@@ -48,7 +51,10 @@ export function registerHistoryApiRoute(
       req as FromToContextRequest,
       selfId
     );
-    historyApi.getValues(context, from, to, shouldRefresh, debug, req, res);
+    const includeMovingAverages =
+      req.query.includeMovingAverages === 'true' ||
+      req.query.includeMovingAverages === '1';
+    historyApi.getValues(context, from, to, shouldRefresh, includeMovingAverages, debug, req, res);
   });
   router.get('/api/history/contexts', (req: Request, res: Response) => {
     res.json([`vessels.${selfId}`] as Context[]);
@@ -63,30 +69,82 @@ const getRequestParams = ({ query }: FromToContextRequest, selfId: string) => {
     let from: ZonedDateTime;
     let to: ZonedDateTime;
     let shouldRefresh = false;
-    
+
     // Check if user wants to work in UTC (default: false, use local timezone)
     const useUTC = query.useUTC === 'true' || query.useUTC === '1';
 
-    // Handle new backwards querying with start + duration
-    if (query.start && query.duration) {
-      const durationMs = parseDuration(query.duration);
-      
-      if (query.start === 'now') {
-        // Always use current UTC time for 'now' regardless of useUTC setting
-        to = ZonedDateTime.now(ZoneOffset.UTC);
-        from = to.minusNanos(durationMs * 1000000); // Convert ms to nanoseconds
-        shouldRefresh = query.refresh === 'true' || query.refresh === '1';
+    // ============================================================================
+    // BACKWARD COMPATIBILITY: Support legacy 'start' parameter
+    // ============================================================================
+    if (query.start) {
+      console.warn(
+        '[DEPRECATED] Query parameter "start" is deprecated and will be removed in v2.0. ' +
+        'Use standard SignalK time range parameters instead:\n' +
+        '  - duration only: ?duration=1h (query back from now)\n' +
+        '  - from + duration: ?from=2025-08-01T00:00:00Z&duration=1h (query forward)\n' +
+        '  - to + duration: ?to=2025-08-01T12:00:00Z&duration=1h (query backward)\n' +
+        '  - from only: ?from=2025-08-01T00:00:00Z (from start to now)\n' +
+        '  - from + to: ?from=...&to=... (specific range)'
+      );
+
+      if (query.duration) {
+        const durationMs = parseDuration(query.duration);
+
+        if (query.start === 'now') {
+          // Map 'start=now&duration=X' to standard pattern 1: duration only
+          to = ZonedDateTime.now(ZoneOffset.UTC);
+          from = to.minusNanos(durationMs * 1000000);
+          shouldRefresh = query.refresh === 'true' || query.refresh === '1';
+        } else {
+          // Map 'start=TIME&duration=X' to standard pattern 3: to + duration
+          to = parseDateTime(query.start, useUTC);
+          from = to.minusNanos(durationMs * 1000000);
+        }
       } else {
-        // Parse start time with timezone conversion if needed
-        to = parseDateTime(query.start, useUTC);
-        from = to.minusNanos(durationMs * 1000000);
+        throw new Error('Legacy "start" parameter requires "duration" parameter');
       }
-    } else if (query.from && query.to) {
-      // Traditional from/to querying (forward in time) with timezone conversion
+    }
+    // ============================================================================
+    // STANDARD SIGNALK TIME RANGE PATTERNS
+    // ============================================================================
+    // Pattern 1: duration only → query back from now
+    else if (query.duration && !query.from && !query.to) {
+      const durationMs = parseDuration(query.duration);
+      to = ZonedDateTime.now(ZoneOffset.UTC);
+      from = to.minusNanos(durationMs * 1000000);
+      shouldRefresh = query.refresh === 'true' || query.refresh === '1';
+    }
+    // Pattern 2: from + duration → query forward from start
+    else if (query.from && query.duration && !query.to) {
+      from = parseDateTime(query.from, useUTC);
+      const durationMs = parseDuration(query.duration);
+      to = from.plusNanos(durationMs * 1000000);
+    }
+    // Pattern 3: to + duration → query backward to end
+    else if (query.to && query.duration && !query.from) {
+      to = parseDateTime(query.to, useUTC);
+      const durationMs = parseDuration(query.duration);
+      from = to.minusNanos(durationMs * 1000000);
+    }
+    // Pattern 4: from only → from start to now
+    else if (query.from && !query.duration && !query.to) {
+      from = parseDateTime(query.from, useUTC);
+      to = ZonedDateTime.now(ZoneOffset.UTC);
+    }
+    // Pattern 5: from + to → specific range
+    else if (query.from && query.to && !query.duration) {
       from = parseDateTime(query.from, useUTC);
       to = parseDateTime(query.to, useUTC);
-    } else {
-      throw new Error('Either (from + to) or (start + duration) parameters are required');
+    }
+    else {
+      throw new Error(
+        'Invalid time range parameters. Use one of the following patterns:\n' +
+        '  1. ?duration=1h (query back from now)\n' +
+        '  2. ?from=2025-08-01T00:00:00Z&duration=1h (query forward)\n' +
+        '  3. ?to=2025-08-01T12:00:00Z&duration=1h (query backward)\n' +
+        '  4. ?from=2025-08-01T00:00:00Z (from start to now)\n' +
+        '  5. ?from=2025-08-01T00:00:00Z&to=2025-08-02T00:00:00Z (specific range)'
+      );
     }
 
     const context: Context = getContext(query.context, selfId);
@@ -101,15 +159,19 @@ const getRequestParams = ({ query }: FromToContextRequest, selfId: string) => {
 };
 
 // Parse duration string (e.g., "1h", "30m", "5s", "2d")
-function parseDuration(duration: string): number {
+function parseDuration(duration: string | undefined): number {
+  if (!duration) {
+    throw new Error('Duration parameter is required');
+  }
+
   const match = duration.match(/^(\d+)([smhd])$/);
   if (!match) {
     throw new Error(`Invalid duration format: ${duration}. Use format like "1h", "30m", "5s", "2d"`);
   }
-  
+
   const value = parseInt(match[1]);
   const unit = match[2];
-  
+
   switch (unit) {
     case 's': return value * 1000;        // seconds to milliseconds
     case 'm': return value * 60 * 1000;   // minutes to milliseconds
@@ -169,7 +231,7 @@ function parseDateTime(dateTimeStr: string, useUTC: boolean): ZonedDateTime {
   }
 }
 
-function getContext(contextFromQuery: string, selfId: string): Context {
+function getContext(contextFromQuery: string | undefined, selfId: string): Context {
   if (
     !contextFromQuery ||
     contextFromQuery === 'vessels.self' ||
@@ -193,6 +255,7 @@ export class HistoryAPI {
     from: ZonedDateTime,
     to: ZonedDateTime,
     shouldRefresh: boolean,
+    includeMovingAverages: boolean,
     debug: (k: string) => void,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     req: Request<ParamsDictionary, any, any, ParsedQs, Record<string, any>>,
@@ -217,6 +280,7 @@ export class HistoryAPI {
             to,
             timeResolutionMillis,
             pathSpecs,
+            includeMovingAverages,
             debug
           )
         : Promise.resolve({
@@ -261,6 +325,7 @@ export class HistoryAPI {
     to: ZonedDateTime,
     timeResolutionMillis: number,
     pathSpecs: PathSpec[],
+    includeMovingAverages: boolean,
     debug: (k: string) => void
   ): Promise<DataResult> {
     const allData: { [path: string]: Array<[Timestamp, unknown]> } = {};
@@ -371,8 +436,14 @@ export class HistoryAPI {
     // Merge all path data into time-ordered rows
     const mergedData = this.mergePathData(allData, pathSpecs);
 
-    // Add EMA and SMA calculations to numeric columns
-    const enhancedData = this.addMovingAverages(mergedData, pathSpecs);
+    // Conditionally add EMA and SMA calculations based on includeMovingAverages parameter
+    const finalData = includeMovingAverages
+      ? this.addMovingAverages(mergedData, pathSpecs)
+      : mergedData;
+
+    const finalValues = includeMovingAverages
+      ? this.buildValuesWithMovingAverages(pathSpecs)
+      : pathSpecs.map(({ path, aggregateMethod }) => ({ path, method: aggregateMethod }));
 
     return {
       context,
@@ -380,8 +451,8 @@ export class HistoryAPI {
         from: from.toString() as Timestamp,
         to: to.toString() as Timestamp,
       },
-      values: this.buildValuesWithMovingAverages(pathSpecs),
-      data: enhancedData,
+      values: finalValues,
+      data: finalData,
     } as DataResult;
   }
 

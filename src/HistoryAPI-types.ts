@@ -49,19 +49,34 @@ export interface ValuesResponse extends DataResult {
   };
 }
 
+// Standard SignalK TimeRangeQueryParams - supports 5 patterns:
+// 1. duration only → query back from now
+// 2. from + duration → query forward from start
+// 3. to + duration → query backward to end
+// 4. from only → from start to now
+// 5. from + to → specific range
+export type TimeRangeQueryParams =
+  | { duration: string; from?: never; to?: never }
+  | { duration: string; from: string; to?: never }
+  | { duration: string; to: string; from?: never }
+  | { from: string; duration?: never; to?: never }
+  | { from: string; to: string; duration?: never };
+
 export type FromToContextRequest = Request<
   unknown,
   unknown,
   unknown,
-  {
-    from?: string;
-    to?: string;
+  TimeRangeQueryParams & {
+    // Legacy parameter for backward compatibility (deprecated)
     start?: string;
-    duration?: string;
-    context: string;
+    // Additional query parameters
+    context?: string;
+    paths?: string;
+    resolution?: string;
     bbox?: string;
     refresh?: string;
     useUTC?: string;
+    includeMovingAverages?: string; // 'true' | '1' to enable EMA/SMA
   }
 >;
 
