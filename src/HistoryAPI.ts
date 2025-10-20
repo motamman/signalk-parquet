@@ -286,31 +286,7 @@ export class HistoryAPI {
           // Convert ZonedDateTime to ISO string format matching parquet schema
           const fromIso = from.toInstant().toString();
           const toIso = to.toInstant().toString();
-          
 
-          // Build query with time bucketing - fix type casting
-          // Only include value_json for paths that need it (like navigation.position)
-          const needsValueJson = pathSpec.path === 'navigation.position';
-          const valueJsonSelect = needsValueJson ? ', FIRST(value_json) as value_json' : '';
-          const whereClause = needsValueJson
-            ? '(value IS NOT NULL OR value_json IS NOT NULL)'
-            : 'value IS NOT NULL';
-
-          const query = `
-          SELECT
-            strftime(DATE_TRUNC('seconds',
-              EPOCH_MS(CAST(FLOOR(EPOCH_MS(signalk_timestamp::TIMESTAMP) / ${timeResolutionMillis}) * ${timeResolutionMillis} AS BIGINT))
-            ), '%Y-%m-%dT%H:%M:%SZ') as timestamp,
-            ${getAggregateExpression(pathSpec.aggregateMethod, pathSpec.path)} as value${valueJsonSelect}
-          FROM read_parquet('${filePath}', union_by_name=true)
-          WHERE
-            signalk_timestamp >= '${fromIso}'
-            AND
-            signalk_timestamp < '${toIso}'
-            AND ${whereClause}
-          GROUP BY timestamp
-          ORDER BY timestamp
-          `;
 
           const duckDB = await DuckDBInstance.create();
           const connection = await duckDB.connect();
@@ -320,7 +296,36 @@ export class HistoryAPI {
           await connection.runAndReadAll("LOAD spatial;");
 
           try {
-            const result = await connection.runAndReadAll(query);
+            // First, check if value_json column exists in the parquet files
+            const schemaQuery = `SELECT * FROM parquet_schema('${filePath}') WHERE name = 'value_json'`;
+            const schemaResult = await connection.runAndReadAll(schemaQuery);
+            const hasValueJson = schemaResult.getRowObjects().length > 0;
+
+            debug(`Path ${pathSpec.path}: value_json column ${hasValueJson ? 'exists' : 'does not exist'}`);
+
+            // Rebuild the query based on actual column availability
+            const valueJsonSelect = hasValueJson ? ', FIRST(value_json) as value_json' : '';
+            const whereClause = hasValueJson
+              ? '(value IS NOT NULL OR value_json IS NOT NULL)'
+              : 'value IS NOT NULL';
+
+            const dynamicQuery = `
+            SELECT
+              strftime(DATE_TRUNC('seconds',
+                EPOCH_MS(CAST(FLOOR(EPOCH_MS(signalk_timestamp::TIMESTAMP) / ${timeResolutionMillis}) * ${timeResolutionMillis} AS BIGINT))
+              ), '%Y-%m-%dT%H:%M:%SZ') as timestamp,
+              ${getAggregateExpression(pathSpec.aggregateMethod, pathSpec.path, hasValueJson)} as value${valueJsonSelect}
+            FROM read_parquet('${filePath}', union_by_name=true)
+            WHERE
+              signalk_timestamp >= '${fromIso}'
+              AND
+              signalk_timestamp < '${toIso}'
+              AND ${whereClause}
+            GROUP BY timestamp
+            ORDER BY timestamp
+            `;
+
+            const result = await connection.runAndReadAll(dynamicQuery);
             const rows = result.getRowObjects();
 
             // Convert rows to the expected format using bucketed timestamps
@@ -527,24 +532,24 @@ function getAggregateFunction(method: AggregateMethod): string {
   }
 }
 
-function getValueExpression(pathName: string): string {
-  // For position data, use value_json since the value is an object
-  if (pathName === 'navigation.position') {
+function getValueExpression(pathName: string, hasValueJson: boolean): string {
+  // For position data or other complex objects, use value_json if the column exists
+  if (pathName === 'navigation.position' && hasValueJson) {
     return 'value_json';
   }
-  
+
   // For numeric data, try to cast to DOUBLE, fallback to the original value
   return 'TRY_CAST(value AS DOUBLE)';
 }
 
-function getAggregateExpression(method: AggregateMethod, pathName: string): string {
-  const valueExpr = getValueExpression(pathName);
-  
+function getAggregateExpression(method: AggregateMethod, pathName: string, hasValueJson: boolean): string {
+  const valueExpr = getValueExpression(pathName, hasValueJson);
+
   if (method === 'middle_index') {
     // For middle_index, use FIRST as a simple fallback for now
     // TODO: Implement proper middle index selection
     return `FIRST(${valueExpr})`;
   }
-  
+
   return `${getAggregateFunction(method)}(${valueExpr})`;
 }
