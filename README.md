@@ -34,12 +34,18 @@ The validation system checks each Parquet file for:
 - **Schema Standards**: Enforces data best practices for long-term data integrity
 
 ### Advanced Querying
-- **SignalK History API**: Modelled on the with SignalK History API specifications
-- **Backward Querying**: Query backwards from current time or specific datetime with duration-based windows
+- **SignalK History API Compliance**: Full compliance with SignalK History API specifications
+  - **Standard Time Parameters**: All 5 standard query patterns supported
+  - **Time-Filtered Discovery**: Paths and contexts filtered by time range
+  - **Optional Analytics**: Moving averages (EMA/SMA) available on demand
+- **Flexible Time Querying**: Multiple ways to specify time ranges
+  - Query from now, from specific times, or between time ranges
+  - Duration-based windows (1h, 30m, 2d) for easy relative queries
+  - Forward and backward time querying support
 - **Time Alignment**: Automatic alignment of data from different sensors using time bucketing
 - **Timezone Intelligence**: Smart local-to-UTC conversion with configurable timezone handling
 - **DuckDB Integration**: Direct SQL querying of Parquet files with type-safe operations
-- **🌍 NEW Spatial Analysis**: Advanced geographic analysis with DuckDB spatial extension
+- **🌍 Spatial Analysis**: Advanced geographic analysis with DuckDB spatial extension
   - **Track Analysis**: Calculate vessel tracks, distances, and movement patterns
   - **Proximity Detection**: Multi-vessel distance calculations and collision risk analysis
   - **Geographic Visualization**: Generate movement boundaries, centroids, and spatial statistics
@@ -597,80 +603,134 @@ ORDER BY time_bucket;
 
 ## History API Integration
 
-The plugin provides full SignalK History API compatibility, allowing you to query historical data using standard SignalK API endpoints.
+The plugin provides full SignalK History API compliance, allowing you to query historical data using standard SignalK API endpoints with enhanced performance and filtering capabilities.
 
 ### Available Endpoints
 
 | Endpoint | Description | Parameters |
 |----------|-------------|------------|
-| `/signalk/v1/history/values` | Get historical values for specified paths | **Forward**: `context`, `from`, `to`, `paths`<br>**Backward**: `context`, `start`, `duration`, `paths`<br>**Optional**: `resolution`, `refresh` |
-| `/signalk/v1/history/contexts` | Get available vessel contexts | `from`, `to` (optional) |
-| `/signalk/v1/history/paths` | Get available SignalK paths | `from`, `to` (optional) |
+| `/signalk/v1/history/values` | Get historical values for specified paths | **Standard patterns** (see below)<br>**Optional**: `resolution`, `refresh`, `includeMovingAverages`, `useUTC` |
+| `/signalk/v1/history/contexts` | Get available vessel contexts for time range | **Time Range**: Any standard pattern (see below)<br>Returns only contexts with data in specified range |
+| `/signalk/v1/history/paths` | Get available SignalK paths for time range | **Time Range**: Any standard pattern (see below)<br>Returns only paths with data in specified range |
+
+### Standard Time Range Patterns
+
+The History API supports 5 standard SignalK time query patterns:
+
+| Pattern | Parameters | Description | Example |
+|---------|-----------|-------------|---------|
+| **1** | `duration` | Query back from now | `?duration=1h` |
+| **2** | `from` + `duration` | Query forward from start | `?from=2025-01-01T00:00:00Z&duration=1h` |
+| **3** | `to` + `duration` | Query backward to end | `?to=2025-01-01T12:00:00Z&duration=1h` |
+| **4** | `from` | From start to now | `?from=2025-01-01T00:00:00Z` |
+| **5** | `from` + `to` | Specific range | `?from=2025-01-01T00:00:00Z&to=2025-01-02T00:00:00Z` |
+
+**Legacy Support**: The `start` parameter (used with `duration`) is deprecated but still supported for backward compatibility. A console warning will be shown. Use standard patterns instead.
 
 ### Query Parameters
 
 | Parameter | Description | Format | Examples |
 |-----------|-------------|---------|----------|
-| `context` | Vessel context | `vessels.self` or `vessels.<id>` | `vessels.self` |
+| **Required for `/values`:** | | | |
 | `paths` | SignalK paths with optional aggregation | `path:method,path:method` | `navigation.position:first,wind.speed:average` |
-| `resolution` | Time bucket size in milliseconds | Number | `60000` (1 minute buckets) |
-| **Forward querying:** | | | |
+| **Time Range:** | Use one of the 5 standard patterns above | | |
+| `duration` | Time period | `[number][unit]` | `1h`, `30m`, `15s`, `2d` |
 | `from` | Start time (ISO 8601) | ISO datetime | `2025-01-01T00:00:00Z` |
 | `to` | End time (ISO 8601) | ISO datetime | `2025-01-01T06:00:00Z` |
-| **Backward querying:** | | | |
-| `start` | Start point to query backwards from | `now` or ISO datetime | `now`, `2025-01-01T12:00:00Z` |
-| `duration` | Time period to go back | `[number][unit]` | `1h`, `30m`, `15s`, `2d` |
-| `refresh` | Enable auto-refresh (only with `start=now`) | `true` or `1` | `refresh=true` |
-| **Timezone handling:** | | | |
-| `useUTC` | Treat datetime inputs as UTC instead of local time | `true` or `1` | `useUTC=true` |
+| **Optional:** | | | |
+| `context` | Vessel context | `vessels.self` or `vessels.<id>` | `vessels.self` (default) |
+| `resolution` | Time bucket size in milliseconds | Number | `60000` (1 minute buckets) |
+| `refresh` | Enable auto-refresh (pattern 1 only) | `true` or `1` | `refresh=true` |
+| `includeMovingAverages` | Include EMA/SMA calculations | `true` or `1` | `includeMovingAverages=true` |
+| `useUTC` | Treat datetime inputs as UTC | `true` or `1` | `useUTC=true` |
+| **Deprecated:** | | | |
+| `start` | ⚠️ Use standard patterns instead | `now` or ISO datetime | Deprecated, use `duration` or `from`/`to` |
 
 ### Query Examples
 
-**Get historical position data:**
+#### Pattern 1: Duration Only (Query back from now)
 ```bash
-curl "http://localhost:3000/signalk/v1/history/values?context=vessels.self&from=2025-01-01T00:00:00Z&to=2025-01-02T00:00:00Z&paths=navigation.position"
+# Last hour of wind data
+curl "http://localhost:3000/signalk/v1/history/values?duration=1h&paths=environment.wind.speedApparent"
+
+# Last 30 minutes with moving averages
+curl "http://localhost:3000/signalk/v1/history/values?duration=30m&paths=environment.wind.speedApparent&includeMovingAverages=true"
+
+# Real-time with auto-refresh
+curl "http://localhost:3000/signalk/v1/history/values?duration=15m&paths=navigation.position&refresh=true"
 ```
 
-**Get wind data with multiple paths:**
+#### Pattern 2: From + Duration (Query forward)
 ```bash
-curl "http://localhost:3000/signalk/v1/history/values?context=vessels.self&from=2025-01-01T00:00:00Z&to=2025-01-01T06:00:00Z&paths=environment.wind.angleApparent,environment.wind.speedApparent"
+# 6 hours forward from specific time
+curl "http://localhost:3000/signalk/v1/history/values?from=2025-01-01T00:00:00Z&duration=6h&paths=navigation.position"
 ```
 
-**Get time-aligned data with custom resolution (60-second buckets):**
+#### Pattern 3: To + Duration (Query backward)
 ```bash
-curl "http://localhost:3000/signalk/v1/history/values?context=vessels.self&from=2025-01-01T00:00:00Z&to=2025-01-01T06:00:00Z&paths=environment.wind.speedApparent,navigation.position&resolution=60000"
+# 2 hours backward to specific time
+curl "http://localhost:3000/signalk/v1/history/values?to=2025-01-01T12:00:00Z&duration=2h&paths=environment.wind.speedApparent"
 ```
 
-**Get multiple aggregations of the same path:**
+#### Pattern 4: From Only (From start to now)
 ```bash
-curl "http://localhost:3000/signalk/v1/history/values?context=vessels.self&from=2025-01-01T00:00:00Z&to=2025-01-01T06:00:00Z&paths=environment.wind.speedApparent:average,environment.wind.speedApparent:min,environment.wind.speedApparent:max&resolution=60000"
+# From specific time until now
+curl "http://localhost:3000/signalk/v1/history/values?from=2025-01-01T00:00:00Z&paths=navigation.speedOverGround"
 ```
 
-**Get different temporal samples of position data:**
+#### Pattern 5: From + To (Specific range)
 ```bash
-curl "http://localhost:3000/signalk/v1/history/values?context=vessels.self&from=2025-01-01T00:00:00Z&to=2025-01-01T06:00:00Z&paths=navigation.position:first,navigation.position:middle_index,navigation.position:last&resolution=60000"
+# Specific 24-hour period
+curl "http://localhost:3000/signalk/v1/history/values?from=2025-01-01T00:00:00Z&to=2025-01-02T00:00:00Z&paths=navigation.position"
 ```
 
-### Backward Querying (NEW)
+#### Advanced Query Examples
 
-**Query backwards from current time:**
+**Multiple paths with time alignment:**
 ```bash
-curl "http://localhost:3000/signalk/v1/history/values?context=vessels.self&start=now&duration=1h&paths=navigation.position,environment.wind.speedApparent:average&resolution=60000"
+curl "http://localhost:3000/signalk/v1/history/values?duration=6h&paths=environment.wind.angleApparent,environment.wind.speedApparent,navigation.position&resolution=60000"
 ```
 
-**Query backwards from specific datetime:**
+**Multiple aggregations of same path:**
 ```bash
-curl "http://localhost:3000/signalk/v1/history/values?context=vessels.self&start=2025-01-01T12:00:00Z&duration=30m&paths=navigation.position:last&resolution=60000"
+curl "http://localhost:3000/signalk/v1/history/values?from=2025-01-01T00:00:00Z&to=2025-01-01T06:00:00Z&paths=environment.wind.speedApparent:average,environment.wind.speedApparent:min,environment.wind.speedApparent:max&resolution=60000"
 ```
 
-**Real-time refresh from 'now' (auto-refreshing data):**
+**With moving averages for trend analysis:**
 ```bash
-curl "http://localhost:3000/signalk/v1/history/values?context=vessels.self&start=now&duration=15m&paths=electrical.batteries.512.voltage:min&resolution=30000&refresh=true"
+curl "http://localhost:3000/signalk/v1/history/values?duration=24h&paths=electrical.batteries.512.voltage&includeMovingAverages=true&resolution=300000"
 ```
 
-**Duration formats supported:**
+**Different temporal samples:**
+```bash
+curl "http://localhost:3000/signalk/v1/history/values?duration=1h&paths=navigation.position:first,navigation.position:middle_index,navigation.position:last&resolution=60000"
+```
+
+#### Context and Path Discovery
+
+**Get contexts with data in last hour:**
+```bash
+curl "http://localhost:3000/signalk/v1/history/contexts?duration=1h"
+```
+
+**Get contexts for specific time range:**
+```bash
+curl "http://localhost:3000/signalk/v1/history/contexts?from=2025-01-01T00:00:00Z&to=2025-01-07T00:00:00Z"
+```
+
+**Get available paths with recent data:**
+```bash
+curl "http://localhost:3000/signalk/v1/history/paths?duration=24h"
+```
+
+**Get all paths (no time filter):**
+```bash
+curl "http://localhost:3000/signalk/v1/history/paths"
+```
+
+#### Duration Formats
 - `30s` - 30 seconds
-- `15m` - 15 minutes  
+- `15m` - 15 minutes
 - `2h` - 2 hours
 - `1d` - 1 day
 
@@ -743,7 +803,36 @@ The History API automatically aligns data from different paths using time bucket
 
 ### Response Format
 
-The History API returns time-aligned data in standard SignalK format:
+The History API returns time-aligned data in standard SignalK format.
+
+#### Default Response (without moving averages)
+
+```json
+{
+  "context": "vessels.self",
+  "range": {
+    "from": "2025-01-01T00:00:00Z",
+    "to": "2025-01-01T06:00:00Z"
+  },
+  "values": [
+    {
+      "path": "environment.wind.speedApparent",
+      "method": "average"
+    },
+    {
+      "path": "navigation.position",
+      "method": "first"
+    }
+  ],
+  "data": [
+    ["2025-01-01T00:00:00Z", 12.5, {"latitude": 37.7749, "longitude": -122.4194}],
+    ["2025-01-01T00:01:00Z", 13.2, {"latitude": 37.7750, "longitude": -122.4195}],
+    ["2025-01-01T00:02:00Z", 11.8, {"latitude": 37.7751, "longitude": -122.4196}]
+  ]
+}
+```
+
+#### With Moving Averages (includeMovingAverages=true)
 
 ```json
 {
@@ -766,35 +855,23 @@ The History API returns time-aligned data in standard SignalK format:
       "method": "sma"
     },
     {
-      "path": "environment.wind.speedApparent",
-      "method": "max"
-    },
-    {
-      "path": "environment.wind.speedApparent.ema",
-      "method": "ema"
-    },
-    {
-      "path": "environment.wind.speedApparent.sma",
-      "method": "sma"
-    },
-    {
       "path": "navigation.position",
       "method": "first"
-    },
-    {
-      "path": "navigation.position",
-      "method": "last"
     }
   ],
   "data": [
-    ["2025-01-01T00:00:00Z", 12.5, 12.5, 12.5, 15.2, 15.2, 15.2, {"latitude": 37.7749, "longitude": -122.4194}, null, null],
-    ["2025-01-01T00:01:00Z", 13.2, 12.64, 12.85, 16.1, 15.38, 15.65, {"latitude": 37.7750, "longitude": -122.4195}, null, null],
-    ["2025-01-01T00:02:00Z", 11.8, 12.45, 12.5, 14.3, 15.12, 15.2, null, null, null]
+    ["2025-01-01T00:00:00Z", 12.5, 12.5, 12.5, {"latitude": 37.7749, "longitude": -122.4194}],
+    ["2025-01-01T00:01:00Z", 13.2, 12.64, 12.85, {"latitude": 37.7750, "longitude": -122.4195}],
+    ["2025-01-01T00:02:00Z", 11.8, 12.45, 12.5, {"latitude": 37.7751, "longitude": -122.4196}]
   ]
 }
 ```
 
-**Note**: Each data array contains `[timestamp, value1, ema1, sma1, value2, ema2, sma2, ...]` where values correspond to the paths in the same order as the `values` array. EMA/SMA are automatically calculated for numeric values; non-numeric values show `null` for their EMA/SMA columns.
+**Notes**:
+- Each data array element is `[timestamp, value1, value2, ...]` corresponding to the paths in the `values` array
+- Moving averages (EMA/SMA) are **opt-in** - add `includeMovingAverages=true` to include them
+- EMA/SMA are only calculated for numeric values; non-numeric values (objects, strings) show `null` for their EMA/SMA columns
+- Without `includeMovingAverages`, response size is ~66% smaller
 
 ## Claude AI Analysis
 
@@ -979,7 +1056,24 @@ journalctl -u signalk -f | grep -i claude
 
 ## Moving Averages (EMA & SMA)
 
-The plugin automatically calculates **Exponential Moving Average (EMA)** and **Simple Moving Average (SMA)** for all numeric values when querying historical data, providing enhanced trend analysis capabilities.
+The plugin calculates **Exponential Moving Average (EMA)** and **Simple Moving Average (SMA)** for numeric values when explicitly requested via the `includeMovingAverages` parameter, providing enhanced trend analysis capabilities.
+
+### How to Enable
+
+**History API:**
+```bash
+# Add includeMovingAverages=true to any query
+curl "http://localhost:3000/signalk/v1/history/values?duration=1h&paths=environment.wind.speedApparent&includeMovingAverages=true"
+```
+
+**Default Behavior (v0.5.6+):**
+- Moving averages are **opt-in** - not included by default
+- Reduces response size by ~66% when not needed
+- Better API compliance with SignalK specification
+
+**Legacy Behavior (pre-v0.5.6):**
+- Moving averages were automatically included for all queries
+- To maintain old behavior, add `includeMovingAverages=true` to all requests
 
 ### Calculation Details
 
@@ -989,7 +1083,7 @@ The plugin automatically calculates **Exponential Moving Average (EMA)** and **S
 - **Characteristic**: Responds faster to recent changes, emphasizes recent data
 - **Use Case**: Trend detection, rapid response to data changes
 
-#### Simple Moving Average (SMA)  
+#### Simple Moving Average (SMA)
 - **Period**: 10 data points
 - **Formula**: Average of the last 10 values
 - **Characteristic**: Smooths out fluctuations, equal weight to all values in window
@@ -1003,28 +1097,29 @@ Point 1: Value=5.0, EMA=5.0,   SMA=5.0
 Point 2: Value=6.0, EMA=5.2,   SMA=5.5
 Point 3: Value=4.0, EMA=5.0,   SMA=5.0
 
-// Incremental Updates (isIncremental: true) 
+// Incremental Updates (isIncremental: true)
 Point 4: Value=7.0, EMA=5.4,   SMA=5.5  // Continues from previous EMA
 Point 5: Value=5.5, EMA=5.42,  SMA=5.5  // Rolling 10-point SMA window
 ```
 
 ### Key Features
 
-- ✅ **Automatic Calculation**: No configuration required - calculated for all numeric data during queries
+- 🎛️ **Opt-In**: Add `includeMovingAverages=true` to enable (v0.5.6+)
 - ✅ **Memory Efficient**: SMA maintains rolling 10-point window
 - ✅ **Non-Numeric Handling**: Non-numeric values (strings, objects) show `null` for EMA/SMA
 - ✅ **Precision**: Values rounded to 3 decimal places to prevent floating-point noise
+- ⚡ **Performance**: Smaller response sizes when not needed
 
 ### Real-world Applications
 
 **Marine Data Examples:**
 - **Wind Speed**: EMA detects gusts quickly, SMA shows general wind conditions
-- **Battery Voltage**: EMA shows charging/discharging trends, SMA indicates overall battery health  
+- **Battery Voltage**: EMA shows charging/discharging trends, SMA indicates overall battery health
 - **Engine RPM**: EMA responds to throttle changes, SMA shows average operating level
 - **Water Temperature**: EMA detects thermal changes, SMA provides stable baseline
 
 **Available in:**
-- 📊 **History API**: EMA/SMA automatically calculated for all numeric paths
+- 📊 **History API**: Add `includeMovingAverages=true` to include EMA/SMA calculations
 
 
 ## S3 Integration
@@ -1286,7 +1381,16 @@ curl "http://localhost:3000/signalk/v1/history/contexts"
 
 ## Changelog
 
-### Version 0.5.5-beta.4 (Latest)
+See [CHANGELOG.md](CHANGELOG.md) for complete version history.
+
+### Version 0.5.6-beta.1 (Latest)
+- **🎯 SignalK History API Compliance**: Full support for all 5 standard time range patterns
+- **⏪ Backward Compatibility**: Legacy `start` parameter supported with deprecation warnings
+- **🎛️ Optional Moving Averages**: EMA/SMA now opt-in via `includeMovingAverages` parameter
+- **🔍 Time-Filtered Discovery**: Paths and contexts endpoints accept time range parameters
+- **⚡ Performance**: 4.3x faster context discovery (13s → 3s) with SQL optimization and caching
+
+### Version 0.5.5-beta.4
 - **🔧 Threshold Automation State Machine Fix**: Fixed automation enable/disable transitions to properly execute state changes
   - When enabling automation (`.auto = true`): Command is now set to OFF, then all thresholds are immediately evaluated
   - When disabling automation (`.auto = false`): Threshold monitoring stops and command state remains unchanged
