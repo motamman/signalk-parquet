@@ -46,6 +46,7 @@ export interface PluginConfig {
   setCurrentLocationAction?: {
     setCurrentLocation: boolean;
   };
+  unitConversionCacheMinutes?: number; // Cache duration for unit conversions from signalk-units-preference
 }
 
 import type { ClaudeModel } from './claude-models';

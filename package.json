@@ -1,6 +1,6 @@
 {
   "name": "signalk-parquet",
-  "version": "0.5.5-beta.7",
+  "version": "0.6.0-beta.1",
   "description": "SignalK plugin and webapp that archives SK data to Parquet files with a regimen control system, advanced querying, Claude integrated AI analysis, spatial capabilities, and REST API.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -11,7 +11,6 @@
     "prepublishOnly": "npm run build",
     "dev": "npm run build && npm run watch",
     "test": "echo \"Error: no test specified\" && exit 1",
-  
     "lint": "eslint src/**/*.ts",
     "lint:fix": "eslint src/**/*.ts --fix",
     "format": "prettier --write src/**/*.ts *.json --ignore-unknown",

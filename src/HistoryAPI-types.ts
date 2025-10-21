@@ -20,6 +20,21 @@ export interface DataResult {
   values: ValueList;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   data: Datarow[];
+  units?: {
+    converted: boolean;
+    conversions: Array<{
+      path: Path;
+      baseUnit: string;
+      targetUnit: string;
+      symbol: string;
+    }>;
+  };
+  timezone?: {
+    converted: boolean;
+    targetTimezone: string;
+    offset: string;
+    description: string;
+  };
 }
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 const _demo: DataResult = {
@@ -49,19 +64,37 @@ export interface ValuesResponse extends DataResult {
   };
 }
 
+// Standard SignalK TimeRangeQueryParams - supports 5 patterns:
+// 1. duration only → query back from now
+// 2. from + duration → query forward from start
+// 3. to + duration → query backward to end
+// 4. from only → from start to now
+// 5. from + to → specific range
+export type TimeRangeQueryParams =
+  | { duration: string; from?: never; to?: never }
+  | { duration: string; from: string; to?: never }
+  | { duration: string; to: string; from?: never }
+  | { from: string; duration?: never; to?: never }
+  | { from: string; to: string; duration?: never };
+
 export type FromToContextRequest = Request<
   unknown,
   unknown,
   unknown,
-  {
-    from?: string;
-    to?: string;
+  TimeRangeQueryParams & {
+    // Legacy parameter for backward compatibility (deprecated)
     start?: string;
-    duration?: string;
-    context: string;
+    // Additional query parameters
+    context?: string;
+    paths?: string;
+    resolution?: string;
     bbox?: string;
     refresh?: string;
     useUTC?: string;
+    includeMovingAverages?: string; // 'true' | '1' to enable EMA/SMA
+    convertUnits?: string; // 'true' | '1' to convert to user's preferred units
+    convertTimesToLocal?: string; // 'true' | '1' to convert timestamps to local time
+    timezone?: string; // Optional timezone ID (e.g., 'America/New_York', 'Europe/London'). If not specified, uses server local time
   }
 >;
 
@@ -70,4 +103,24 @@ export interface PathSpec {
   queryResultName: string;
   aggregateMethod: AggregateMethod;
   aggregateFunction: string;
+}
+
+// Unit conversion types
+export interface ConversionMetadata {
+  path: string;
+  baseUnit: string;
+  targetUnit: string;
+  formula: string;
+  inverseFormula: string;
+  displayFormat: string;
+  symbol: string;
+  category: string;
+  valueType: string;
+}
+
+export interface UnitConversionInfo {
+  path: Path;
+  targetUnit: string;
+  symbol: string;
+  displayFormat: string;
 }

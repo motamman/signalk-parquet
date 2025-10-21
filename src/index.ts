@@ -205,7 +205,8 @@ export default function (app: ServerAPI): SignalKPlugin {
         app.selfId,
         state.currentConfig.outputDirectory,
         app.debug,
-        app
+        app,
+        state.currentConfig.unitConversionCacheMinutes || 5 // Default to 5 minutes
       );
     } catch (error) {
       app.error(`Failed to register History API routes with main server: ${error}`);
@@ -353,6 +354,14 @@ export default function (app: ServerAPI): SignalKPlugin {
         default: 7,
         minimum: 1,
         maximum: 365,
+      },
+      unitConversionCacheMinutes: {
+        type: 'number',
+        title: 'Unit Conversion Cache Duration (minutes)',
+        description: 'How long to cache unit conversions from signalk-units-preference plugin before reloading. Lower values reflect preference changes faster but use more resources.',
+        default: 5,
+        minimum: 1,
+        maximum: 60,
       },
       s3Upload: {
         type: 'object',
