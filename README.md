@@ -38,12 +38,22 @@ The validation system checks each Parquet file for:
   - **Standard Time Parameters**: All 5 standard query patterns supported
   - **Time-Filtered Discovery**: Paths and contexts filtered by time range
   - **Optional Analytics**: Moving averages (EMA/SMA) available on demand
+- **🔄 NEW: Automatic Unit Conversion**: Optional integration with `signalk-units-preference` plugin
+  - Server-side conversion to user's preferred units (knots, km/h, °F, °C, etc.)
+  - Add `?convertUnits=true` to any history query
+  - Respects all unit preferences configured in units-preference plugin
+  - Configurable cache (1-60 minutes) balances performance vs. responsiveness
+  - Conversion metadata included in response
+- **🌍 NEW: Timezone Conversion**: Convert UTC timestamps to local or specified timezone
+  - Add `?convertTimesToLocal=true` to convert timestamps to local time
+  - Optional `&timezone=America/New_York` for custom IANA timezone
+  - Automatic daylight saving time handling
+  - Clean ISO 8601 format with offset (e.g., `2025-10-20T12:34:04-04:00`)
 - **Flexible Time Querying**: Multiple ways to specify time ranges
   - Query from now, from specific times, or between time ranges
   - Duration-based windows (1h, 30m, 2d) for easy relative queries
   - Forward and backward time querying support
 - **Time Alignment**: Automatic alignment of data from different sensors using time bucketing
-- **Timezone Intelligence**: Smart local-to-UTC conversion with configurable timezone handling
 - **DuckDB Integration**: Direct SQL querying of Parquet files with type-safe operations
 - **🌍 Spatial Analysis**: Advanced geographic analysis with DuckDB spatial extension
   - **Track Analysis**: Calculate vessel tracks, distances, and movement patterns
@@ -88,6 +98,18 @@ The validation system checks each Parquet file for:
 - **Conversation Continuity**: Follow-up questions with preserved context and specialized tools
 - **Timezone Intelligence**: Automatic UTC-to-local time conversion based on system timezone
 - **Custom Analysis**: Create custom analysis prompts for specific operational needs
+
+## Requirements
+
+### Core Requirements
+- SignalK Server v1.x or v2.x
+- Node.js 18+ (included with SignalK)
+
+### Optional Plugin Integration
+- **signalk-units-preference** (v0.7.0+): Required for automatic unit conversion feature
+  - Install from: https://github.com/motamman/signalk-units-preference
+  - Provides server-side unit conversion based on user preferences
+  - The history API will work without this plugin, but `convertUnits=true` will have no effect
 
 ## Installation
 
@@ -179,6 +201,9 @@ Configure basic plugin settings (path configuration is managed separately in the
 | **Filename Prefix** | Prefix for generated filenames | `signalk_data` |
 | **File Format** | Output format (parquet, json, csv) | `parquet` |
 | **Retention Days** | Days to keep processed files | 7 |
+| **Unit Conversion Cache Duration** 🆕 | How long to cache unit conversions before reloading (minutes) | 5 |
+
+> **Note**: The Unit Conversion Cache Duration setting controls how quickly changes to unit preferences (in the signalk-units-preference plugin) are reflected in the history API. Lower values (1-2 minutes) reflect changes faster but use more resources. Higher values (30-60 minutes) reduce overhead but take longer to reflect changes. The default of 5 minutes provides a good balance for most users.
 
 ### S3 Upload Configuration
 
@@ -643,6 +668,9 @@ The History API supports 5 standard SignalK time query patterns:
 | `refresh` | Enable auto-refresh (pattern 1 only) | `true` or `1` | `refresh=true` |
 | `includeMovingAverages` | Include EMA/SMA calculations | `true` or `1` | `includeMovingAverages=true` |
 | `useUTC` | Treat datetime inputs as UTC | `true` or `1` | `useUTC=true` |
+| `convertUnits` | 🆕 Convert to preferred units (requires signalk-units-preference plugin) | `true` or `1` | `convertUnits=true` |
+| `convertTimesToLocal` | 🆕 Convert timestamps to local/specified timezone | `true` or `1` | `convertTimesToLocal=true` |
+| `timezone` | 🆕 IANA timezone ID (used with convertTimesToLocal) | IANA timezone | `timezone=America/New_York` |
 | **Deprecated:** | | | |
 | `start` | ⚠️ Use standard patterns instead | `now` or ISO datetime | Deprecated, use `duration` or `from`/`to` |
 
@@ -727,6 +755,93 @@ curl "http://localhost:3000/signalk/v1/history/paths?duration=24h"
 ```bash
 curl "http://localhost:3000/signalk/v1/history/paths"
 ```
+
+#### Unit Conversion (NEW in v0.6.0)
+
+**Convert to user's preferred units:**
+```bash
+# Speed in knots (if configured in signalk-units-preference)
+curl "http://localhost:3000/signalk/v1/history/values?duration=2d&paths=navigation.speedOverGround&convertUnits=true"
+
+# Wind speed in preferred units (knots, km/h, or mph)
+curl "http://localhost:3000/signalk/v1/history/values?duration=1h&paths=environment.wind.speedApparent&convertUnits=true"
+
+# Temperature in preferred units (°C or °F)
+curl "http://localhost:3000/signalk/v1/history/values?duration=24h&paths=environment.outside.temperature&convertUnits=true"
+```
+
+**Response includes conversion metadata:**
+```json
+{
+  "values": [{"path": "navigation.speedOverGround", "method": "average"}],
+  "data": [["2025-10-20T16:12:14Z", 5.2]],
+  "units": {
+    "converted": true,
+    "conversions": [{
+      "path": "navigation.speedOverGround",
+      "baseUnit": "m/s",
+      "targetUnit": "knots",
+      "symbol": "kn"
+    }]
+  }
+}
+```
+
+#### Timezone Conversion (NEW in v0.6.0)
+
+**Convert to server's local time:**
+```bash
+curl "http://localhost:3000/signalk/v1/history/values?duration=2d&paths=environment.wind.speedApparent&convertTimesToLocal=true"
+```
+
+**Convert to specific timezone:**
+```bash
+# New York time (Eastern)
+curl "http://localhost:3000/signalk/v1/history/values?duration=2d&paths=navigation.position&convertTimesToLocal=true&timezone=America/New_York"
+
+# London time
+curl "http://localhost:3000/signalk/v1/history/values?duration=1h&paths=environment.wind.speedApparent&convertTimesToLocal=true&timezone=Europe/London"
+
+# Tokyo time
+curl "http://localhost:3000/signalk/v1/history/values?duration=1h&paths=navigation.speedOverGround&convertTimesToLocal=true&timezone=Asia/Tokyo"
+```
+
+**Response includes timezone metadata:**
+```json
+{
+  "range": {
+    "from": "2025-10-20T12:12:19-04:00",
+    "to": "2025-10-20T13:12:19-04:00"
+  },
+  "data": [
+    ["2025-10-20T12:12:14-04:00", 5.84],
+    ["2025-10-20T12:12:28-04:00", 5.26]
+  ],
+  "timezone": {
+    "converted": true,
+    "targetTimezone": "America/New_York",
+    "offset": "-04:00",
+    "description": "Converted to user-specified timezone: America/New_York (-04:00)"
+  }
+}
+```
+
+**Combine both conversions:**
+```bash
+# Convert values to knots AND timestamps to New York time
+curl "http://localhost:3000/signalk/v1/history/values?duration=2d&paths=navigation.speedOverGround,environment.wind.speedApparent&convertUnits=true&convertTimesToLocal=true&timezone=America/New_York"
+```
+
+**Common IANA Timezone IDs:**
+- `America/New_York` - Eastern Time (US)
+- `America/Chicago` - Central Time (US)
+- `America/Denver` - Mountain Time (US)
+- `America/Los_Angeles` - Pacific Time (US)
+- `Europe/London` - UK
+- `Europe/Paris` - Central European Time
+- `Asia/Tokyo` - Japan
+- `Pacific/Auckland` - New Zealand
+- `Australia/Sydney` - Australian Eastern Time
 
 #### Duration Formats
 - `30s` - 30 seconds

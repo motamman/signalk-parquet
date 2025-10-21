@@ -1,5 +1,92 @@
 # Changelog
 
+## [0.6.0-beta.1] - 2025-10-20
+
+### Added - Unit Conversion & Timezone Support
+- **🔄 Automatic Unit Conversion**: Optional integration with `signalk-units-preference` plugin
+  - Add `?convertUnits=true` to automatically convert values to user's preferred units
+  - Server-side conversion using formulas from units-preference plugin
+  - Respects all user unit preferences (knots, km/h, mph, °F, °C, etc.)
+  - Zero client-side dependencies - all conversions handled server-side
+  - Includes conversion metadata in response (base unit → target unit, symbol, conversions applied)
+- **🌍 Timezone Conversion**: Convert UTC timestamps to local or specified timezone
+  - Add `?convertTimesToLocal=true` to convert all timestamps to local time
+  - Optional `&timezone=America/New_York` parameter for custom IANA timezone
+  - Supports all IANA timezone identifiers with automatic DST handling
+  - Clean ISO 8601 format with offset (e.g., `2025-10-20T12:34:04-04:00`)
+  - Timezone metadata included in response (offset, description)
+- **⚙️ Configurable Cache**: User-adjustable unit conversion cache duration
+  - New plugin setting: `unitConversionCacheMinutes` (default: 5 minutes, range: 1-60)
+  - Balances responsiveness to preference changes vs. performance
+  - Automatic cache expiration and reload without server restart
+  - Lower values reflect preference changes faster, higher values reduce overhead
+
+### Performance & Integration
+- **🔌 Plugin-to-Plugin Communication**: Direct app object function calls (no HTTP auth needed)
+  - Units-preference plugin exposes conversion data via `app.getAllUnitsConversions()`
+  - Lazy loading with automatic retry handles plugin load order race conditions
+  - Efficient caching prevents repeated lookups
+  - Debug logging for troubleshooting plugin availability
+- **📊 Enhanced Response Metadata**: Rich metadata for client applications
+  - `units` object: Shows all conversions applied (path, base→target unit, symbol)
+  - `timezone` object: Shows timezone, offset, and conversion description
+  - Preserves backward compatibility - metadata only added when features used
+
+### Developer Experience
+- **🛠️ Comprehensive Logging**: Detailed debug output for troubleshooting
+  - Unit conversion: Plugin detection, cache status, conversion loading
+  - Timezone conversion: Target zone, current offset, example conversions
+  - Clear error messages with fallback to original values on failures
+- **🔄 Graceful Degradation**: Features work independently or fail gracefully
+  - Unit conversion: Falls back to SI units if plugin unavailable
+  - Timezone conversion: Returns UTC if timezone invalid
+  - Both features optional and backward compatible
+
+### Example Usage
+```bash
+# Convert to preferred units
+GET /signalk/v1/history/values?duration=2d&paths=navigation.speedOverGround&convertUnits=true
+
+# Convert timestamps to local time
+GET /signalk/v1/history/values?duration=2d&paths=environment.wind.speedApparent&convertTimesToLocal=true
+
+# Specify custom timezone
+GET /signalk/v1/history/values?duration=2d&paths=navigation.position&convertTimesToLocal=true&timezone=Pacific/Auckland
+
+# Combine both conversions
+GET /signalk/v1/history/values?duration=2d&paths=navigation.speedOverGround,environment.wind.speedApparent&convertUnits=true&convertTimesToLocal=true&timezone=America/New_York
+```
+
+### Response Format Changes
+**With unit conversion:**
+```json
+{
+  "units": {
+    "converted": true,
+    "conversions": [
+      {
+        "path": "navigation.speedOverGround",
+        "baseUnit": "m/s",
+        "targetUnit": "knots",
+        "symbol": "kn"
+      }
+    ]
+  }
+}
+```
+
+**With timezone conversion:**
+```json
+{
+  "timezone": {
+    "converted": true,
+    "targetTimezone": "America/New_York",
+    "offset": "-04:00",
+    "description": "Converted to user-specified timezone: America/New_York (-04:00)"
+  }
+}
+```
+
 ## [0.5.6-beta.1] - 2025-10-20
 
 ### Added - SignalK History API Compliance
