@@ -106,7 +106,7 @@ export async function getAvailablePathsForTimeRange(
   const pathsWithData: Path[] = [];
 
   await Promise.all(
-    allPaths.map(async (pathStr) => {
+    allPaths.map(async pathStr => {
       const hasData = await checkPathHasDataInRange(
         dataDir,
         contextPath,
@@ -204,7 +204,7 @@ async function checkPathHasDataInRange(
       const result = await connection.runAndReadAll(query);
       const rows = result.getRowObjects();
 
-      return rows.length > 0 && (rows[0] as any).count > 0;
+      return rows.length > 0 && (rows[0].count as number) > 0;
     } finally {
       connection.disconnectSync();
     }

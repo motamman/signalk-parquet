@@ -41,33 +41,43 @@ export async function getAvailableContextsForTimeRange(
     ) {
       // Cache hit
       allParquetFiles = fileListCache.files;
-      console.log(`[Context Discovery] Using cached file list (${allParquetFiles.length} files, age: ${Math.round((now - fileListCache.timestamp) / 1000)}s)`);
+      console.log(
+        `[Context Discovery] Using cached file list (${allParquetFiles.length} files, age: ${Math.round((now - fileListCache.timestamp) / 1000)}s)`
+      );
     } else {
       // Cache miss - scan filesystem
-      console.log(`[Context Discovery] Scanning filesystem for parquet files...`);
+      console.log(
+        `[Context Discovery] Scanning filesystem for parquet files...`
+      );
       allParquetFiles = await findAllValidParquetFiles(dataDir);
 
       // Update cache
       fileListCache = {
         files: allParquetFiles,
         timestamp: now,
-        dataDir
+        dataDir,
       };
-      console.log(`[Context Discovery] Cached ${allParquetFiles.length} parquet files`);
+      console.log(
+        `[Context Discovery] Cached ${allParquetFiles.length} parquet files`
+      );
     }
 
     if (allParquetFiles.length === 0) {
       return [];
     }
 
-    console.log(`[Context Discovery] Querying ${allParquetFiles.length} parquet files for time range ${fromIso} to ${toIso}`);
+    console.log(
+      `[Context Discovery] Querying ${allParquetFiles.length} parquet files for time range ${fromIso} to ${toIso}`
+    );
 
     const duckDB = await DuckDBInstance.create();
     const connection = await duckDB.connect();
 
     try {
       // Create file list for DuckDB
-      const fileList = allParquetFiles.map(f => `'${f.path.replace(/'/g, "''")}'`).join(', ');
+      const fileList = allParquetFiles
+        .map(f => `'${f.path.replace(/'/g, "''")}'`)
+        .join(', ');
 
       // Single query to find all contexts with data in the time range
       // Use filename column to extract context information
@@ -83,10 +93,10 @@ export async function getAvailableContextsForTimeRange(
 
       // Extract unique contexts from filenames
       const contextSet = new Set<string>();
-      rows.forEach((row: any) => {
+      rows.forEach(row => {
         const filename = row.filename as string;
         // Extract context from path: data/vessels/urn_mrn_imo_mmsi_368396230/navigation/...
-        const match = filename.match(/vessels\/([^\/]+)\//);
+        const match = filename.match(/vessels\/([^/]+)\//);
         if (match) {
           const entityName = match[1].replace(/_/g, ':');
           contextSet.add(`vessels.${entityName}`);
@@ -94,7 +104,9 @@ export async function getAvailableContextsForTimeRange(
       });
 
       const contexts = Array.from(contextSet).sort() as Context[];
-      console.log(`[Context Discovery] Found ${contexts.length} contexts with data in time range`);
+      console.log(
+        `[Context Discovery] Found ${contexts.length} contexts with data in time range`
+      );
 
       return contexts;
     } finally {
@@ -144,7 +156,7 @@ async function findAllValidParquetFiles(
         contextFiles.forEach(filePath => {
           files.push({
             path: filePath,
-            context: `${typeEntry.name}.${entityEntry.name.replace(/_/g, ':')}`
+            context: `${typeEntry.name}.${entityEntry.name.replace(/_/g, ':')}`,
           });
         });
       }
@@ -194,4 +206,3 @@ async function findValidParquetFilesInContext(dir: string): Promise<string[]> {
   await scan(dir);
   return files;
 }
-

@@ -55,13 +55,14 @@ export function setCachedPaths(
   pathCache.set(key, {
     timeRange: { from: from.toString(), to: to.toString() },
     paths,
-    timestamp: Date.now()
+    timestamp: Date.now(),
   });
 
   // Clean up old entries if cache is too large
   if (pathCache.size > MAX_CACHE_SIZE) {
-    const oldestKey = Array.from(pathCache.entries())
-      .sort((a, b) => a[1].timestamp - b[1].timestamp)[0][0];
+    const oldestKey = Array.from(pathCache.entries()).sort(
+      (a, b) => a[1].timestamp - b[1].timestamp
+    )[0][0];
     pathCache.delete(oldestKey);
   }
 }
@@ -80,7 +81,7 @@ export function getPathCacheStats() {
   return {
     size: pathCache.size,
     maxSize: MAX_CACHE_SIZE,
-    ttlMs: CACHE_TTL_MS
+    ttlMs: CACHE_TTL_MS,
   };
 }
 
@@ -123,13 +124,14 @@ export function setCachedContexts(
   contextCache.set(key, {
     timeRange: { from: from.toString(), to: to.toString() },
     contexts,
-    timestamp: Date.now()
+    timestamp: Date.now(),
   });
 
   // Clean up old entries if cache is too large
   if (contextCache.size > MAX_CACHE_SIZE) {
-    const oldestKey = Array.from(contextCache.entries())
-      .sort((a, b) => a[1].timestamp - b[1].timestamp)[0][0];
+    const oldestKey = Array.from(contextCache.entries()).sort(
+      (a, b) => a[1].timestamp - b[1].timestamp
+    )[0][0];
     contextCache.delete(oldestKey);
   }
 }
@@ -157,12 +159,12 @@ export function getAllCacheStats() {
     paths: {
       size: pathCache.size,
       maxSize: MAX_CACHE_SIZE,
-      ttlMs: CACHE_TTL_MS
+      ttlMs: CACHE_TTL_MS,
     },
     contexts: {
       size: contextCache.size,
       maxSize: MAX_CACHE_SIZE,
-      ttlMs: CACHE_TTL_MS
-    }
+      ttlMs: CACHE_TTL_MS,
+    },
   };
 }

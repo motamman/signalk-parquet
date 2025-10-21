@@ -94,7 +94,7 @@ export async function getPathComponentSchema(
           const result = await connection.runAndReadAll(schemaQuery);
           const rows = result.getRowObjects();
 
-          rows.forEach((row: any) => {
+          rows.forEach(row => {
             const columnName = row.name as string;
             const columnType = row.type as string;
             const componentName = columnName.replace(/^value_/, '');
@@ -115,7 +115,10 @@ export async function getPathComponentSchema(
           });
         } catch (error) {
           // Skip files with errors (corrupted, etc.)
-          console.warn(`[Schema Cache] Error reading schema from ${filePath}:`, error);
+          console.warn(
+            `[Schema Cache] Error reading schema from ${filePath}:`,
+            error
+          );
         }
       }
     } finally {
