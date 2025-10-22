@@ -1498,7 +1498,11 @@ curl "http://localhost:3000/signalk/v1/history/contexts"
 
 See [CHANGELOG.md](CHANGELOG.md) for complete version history.
 
-### Version 0.5.6-beta.1 (Latest)
+### Version 0.6.0-beta.2 (Latest)
+- **🧹 Code Quality**: Improved code formatting and readability in utility files
+- **🔄 Unit Conversion**: Optional integration with signalk-units-preference plugin for automatic unit conversion
+- **🌍 Timezone Support**: Convert UTC timestamps to local or specified timezone
+- **⚙️ Configurable Cache**: User-adjustable unit conversion cache duration
 - **🎯 SignalK History API Compliance**: Full support for all 5 standard time range patterns
 - **⏪ Backward Compatibility**: Legacy `start` parameter supported with deprecation warnings
 - **🎛️ Optional Moving Averages**: EMA/SMA now opt-in via `includeMovingAverages` parameter

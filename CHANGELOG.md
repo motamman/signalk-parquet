@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.6.0-beta.2] - 2025-10-22
+
+### Code Quality
+- **🧹 Code Formatting**: Improved code formatting and readability in utility files
+  - Enhanced context-discovery.ts with better structure and organization
+  - Improved path-cache.ts formatting for better maintainability
+  - Cleaned up path-discovery.ts and schema-cache.ts code formatting
+  - Minor package.json cleanup
+
 ## [0.6.0-beta.1] - 2025-10-20
 
 ### Added - Unit Conversion & Timezone Support
