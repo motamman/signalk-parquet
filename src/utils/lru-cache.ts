@@ -119,7 +119,7 @@ export class LRUCache<K, V> {
     return {
       size: this.cache.size,
       maxSize: this.maxSize,
-      utilizationPercent: (this.cache.size / this.maxSize) * 100
+      utilizationPercent: (this.cache.size / this.maxSize) * 100,
     };
   }
 }

@@ -1,5 +1,4 @@
 import { Context, Path } from '@signalk/server-api';
-import { DuckDBInstance } from '@duckdb/node-api';
 import { DuckDBPool } from './duckdb-pool';
 import * as path from 'path';
 import * as fs from 'fs-extra';
@@ -93,11 +92,14 @@ export async function getPathComponentSchema(
           `;
 
           const result = await connection.runAndReadAll(schemaQuery);
-          const rows = result.getRowObjects();
+          const rows = result.getRowObjects() as Array<{
+            name: string;
+            type: string;
+          }>;
 
-          rows.forEach((row: any) => {
-            const columnName = row.name as string;
-            const columnType = row.type as string;
+          rows.forEach(row => {
+            const columnName = row.name;
+            const columnType = row.type;
             const componentName = columnName.replace(/^value_/, '');
 
             // Skip if we already have this component

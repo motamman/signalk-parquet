@@ -20,6 +20,7 @@ import { getCachedPaths, setCachedPaths, getCachedContexts, setCachedContexts } 
 import { getAvailableContextsForTimeRange } from './utils/context-discovery';
 import { getPathComponentSchema, PathComponentSchema, ComponentInfo } from './utils/schema-cache';
 import { FormulaCache } from './utils/formula-cache';
+import { ConcurrencyLimiter } from './utils/concurrency-limiter';
 
 // ============================================================================
 // Unit Conversion Helper Functions
@@ -716,9 +717,10 @@ export class HistoryAPI {
     const allData: { [path: string]: Array<[Timestamp, unknown]> } = {};
     const objectPaths = new Set<string>(); // Track which paths are object paths
 
-    // Process each path and collect data
-    await Promise.all(
-      pathSpecs.map(async pathSpec => {
+    // Process each path and collect data with concurrency limiting
+    // Limit to 10 concurrent queries to prevent resource exhaustion
+    const limiter = new ConcurrencyLimiter(10);
+    await limiter.map(pathSpecs, async (pathSpec) => {
         try {
           // Sanitize the path to prevent directory traversal and SQL injection
           const sanitizedPath = pathSpec.path
@@ -861,8 +863,7 @@ export class HistoryAPI {
           debug(`Error querying path ${pathSpec.path}: ${error}`);
           allData[pathSpec.path] = [];
         }
-      })
-    );
+    });
 
     // Merge all path data into time-ordered rows
     const mergedData = this.mergePathData(allData, pathSpecs);

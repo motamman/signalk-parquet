@@ -35,7 +35,9 @@ export class FormulaCache {
       if (!this.cache.has(formula)) {
         // Compile formula once and cache it
         // Function constructor is safer than eval and can be optimized by V8
-        const compiledFn = new Function(variableName, `return ${formula}`) as (x: number) => number;
+        const compiledFn = new Function(variableName, `return ${formula}`) as (
+          x: number
+        ) => number;
         this.cache.set(formula, compiledFn);
       }
 
@@ -50,8 +52,11 @@ export class FormulaCache {
       return result;
     } catch (error) {
       // Formula compilation or execution failed
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      console.warn(`Formula evaluation failed for "${formula}": ${errorMessage}`);
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
+      console.warn(
+        `Formula evaluation failed for "${formula}": ${errorMessage}`
+      );
       return inputValue;
     }
   }
@@ -69,7 +74,7 @@ export class FormulaCache {
   getStats(): { size: number; formulas: string[] } {
     return {
       size: this.cache.size,
-      formulas: Array.from(this.cache.keys())
+      formulas: Array.from(this.cache.keys()),
     };
   }
 }
