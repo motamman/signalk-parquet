@@ -100,6 +100,12 @@ export function subscribeToCommandPaths(
 
   if (commandPaths.length === 0) return;
 
+  // Create Map for O(1) lookup instead of O(n) .find()
+  // This eliminates O(n²) nested loop on every delta message
+  const commandPathsMap = new Map<string, PathConfig>(
+    commandPaths.map(pathConfig => [pathConfig.path, pathConfig])
+  );
+
   const commandSubscription = {
     context: 'vessels.self' as Context,
     subscribe: commandPaths.map((pathConfig: PathConfig) => ({
@@ -121,9 +127,8 @@ export function subscribeToCommandPaths(
         delta.updates.forEach((update: Update) => {
           if (hasValues(update)) {
             update.values.forEach((valueUpdate: PathValue) => {
-              const pathConfig = commandPaths.find(
-                p => p.path === valueUpdate.path
-              );
+              // O(1) Map lookup instead of O(n) array.find()
+              const pathConfig = commandPathsMap.get(valueUpdate.path);
               if (pathConfig) {
                 handleCommandMessage(valueUpdate, pathConfig, config, update, state, app);
               }
