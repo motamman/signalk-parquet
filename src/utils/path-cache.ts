@@ -1,5 +1,6 @@
 import { Context, Path } from '@signalk/server-api';
 import { ZonedDateTime } from '@js-joda/core';
+import { CACHE_TTL, CACHE_SIZE } from '../config/cache-defaults';
 
 interface PathCacheEntry {
   timeRange: { from: string; to: string };
@@ -15,8 +16,6 @@ interface ContextCacheEntry {
 
 const pathCache = new Map<string, PathCacheEntry>();
 const contextCache = new Map<string, ContextCacheEntry>();
-const CACHE_TTL_MS = 60 * 1000; // 1 minute
-const MAX_CACHE_SIZE = 100;
 
 /**
  * Round timestamp to nearest minute for cache key generation
@@ -47,7 +46,7 @@ export function getCachedPaths(
   const key = `${context}:${roundToMinute(from)}:${roundToMinute(to)}`;
   const cached = pathCache.get(key);
 
-  if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS) {
+  if (cached && Date.now() - cached.timestamp < CACHE_TTL.PATH_CONTEXT) {
     return cached.paths;
   }
 
@@ -78,7 +77,7 @@ export function setCachedPaths(
   });
 
   // Clean up old entries if cache is too large
-  if (pathCache.size > MAX_CACHE_SIZE) {
+  if (pathCache.size > CACHE_SIZE.PATH_CONTEXT_MAX) {
     const oldestKey = Array.from(pathCache.entries()).sort(
       (a, b) => a[1].timestamp - b[1].timestamp
     )[0][0];
@@ -99,8 +98,8 @@ export function clearPathCache(): void {
 export function getPathCacheStats() {
   return {
     size: pathCache.size,
-    maxSize: MAX_CACHE_SIZE,
-    ttlMs: CACHE_TTL_MS,
+    maxSize: CACHE_SIZE.PATH_CONTEXT_MAX,
+    ttlMs: CACHE_TTL.PATH_CONTEXT,
   };
 }
 
@@ -119,7 +118,7 @@ export function getCachedContexts(
   const key = `${roundToMinute(from)}:${roundToMinute(to)}`;
   const cached = contextCache.get(key);
 
-  if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS) {
+  if (cached && Date.now() - cached.timestamp < CACHE_TTL.PATH_CONTEXT) {
     return cached.contexts;
   }
 
@@ -149,7 +148,7 @@ export function setCachedContexts(
   });
 
   // Clean up old entries if cache is too large
-  if (contextCache.size > MAX_CACHE_SIZE) {
+  if (contextCache.size > CACHE_SIZE.PATH_CONTEXT_MAX) {
     const oldestKey = Array.from(contextCache.entries()).sort(
       (a, b) => a[1].timestamp - b[1].timestamp
     )[0][0];
@@ -179,13 +178,13 @@ export function getAllCacheStats() {
   return {
     paths: {
       size: pathCache.size,
-      maxSize: MAX_CACHE_SIZE,
-      ttlMs: CACHE_TTL_MS,
+      maxSize: CACHE_SIZE.PATH_CONTEXT_MAX,
+      ttlMs: CACHE_TTL.PATH_CONTEXT,
     },
     contexts: {
       size: contextCache.size,
-      maxSize: MAX_CACHE_SIZE,
-      ttlMs: CACHE_TTL_MS,
+      maxSize: CACHE_SIZE.PATH_CONTEXT_MAX,
+      ttlMs: CACHE_TTL.PATH_CONTEXT,
     },
   };
 }

@@ -1,6 +1,7 @@
 import * as fs from 'fs-extra';
 import * as path from 'path';
 import { SPECIAL_DIRECTORIES } from './path-helpers';
+import { CACHE_TTL } from '../config/cache-defaults';
 
 /**
  * Information about a scanned file
@@ -32,11 +33,11 @@ export class DirectoryScanner {
   private excludedDirs: Set<string>;
 
   /**
-   * @param cacheTTL - Cache time-to-live in milliseconds (default: 5 minutes)
+   * @param cacheTTL - Cache time-to-live in milliseconds (default from config)
    * @param excludedDirs - Directory names to skip during scanning (defaults to SPECIAL_DIRECTORIES)
    */
   constructor(
-    cacheTTL: number = 5 * 60 * 1000,
+    cacheTTL: number = CACHE_TTL.DIRECTORY_SCAN,
     excludedDirs: string[] = Array.from(SPECIAL_DIRECTORIES)
   ) {
     this.cacheTTL = cacheTTL;

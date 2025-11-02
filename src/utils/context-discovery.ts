@@ -4,6 +4,7 @@ import { Context } from '@signalk/server-api';
 import { DuckDBInstance } from '@duckdb/node-api';
 import { ZonedDateTime } from '@js-joda/core';
 import { debugLogger } from './debug-logger';
+import { CACHE_TTL } from '../config/cache-defaults';
 
 // Cache for parquet file list
 interface FileListCache {
@@ -13,7 +14,6 @@ interface FileListCache {
 }
 
 let fileListCache: FileListCache | null = null;
-const FILE_LIST_CACHE_TTL_MS = 2 * 60 * 1000; // 2 minutes
 
 /**
  * Get available SignalK contexts that have data within a specific time range
@@ -38,7 +38,7 @@ export async function getAvailableContextsForTimeRange(
     if (
       fileListCache &&
       fileListCache.dataDir === dataDir &&
-      now - fileListCache.timestamp < FILE_LIST_CACHE_TTL_MS
+      now - fileListCache.timestamp < CACHE_TTL.FILE_LIST
     ) {
       // Cache hit
       allParquetFiles = fileListCache.files;

@@ -4,6 +4,7 @@ import { Router } from 'express';
 import { ParquetWriter } from './parquet-writer';
 import { registerHistoryApiRoute } from './HistoryAPI';
 import { registerApiRoutes } from './api-routes';
+import { CACHE_SIZE } from './config/cache-defaults';
 import { HistoricalStreamingService } from './historical-streaming';
 import {
   SignalKPlugin,
@@ -57,7 +58,7 @@ export default function (app: ServerAPI): SignalKPlugin {
   // Plugin state
   const state: PluginState = {
     unsubscribes: [],
-    dataBuffers: new LRUCache<string, import('./types').DataRecord[]>(1000), // Limit to 1000 paths
+    dataBuffers: new LRUCache<string, import('./types').DataRecord[]>(CACHE_SIZE.DATA_BUFFER_MAX),
     activeRegimens: new Set(),
     subscribedPaths: new Set(),
     saveInterval: undefined,

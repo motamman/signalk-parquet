@@ -21,6 +21,7 @@ import { getAvailableContextsForTimeRange } from './utils/context-discovery';
 import { getPathComponentSchema, PathComponentSchema, ComponentInfo } from './utils/schema-cache';
 import { FormulaCache } from './utils/formula-cache';
 import { ConcurrencyLimiter } from './utils/concurrency-limiter';
+import { CONCURRENCY } from './config/cache-defaults';
 
 // ============================================================================
 // Unit Conversion Helper Functions
@@ -718,8 +719,8 @@ export class HistoryAPI {
     const objectPaths = new Set<string>(); // Track which paths are object paths
 
     // Process each path and collect data with concurrency limiting
-    // Limit to 10 concurrent queries to prevent resource exhaustion
-    const limiter = new ConcurrencyLimiter(10);
+    // Limit concurrent queries to prevent resource exhaustion (configured in cache-defaults)
+    const limiter = new ConcurrencyLimiter(CONCURRENCY.MAX_QUERIES);
     await limiter.map(pathSpecs, async (pathSpec) => {
         try {
           // Sanitize the path to prevent directory traversal and SQL injection
