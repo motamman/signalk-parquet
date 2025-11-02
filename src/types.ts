@@ -261,13 +261,13 @@ export interface DataRecord {
   path: string;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   value: any;
-  value_json?: string;
-  source?: string;
+  value_json?: string | object; // Store as object in memory, serialize when writing
+  source?: string | object; // Store as object in memory, serialize when writing
   source_label?: string;
   source_type?: string;
   source_pgn?: number;
   source_src?: string;
-  meta?: string;
+  meta?: string | object; // Store as object in memory, serialize when writing
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   [key: string]: any; // For flattened object properties
 }

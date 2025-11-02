@@ -187,7 +187,7 @@ function handleCommandMessage(
           context: 'vessels.self',
           path: valueUpdate.path,
           value: valueUpdate.value,
-          source: update.source ? JSON.stringify(update.source) : undefined,
+          source: update.source || undefined, // Store as object, serialize at write time
           source_label:
             update.$source ||
             (update.source ? update.source.label : undefined),
@@ -424,12 +424,12 @@ function handleStreamData(
 ): void {
   try {
     // Retrieve metadata for this path
-    let metadata: string | undefined;
+    let metadata: object | undefined;
     try {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pathMetadata = (app as any).getMetadata?.(normalizedDelta.path);
       if (pathMetadata) {
-        metadata = JSON.stringify(pathMetadata);
+        metadata = pathMetadata; // Store as object, serialize at write time
       }
     } catch (error) {
       // Metadata retrieval failed, continue without it
@@ -444,9 +444,7 @@ function handleStreamData(
       path: normalizedDelta.path,
       value: null,
       value_json: undefined,
-      source: normalizedDelta.source
-        ? JSON.stringify(normalizedDelta.source)
-        : undefined,
+      source: normalizedDelta.source || undefined, // Store as object, serialize at write time
       source_label: normalizedDelta.$source || undefined,
       source_type: normalizedDelta.source
         ? normalizedDelta.source.type
@@ -465,7 +463,7 @@ function handleStreamData(
       typeof normalizedDelta.value === 'object' &&
       normalizedDelta.value !== null
     ) {
-      record.value_json = JSON.stringify(normalizedDelta.value);
+      record.value_json = normalizedDelta.value; // Store as object, serialize at write time
       // Extract key properties as columns for easier querying
       Object.entries(normalizedDelta.value).forEach(([key, val]) => {
         if (

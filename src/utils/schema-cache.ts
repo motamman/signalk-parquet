@@ -22,7 +22,7 @@ export interface ComponentInfo {
  * Key: `${context}:${path}`
  */
 const schemaCache = new Map<string, PathComponentSchema>();
-const SCHEMA_CACHE_TTL_MS = 2 * 60 * 1000; // 2 minutes
+const SCHEMA_CACHE_TTL_MS = 30 * 60 * 1000; // 30 minutes - schemas are relatively static
 
 /**
  * Get the component schema for an object-valued path across all parquet files

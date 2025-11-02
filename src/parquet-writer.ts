@@ -505,11 +505,24 @@ export class ParquetWriter {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const cleanRecord: { [key: string]: any } = {};
 
+    // Serialize object fields to JSON strings (deferred from delta processing)
+    // This improves performance by avoiding JSON.stringify() on every delta message
+    const recordWithSerializedFields = { ...record };
+    if (recordWithSerializedFields.source && typeof recordWithSerializedFields.source === 'object') {
+      recordWithSerializedFields.source = JSON.stringify(recordWithSerializedFields.source);
+    }
+    if (recordWithSerializedFields.value_json && typeof recordWithSerializedFields.value_json === 'object') {
+      recordWithSerializedFields.value_json = JSON.stringify(recordWithSerializedFields.value_json);
+    }
+    if (recordWithSerializedFields.meta && typeof recordWithSerializedFields.meta === 'object') {
+      recordWithSerializedFields.meta = JSON.stringify(recordWithSerializedFields.meta);
+    }
+
     const schemaFields = schema.schema;
 
     Object.keys(schemaFields).forEach(fieldName => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const value = (record as any)[fieldName];
+      const value = (recordWithSerializedFields as any)[fieldName];
       const fieldType = schemaFields[fieldName].type;
 
       if (value === null || value === undefined) {
