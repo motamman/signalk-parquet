@@ -38,6 +38,7 @@ import {
   uploadAllConsolidatedFilesToS3,
 } from './data-handler';
 import { ServerAPI } from '@signalk/server-api';
+import { DuckDBPool } from './utils/duckdb-pool';
 
 export default function (app: ServerAPI): SignalKPlugin {
   const plugin: SignalKPlugin = {
@@ -138,6 +139,10 @@ export default function (app: ServerAPI): SignalKPlugin {
 
     // Ensure output directory exists
     fs.ensureDirSync(state.currentConfig.outputDirectory);
+
+    // Initialize DuckDB connection pool once
+    await DuckDBPool.initialize();
+    app.debug('DuckDB connection pool initialized');
 
     // Subscribe to command paths first (these control regimens)
     subscribeToCommandPaths(currentPaths, state, state.currentConfig, app);
@@ -244,7 +249,7 @@ export default function (app: ServerAPI): SignalKPlugin {
 
   };
 
-  plugin.stop = function (): void {
+  plugin.stop = async function (): Promise<void> {
 
     // Stop threshold monitoring system
     stopThresholdMonitoring();
@@ -303,6 +308,10 @@ export default function (app: ServerAPI): SignalKPlugin {
     state.dataBuffers.clear();
     state.activeRegimens.clear();
     state.subscribedPaths.clear();
+
+    // Shutdown DuckDB connection pool
+    await DuckDBPool.shutdown();
+    app.debug('DuckDB connection pool shut down');
   };
 
   plugin.schema = {

@@ -1,5 +1,6 @@
 import { Context, Path } from '@signalk/server-api';
 import { DuckDBInstance } from '@duckdb/node-api';
+import { DuckDBPool } from './duckdb-pool';
 import * as path from 'path';
 import * as fs from 'fs-extra';
 
@@ -62,8 +63,8 @@ export async function getPathComponentSchema(
     // Query schemas from all files to get union of components
     const allComponents = new Map<string, ComponentInfo>();
 
-    const duckDB = await DuckDBInstance.create();
-    const connection = await duckDB.connect();
+    // Get connection from pool
+    const connection = await DuckDBPool.getConnection();
 
     try {
       for (const filePath of parquetFiles) {
@@ -94,7 +95,7 @@ export async function getPathComponentSchema(
           const result = await connection.runAndReadAll(schemaQuery);
           const rows = result.getRowObjects();
 
-          rows.forEach(row => {
+          rows.forEach((row: any) => {
             const columnName = row.name as string;
             const columnType = row.type as string;
             const componentName = columnName.replace(/^value_/, '');

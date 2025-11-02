@@ -12,6 +12,7 @@ import { Context, Path, Timestamp } from '@signalk/server-api';
 import { ParamsDictionary } from 'express-serve-static-core';
 import { ParsedQs } from 'qs';
 import { DuckDBInstance } from '@duckdb/node-api';
+import { DuckDBPool } from './utils/duckdb-pool';
 import { toContextFilePath } from '.';
 import path from 'path';
 import { getAvailablePathsArray, getAvailablePathsForTimeRange } from './utils/path-discovery';
@@ -741,12 +742,8 @@ export class HistoryAPI {
           const toIso = to.toInstant().toString();
 
 
-          const duckDB = await DuckDBInstance.create();
-          const connection = await duckDB.connect();
-
-          // Load spatial extension for geographic queries
-          await connection.runAndReadAll("INSTALL spatial;");
-          await connection.runAndReadAll("LOAD spatial;");
+          // Get connection from pool (spatial extension already loaded)
+          const connection = await DuckDBPool.getConnection();
 
           try {
             // Check if this path has object components (value_latitude, value_longitude, etc.)
@@ -788,7 +785,7 @@ export class HistoryAPI {
               const rows = result.getRowObjects();
 
               // Reconstruct objects from aggregated components
-              const pathData: Array<[Timestamp, unknown]> = rows.map(row => {
+              const pathData: Array<[Timestamp, unknown]> = rows.map((row: any) => {
                 const timestamp = row.timestamp as Timestamp;
                 const reconstructedObject: any = {};
 
@@ -841,7 +838,7 @@ export class HistoryAPI {
 
               // Convert rows to the expected format using bucketed timestamps
               const pathData: Array<[Timestamp, unknown]> = rows.map(
-                (row) => {
+                (row: any) => {
                   const rowData = row as {
                     timestamp: Timestamp;
                     value: unknown;

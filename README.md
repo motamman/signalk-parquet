@@ -8,7 +8,8 @@ A comprehensive SignalK plugin and webapp that saves SignalK data directly to Pa
 - **Smart Data Types**: Intelligent Parquet schema detection preserves native data types (DOUBLE, BOOLEAN) instead of forcing everything to strings
 - **Multiple File Formats**: Support for Parquet, JSON, and CSV output formats (querying in parquet only)
 - **Daily Consolidation**: Automatic daily file consolidation with S3 upload capabilities
-- **Near Real-time Buffering**: Efficient data buffering with configurable thresholds
+- **Near Real-time Buffering**: Efficient data
+ buffering with configurable thresholds
 
 ### Data Validation & Schema Repair
 - **NEW Schema Validation**: Comprehensive validation of Parquet file schemas against SignalK metadata standards
@@ -1482,6 +1483,7 @@ curl "http://localhost:3000/signalk/v1/history/contexts"
 
 - [x] Implement startup consolidation for missed previous days (exclude current day)
 - [x] Add history API integration
+- [ ] Incorporate user preferences from units-preference in the regimen filter system
 - [ ] Expose recorded spatial event via api endpoint (geojson)
 - [ ] Add Grafana integration
 

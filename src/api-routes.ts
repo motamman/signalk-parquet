@@ -3,6 +3,7 @@ import * as path from 'path';
 import express, { Router } from 'express';
 import { getAvailablePaths } from './utils/path-discovery';
 import { DuckDBInstance } from '@duckdb/node-api';
+import { DuckDBPool } from './utils/duckdb-pool';
 import {
   TypedRequest,
   TypedResponse,
@@ -382,12 +383,8 @@ export function registerApiRoutes(
         const sampleFile = files[0];
         const query = `SELECT * FROM read_parquet('${sampleFile.path}', union_by_name=true) LIMIT ${limit}`;
 
-        const instance = await DuckDBInstance.create();
-        const connection = await instance.connect();
-
-        // Load spatial extension for geographic queries
-        await connection.runAndReadAll("INSTALL spatial;");
-        await connection.runAndReadAll("LOAD spatial;");
+        // Get connection from pool (spatial extension already loaded)
+        const connection = await DuckDBPool.getConnection();
 
         try {
           const reader = await connection.runAndReadAll(query);
@@ -477,12 +474,8 @@ export function registerApiRoutes(
         }
 
 
-        const instance = await DuckDBInstance.create();
-        const connection = await instance.connect();
-
-        // Load spatial extension for geographic queries
-        await connection.runAndReadAll("INSTALL spatial;");
-        await connection.runAndReadAll("LOAD spatial;");
+        // Get connection from pool (spatial extension already loaded)
+        const connection = await DuckDBPool.getConnection();
 
         try {
           const reader = await connection.runAndReadAll(processedQuery);

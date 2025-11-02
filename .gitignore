@@ -6,6 +6,7 @@ dist/
 *.tsbuildinfo
 data/
 temp/
+docs/
 *.parquet
 *.csv
 *.json.backup
@@ -20,7 +21,7 @@ DUCKDB_CODE_REVIEW.md
 COMMAND_SYSTEM_FIXES.md
 CLAUDE_API_IMPLEMENTATIONS.md
 XMEMORY-LEAK-ANALYSIS.md
-
+ANALYSIS_REPORT_FILES.txt
 *-backup
 
 # Ignore build artifacts
