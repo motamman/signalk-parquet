@@ -10,6 +10,7 @@ import {
 export { NormalizedDelta, SourceRef };
 import { Request, Response, Router } from 'express';
 import { FormulaCache } from './utils/formula-cache';
+import { LRUCache } from './utils/lru-cache';
 
 // Forward declaration to avoid circular dependency
 export interface SchemaService {
@@ -486,7 +487,7 @@ export interface PluginState {
   streamingService?: any; // WebSocket streaming service for runtime control
   streamingEnabled?: boolean; // Runtime control separate from config
   restoredSubscriptions?: Map<string, any>; // Track active subscriptions
-  dataBuffers: Map<string, DataRecord[]>;
+  dataBuffers: LRUCache<string, DataRecord[]>;
   activeRegimens: Set<string>;
   subscribedPaths: Set<string>;
   saveInterval?: NodeJS.Timeout;

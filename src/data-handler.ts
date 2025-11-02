@@ -521,7 +521,7 @@ export function saveAllBuffers(config: PluginConfig, state: PluginState, app: Se
       const urnMatch = signalkPath.match(/^([^:]+):/);
       const urn = urnMatch ? urnMatch[1] : 'vessels.self';
       saveBufferToParquet(actualPath, buffer, config, state, app);
-      state.dataBuffers.set(signalkPath, []); // Clear buffer
+      state.dataBuffers.delete(signalkPath); // Delete buffer to free memory
     }
   });
 }

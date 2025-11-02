@@ -40,6 +40,7 @@ import {
 import { ServerAPI } from '@signalk/server-api';
 import { DuckDBPool } from './utils/duckdb-pool';
 import { FormulaCache } from './utils/formula-cache';
+import { LRUCache } from './utils/lru-cache';
 
 export default function (app: ServerAPI): SignalKPlugin {
   const plugin: SignalKPlugin = {
@@ -56,7 +57,7 @@ export default function (app: ServerAPI): SignalKPlugin {
   // Plugin state
   const state: PluginState = {
     unsubscribes: [],
-    dataBuffers: new Map(),
+    dataBuffers: new LRUCache<string, import('./types').DataRecord[]>(1000), // Limit to 1000 paths
     activeRegimens: new Set(),
     subscribedPaths: new Set(),
     saveInterval: undefined,
