@@ -9,6 +9,7 @@ import {
 // Re-export SignalK types for convenience
 export { NormalizedDelta, SourceRef };
 import { Request, Response, Router } from 'express';
+import { FormulaCache } from './utils/formula-cache';
 
 // Forward declaration to avoid circular dependency
 export interface SchemaService {
@@ -497,6 +498,7 @@ export interface PluginState {
   commandState: CommandRegistrationState;
   // Process management
   currentProcess?: ProcessState;
+  formulaCache?: FormulaCache;
 }
 
 // Parquet Writer Class Interface

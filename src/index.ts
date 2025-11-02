@@ -39,6 +39,7 @@ import {
 } from './data-handler';
 import { ServerAPI } from '@signalk/server-api';
 import { DuckDBPool } from './utils/duckdb-pool';
+import { FormulaCache } from './utils/formula-cache';
 
 export default function (app: ServerAPI): SignalKPlugin {
   const plugin: SignalKPlugin = {
@@ -67,6 +68,7 @@ export default function (app: ServerAPI): SignalKPlugin {
       registeredCommands: new Map(),
       putHandlers: new Map(),
     },
+    formulaCache: new FormulaCache(),
   };
 
   let currentPaths: PathConfig[] = [];
