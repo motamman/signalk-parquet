@@ -2,6 +2,8 @@ import { Context, Path } from '@signalk/server-api';
 import { DuckDBPool } from './duckdb-pool';
 import * as path from 'path';
 import * as fs from 'fs-extra';
+import { toContextFilePath } from './path-helpers';
+import { debugLogger } from './debug-logger';
 
 /**
  * Schema information for an object-valued path
@@ -118,7 +120,7 @@ export async function getPathComponentSchema(
           });
         } catch (error) {
           // Skip files with errors (corrupted, etc.)
-          console.warn(
+          debugLogger.warn(
             `[Schema Cache] Error reading schema from ${filePath}:`,
             error
           );
@@ -143,7 +145,10 @@ export async function getPathComponentSchema(
 
     return schema;
   } catch (error) {
-    console.error(`[Schema Cache] Error getting schema for ${pathStr}:`, error);
+    debugLogger.error(
+      `[Schema Cache] Error getting schema for ${pathStr}:`,
+      error
+    );
     return null;
   }
 }
@@ -153,7 +158,7 @@ export async function getPathComponentSchema(
  */
 export function clearSchemaCache(): void {
   schemaCache.clear();
-  console.log('[Schema Cache] Schema cache cleared');
+  debugLogger.log('[Schema Cache] Schema cache cleared');
 }
 
 /**
@@ -194,18 +199,6 @@ function inferDataTypeCategory(duckdbType: string): ComponentInfo['dataType'] {
   }
 
   return 'unknown';
-}
-
-/**
- * Convert context to filesystem path
- */
-function toContextFilePath(context: Context): string {
-  const parts = context.split('.');
-  if (parts.length === 2) {
-    // e.g., "vessels.urn:mrn:imo:mmsi:368396230" -> "vessels/urn_mrn_imo_mmsi_368396230"
-    return `${parts[0]}/${parts[1].replace(/:/g, '_')}`;
-  }
-  return context.replace(/\./g, '/').replace(/:/g, '_');
 }
 
 /**

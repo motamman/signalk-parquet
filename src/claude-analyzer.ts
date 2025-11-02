@@ -1,12 +1,13 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { ServerAPI } from '@signalk/server-api';
-import { DataRecord, PluginState } from './types';
+import { DataRecord, PluginState, ColumnInfo, Statistics, DataQualityMetrics } from './types';
 import { VesselContextManager } from './vessel-context';
 import { getAvailablePaths } from './utils/path-discovery';
 import * as fs from 'fs-extra';
 import * as path from 'path';
 import { DuckDBInstance } from '@duckdb/node-api';
 import { ClaudeModel } from './claude-models';
+import { shouldSkipDirectory } from './utils/path-helpers';
 
 // Claude AI Integration Types
 export interface ClaudeAnalyzerConfig {
@@ -69,30 +70,6 @@ export interface DataSummary {
   columns: ColumnInfo[];
   statisticalSummary: Record<string, Statistics>;
   dataQuality: DataQualityMetrics;
-}
-
-export interface ColumnInfo {
-  name: string;
-  type: string;
-  nullCount: number;
-  uniqueCount: number;
-  sampleValues: any[];
-}
-
-export interface Statistics {
-  count: number;
-  mean?: number;
-  median?: number;
-  min?: any;
-  max?: any;
-  stdDev?: number;
-}
-
-export interface DataQualityMetrics {
-  completeness: number; // Percentage of non-null values
-  consistency: number;  // Data format consistency
-  timeliness: number;   // Data freshness
-  accuracy: number;     // Estimated data accuracy
 }
 
 export interface AvailablePathsFilter {
@@ -2963,7 +2940,7 @@ Begin your analysis by querying relevant data within the specified time range.`;
           const fullPath = path.join(currentPath, item);
           const stat = fs.statSync(fullPath);
 
-          if (stat.isDirectory() && item !== 'processed' && item !== 'failed') {
+          if (stat.isDirectory() && !shouldSkipDirectory(item)) {
             const newRelativePath = relativePath ? `${relativePath}.${item}` : item;
 
             // Check if this directory has parquet files

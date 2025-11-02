@@ -1,3 +1,5 @@
+import { debugLogger } from './debug-logger';
+
 /**
  * Caches compiled formulas to avoid repeated eval() overhead
  * Uses Function constructor which is safer and faster than eval()
@@ -54,7 +56,7 @@ export class FormulaCache {
       // Formula compilation or execution failed
       const errorMessage =
         error instanceof Error ? error.message : String(error);
-      console.warn(
+      debugLogger.warn(
         `Formula evaluation failed for "${formula}": ${errorMessage}`
       );
       return inputValue;

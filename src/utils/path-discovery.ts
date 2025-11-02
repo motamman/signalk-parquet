@@ -4,7 +4,7 @@ import { ServerAPI, Context, Path } from '@signalk/server-api';
 import { PathInfo } from '../types';
 import { DuckDBInstance } from '@duckdb/node-api';
 import { ZonedDateTime } from '@js-joda/core';
-import { toContextFilePath } from './path-helpers';
+import { toContextFilePath, shouldSkipDirectory } from './path-helpers';
 
 /**
  * Get available SignalK paths from directory structure
@@ -30,14 +30,7 @@ export function getAvailablePaths(dataDir: string, app: ServerAPI): PathInfo[] {
         const fullPath = path.join(currentPath, item);
         const stat = fs.statSync(fullPath);
 
-        if (
-          stat.isDirectory() &&
-          item !== 'processed' &&
-          item !== 'failed' &&
-          item !== 'quarantine' &&
-          item !== 'claude-schemas' &&
-          item !== 'repaired'
-        ) {
+        if (stat.isDirectory() && !shouldSkipDirectory(item)) {
           const newRelativePath = relativePath
             ? `${relativePath}.${item}`
             : item;
