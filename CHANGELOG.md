@@ -56,8 +56,6 @@ No breaking changes - all optimizations are backward compatible.
 - `src/utils/concurrency-limiter.ts`, `directory-scanner.ts`, `debug-logger.ts`
 - `src/config/cache-defaults.ts`
 
-**Implementation Time:** ~31 hours
-
 ---
 
 ## [0.6.0-beta.1] - 2025-10-20
