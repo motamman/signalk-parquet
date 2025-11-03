@@ -1,8 +1,11 @@
 import { Context, Path } from '@signalk/server-api';
-import { DuckDBInstance } from '@duckdb/node-api';
 import { DuckDBPool } from './duckdb-pool';
 import * as path from 'path';
 import * as fs from 'fs-extra';
+import { toContextFilePath } from './path-helpers';
+import { debugLogger } from './debug-logger';
+import { CACHE_TTL } from '../config/cache-defaults';
+import { DirectoryScanner } from './directory-scanner';
 
 /**
  * Schema information for an object-valued path
@@ -23,7 +26,12 @@ export interface ComponentInfo {
  * Key: `${context}:${path}`
  */
 const schemaCache = new Map<string, PathComponentSchema>();
-const SCHEMA_CACHE_TTL_MS = 2 * 60 * 1000; // 2 minutes
+
+/**
+ * Directory scanner for finding parquet files
+ * Reused across multiple schema discovery operations
+ */
+const directoryScanner = new DirectoryScanner();
 
 /**
  * Get the component schema for an object-valued path across all parquet files
@@ -39,7 +47,7 @@ export async function getPathComponentSchema(
 
   // Check cache first
   const cached = schemaCache.get(cacheKey);
-  if (cached && now - cached.timestamp < SCHEMA_CACHE_TTL_MS) {
+  if (cached && now - cached.timestamp < CACHE_TTL.SCHEMA) {
     return cached;
   }
 
@@ -93,11 +101,14 @@ export async function getPathComponentSchema(
           `;
 
           const result = await connection.runAndReadAll(schemaQuery);
-          const rows = result.getRowObjects();
+          const rows = result.getRowObjects() as Array<{
+            name: string;
+            type: string;
+          }>;
 
-          rows.forEach((row: any) => {
-            const columnName = row.name as string;
-            const columnType = row.type as string;
+          rows.forEach(row => {
+            const columnName = row.name;
+            const columnType = row.type;
             const componentName = columnName.replace(/^value_/, '');
 
             // Skip if we already have this component
@@ -116,7 +127,7 @@ export async function getPathComponentSchema(
           });
         } catch (error) {
           // Skip files with errors (corrupted, etc.)
-          console.warn(
+          debugLogger.warn(
             `[Schema Cache] Error reading schema from ${filePath}:`,
             error
           );
@@ -141,7 +152,10 @@ export async function getPathComponentSchema(
 
     return schema;
   } catch (error) {
-    console.error(`[Schema Cache] Error getting schema for ${pathStr}:`, error);
+    debugLogger.error(
+      `[Schema Cache] Error getting schema for ${pathStr}:`,
+      error
+    );
     return null;
   }
 }
@@ -151,7 +165,7 @@ export async function getPathComponentSchema(
  */
 export function clearSchemaCache(): void {
   schemaCache.clear();
-  console.log('[Schema Cache] Schema cache cleared');
+  debugLogger.log('[Schema Cache] Schema cache cleared');
 }
 
 /**
@@ -195,52 +209,13 @@ function inferDataTypeCategory(duckdbType: string): ComponentInfo['dataType'] {
 }
 
 /**
- * Convert context to filesystem path
- */
-function toContextFilePath(context: Context): string {
-  const parts = context.split('.');
-  if (parts.length === 2) {
-    // e.g., "vessels.urn:mrn:imo:mmsi:368396230" -> "vessels/urn_mrn_imo_mmsi_368396230"
-    return `${parts[0]}/${parts[1].replace(/:/g, '_')}`;
-  }
-  return context.replace(/\./g, '/').replace(/:/g, '_');
-}
-
-/**
  * Recursively find all .parquet files in a directory
+ * Uses DirectoryScanner for cached, efficient file discovery
  */
 async function findParquetFiles(dir: string): Promise<string[]> {
-  const files: string[] = [];
+  // Use DirectoryScanner with pattern matching for .parquet files
+  const fileInfos = await directoryScanner.scanDirectory(dir, /\.parquet$/);
 
-  async function scan(currentDir: string) {
-    try {
-      const entries = await fs.readdir(currentDir, { withFileTypes: true });
-
-      for (const entry of entries) {
-        // Skip special directories
-        if (
-          entry.name === 'quarantine' ||
-          entry.name === 'processed' ||
-          entry.name === 'failed' ||
-          entry.name === 'repaired' ||
-          entry.name === 'claude-schemas'
-        ) {
-          continue;
-        }
-
-        const fullPath = path.join(currentDir, entry.name);
-
-        if (entry.isFile() && entry.name.endsWith('.parquet')) {
-          files.push(fullPath);
-        } else if (entry.isDirectory()) {
-          await scan(fullPath);
-        }
-      }
-    } catch (error) {
-      // Skip directories we can't read
-    }
-  }
-
-  await scan(dir);
-  return files;
+  // Convert FileInfo[] to string[] for compatibility
+  return fileInfos.map(f => f.path);
 }

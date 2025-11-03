@@ -41,8 +41,8 @@ export class DuckDBPool {
 
     // Load spatial extension once for all future connections
     const setupConn = await this.instance.connect();
-    await setupConn.runAndReadAll("INSTALL spatial;");
-    await setupConn.runAndReadAll("LOAD spatial;");
+    await setupConn.runAndReadAll('INSTALL spatial;');
+    await setupConn.runAndReadAll('LOAD spatial;');
     this.initialized = true;
     // Connection closes automatically when no longer referenced
   }
@@ -56,7 +56,9 @@ export class DuckDBPool {
    */
   static async getConnection() {
     if (!this.instance) {
-      throw new Error('DuckDBPool not initialized. Call DuckDBPool.initialize() first.');
+      throw new Error(
+        'DuckDBPool not initialized. Call DuckDBPool.initialize() first.'
+      );
     }
 
     return await this.instance.connect();

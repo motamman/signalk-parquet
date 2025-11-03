@@ -1,5 +1,6 @@
 import { Context, Path } from '@signalk/server-api';
 import { ZonedDateTime } from '@js-joda/core';
+import { CACHE_TTL, CACHE_SIZE } from '../config/cache-defaults';
 
 interface PathCacheEntry {
   timeRange: { from: string; to: string };
@@ -15,8 +16,23 @@ interface ContextCacheEntry {
 
 const pathCache = new Map<string, PathCacheEntry>();
 const contextCache = new Map<string, ContextCacheEntry>();
-const CACHE_TTL_MS = 60 * 1000; // 1 minute
-const MAX_CACHE_SIZE = 100;
+
+/**
+ * Round timestamp to nearest minute for cache key generation
+ * This allows queries within the same minute to share cache entries
+ * @param dateTime - ZonedDateTime to round
+ * @returns ISO string rounded to the minute (e.g., "2025-11-02T10:15:00Z")
+ */
+function roundToMinute(dateTime: ZonedDateTime): string {
+  // Get the instant and convert to epoch milliseconds
+  const epochMs = dateTime.toInstant().toEpochMilli();
+
+  // Round to nearest minute (60000 ms)
+  const roundedMs = Math.floor(epochMs / 60000) * 60000;
+
+  // Convert back to ISO string
+  return new Date(roundedMs).toISOString();
+}
 
 /**
  * Get cached paths for a specific context and time range
@@ -26,10 +42,11 @@ export function getCachedPaths(
   from: ZonedDateTime,
   to: ZonedDateTime
 ): Path[] | null {
-  const key = `${context}:${from.toString()}:${to.toString()}`;
+  // Use rounded timestamps for cache key to improve hit rate
+  const key = `${context}:${roundToMinute(from)}:${roundToMinute(to)}`;
   const cached = pathCache.get(key);
 
-  if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS) {
+  if (cached && Date.now() - cached.timestamp < CACHE_TTL.PATH_CONTEXT) {
     return cached.paths;
   }
 
@@ -50,7 +67,8 @@ export function setCachedPaths(
   to: ZonedDateTime,
   paths: Path[]
 ): void {
-  const key = `${context}:${from.toString()}:${to.toString()}`;
+  // Use rounded timestamps for cache key to improve hit rate
+  const key = `${context}:${roundToMinute(from)}:${roundToMinute(to)}`;
 
   pathCache.set(key, {
     timeRange: { from: from.toString(), to: to.toString() },
@@ -59,7 +77,7 @@ export function setCachedPaths(
   });
 
   // Clean up old entries if cache is too large
-  if (pathCache.size > MAX_CACHE_SIZE) {
+  if (pathCache.size > CACHE_SIZE.PATH_CONTEXT_MAX) {
     const oldestKey = Array.from(pathCache.entries()).sort(
       (a, b) => a[1].timestamp - b[1].timestamp
     )[0][0];
@@ -80,8 +98,8 @@ export function clearPathCache(): void {
 export function getPathCacheStats() {
   return {
     size: pathCache.size,
-    maxSize: MAX_CACHE_SIZE,
-    ttlMs: CACHE_TTL_MS,
+    maxSize: CACHE_SIZE.PATH_CONTEXT_MAX,
+    ttlMs: CACHE_TTL.PATH_CONTEXT,
   };
 }
 
@@ -96,10 +114,11 @@ export function getCachedContexts(
   from: ZonedDateTime,
   to: ZonedDateTime
 ): Context[] | null {
-  const key = `${from.toString()}:${to.toString()}`;
+  // Use rounded timestamps for cache key to improve hit rate
+  const key = `${roundToMinute(from)}:${roundToMinute(to)}`;
   const cached = contextCache.get(key);
 
-  if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS) {
+  if (cached && Date.now() - cached.timestamp < CACHE_TTL.PATH_CONTEXT) {
     return cached.contexts;
   }
 
@@ -119,7 +138,8 @@ export function setCachedContexts(
   to: ZonedDateTime,
   contexts: Context[]
 ): void {
-  const key = `${from.toString()}:${to.toString()}`;
+  // Use rounded timestamps for cache key to improve hit rate
+  const key = `${roundToMinute(from)}:${roundToMinute(to)}`;
 
   contextCache.set(key, {
     timeRange: { from: from.toString(), to: to.toString() },
@@ -128,7 +148,7 @@ export function setCachedContexts(
   });
 
   // Clean up old entries if cache is too large
-  if (contextCache.size > MAX_CACHE_SIZE) {
+  if (contextCache.size > CACHE_SIZE.PATH_CONTEXT_MAX) {
     const oldestKey = Array.from(contextCache.entries()).sort(
       (a, b) => a[1].timestamp - b[1].timestamp
     )[0][0];
@@ -158,13 +178,13 @@ export function getAllCacheStats() {
   return {
     paths: {
       size: pathCache.size,
-      maxSize: MAX_CACHE_SIZE,
-      ttlMs: CACHE_TTL_MS,
+      maxSize: CACHE_SIZE.PATH_CONTEXT_MAX,
+      ttlMs: CACHE_TTL.PATH_CONTEXT,
     },
     contexts: {
       size: contextCache.size,
-      maxSize: MAX_CACHE_SIZE,
-      ttlMs: CACHE_TTL_MS,
+      maxSize: CACHE_SIZE.PATH_CONTEXT_MAX,
+      ttlMs: CACHE_TTL.PATH_CONTEXT,
     },
   };
 }

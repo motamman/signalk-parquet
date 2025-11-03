@@ -3,6 +3,8 @@ import * as path from 'path';
 import { Context } from '@signalk/server-api';
 import { DuckDBInstance } from '@duckdb/node-api';
 import { ZonedDateTime } from '@js-joda/core';
+import { debugLogger } from './debug-logger';
+import { CACHE_TTL } from '../config/cache-defaults';
 
 // Cache for parquet file list
 interface FileListCache {
@@ -12,7 +14,6 @@ interface FileListCache {
 }
 
 let fileListCache: FileListCache | null = null;
-const FILE_LIST_CACHE_TTL_MS = 2 * 60 * 1000; // 2 minutes
 
 /**
  * Get available SignalK contexts that have data within a specific time range
@@ -37,16 +38,16 @@ export async function getAvailableContextsForTimeRange(
     if (
       fileListCache &&
       fileListCache.dataDir === dataDir &&
-      now - fileListCache.timestamp < FILE_LIST_CACHE_TTL_MS
+      now - fileListCache.timestamp < CACHE_TTL.FILE_LIST
     ) {
       // Cache hit
       allParquetFiles = fileListCache.files;
-      console.log(
+      debugLogger.log(
         `[Context Discovery] Using cached file list (${allParquetFiles.length} files, age: ${Math.round((now - fileListCache.timestamp) / 1000)}s)`
       );
     } else {
       // Cache miss - scan filesystem
-      console.log(
+      debugLogger.log(
         `[Context Discovery] Scanning filesystem for parquet files...`
       );
       allParquetFiles = await findAllValidParquetFiles(dataDir);
@@ -57,7 +58,7 @@ export async function getAvailableContextsForTimeRange(
         timestamp: now,
         dataDir,
       };
-      console.log(
+      debugLogger.log(
         `[Context Discovery] Cached ${allParquetFiles.length} parquet files`
       );
     }
@@ -66,7 +67,7 @@ export async function getAvailableContextsForTimeRange(
       return [];
     }
 
-    console.log(
+    debugLogger.log(
       `[Context Discovery] Querying ${allParquetFiles.length} parquet files for time range ${fromIso} to ${toIso}`
     );
 
@@ -104,7 +105,7 @@ export async function getAvailableContextsForTimeRange(
       });
 
       const contexts = Array.from(contextSet).sort() as Context[];
-      console.log(
+      debugLogger.log(
         `[Context Discovery] Found ${contexts.length} contexts with data in time range`
       );
 
@@ -113,7 +114,7 @@ export async function getAvailableContextsForTimeRange(
       connection.disconnectSync();
     }
   } catch (error) {
-    console.error('Error scanning contexts:', error);
+    debugLogger.error('Error scanning contexts:', error);
     return [];
   }
 }
@@ -123,7 +124,7 @@ export async function getAvailableContextsForTimeRange(
  */
 export function clearFileListCache(): void {
   fileListCache = null;
-  console.log('[Context Discovery] File list cache cleared');
+  debugLogger.log('[Context Discovery] File list cache cleared');
 }
 
 /**
@@ -162,7 +163,7 @@ async function findAllValidParquetFiles(
       }
     }
   } catch (error) {
-    console.error('Error finding parquet files:', error);
+    debugLogger.error('Error finding parquet files:', error);
   }
 
   return files;

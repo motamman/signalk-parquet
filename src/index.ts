@@ -4,6 +4,7 @@ import { Router } from 'express';
 import { ParquetWriter } from './parquet-writer';
 import { registerHistoryApiRoute } from './HistoryAPI';
 import { registerApiRoutes } from './api-routes';
+import { CACHE_SIZE } from './config/cache-defaults';
 import { HistoricalStreamingService } from './historical-streaming';
 import {
   SignalKPlugin,
@@ -39,6 +40,8 @@ import {
 } from './data-handler';
 import { ServerAPI } from '@signalk/server-api';
 import { DuckDBPool } from './utils/duckdb-pool';
+import { FormulaCache } from './utils/formula-cache';
+import { LRUCache } from './utils/lru-cache';
 
 export default function (app: ServerAPI): SignalKPlugin {
   const plugin: SignalKPlugin = {
@@ -55,7 +58,7 @@ export default function (app: ServerAPI): SignalKPlugin {
   // Plugin state
   const state: PluginState = {
     unsubscribes: [],
-    dataBuffers: new Map(),
+    dataBuffers: new LRUCache<string, import('./types').DataRecord[]>(CACHE_SIZE.DATA_BUFFER_MAX),
     activeRegimens: new Set(),
     subscribedPaths: new Set(),
     saveInterval: undefined,
@@ -67,6 +70,7 @@ export default function (app: ServerAPI): SignalKPlugin {
       registeredCommands: new Map(),
       putHandlers: new Map(),
     },
+    formulaCache: new FormulaCache(),
   };
 
   let currentPaths: PathConfig[] = [];

@@ -9,6 +9,8 @@ import {
 // Re-export SignalK types for convenience
 export { NormalizedDelta, SourceRef };
 import { Request, Response, Router } from 'express';
+import { FormulaCache } from './utils/formula-cache';
+import { LRUCache } from './utils/lru-cache';
 
 // Forward declaration to avoid circular dependency
 export interface SchemaService {
@@ -259,13 +261,13 @@ export interface DataRecord {
   path: string;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   value: any;
-  value_json?: string;
-  source?: string;
+  value_json?: string | object; // Store as object in memory, serialize when writing
+  source?: string | object; // Store as object in memory, serialize when writing
   source_label?: string;
   source_type?: string;
   source_pgn?: number;
   source_src?: string;
-  meta?: string;
+  meta?: string | object; // Store as object in memory, serialize when writing
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   [key: string]: any; // For flattened object properties
 }
@@ -485,7 +487,7 @@ export interface PluginState {
   streamingService?: any; // WebSocket streaming service for runtime control
   streamingEnabled?: boolean; // Runtime control separate from config
   restoredSubscriptions?: Map<string, any>; // Track active subscriptions
-  dataBuffers: Map<string, DataRecord[]>;
+  dataBuffers: LRUCache<string, DataRecord[]>;
   activeRegimens: Set<string>;
   subscribedPaths: Set<string>;
   saveInterval?: NodeJS.Timeout;
@@ -497,6 +499,7 @@ export interface PluginState {
   commandState: CommandRegistrationState;
   // Process management
   currentProcess?: ProcessState;
+  formulaCache?: FormulaCache;
 }
 
 // Parquet Writer Class Interface

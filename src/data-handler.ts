@@ -100,6 +100,12 @@ export function subscribeToCommandPaths(
 
   if (commandPaths.length === 0) return;
 
+  // Create Map for O(1) lookup instead of O(n) .find()
+  // This eliminates O(n²) nested loop on every delta message
+  const commandPathsMap = new Map<string, PathConfig>(
+    commandPaths.map(pathConfig => [pathConfig.path, pathConfig])
+  );
+
   const commandSubscription = {
     context: 'vessels.self' as Context,
     subscribe: commandPaths.map((pathConfig: PathConfig) => ({
@@ -121,9 +127,8 @@ export function subscribeToCommandPaths(
         delta.updates.forEach((update: Update) => {
           if (hasValues(update)) {
             update.values.forEach((valueUpdate: PathValue) => {
-              const pathConfig = commandPaths.find(
-                p => p.path === valueUpdate.path
-              );
+              // O(1) Map lookup instead of O(n) array.find()
+              const pathConfig = commandPathsMap.get(valueUpdate.path);
               if (pathConfig) {
                 handleCommandMessage(valueUpdate, pathConfig, config, update, state, app);
               }
@@ -182,7 +187,7 @@ function handleCommandMessage(
           context: 'vessels.self',
           path: valueUpdate.path,
           value: valueUpdate.value,
-          source: update.source ? JSON.stringify(update.source) : undefined,
+          source: update.source || undefined, // Store as object, serialize at write time
           source_label:
             update.$source ||
             (update.source ? update.source.label : undefined),
@@ -419,12 +424,12 @@ function handleStreamData(
 ): void {
   try {
     // Retrieve metadata for this path
-    let metadata: string | undefined;
+    let metadata: object | undefined;
     try {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pathMetadata = (app as any).getMetadata?.(normalizedDelta.path);
       if (pathMetadata) {
-        metadata = JSON.stringify(pathMetadata);
+        metadata = pathMetadata; // Store as object, serialize at write time
       }
     } catch (error) {
       // Metadata retrieval failed, continue without it
@@ -439,9 +444,7 @@ function handleStreamData(
       path: normalizedDelta.path,
       value: null,
       value_json: undefined,
-      source: normalizedDelta.source
-        ? JSON.stringify(normalizedDelta.source)
-        : undefined,
+      source: normalizedDelta.source || undefined, // Store as object, serialize at write time
       source_label: normalizedDelta.$source || undefined,
       source_type: normalizedDelta.source
         ? normalizedDelta.source.type
@@ -460,7 +463,7 @@ function handleStreamData(
       typeof normalizedDelta.value === 'object' &&
       normalizedDelta.value !== null
     ) {
-      record.value_json = JSON.stringify(normalizedDelta.value);
+      record.value_json = normalizedDelta.value; // Store as object, serialize at write time
       // Extract key properties as columns for easier querying
       Object.entries(normalizedDelta.value).forEach(([key, val]) => {
         if (
@@ -521,7 +524,7 @@ export function saveAllBuffers(config: PluginConfig, state: PluginState, app: Se
       const urnMatch = signalkPath.match(/^([^:]+):/);
       const urn = urnMatch ? urnMatch[1] : 'vessels.self';
       saveBufferToParquet(actualPath, buffer, config, state, app);
-      state.dataBuffers.set(signalkPath, []); // Clear buffer
+      state.dataBuffers.delete(signalkPath); // Delete buffer to free memory
     }
   });
 }
