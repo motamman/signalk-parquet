@@ -651,49 +651,35 @@ export function initializeRegimenStates(
 export async function consolidateMissedDays(config: PluginConfig, state: PluginState, app: ServerAPI): Promise<void> {
   try {
 
-    // Get list of all date directories that exist
     const outputDir = config.outputDirectory;
     if (!(await fs.pathExists(outputDir))) {
       return;
     }
 
-    // Find all non-consolidated files from the last 1 day (excluding today)
     const today = new Date();
     today.setUTCHours(0, 0, 0, 0);
 
-    const sevenDaysAgo = new Date(today);
-    sevenDaysAgo.setUTCDate(today.getUTCDate() - 1);
-
-    const pattern = path.join(outputDir, '**/*.parquet');
-    const files = await glob(pattern);
-
-    // Extract dates from files and find days that need consolidation
+    // Use targeted glob patterns for each date instead of scanning all files
+    // This avoids loading 100k+ files into memory on systems with large histories
     const datesNeedingConsolidation = new Set<string>();
+    const prefix = config.filenamePrefix || 'signalk_data';
+    const daysToCheck = 7; // Check last 7 days for missed consolidations
 
-    for (const file of files) {
-      // Skip already consolidated files
-      if (file.includes('_consolidated.parquet')) {
-        continue;
-      }
+    for (let daysAgo = 1; daysAgo <= daysToCheck; daysAgo++) {
+      const targetDate = new Date(today);
+      targetDate.setUTCDate(today.getUTCDate() - daysAgo);
+      const dateStr = targetDate.toISOString().slice(0, 10); // "2025-07-14"
 
-      // Extract date from filename (format: signalk_data_2025-07-14T1847.parquet)
-      const filename = path.basename(file);
-      const dateMatch = filename.match(
-        /(\d{4})-(\d{2})-(\d{2})T\d{4}\.parquet$/
-      );
+      // Targeted glob: only match files from this specific date
+      const datePattern = path.join(outputDir, `**/${prefix}_${dateStr}T*.parquet`);
+      const filesForDate = await glob(datePattern);
 
-      if (dateMatch) {
-        const year = parseInt(dateMatch[1]);
-        const month = parseInt(dateMatch[2]) - 1; // Month is 0-based
-        const day = parseInt(dateMatch[3]);
-        const fileDate = new Date(year, month, day);
-        fileDate.setUTCHours(0, 0, 0, 0);
+      // Check if there are unconsolidated files for this date
+      const hasUnconsolidatedFiles = filesForDate.some(f => !f.includes('_consolidated.parquet'));
 
-        // Only consolidate if file is from before today and within last 7 days
-        if (fileDate < today && fileDate >= sevenDaysAgo) {
-          const dateStr = `${year}-${month + 1 < 10 ? '0' : ''}${month + 1}-${day < 10 ? '0' : ''}${day}`;
-          datesNeedingConsolidation.add(dateStr);
-        }
+      if (hasUnconsolidatedFiles) {
+        datesNeedingConsolidation.add(dateStr);
+        app.debug(`Found unconsolidated files for ${dateStr}`);
       }
     }
 
@@ -767,29 +753,44 @@ export async function consolidateYesterday(config: PluginConfig, state: PluginSt
 }
 
 // Upload all existing consolidated files to S3 (for catching up after BigInt fix)
+// Uses targeted date patterns to avoid scanning 100k+ files on large datasets
 export async function uploadAllConsolidatedFilesToS3(
   config: PluginConfig,
   state: PluginState,
   app: ServerAPI
 ): Promise<void> {
   try {
-
-    // Find all consolidated parquet files
-    const consolidatedPattern = `**/*_consolidated.parquet`;
-    const consolidatedFiles = await glob(consolidatedPattern, {
-      cwd: config.outputDirectory,
-      absolute: true,
-      nodir: true,
-    });
-
+    const prefix = config.filenamePrefix || 'signalk_data';
+    const daysToCheck = 30; // Check last 30 days for S3 upload catchup
+    const today = new Date();
 
     let uploadedCount = 0;
-    for (const filePath of consolidatedFiles) {
-      const success = await uploadToS3(filePath, config, state, app);
-      if (success) uploadedCount++;
+
+    // Use targeted glob patterns for each date instead of scanning all files
+    for (let daysAgo = 1; daysAgo <= daysToCheck; daysAgo++) {
+      const targetDate = new Date(today);
+      targetDate.setUTCDate(today.getUTCDate() - daysAgo);
+      const dateStr = targetDate.toISOString().slice(0, 10); // "2025-07-14"
+
+      // Targeted glob: only match consolidated files from this specific date
+      const consolidatedPattern = `**/${prefix}_${dateStr}_consolidated.parquet`;
+      const consolidatedFiles = await glob(consolidatedPattern, {
+        cwd: config.outputDirectory,
+        absolute: true,
+        nodir: true,
+      });
+
+      for (const filePath of consolidatedFiles) {
+        const success = await uploadToS3(filePath, config, state, app);
+        if (success) uploadedCount++;
+      }
     }
 
+    if (uploadedCount > 0) {
+      app.debug(`S3 catchup: uploaded ${uploadedCount} consolidated files from last ${daysToCheck} days`);
+    }
   } catch (error) {
+    app.error(`S3 catchup upload failed: ${(error as Error).message}`);
   }
 }
 
