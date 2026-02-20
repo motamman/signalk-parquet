@@ -11,6 +11,7 @@ docs/
 *.csv
 *.json.backup
 *.ts.backup
+.claude
 IMPLEMENTATION_SUMMARY.md
 FLEXIBLE_SCHEMA_PLAN.md
 TESTING.md

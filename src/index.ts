@@ -42,6 +42,7 @@ import { ServerAPI } from '@signalk/server-api';
 import { DuckDBPool } from './utils/duckdb-pool';
 import { FormulaCache } from './utils/formula-cache';
 import { LRUCache } from './utils/lru-cache';
+import { registerHistoryApiProvider, unregisterHistoryApiProvider } from './history-provider';
 
 export default function (app: ServerAPI): SignalKPlugin {
   const plugin: SignalKPlugin = {
@@ -221,6 +222,19 @@ export default function (app: ServerAPI): SignalKPlugin {
       app.error(`Failed to register History API routes with main server: ${error}`);
     }
 
+    // Register as the official SignalK History API provider
+    // This allows other plugins to discover and use our history implementation
+    try {
+      registerHistoryApiProvider(
+        app,
+        app.selfId,
+        state.currentConfig.outputDirectory,
+        app.debug
+      );
+    } catch (error) {
+      app.error(`Failed to register as History API provider: ${error}`);
+    }
+
     // Initialize historical streaming service (for history API endpoints)
     try {
       state.historicalStreamingService = new HistoricalStreamingService(app, state.currentConfig.outputDirectory);
@@ -254,6 +268,9 @@ export default function (app: ServerAPI): SignalKPlugin {
   };
 
   plugin.stop = async function (): Promise<void> {
+
+    // Unregister as History API provider
+    unregisterHistoryApiProvider(app);
 
     // Stop threshold monitoring system
     stopThresholdMonitoring();
