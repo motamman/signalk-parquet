@@ -103,6 +103,7 @@ export interface PathSpec {
   queryResultName: string;
   aggregateMethod: AggregateMethod;
   aggregateFunction: string;
+  parameter?: string[];  // For sma:5 or ema:0.2 - contains ['5'] or ['0.2']
 }
 
 // Unit conversion types
