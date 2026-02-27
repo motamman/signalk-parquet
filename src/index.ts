@@ -46,6 +46,7 @@ import { registerHistoryApiProvider, unregisterHistoryApiProvider } from './hist
 import { SQLiteBuffer } from './utils/sqlite-buffer';
 import { ParquetExportService } from './services/parquet-export-service';
 import { AggregationService } from './services/aggregation-service';
+import { AutoDiscoveryService } from './services/auto-discovery';
 
 export default function (app: ServerAPI): SignalKPlugin {
   const plugin: SignalKPlugin = {
@@ -133,6 +134,13 @@ export default function (app: ServerAPI): SignalKPlugin {
       exportIntervalMinutes: options?.exportIntervalMinutes || 5,
       bufferRetentionHours: options?.bufferRetentionHours || 24,
       useHivePartitioning: options?.useHivePartitioning ?? false,
+      // Auto-discovery configuration
+      autoDiscovery: options?.autoDiscovery || {
+        enabled: false,
+        requireLiveData: true,
+        maxAutoConfiguredPaths: 100,
+        excludePatterns: ['design.*', 'communication.*', 'notifications.*'],
+      },
     };
 
     // Load webapp configuration including commands
@@ -281,6 +289,22 @@ export default function (app: ServerAPI): SignalKPlugin {
       }, 10000); // Wait 10 seconds after startup to avoid conflicts
     }
 
+    // Initialize auto-discovery service if enabled
+    let autoDiscoveryService: AutoDiscoveryService | undefined;
+    if (state.currentConfig?.autoDiscovery?.enabled) {
+      autoDiscoveryService = new AutoDiscoveryService(
+        app,
+        state.currentConfig,
+        state,
+        currentPaths
+      );
+
+      // Recover counter from existing auto-discovered paths
+      const existingAutoDiscovered = currentPaths.filter(p => p.autoDiscovered).length;
+      autoDiscoveryService.setInitialCount(existingAutoDiscovered);
+      app.debug(`Auto-discovery service initialized with ${existingAutoDiscovered} existing auto-discovered paths`);
+    }
+
     // Register History API routes directly with the main app
     try {
       registerHistoryApiRoute(
@@ -291,7 +315,8 @@ export default function (app: ServerAPI): SignalKPlugin {
         app,
         state.currentConfig.unitConversionCacheMinutes || 5, // Default to 5 minutes
         state.sqliteBuffer, // Pass SQLite buffer for federated queries
-        state.currentConfig.exportIntervalMinutes || 5 // Export interval for buffer cutoff
+        state.currentConfig.exportIntervalMinutes || 5, // Export interval for buffer cutoff
+        autoDiscoveryService // Pass auto-discovery service
       );
     } catch (error) {
       app.error(`Failed to register History API routes with main server: ${error}`);
@@ -517,6 +542,42 @@ export default function (app: ServerAPI): SignalKPlugin {
         title: 'Use Hive Partitioning (Experimental)',
         description: 'Use Hive-style partitioning for Parquet files (tier/context/path/year/day structure). Enables efficient time-range queries.',
         default: false,
+      },
+      autoDiscovery: {
+        type: 'object',
+        title: 'Auto-Discovery',
+        description: 'Automatically configure paths for recording when historical data is requested but not available',
+        properties: {
+          enabled: {
+            type: 'boolean',
+            title: 'Enable auto-discovery',
+            description: 'When enabled, paths requested via history API that are not being recorded will be automatically configured',
+            default: false,
+          },
+          maxAutoConfiguredPaths: {
+            type: 'number',
+            title: 'Max auto-configured paths',
+            description: 'Maximum number of paths that can be auto-configured to prevent runaway configuration',
+            default: 100,
+            minimum: 1,
+            maximum: 1000,
+          },
+          requireLiveData: {
+            type: 'boolean',
+            title: 'Require live data',
+            description: 'Only auto-configure paths that have live data in SignalK',
+            default: true,
+          },
+          excludePatterns: {
+            type: 'array',
+            title: 'Exclude patterns',
+            description: 'Glob patterns for paths that should never be auto-configured',
+            items: {
+              type: 'string',
+            },
+            default: ['design.*', 'communication.*', 'notifications.*'],
+          },
+        },
       },
       s3Upload: {
         type: 'object',

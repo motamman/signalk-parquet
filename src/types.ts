@@ -32,6 +32,15 @@ export interface SignalKPlugin {
 }
 
 // Plugin Configuration
+// Auto-discovery configuration for automatic path recording
+export interface AutoDiscoveryConfig {
+  enabled: boolean;                    // Master switch (default: false)
+  excludePatterns?: string[];          // Paths to never auto-configure (glob patterns)
+  includePatterns?: string[];          // Restrict to matching paths only (glob patterns)
+  maxAutoConfiguredPaths?: number;     // Limit (default: 100)
+  requireLiveData: boolean;            // Only configure if path has live SignalK data
+}
+
 export interface PluginConfig {
   bufferSize: number;
   saveIntervalSeconds: number;
@@ -54,6 +63,7 @@ export interface PluginConfig {
   exportIntervalMinutes?: number; // How often to export from SQLite to Parquet (default 5)
   bufferRetentionHours?: number; // How long to keep exported records in SQLite (default 24)
   useHivePartitioning?: boolean; // Use Hive-style partitioning for Parquet files
+  autoDiscovery?: AutoDiscoveryConfig; // Auto-discovery configuration
 }
 
 import type { ClaudeModel } from './claude-models';
@@ -133,6 +143,7 @@ export interface PathConfig {
   source?: string;
   context?: Context;
   excludeMMSI?: string[]; // Array of MMSI numbers to exclude when using vessels.*
+  autoDiscovered?: boolean; // Track which paths were auto-discovered
 }
 
 // Command Registration Types

@@ -24,6 +24,7 @@ import { ConcurrencyLimiter } from './utils/concurrency-limiter';
 import { CONCURRENCY } from './config/cache-defaults';
 import { SQLiteBufferInterface, DataRecord } from './types';
 import { HivePathBuilder, AggregationTier } from './utils/hive-path-builder';
+import { AutoDiscoveryService, AutoDiscoveryResult } from './services/auto-discovery';
 
 // ============================================================================
 // Unit Conversion Helper Functions
@@ -267,12 +268,13 @@ export function registerHistoryApiRoute(
   app: any,
   unitConversionCacheMinutes: number = 5,
   sqliteBuffer?: SQLiteBufferInterface,
-  exportIntervalMinutes: number = 5
+  exportIntervalMinutes: number = 5,
+  autoDiscoveryService?: AutoDiscoveryService
 ) {
   // Set the cache TTL from configuration
   CONVERSIONS_CACHE_TTL_MS = unitConversionCacheMinutes * 60 * 1000;
   console.log(`[Unit Conversion] Cache TTL set to ${unitConversionCacheMinutes} minutes`);
-  const historyApi = new HistoryAPI(selfId, dataDir, sqliteBuffer, exportIntervalMinutes);
+  const historyApi = new HistoryAPI(selfId, dataDir, sqliteBuffer, exportIntervalMinutes, autoDiscoveryService);
   router.get('/signalk/v1/history/values', (req: Request, res: Response) => {
     const { from, to, context, shouldRefresh } = getRequestParams(
       req as FromToContextRequest,
@@ -624,17 +626,27 @@ export class HistoryAPI {
   private sqliteBuffer?: SQLiteBufferInterface;
   private exportIntervalMinutes: number;
   private hivePathBuilder: HivePathBuilder;
+  private autoDiscoveryService?: AutoDiscoveryService;
 
   constructor(
     private selfId: string,
     private dataDir: string,
     sqliteBuffer?: SQLiteBufferInterface,
-    exportIntervalMinutes: number = 5
+    exportIntervalMinutes: number = 5,
+    autoDiscoveryService?: AutoDiscoveryService
   ) {
     this.selfContextPath = toContextFilePath(`vessels.${selfId}` as Context);
     this.sqliteBuffer = sqliteBuffer;
     this.exportIntervalMinutes = exportIntervalMinutes;
     this.hivePathBuilder = new HivePathBuilder();
+    this.autoDiscoveryService = autoDiscoveryService;
+  }
+
+  /**
+   * Set the auto-discovery service
+   */
+  setAutoDiscoveryService(service: AutoDiscoveryService | undefined): void {
+    this.autoDiscoveryService = service;
   }
 
   /**
@@ -839,6 +851,45 @@ export class HistoryAPI {
             values: [],
             data: [],
           };
+
+      // Check for auto-discovery on paths with no data
+      if (this.autoDiscoveryService && pathSpecs.length > 0) {
+        const autoConfiguredPaths: AutoDiscoveryResult[] = [];
+
+        for (let i = 0; i < pathSpecs.length; i++) {
+          const pathSpec = pathSpecs[i];
+          // Check if this path has any data in the result
+          // Data array format: [timestamp, value1, value2, ...]
+          // Each path corresponds to a position in the values array
+          const hasData = allResult.data.some(row => {
+            const valueIndex = i + 1; // +1 because index 0 is timestamp
+            return row[valueIndex] !== null && row[valueIndex] !== undefined;
+          });
+
+          if (!hasData) {
+            debug(`[AutoDiscovery] No data found for path ${pathSpec.path}, checking auto-discovery`);
+            const result = await this.autoDiscoveryService.maybeAutoConfigurePath(
+              pathSpec.path as Path,
+              context
+            );
+            if (result.configured) {
+              autoConfiguredPaths.push(result);
+              debug(`[AutoDiscovery] Auto-configured path: ${pathSpec.path}`);
+            } else {
+              debug(`[AutoDiscovery] Path ${pathSpec.path} not auto-configured: ${result.reason}`);
+            }
+          }
+        }
+
+        // Add meta to response if any paths were auto-configured
+        if (autoConfiguredPaths.length > 0) {
+          allResult.meta = {
+            autoConfigured: true,
+            paths: autoConfiguredPaths.map(r => r.path),
+            message: `${autoConfiguredPaths.length} path(s) auto-configured for recording. Data will be available shortly.`,
+          };
+        }
+      }
 
       // Apply unit conversions if requested
       if (convertUnits) {

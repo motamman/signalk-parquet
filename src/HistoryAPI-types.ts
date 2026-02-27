@@ -35,6 +35,11 @@ export interface DataResult {
     offset: string;
     description: string;
   };
+  meta?: {
+    autoConfigured: boolean;
+    paths: string[];
+    message: string;
+  };
 }
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 const _demo: DataResult = {
