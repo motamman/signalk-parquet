@@ -43,6 +43,8 @@ import { DuckDBPool } from './utils/duckdb-pool';
 import { FormulaCache } from './utils/formula-cache';
 import { LRUCache } from './utils/lru-cache';
 import { registerHistoryApiProvider, unregisterHistoryApiProvider } from './history-provider';
+import { SQLiteBuffer } from './utils/sqlite-buffer';
+import { ParquetExportService } from './services/parquet-export-service';
 
 export default function (app: ServerAPI): SignalKPlugin {
   const plugin: SignalKPlugin = {
@@ -125,6 +127,11 @@ export default function (app: ServerAPI): SignalKPlugin {
         setCurrentLocation: false,
       },
       // enableStreaming: options?.enableStreaming ?? false,
+      // SQLite buffer options (new)
+      useSqliteBuffer: options?.useSqliteBuffer ?? false,
+      exportIntervalMinutes: options?.exportIntervalMinutes || 5,
+      bufferRetentionHours: options?.bufferRetentionHours || 24,
+      useHivePartitioning: options?.useHivePartitioning ?? false,
     };
 
     // Load webapp configuration including commands
@@ -137,6 +144,33 @@ export default function (app: ServerAPI): SignalKPlugin {
       format: state.currentConfig.fileFormat,
       app: app,
     });
+
+    // Initialize SQLite buffer if enabled
+    if (state.currentConfig.useSqliteBuffer) {
+      const dbPath = path.join(state.currentConfig.outputDirectory, 'buffer.db');
+      state.sqliteBuffer = new SQLiteBuffer({
+        dbPath,
+        maxBatchSize: state.currentConfig.bufferSize,
+        retentionHours: state.currentConfig.bufferRetentionHours,
+      });
+      app.debug(`SQLite buffer initialized at ${dbPath}`);
+
+      // Initialize export service
+      state.exportService = new ParquetExportService(
+        state.sqliteBuffer as SQLiteBuffer,
+        state.parquetWriter,
+        {
+          exportIntervalMinutes: state.currentConfig.exportIntervalMinutes!,
+          outputDirectory: state.currentConfig.outputDirectory,
+          filenamePrefix: state.currentConfig.filenamePrefix,
+          useHivePartitioning: state.currentConfig.useHivePartitioning!,
+          s3Upload: state.currentConfig.s3Upload,
+        },
+        app
+      );
+      state.exportService.start();
+      app.debug('Parquet export service started');
+    }
 
     // Initialize S3 client if enabled
     await initializeS3(state.currentConfig, app);
@@ -216,7 +250,9 @@ export default function (app: ServerAPI): SignalKPlugin {
         state.currentConfig.outputDirectory,
         app.debug,
         app,
-        state.currentConfig.unitConversionCacheMinutes || 5 // Default to 5 minutes
+        state.currentConfig.unitConversionCacheMinutes || 5, // Default to 5 minutes
+        state.sqliteBuffer, // Pass SQLite buffer for federated queries
+        state.currentConfig.exportIntervalMinutes || 5 // Export interval for buffer cutoff
       );
     } catch (error) {
       app.error(`Failed to register History API routes with main server: ${error}`);
@@ -286,6 +322,28 @@ export default function (app: ServerAPI): SignalKPlugin {
     // Save any remaining buffered data
     if (state.currentConfig) {
       saveAllBuffers(state.currentConfig, state, app);
+    }
+
+    // Stop export service and flush SQLite buffer
+    if (state.exportService) {
+      try {
+        state.exportService.stop();
+        // Force final export of pending records
+        await state.exportService.forceExport();
+        app.debug('Parquet export service stopped');
+      } catch (error) {
+        app.error(`Error stopping export service: ${error}`);
+      }
+    }
+
+    // Close SQLite buffer
+    if (state.sqliteBuffer) {
+      try {
+        state.sqliteBuffer.close();
+        app.debug('SQLite buffer closed');
+      } catch (error) {
+        app.error(`Error closing SQLite buffer: ${error}`);
+      }
     }
 
     // Unsubscribe from all paths
@@ -392,6 +450,34 @@ export default function (app: ServerAPI): SignalKPlugin {
         default: 5,
         minimum: 1,
         maximum: 60,
+      },
+      useSqliteBuffer: {
+        type: 'boolean',
+        title: 'Use SQLite Buffer (Experimental)',
+        description: 'Use SQLite WAL buffer for crash-safe data ingestion instead of in-memory buffer. Provides better durability and crash recovery.',
+        default: false,
+      },
+      exportIntervalMinutes: {
+        type: 'number',
+        title: 'Export Interval (minutes)',
+        description: 'How often to export data from SQLite buffer to Parquet files. Only used when SQLite buffer is enabled.',
+        default: 5,
+        minimum: 1,
+        maximum: 60,
+      },
+      bufferRetentionHours: {
+        type: 'number',
+        title: 'Buffer Retention (hours)',
+        description: 'How long to keep exported records in SQLite buffer before cleanup. Only used when SQLite buffer is enabled.',
+        default: 24,
+        minimum: 1,
+        maximum: 168,
+      },
+      useHivePartitioning: {
+        type: 'boolean',
+        title: 'Use Hive Partitioning (Experimental)',
+        description: 'Use Hive-style partitioning for Parquet files (tier/context/path/year/day structure). Enables efficient time-range queries.',
+        default: false,
       },
       s3Upload: {
         type: 'object',

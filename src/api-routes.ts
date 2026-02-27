@@ -31,6 +31,8 @@ import {
 } from './types';
 import { SchemaService } from './schema-service';
 import { ProcessType, ProcessState, ProcessStatusApiResponse, ProcessCancelApiResponse } from './types';
+import { MigrationService } from './services/migration-service';
+import { AggregationTier } from './utils/hive-path-builder';
 import {
   loadWebAppConfig,
   saveWebAppConfig,
@@ -3058,5 +3060,234 @@ export function registerApiRoutes(
       }
     }
   );
+
+  // ===========================================
+  // SQLITE BUFFER API ROUTES
+  // ===========================================
+
+  // Get buffer statistics
+  router.get('/api/buffer/stats', (_req, res) => {
+    try {
+      if (!state.sqliteBuffer) {
+        return res.json({
+          success: true,
+          enabled: false,
+          message: 'SQLite buffer is not enabled'
+        });
+      }
+
+      const stats = state.sqliteBuffer.getStats();
+      const exportStatus = state.exportService?.getStatus();
+
+      return res.json({
+        success: true,
+        enabled: true,
+        stats,
+        exportService: exportStatus
+      });
+    } catch (error) {
+      return res.status(500).json({
+        success: false,
+        error: (error as Error).message
+      });
+    }
+  });
+
+  // Force export pending records
+  router.post('/api/buffer/export', async (_req, res) => {
+    try {
+      if (!state.exportService) {
+        return res.status(400).json({
+          success: false,
+          error: 'SQLite buffer is not enabled'
+        });
+      }
+
+      const result = await state.exportService.forceExport();
+      return res.json({
+        success: true,
+        ...result
+      });
+    } catch (error) {
+      return res.status(500).json({
+        success: false,
+        error: (error as Error).message
+      });
+    }
+  });
+
+  // Buffer health check
+  router.get('/api/buffer/health', (_req, res) => {
+    try {
+      if (!state.exportService) {
+        return res.json({
+          success: true,
+          enabled: false,
+          healthy: true,
+          message: 'SQLite buffer is not enabled (using in-memory buffer)'
+        });
+      }
+
+      const health = state.exportService.getHealth();
+      return res.json({
+        success: true,
+        enabled: true,
+        ...health
+      });
+    } catch (error) {
+      return res.status(500).json({
+        success: false,
+        error: (error as Error).message
+      });
+    }
+  });
+
+  // ===========================================
+  // MIGRATION API ROUTES
+  // ===========================================
+
+  const migrationService = new MigrationService(app);
+
+  // Scan for files to migrate
+  router.post('/api/migrate/scan', async (req, res) => {
+    try {
+      const { sourceDirectory } = req.body;
+      const source = sourceDirectory || getDataDir();
+
+      const result = await migrationService.scan(source);
+
+      // Convert Map to array for JSON serialization
+      const byPathArray = Array.from(result.byPath.entries()).map(([path, stats]) => ({
+        path,
+        ...stats
+      }));
+
+      return res.json({
+        success: true,
+        totalFiles: result.totalFiles,
+        totalSize: result.totalSize,
+        totalSizeMB: (result.totalSize / 1024 / 1024).toFixed(2),
+        byPath: byPathArray,
+        estimatedTimeSeconds: result.estimatedTime,
+        sourceStyle: result.sourceStyle
+      });
+    } catch (error) {
+      return res.status(500).json({
+        success: false,
+        error: (error as Error).message
+      });
+    }
+  });
+
+  // Start migration
+  router.post('/api/migrate', async (req, res) => {
+    try {
+      const {
+        sourceDirectory,
+        targetDirectory,
+        targetTier = 'raw',
+        deleteSource = false
+      } = req.body;
+
+      const source = sourceDirectory || getDataDir();
+      const target = targetDirectory || getDataDir();
+
+      // Validate tier
+      const validTiers: AggregationTier[] = ['raw', '5s', '60s', '1h'];
+      if (!validTiers.includes(targetTier)) {
+        return res.status(400).json({
+          success: false,
+          error: `Invalid tier: ${targetTier}. Must be one of: ${validTiers.join(', ')}`
+        });
+      }
+
+      const jobId = await migrationService.migrate({
+        sourceDirectory: source,
+        targetDirectory: target,
+        targetTier,
+        deleteSourceAfterMigration: deleteSource
+      });
+
+      return res.json({
+        success: true,
+        jobId,
+        message: 'Migration started'
+      });
+    } catch (error) {
+      return res.status(500).json({
+        success: false,
+        error: (error as Error).message
+      });
+    }
+  });
+
+  // Get migration progress
+  router.get('/api/migrate/progress/:jobId', (req, res) => {
+    try {
+      const { jobId } = req.params;
+      const progress = migrationService.getProgress(jobId);
+
+      if (!progress) {
+        return res.status(404).json({
+          success: false,
+          error: 'Migration job not found'
+        });
+      }
+
+      return res.json({
+        success: true,
+        ...progress,
+        bytesProcessedMB: (progress.bytesProcessed / 1024 / 1024).toFixed(2)
+      });
+    } catch (error) {
+      return res.status(500).json({
+        success: false,
+        error: (error as Error).message
+      });
+    }
+  });
+
+  // Cancel migration
+  router.post('/api/migrate/cancel/:jobId', (req, res) => {
+    try {
+      const { jobId } = req.params;
+      const cancelled = migrationService.cancel(jobId);
+
+      if (!cancelled) {
+        return res.status(400).json({
+          success: false,
+          error: 'Migration job not found or not running'
+        });
+      }
+
+      return res.json({
+        success: true,
+        message: 'Cancellation requested'
+      });
+    } catch (error) {
+      return res.status(500).json({
+        success: false,
+        error: (error as Error).message
+      });
+    }
+  });
+
+  // List all migration jobs
+  router.get('/api/migrate/jobs', (_req, res) => {
+    try {
+      const jobIds = migrationService.getJobIds();
+      const jobs = jobIds.map(id => migrationService.getProgress(id)).filter(Boolean);
+
+      return res.json({
+        success: true,
+        jobs
+      });
+    } catch (error) {
+      return res.status(500).json({
+        success: false,
+        error: (error as Error).message
+      });
+    }
+  });
 
 }

@@ -22,6 +22,7 @@ import { getPathComponentSchema, PathComponentSchema, ComponentInfo } from './ut
 import { FormulaCache } from './utils/formula-cache';
 import { ConcurrencyLimiter } from './utils/concurrency-limiter';
 import { CONCURRENCY } from './config/cache-defaults';
+import { SQLiteBufferInterface, DataRecord } from './types';
 
 // ============================================================================
 // Unit Conversion Helper Functions
@@ -263,12 +264,14 @@ export function registerHistoryApiRoute(
   dataDir: string,
   debug: (k: string) => void,
   app: any,
-  unitConversionCacheMinutes: number = 5
+  unitConversionCacheMinutes: number = 5,
+  sqliteBuffer?: SQLiteBufferInterface,
+  exportIntervalMinutes: number = 5
 ) {
   // Set the cache TTL from configuration
   CONVERSIONS_CACHE_TTL_MS = unitConversionCacheMinutes * 60 * 1000;
   console.log(`[Unit Conversion] Cache TTL set to ${unitConversionCacheMinutes} minutes`);
-  const historyApi = new HistoryAPI(selfId, dataDir);
+  const historyApi = new HistoryAPI(selfId, dataDir, sqliteBuffer, exportIntervalMinutes);
   router.get('/signalk/v1/history/values', (req: Request, res: Response) => {
     const { from, to, context, shouldRefresh } = getRequestParams(
       req as FromToContextRequest,
@@ -617,11 +620,114 @@ function getContext(contextFromQuery: string | undefined, selfId: string): Conte
 
 export class HistoryAPI {
   readonly selfContextPath: string;
+  private sqliteBuffer?: SQLiteBufferInterface;
+  private exportIntervalMinutes: number;
+
   constructor(
     private selfId: string,
-    private dataDir: string
+    private dataDir: string,
+    sqliteBuffer?: SQLiteBufferInterface,
+    exportIntervalMinutes: number = 5
   ) {
     this.selfContextPath = toContextFilePath(`vessels.${selfId}` as Context);
+    this.sqliteBuffer = sqliteBuffer;
+    this.exportIntervalMinutes = exportIntervalMinutes;
+  }
+
+  /**
+   * Set the SQLite buffer for federated queries
+   */
+  setSqliteBuffer(buffer: SQLiteBufferInterface | undefined): void {
+    this.sqliteBuffer = buffer;
+  }
+
+  /**
+   * Query recent data from SQLite buffer (within export interval)
+   * Returns records for a specific context and path
+   */
+  private getRecentBufferData(
+    context: Context,
+    signalkPath: Path,
+    from: ZonedDateTime,
+    to: ZonedDateTime,
+    debug: (k: string) => void
+  ): DataRecord[] {
+    if (!this.sqliteBuffer) {
+      return [];
+    }
+
+    const cutoffTime = new Date();
+    cutoffTime.setMinutes(cutoffTime.getMinutes() - this.exportIntervalMinutes);
+
+    // Only query buffer if 'to' time is recent (within export interval)
+    const toDate = new Date(to.toInstant().toString());
+    if (toDate < cutoffTime) {
+      debug(`Query end time ${toDate.toISOString()} is before buffer cutoff ${cutoffTime.toISOString()}, skipping buffer query`);
+      return [];
+    }
+
+    // Adjust 'from' to be at least the cutoff time for buffer query
+    const fromDate = new Date(from.toInstant().toString());
+    const bufferFrom = fromDate > cutoffTime ? fromDate : cutoffTime;
+
+    debug(`Querying SQLite buffer for recent data: ${context}:${signalkPath} from ${bufferFrom.toISOString()}`);
+
+    try {
+      const records = this.sqliteBuffer.getRecordsForPath(
+        context,
+        signalkPath,
+        bufferFrom.toISOString(),
+        toDate.toISOString()
+      );
+      debug(`Found ${records.length} records in SQLite buffer`);
+      return records;
+    } catch (error) {
+      debug(`Error querying SQLite buffer: ${(error as Error).message}`);
+      return [];
+    }
+  }
+
+  /**
+   * Merge parquet results with buffer results, removing duplicates by timestamp
+   */
+  private mergeWithBufferData(
+    parquetData: Array<[Timestamp, unknown]>,
+    bufferRecords: DataRecord[],
+    debug: (k: string) => void
+  ): Array<[Timestamp, unknown]> {
+    if (bufferRecords.length === 0) {
+      return parquetData;
+    }
+
+    // Convert buffer records to the same format
+    const bufferData: Array<[Timestamp, unknown]> = bufferRecords.map(record => {
+      const timestamp = record.signalk_timestamp as Timestamp;
+      const value = record.value_json
+        ? (typeof record.value_json === 'string' ? JSON.parse(record.value_json) : record.value_json)
+        : record.value;
+      return [timestamp, value];
+    });
+
+    // Create a map of parquet data by timestamp for deduplication
+    const resultMap = new Map<string, [Timestamp, unknown]>();
+
+    // Add parquet data first
+    for (const [timestamp, value] of parquetData) {
+      resultMap.set(timestamp, [timestamp, value]);
+    }
+
+    // Add buffer data (will overwrite parquet data if same timestamp)
+    for (const [timestamp, value] of bufferData) {
+      resultMap.set(timestamp, [timestamp, value]);
+    }
+
+    // Sort by timestamp and return
+    const merged = Array.from(resultMap.values()).sort((a, b) =>
+      a[0].localeCompare(b[0])
+    );
+
+    debug(`Merged ${parquetData.length} parquet + ${bufferRecords.length} buffer records = ${merged.length} total`);
+    return merged;
   }
   async getValues(
     context: Context,
@@ -800,7 +906,15 @@ export class HistoryAPI {
                 return [timestamp, reconstructedObject];
               });
 
-              allData[pathSpec.path] = pathData;
+              // Merge with SQLite buffer data for recent records (federated query)
+              const bufferRecords = this.getRecentBufferData(
+                context,
+                pathSpec.path as Path,
+                from,
+                to,
+                debug
+              );
+              allData[pathSpec.path] = this.mergeWithBufferData(pathData, bufferRecords, debug);
 
             } else {
               // Scalar path - use original logic
@@ -854,7 +968,15 @@ export class HistoryAPI {
                 }
               );
 
-              allData[pathSpec.path] = pathData;
+              // Merge with SQLite buffer data for recent records (federated query)
+              const bufferRecords = this.getRecentBufferData(
+                context,
+                pathSpec.path as Path,
+                from,
+                to,
+                debug
+              );
+              allData[pathSpec.path] = this.mergeWithBufferData(pathData, bufferRecords, debug);
             }
           } finally {
             connection.disconnectSync();
@@ -862,7 +984,20 @@ export class HistoryAPI {
         } catch (error) {
           console.error(`[HistoryAPI] Error querying path ${pathSpec.path}:`, error);
           debug(`Error querying path ${pathSpec.path}: ${error}`);
-          allData[pathSpec.path] = [];
+
+          // Even if parquet query fails, try to get buffer data
+          const bufferRecords = this.getRecentBufferData(
+            context,
+            pathSpec.path as Path,
+            from,
+            to,
+            debug
+          );
+          if (bufferRecords.length > 0) {
+            allData[pathSpec.path] = this.mergeWithBufferData([], bufferRecords, debug);
+          } else {
+            allData[pathSpec.path] = [];
+          }
         }
     });
 

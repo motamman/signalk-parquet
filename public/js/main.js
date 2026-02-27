@@ -44,6 +44,13 @@ function showTab(tabId) {
   if (tabId === 'liveConnections') {
     LiveConnections.loadStreams();
   }
+
+  if (tabId === 'migration') {
+    // Refresh buffer status when migration tab is shown
+    if (typeof window.refreshBufferStatus === 'function') {
+      window.refreshBufferStatus();
+    }
+  }
 }
 
 registerGlobals({

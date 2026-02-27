@@ -49,6 +49,11 @@ export interface PluginConfig {
     setCurrentLocation: boolean;
   };
   unitConversionCacheMinutes?: number; // Cache duration for unit conversions from signalk-units-preference
+  // SQLite buffer and Hive partitioning options
+  useSqliteBuffer?: boolean; // Use SQLite WAL buffer instead of in-memory LRU
+  exportIntervalMinutes?: number; // How often to export from SQLite to Parquet (default 5)
+  bufferRetentionHours?: number; // How long to keep exported records in SQLite (default 24)
+  useHivePartitioning?: boolean; // Use Hive-style partitioning for Parquet files
 }
 
 import type { ClaudeModel } from './claude-models';
@@ -479,6 +484,56 @@ export interface ProcessState {
   abortController?: AbortController;
 }
 
+// Forward declaration for SQLiteBuffer to avoid circular dependency
+export interface SQLiteBufferInterface {
+  insert(record: DataRecord): void;
+  insertBatch(records: DataRecord[]): void;
+  getPendingRecords(limit?: number): unknown[];
+  getPendingRecordsGrouped(limit?: number): Map<string, DataRecord[]>;
+  markAsExported(recordIds: number[], batchId: string): void;
+  cleanup(): number;
+  getStats(): {
+    totalRecords: number;
+    pendingRecords: number;
+    exportedRecords: number;
+    oldestPendingTimestamp: string | null;
+    newestRecordTimestamp: string | null;
+    dbSizeBytes: number;
+    walSizeBytes: number;
+  };
+  getPendingCount(): number;
+  getRecordsForPath(context: string, signalkPath: string, from?: string, to?: string): DataRecord[];
+  getDbPath(): string;
+  close(): void;
+}
+
+// Forward declaration for ParquetExportService to avoid circular dependency
+export interface ParquetExportServiceInterface {
+  start(): void;
+  stop(): void;
+  forceExport(): Promise<{
+    batchId: string;
+    recordsExported: number;
+    filesCreated: string[];
+    duration: number;
+    errors: string[];
+  }>;
+  getStatus(): {
+    isRunning: boolean;
+    isExporting: boolean;
+    lastExportTime: Date | null;
+    totalExported: number;
+    pendingRecords: number;
+    exportIntervalMinutes: number;
+  };
+  getHealth(): {
+    healthy: boolean;
+    lastExportTime: Date | null;
+    pendingRecords: number;
+    bufferStats: ReturnType<SQLiteBufferInterface['getStats']>;
+  };
+}
+
 export interface PluginState {
   unsubscribes: Array<() => void>;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -500,6 +555,9 @@ export interface PluginState {
   // Process management
   currentProcess?: ProcessState;
   formulaCache?: FormulaCache;
+  // SQLite buffer and export service (new)
+  sqliteBuffer?: SQLiteBufferInterface;
+  exportService?: ParquetExportServiceInterface;
 }
 
 // Parquet Writer Class Interface

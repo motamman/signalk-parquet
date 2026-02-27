@@ -494,6 +494,13 @@ function bufferData(
   state: PluginState,
   app: ServerAPI
 ): void {
+  // Use SQLite buffer if enabled
+  if (config.useSqliteBuffer && state.sqliteBuffer) {
+    state.sqliteBuffer.insert(record);
+    return;
+  }
+
+  // Fall back to LRU cache (legacy behavior)
   if (!state.dataBuffers.has(signalkPath)) {
     state.dataBuffers.set(signalkPath, []);
   }
