@@ -497,6 +497,7 @@ export interface ProcessState {
 
 // Forward declaration for SQLiteBuffer to avoid circular dependency
 export interface SQLiteBufferInterface {
+  isOpen(): boolean;
   insert(record: DataRecord): void;
   insertBatch(records: DataRecord[]): void;
   getPendingRecords(limit?: number): unknown[];
@@ -569,6 +570,9 @@ export interface PluginState {
   // SQLite buffer and export service (new)
   sqliteBuffer?: SQLiteBufferInterface;
   exportService?: ParquetExportServiceInterface;
+  // Auto-discovery service
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  autoDiscoveryService?: any; // AutoDiscoveryService - avoiding circular import
 }
 
 // Parquet Writer Class Interface

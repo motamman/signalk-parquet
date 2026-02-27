@@ -21,6 +21,7 @@ export class AutoDiscoveryService {
   private pluginConfig: PluginConfig;
   private state: PluginState;
   private currentPaths: PathConfig[];
+  private configurationLock: Promise<void> = Promise.resolve();
 
   constructor(
     app: ServerAPI,
@@ -61,21 +62,53 @@ export class AutoDiscoveryService {
   /**
    * Main entry point: attempt to auto-configure a path if conditions are met.
    * Called when a query returns no data for a path.
+   * Uses a lock to prevent race conditions on concurrent requests.
    */
   async maybeAutoConfigurePath(
     path: Path,
     context: Context
   ): Promise<AutoDiscoveryResult> {
+    // Serialize all auto-discovery operations to prevent race conditions
+    return new Promise((resolve) => {
+      this.configurationLock = this.configurationLock
+        .then(async () => {
+          const result = await this.doAutoConfigurePath(path, context);
+          resolve(result);
+        })
+        .catch((error) => {
+          // Ensure errors don't break the chain, but still resolve with failure
+          this.app.error(`[AutoDiscovery] Lock chain error for ${path}: ${error}`);
+          resolve({
+            configured: false,
+            path,
+            reason: `Lock error: ${(error as Error).message}`,
+          });
+        });
+    });
+  }
+
+  /**
+   * Internal implementation of auto-configure logic.
+   * Must only be called through the lock in maybeAutoConfigurePath.
+   */
+  private async doAutoConfigurePath(
+    path: Path,
+    context: Context
+  ): Promise<AutoDiscoveryResult> {
+    this.app.debug(`[AutoDiscovery] doAutoConfigurePath called for ${path} in context ${context}`);
     const config = this.pluginConfig.autoDiscovery;
 
     // Check if auto-discovery is enabled
     if (!config?.enabled) {
+      this.app.debug(`[AutoDiscovery] Auto-discovery is disabled in config`);
       return {
         configured: false,
         path,
         reason: 'Auto-discovery is disabled',
       };
     }
+
+    this.app.debug(`[AutoDiscovery] Config: enabled=${config.enabled}, requireLiveData=${config.requireLiveData}, maxPaths=${config.maxAutoConfiguredPaths}`);
 
     // Check if path is already configured
     const existingPath = this.currentPaths.find(p => p.path === path);
@@ -138,7 +171,7 @@ export class AutoDiscoveryService {
     }
 
     // All checks passed - configure the path
-    return this.configurePath(path, context);
+    return await this.configurePath(path, context);
   }
 
   /**
@@ -149,6 +182,7 @@ export class AutoDiscoveryService {
       // For vessels.self context, use getSelfPath
       if (context === 'vessels.self' || context === `vessels.${this.app.selfId}`) {
         const value = this.app.getSelfPath(path);
+        this.app.debug(`[AutoDiscovery] getSelfPath(${path}) returned: ${JSON.stringify(value)}`);
         return value !== undefined && value !== null;
       }
 
@@ -156,6 +190,7 @@ export class AutoDiscoveryService {
       // Note: This may not be available depending on SignalK version
       const fullPath = `${context}.${path}`;
       const model = (this.app as any).getPath?.(fullPath);
+      this.app.debug(`[AutoDiscovery] getPath(${fullPath}) returned: ${JSON.stringify(model)}`);
       return model !== undefined && model !== null;
     } catch (error) {
       this.app.debug(`[AutoDiscovery] Error checking live data for ${path}: ${error}`);
@@ -178,7 +213,7 @@ export class AutoDiscoveryService {
   /**
    * Configure a path for recording and update subscriptions
    */
-  private configurePath(path: Path, context: Context): AutoDiscoveryResult {
+  private async configurePath(path: Path, context: Context): Promise<AutoDiscoveryResult> {
     try {
       // Create the new path configuration
       const newPathConfig: PathConfig = {
@@ -191,14 +226,14 @@ export class AutoDiscoveryService {
         autoDiscovered: true,
       };
 
-      // Add to current paths
+      // Add to current paths (this.currentPaths is the source of truth)
       this.currentPaths.push(newPathConfig);
       this.configuredCount++;
 
-      // Load current webapp config and save with new path
+      // Load current webapp config to get commands, then save with updated paths
+      // Don't push to webAppConfig.paths - use this.currentPaths as the authoritative source
       const webAppConfig = loadWebAppConfig(this.app);
-      webAppConfig.paths.push(newPathConfig);
-      saveWebAppConfig(webAppConfig.paths, webAppConfig.commands, this.app);
+      saveWebAppConfig(this.currentPaths, webAppConfig.commands, this.app);
 
       // Update data subscriptions to include the new path
       updateDataSubscriptions(

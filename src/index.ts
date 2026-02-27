@@ -156,13 +156,28 @@ export default function (app: ServerAPI): SignalKPlugin {
 
     // Initialize SQLite buffer if enabled
     if (state.currentConfig.useSqliteBuffer) {
-      const dbPath = path.join(state.currentConfig.outputDirectory, 'buffer.db');
-      state.sqliteBuffer = new SQLiteBuffer({
-        dbPath,
-        maxBatchSize: state.currentConfig.bufferSize,
-        retentionHours: state.currentConfig.bufferRetentionHours,
-      });
-      app.debug(`SQLite buffer initialized at ${dbPath}`);
+      // Use absolute path for buffer.db
+      const dbPath = path.resolve(state.currentConfig.outputDirectory, 'buffer.db');
+      app.debug(`[SQLite] Initializing buffer at: ${dbPath}`);
+
+      try {
+        state.sqliteBuffer = new SQLiteBuffer({
+          dbPath,
+          maxBatchSize: state.currentConfig.bufferSize,
+          retentionHours: state.currentConfig.bufferRetentionHours,
+        });
+
+        // Verify the buffer is actually open
+        if (!state.sqliteBuffer.isOpen()) {
+          throw new Error('SQLite buffer created but database is not open');
+        }
+
+        app.debug(`[SQLite] Buffer initialized successfully at ${dbPath}`);
+      } catch (error) {
+        app.error(`[SQLite] CRITICAL: Failed to initialize SQLite buffer at ${dbPath}: ${error}`);
+        app.error(`[SQLite] Data recording will NOT work. Fix the configuration and restart.`);
+        throw error; // Fail loudly - don't continue with broken state
+      }
 
       // Initialize export service
       state.exportService = new ParquetExportService(
@@ -289,21 +304,19 @@ export default function (app: ServerAPI): SignalKPlugin {
       }, 10000); // Wait 10 seconds after startup to avoid conflicts
     }
 
-    // Initialize auto-discovery service if enabled
-    let autoDiscoveryService: AutoDiscoveryService | undefined;
-    if (state.currentConfig?.autoDiscovery?.enabled) {
-      autoDiscoveryService = new AutoDiscoveryService(
-        app,
-        state.currentConfig,
-        state,
-        currentPaths
-      );
+    // Always initialize auto-discovery service - it checks enabled state at runtime
+    app.debug(`[AutoDiscovery] Config: ${JSON.stringify(state.currentConfig?.autoDiscovery)}`);
+    state.autoDiscoveryService = new AutoDiscoveryService(
+      app,
+      state.currentConfig,
+      state,
+      currentPaths
+    );
 
-      // Recover counter from existing auto-discovered paths
-      const existingAutoDiscovered = currentPaths.filter(p => p.autoDiscovered).length;
-      autoDiscoveryService.setInitialCount(existingAutoDiscovered);
-      app.debug(`Auto-discovery service initialized with ${existingAutoDiscovered} existing auto-discovered paths`);
-    }
+    // Recover counter from existing auto-discovered paths
+    const existingAutoDiscovered = currentPaths.filter(p => p.autoDiscovered).length;
+    state.autoDiscoveryService.setInitialCount(existingAutoDiscovered);
+    app.debug(`[AutoDiscovery] Service initialized with ${existingAutoDiscovered} existing auto-discovered paths`);
 
     // Register History API routes directly with the main app
     try {
@@ -316,8 +329,9 @@ export default function (app: ServerAPI): SignalKPlugin {
         state.currentConfig.unitConversionCacheMinutes || 5, // Default to 5 minutes
         state.sqliteBuffer, // Pass SQLite buffer for federated queries
         state.currentConfig.exportIntervalMinutes || 5, // Export interval for buffer cutoff
-        autoDiscoveryService // Pass auto-discovery service
+        state.autoDiscoveryService // Pass auto-discovery service
       );
+      app.debug(`[AutoDiscovery] History API registered with autoDiscoveryService: ${!!state.autoDiscoveryService}`);
     } catch (error) {
       app.error(`Failed to register History API routes with main server: ${error}`);
     }

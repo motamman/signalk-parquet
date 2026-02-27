@@ -853,6 +853,7 @@ export class HistoryAPI {
           };
 
       // Check for auto-discovery on paths with no data
+      debug(`[AutoDiscovery] Checking auto-discovery: service=${!!this.autoDiscoveryService}, pathSpecs.length=${pathSpecs.length}`);
       if (this.autoDiscoveryService && pathSpecs.length > 0) {
         const autoConfiguredPaths: AutoDiscoveryResult[] = [];
 

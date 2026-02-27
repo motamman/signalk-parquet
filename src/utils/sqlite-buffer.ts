@@ -153,9 +153,19 @@ export class SQLiteBuffer {
   }
 
   /**
+   * Check if the database connection is open
+   */
+  isOpen(): boolean {
+    return this.db.open;
+  }
+
+  /**
    * Insert a single record into the buffer
    */
   insert(record: DataRecord): void {
+    if (!this.db.open) {
+      throw new Error('SQLite buffer is closed');
+    }
     const params = this.prepareRecord(record);
     this.insertStmt.run(params);
   }
@@ -373,6 +383,9 @@ export class SQLiteBuffer {
    * Get count of pending records (faster than full stats)
    */
   getPendingCount(): number {
+    if (!this.db.open) {
+      return 0;
+    }
     const row = this.db.prepare('SELECT COUNT(*) as count FROM buffer_records WHERE exported = 0').get() as { count: number };
     return row.count;
   }
@@ -386,6 +399,9 @@ export class SQLiteBuffer {
     from?: string,
     to?: string
   ): DataRecord[] {
+    if (!this.db.open) {
+      return []; // Return empty array if database is closed
+    }
     let query = `
       SELECT * FROM buffer_records
       WHERE context = ? AND path = ?
