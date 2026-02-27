@@ -95,6 +95,7 @@ export type FromToContextRequest = Request<
     convertUnits?: string; // 'true' | '1' to convert to user's preferred units
     convertTimesToLocal?: string; // 'true' | '1' to convert timestamps to local time
     timezone?: string; // Optional timezone ID (e.g., 'America/New_York', 'Europe/London'). If not specified, uses server local time
+    tier?: string; // Aggregation tier: 'raw' (default), '5s', '60s', '1h'
   }
 >;
 

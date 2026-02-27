@@ -45,6 +45,7 @@ import { LRUCache } from './utils/lru-cache';
 import { registerHistoryApiProvider, unregisterHistoryApiProvider } from './history-provider';
 import { SQLiteBuffer } from './utils/sqlite-buffer';
 import { ParquetExportService } from './services/parquet-export-service';
+import { AggregationService } from './services/aggregation-service';
 
 export default function (app: ServerAPI): SignalKPlugin {
   const plugin: SignalKPlugin = {
@@ -218,13 +219,50 @@ export default function (app: ServerAPI): SignalKPlugin {
     );
     const msUntilMidnightUTC = nextMidnightUTC.getTime() - now.getTime();
 
+    // Initialize aggregation service if Hive partitioning is enabled
+    let aggregationService: AggregationService | undefined;
+    if (state.currentConfig.useHivePartitioning) {
+      aggregationService = new AggregationService(
+        {
+          outputDirectory: state.currentConfig.outputDirectory,
+          filenamePrefix: state.currentConfig.filenamePrefix,
+          retentionDays: {
+            raw: state.currentConfig.retentionDays,
+            '5s': state.currentConfig.retentionDays * 2,
+            '60s': state.currentConfig.retentionDays * 4,
+            '1h': state.currentConfig.retentionDays * 12,
+          },
+        },
+        app
+      );
+      app.debug('Aggregation service initialized');
+    }
+
     setTimeout(() => {
       consolidateYesterday(state.currentConfig!, state, app);
+
+      // Run aggregation after consolidation if Hive partitioning is enabled
+      if (aggregationService) {
+        aggregationService.runDailyAggregation().then(results => {
+          app.debug(`Daily aggregation complete: ${JSON.stringify(results.map(r => ({ tier: r.targetTier, files: r.filesCreated })))}`);
+        }).catch(err => {
+          app.error(`Daily aggregation failed: ${err.message}`);
+        });
+      }
 
       // Then run daily consolidation every 24 hours
       state.consolidationInterval = setInterval(
         () => {
           consolidateYesterday(state.currentConfig!, state, app);
+
+          // Run aggregation after consolidation
+          if (aggregationService) {
+            aggregationService.runDailyAggregation().then(results => {
+              app.debug(`Daily aggregation complete: ${JSON.stringify(results.map(r => ({ tier: r.targetTier, files: r.filesCreated })))}`);
+            }).catch(err => {
+              app.error(`Daily aggregation failed: ${err.message}`);
+            });
+          }
         },
         24 * 60 * 60 * 1000
       );

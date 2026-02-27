@@ -23,6 +23,7 @@ import { FormulaCache } from './utils/formula-cache';
 import { ConcurrencyLimiter } from './utils/concurrency-limiter';
 import { CONCURRENCY } from './config/cache-defaults';
 import { SQLiteBufferInterface, DataRecord } from './types';
+import { HivePathBuilder, AggregationTier } from './utils/hive-path-builder';
 
 // ============================================================================
 // Unit Conversion Helper Functions
@@ -622,6 +623,7 @@ export class HistoryAPI {
   readonly selfContextPath: string;
   private sqliteBuffer?: SQLiteBufferInterface;
   private exportIntervalMinutes: number;
+  private hivePathBuilder: HivePathBuilder;
 
   constructor(
     private selfId: string,
@@ -632,6 +634,7 @@ export class HistoryAPI {
     this.selfContextPath = toContextFilePath(`vessels.${selfId}` as Context);
     this.sqliteBuffer = sqliteBuffer;
     this.exportIntervalMinutes = exportIntervalMinutes;
+    this.hivePathBuilder = new HivePathBuilder();
   }
 
   /**
@@ -639,6 +642,51 @@ export class HistoryAPI {
    */
   setSqliteBuffer(buffer: SQLiteBufferInterface | undefined): void {
     this.sqliteBuffer = buffer;
+  }
+
+  /**
+   * Auto-select the optimal tier based on requested resolution
+   * Returns undefined to use raw/flat data, or a tier name for aggregated data
+   *
+   * Logic:
+   * - resolution >= 1 hour (3600000ms) → use 1h tier
+   * - resolution >= 1 minute (60000ms) → use 60s tier
+   * - resolution >= 5 seconds (5000ms) → use 5s tier
+   * - resolution < 5 seconds → use raw data (no tier)
+   *
+   * Falls back through tiers if preferred tier doesn't exist
+   */
+  private selectOptimalTier(resolutionMillis: number): AggregationTier | undefined {
+    const fs = require('fs');
+
+    // Determine preferred tier based on resolution
+    let preferredTiers: AggregationTier[] = [];
+
+    if (resolutionMillis >= 3600000) {
+      preferredTiers = ['1h', '60s', '5s'];
+    } else if (resolutionMillis >= 60000) {
+      preferredTiers = ['60s', '5s'];
+    } else if (resolutionMillis >= 5000) {
+      preferredTiers = ['5s'];
+    } else {
+      // Use raw data for sub-5-second resolution
+      return undefined;
+    }
+
+    // Check which tiers exist and return the best available
+    for (const tier of preferredTiers) {
+      const tierPath = path.join(this.dataDir, `tier=${tier}`);
+      try {
+        if (fs.existsSync(tierPath)) {
+          return tier;
+        }
+      } catch {
+        // Directory doesn't exist or not accessible
+      }
+    }
+
+    // No aggregated tiers available, use raw data
+    return undefined;
   }
 
   /**
@@ -755,6 +803,21 @@ export class HistoryAPI {
         .split(',');
       const pathSpecs: PathSpec[] = pathExpressions.map(splitPathExpression);
 
+      // Parse tier parameter (raw, 5s, 60s, 1h) or auto-select based on resolution
+      const tierParam = req.query.tier as string | undefined;
+      const validTiers: AggregationTier[] = ['raw', '5s', '60s', '1h'];
+      let tier: AggregationTier | undefined;
+
+      if (tierParam === 'auto' || !tierParam) {
+        // Auto-select tier based on resolution
+        tier = this.selectOptimalTier(timeResolutionMillis);
+        if (tier) {
+          debug(`Auto-selected tier=${tier} for resolution=${timeResolutionMillis}ms`);
+        }
+      } else if (validTiers.includes(tierParam as AggregationTier)) {
+        tier = tierParam as AggregationTier;
+      }
+
       // Handle position and numeric paths together
       let allResult = pathSpecs.length
         ? await this.getNumericValues(
@@ -764,7 +827,8 @@ export class HistoryAPI {
             timeResolutionMillis,
             pathSpecs,
             includeMovingAverages,
-            debug
+            debug,
+            tier
           )
         : {
             context,
@@ -819,7 +883,8 @@ export class HistoryAPI {
     timeResolutionMillis: number,
     pathSpecs: PathSpec[],
     includeMovingAverages: boolean,
-    debug: (k: string) => void
+    debug: (k: string) => void,
+    tier?: AggregationTier
   ): Promise<DataResult> {
     const allData: { [path: string]: Array<[Timestamp, unknown]> } = {};
     const objectPaths = new Set<string>(); // Track which paths are object paths
@@ -834,14 +899,31 @@ export class HistoryAPI {
             .replace(/[^a-zA-Z0-9._]/g, '') // Only allow alphanumeric, dots, underscores
             .replace(/\./g, '/');
 
-          const filePath = path.join(
-            this.dataDir,
-            this.selfContextPath,
-            sanitizedPath,
-            '*.parquet'
-          );
+          let filePath: string;
 
-          debug(`Querying parquet files at: ${filePath}`);
+          if (tier) {
+            // Use Hive-style path for aggregated tiers
+            const sanitizedContext = this.hivePathBuilder.sanitizeContext(context);
+            const sanitizedSkPath = this.hivePathBuilder.sanitizePath(pathSpec.path);
+            filePath = path.join(
+              this.dataDir,
+              `tier=${tier}`,
+              `context=${sanitizedContext}`,
+              `path=${sanitizedSkPath}`,
+              '**',
+              '*.parquet'
+            );
+            debug(`Querying Hive tier=${tier} at: ${filePath}`);
+          } else {
+            // Use legacy flat path
+            filePath = path.join(
+              this.dataDir,
+              this.selfContextPath,
+              sanitizedPath,
+              '*.parquet'
+            );
+            debug(`Querying parquet files at: ${filePath}`);
+          }
 
           // Convert ZonedDateTime to ISO string format matching parquet schema
           const fromIso = from.toInstant().toString();
