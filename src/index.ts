@@ -190,11 +190,12 @@ export default function (app: ServerAPI): SignalKPlugin {
     // Check current command values at startup
     initializeRegimenStates(currentPaths, state, app);
 
+    // Start threshold monitoring system BEFORE initializing command state
+    // so that pluginConfig (with homePort) is available during command registration
+    startThresholdMonitoring(app, state.currentConfig);
+
     // Initialize command state
     initializeCommandState(currentPaths, app);
-
-    // Start threshold monitoring system
-    startThresholdMonitoring(app, state.currentConfig);
 
     // Subscribe to data paths based on initial regimen states
     updateDataSubscriptions(currentPaths, state, state.currentConfig, app);

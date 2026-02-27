@@ -160,6 +160,7 @@ export class AggregationService {
           files,
           context,
           signalkPath,
+          sourceTier,
           targetTier,
           date
         );
@@ -194,10 +195,32 @@ export class AggregationService {
     files: string[],
     context: string,
     signalkPath: string,
+    sourceTier: AggregationTier,
     targetTier: AggregationTier,
     date: Date
   ): Promise<{ recordsAggregated: number; outputFile: string | null }> {
     const intervalSeconds = TIER_INTERVALS[targetTier];
+    const isSourceRaw = sourceTier === 'raw';
+    const fileListStr = files.map(f => `'${f}'`).join(', ');
+
+    // Check schema compatibility - skip object-type paths (like position with value_latitude/value_longitude)
+    const connection = await DuckDBPool.getConnection();
+    try {
+      const schemaQuery = `SELECT column_name FROM (DESCRIBE SELECT * FROM read_parquet([${fileListStr}], union_by_name=true))`;
+      const schemaResult = await connection.runAndReadAll(schemaQuery);
+      const columns = schemaResult.getRowObjects().map((r: Record<string, unknown>) => r.column_name as string);
+
+      // For raw tier, we need 'value' column; for aggregated tiers, we need 'bucket_time' and 'value_avg'
+      const requiredColumn = isSourceRaw ? 'value' : 'bucket_time';
+      if (!columns.includes(requiredColumn)) {
+        this.app.debug(`Skipping ${signalkPath}: no '${requiredColumn}' column (object-type data stays in raw tier)`);
+        connection.disconnectSync();
+        return { recordsAggregated: 0, outputFile: null };
+      }
+    } catch (error) {
+      connection.disconnectSync();
+      throw error;
+    }
 
     // Build output path
     const outputDir = this.hivePathBuilder.buildPath(
@@ -215,29 +238,48 @@ export class AggregationService {
       `${this.config.filenamePrefix}_${date.toISOString().slice(0, 10)}_aggregated.parquet`
     );
 
-    // Build file list for DuckDB
-    const fileListStr = files.map(f => `'${f}'`).join(', ');
+    // Use different query depending on source tier schema
+    // Raw tier has: received_timestamp, value
+    // Aggregated tiers have: bucket_time, value_avg, value_min, value_max, sample_count, first_timestamp, last_timestamp
+    const query = isSourceRaw
+      ? `
+        COPY (
+          SELECT
+            time_bucket(INTERVAL '${intervalSeconds} seconds', received_timestamp::TIMESTAMP) as bucket_time,
+            context,
+            path,
+            AVG(CASE WHEN value IS NOT NULL AND TRY_CAST(value AS DOUBLE) IS NOT NULL THEN CAST(value AS DOUBLE) END) as value_avg,
+            MIN(CASE WHEN value IS NOT NULL AND TRY_CAST(value AS DOUBLE) IS NOT NULL THEN CAST(value AS DOUBLE) END) as value_min,
+            MAX(CASE WHEN value IS NOT NULL AND TRY_CAST(value AS DOUBLE) IS NOT NULL THEN CAST(value AS DOUBLE) END) as value_max,
+            COUNT(*) as sample_count,
+            MIN(received_timestamp) as first_timestamp,
+            MAX(received_timestamp) as last_timestamp
+          FROM read_parquet([${fileListStr}], union_by_name=true)
+          GROUP BY bucket_time, context, path
+          ORDER BY bucket_time
+        ) TO '${outputFile}' (FORMAT PARQUET, COMPRESSION 'ZSTD');
+      `
+      : `
+        COPY (
+          SELECT
+            time_bucket(INTERVAL '${intervalSeconds} seconds', src_bucket_time::TIMESTAMP) as bucket_time,
+            context,
+            path,
+            SUM(value_avg * sample_count) / SUM(sample_count) as value_avg,
+            MIN(value_min) as value_min,
+            MAX(value_max) as value_max,
+            SUM(sample_count)::BIGINT as sample_count,
+            MIN(first_timestamp) as first_timestamp,
+            MAX(last_timestamp) as last_timestamp
+          FROM (
+            SELECT bucket_time as src_bucket_time, context, path, value_avg, value_min, value_max, sample_count, first_timestamp, last_timestamp
+            FROM read_parquet([${fileListStr}], union_by_name=true)
+          ) src
+          GROUP BY time_bucket(INTERVAL '${intervalSeconds} seconds', src_bucket_time::TIMESTAMP), context, path
+          ORDER BY 1
+        ) TO '${outputFile}' (FORMAT PARQUET, COMPRESSION 'ZSTD');
+      `;
 
-    // Aggregation query using DuckDB's time_bucket
-    const query = `
-      COPY (
-        SELECT
-          time_bucket(INTERVAL '${intervalSeconds} seconds', received_timestamp::TIMESTAMP) as bucket_time,
-          context,
-          path,
-          AVG(CASE WHEN value IS NOT NULL AND TRY_CAST(value AS DOUBLE) IS NOT NULL THEN CAST(value AS DOUBLE) END) as value_avg,
-          MIN(CASE WHEN value IS NOT NULL AND TRY_CAST(value AS DOUBLE) IS NOT NULL THEN CAST(value AS DOUBLE) END) as value_min,
-          MAX(CASE WHEN value IS NOT NULL AND TRY_CAST(value AS DOUBLE) IS NOT NULL THEN CAST(value AS DOUBLE) END) as value_max,
-          COUNT(*) as sample_count,
-          MIN(received_timestamp) as first_timestamp,
-          MAX(received_timestamp) as last_timestamp
-        FROM read_parquet([${fileListStr}], union_by_name=true)
-        GROUP BY bucket_time, context, path
-        ORDER BY bucket_time
-      ) TO '${outputFile}' (FORMAT PARQUET, COMPRESSION 'ZSTD');
-    `;
-
-    const connection = await DuckDBPool.getConnection();
     try {
       await connection.runAndReadAll(query);
 
