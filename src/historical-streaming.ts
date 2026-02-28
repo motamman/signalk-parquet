@@ -151,6 +151,7 @@ export class HistoricalStreamingService {
         false, // convertUnits
         false, // convertTimesToLocal
         undefined, // timezone
+        null, // spatialFilter
         this.app, // app
         this.app.debug.bind(this.app),
         mockReq,
@@ -780,6 +781,7 @@ export class HistoricalStreamingService {
           false, // convertUnits
           false, // convertTimesToLocal
           undefined, // timezone
+          null, // spatialFilter
           this.app, // app
           this.app.debug.bind(this.app),
           mockReq,

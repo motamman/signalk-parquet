@@ -25,6 +25,13 @@ import { CONCURRENCY } from './config/cache-defaults';
 import { SQLiteBufferInterface, DataRecord } from './types';
 import { HivePathBuilder, AggregationTier } from './utils/hive-path-builder';
 import { AutoDiscoveryService, AutoDiscoveryResult } from './services/auto-discovery';
+import {
+  SpatialFilter,
+  parseSpatialParams,
+  buildSpatialSqlClause,
+  filterBufferRecordsSpatially,
+  isPositionPath,
+} from './utils/spatial-queries';
 
 // ============================================================================
 // Unit Conversion Helper Functions
@@ -276,7 +283,7 @@ export function registerHistoryApiRoute(
   console.log(`[Unit Conversion] Cache TTL set to ${unitConversionCacheMinutes} minutes`);
   const historyApi = new HistoryAPI(selfId, dataDir, sqliteBuffer, exportIntervalMinutes, autoDiscoveryService);
   router.get('/signalk/v1/history/values', (req: Request, res: Response) => {
-    const { from, to, context, shouldRefresh } = getRequestParams(
+    const { from, to, context, spatialFilter, shouldRefresh } = getRequestParams(
       req as FromToContextRequest,
       selfId
     );
@@ -290,7 +297,7 @@ export function registerHistoryApiRoute(
       req.query.convertTimesToLocal === 'true' ||
       req.query.convertTimesToLocal === '1';
     const timezone = req.query.timezone as string | undefined;
-    historyApi.getValues(context, from, to, shouldRefresh, includeMovingAverages, convertUnits, convertTimesToLocal, timezone, app, debug, req, res);
+    historyApi.getValues(context, from, to, shouldRefresh, includeMovingAverages, convertUnits, convertTimesToLocal, timezone, spatialFilter, app, debug, req, res);
   });
   router.get('/signalk/v1/history/contexts', async (req: Request, res: Response) => {
     try {
@@ -360,7 +367,7 @@ export function registerHistoryApiRoute(
 
   // Also register as plugin-style routes for testing
   router.get('/api/history/values', (req: Request, res: Response) => {
-    const { from, to, context, shouldRefresh } = getRequestParams(
+    const { from, to, context, spatialFilter, shouldRefresh } = getRequestParams(
       req as FromToContextRequest,
       selfId
     );
@@ -374,7 +381,7 @@ export function registerHistoryApiRoute(
       req.query.convertTimesToLocal === 'true' ||
       req.query.convertTimesToLocal === '1';
     const timezone = req.query.timezone as string | undefined;
-    historyApi.getValues(context, from, to, shouldRefresh, includeMovingAverages, convertUnits, convertTimesToLocal, timezone, app, debug, req, res);
+    historyApi.getValues(context, from, to, shouldRefresh, includeMovingAverages, convertUnits, convertTimesToLocal, timezone, spatialFilter, app, debug, req, res);
   });
   router.get('/api/history/contexts', async (req: Request, res: Response) => {
     try {
@@ -527,8 +534,8 @@ const getRequestParams = ({ query }: FromToContextRequest, selfId: string) => {
     }
 
     const context: Context = getContext(query.context, selfId);
-    const bbox = query.bbox;
-    return { from, to, context, bbox, shouldRefresh };
+    const spatialFilter = parseSpatialParams(query.bbox, query.radius);
+    return { from, to, context, spatialFilter, shouldRefresh };
   } catch (e: unknown) {
     console.error('Full error details:', e);
     throw new Error(
@@ -798,6 +805,7 @@ export class HistoryAPI {
     convertUnits: boolean,
     convertTimesToLocal: boolean,
     timezone: string | undefined,
+    spatialFilter: SpatialFilter | null,
     app: any,
     debug: (k: string) => void,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -830,6 +838,11 @@ export class HistoryAPI {
         tier = tierParam as AggregationTier;
       }
 
+      // Log spatial filter if present
+      if (spatialFilter) {
+        debug(`Spatial filter: type=${spatialFilter.type}, bbox=[${spatialFilter.bbox.west},${spatialFilter.bbox.south},${spatialFilter.bbox.east},${spatialFilter.bbox.north}]`);
+      }
+
       // Handle position and numeric paths together
       let allResult = pathSpecs.length
         ? await this.getNumericValues(
@@ -840,7 +853,8 @@ export class HistoryAPI {
             pathSpecs,
             includeMovingAverages,
             debug,
-            tier
+            tier,
+            spatialFilter
           )
         : {
             context,
@@ -936,7 +950,8 @@ export class HistoryAPI {
     pathSpecs: PathSpec[],
     includeMovingAverages: boolean,
     debug: (k: string) => void,
-    tier?: AggregationTier
+    tier?: AggregationTier,
+    spatialFilter?: SpatialFilter | null
   ): Promise<DataResult> {
     const allData: { [path: string]: Array<[Timestamp, unknown]> } = {};
     const objectPaths = new Set<string>(); // Track which paths are object paths
@@ -1005,6 +1020,17 @@ export class HistoryAPI {
                 .map(comp => `${comp.columnName} IS NOT NULL`)
                 .join(' OR ');
 
+              // Check if this is a position path and spatial filter applies
+              const applyPositionSpatialFilter = spatialFilter && isPositionPath(pathSpec.path) &&
+                componentSchema.components.has('latitude') && componentSchema.components.has('longitude');
+              const spatialWhereClause = applyPositionSpatialFilter
+                ? ` AND ${buildSpatialSqlClause(spatialFilter!)}`
+                : '';
+
+              if (applyPositionSpatialFilter) {
+                debug(`Applying spatial filter to position path ${pathSpec.path}`);
+              }
+
               const dynamicQuery = `
               SELECT
                 strftime(DATE_TRUNC('seconds',
@@ -1016,7 +1042,7 @@ export class HistoryAPI {
                 signalk_timestamp >= '${fromIso}'
                 AND
                 signalk_timestamp < '${toIso}'
-                AND (${componentWhereConditions})
+                AND (${componentWhereConditions})${spatialWhereClause}
               GROUP BY timestamp
               ORDER BY timestamp
               `;
@@ -1041,13 +1067,21 @@ export class HistoryAPI {
               });
 
               // Merge with SQLite buffer data for recent records (federated query)
-              const bufferRecords = this.getRecentBufferData(
+              let bufferRecords = this.getRecentBufferData(
                 context,
                 pathSpec.path as Path,
                 from,
                 to,
                 debug
               );
+
+              // Apply spatial filter to buffer records if this is a position path
+              if (applyPositionSpatialFilter && bufferRecords.length > 0) {
+                const originalCount = bufferRecords.length;
+                bufferRecords = filterBufferRecordsSpatially(bufferRecords, spatialFilter!);
+                debug(`Spatial filter on buffer: ${originalCount} -> ${bufferRecords.length} records`);
+              }
+
               allData[pathSpec.path] = this.mergeWithBufferData(pathData, bufferRecords, debug);
 
             } else {
@@ -1103,13 +1137,22 @@ export class HistoryAPI {
               );
 
               // Merge with SQLite buffer data for recent records (federated query)
-              const bufferRecords = this.getRecentBufferData(
+              let bufferRecords = this.getRecentBufferData(
                 context,
                 pathSpec.path as Path,
                 from,
                 to,
                 debug
               );
+
+              // Apply spatial filter to buffer records if this is a position path
+              // (rare for scalar paths, but handle value_json position data)
+              if (spatialFilter && isPositionPath(pathSpec.path) && bufferRecords.length > 0) {
+                const originalCount = bufferRecords.length;
+                bufferRecords = filterBufferRecordsSpatially(bufferRecords, spatialFilter);
+                debug(`Spatial filter on scalar buffer: ${originalCount} -> ${bufferRecords.length} records`);
+              }
+
               allData[pathSpec.path] = this.mergeWithBufferData(pathData, bufferRecords, debug);
             }
           } finally {
@@ -1120,13 +1163,21 @@ export class HistoryAPI {
           debug(`Error querying path ${pathSpec.path}: ${error}`);
 
           // Even if parquet query fails, try to get buffer data
-          const bufferRecords = this.getRecentBufferData(
+          let bufferRecords = this.getRecentBufferData(
             context,
             pathSpec.path as Path,
             from,
             to,
             debug
           );
+
+          // Apply spatial filter if this is a position path
+          if (spatialFilter && isPositionPath(pathSpec.path) && bufferRecords.length > 0) {
+            const originalCount = bufferRecords.length;
+            bufferRecords = filterBufferRecordsSpatially(bufferRecords, spatialFilter);
+            debug(`Spatial filter on fallback buffer: ${originalCount} -> ${bufferRecords.length} records`);
+          }
+
           if (bufferRecords.length > 0) {
             allData[pathSpec.path] = this.mergeWithBufferData([], bufferRecords, debug);
           } else {
