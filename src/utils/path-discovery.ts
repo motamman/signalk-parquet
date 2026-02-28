@@ -4,7 +4,7 @@ import { ServerAPI, Context, Path } from '@signalk/server-api';
 import { PathInfo } from '../types';
 import { DuckDBInstance } from '@duckdb/node-api';
 import { ZonedDateTime } from '@js-joda/core';
-import { toContextFilePath, shouldSkipDirectory } from './path-helpers';
+import { toContextFilePath } from './path-helpers';
 import { HivePathBuilder } from './hive-path-builder';
 
 /**
@@ -42,8 +42,6 @@ export function getAvailablePaths(dataDir: string, app: ServerAPI): PathInfo[] {
 
       // Only include paths for self context
       if (sanitizedContext !== sanitizedSelfContext) continue;
-
-      const unsanitizedContext = hiveBuilder.unsanitizeContext(sanitizedContext);
 
       // Iterate path= directories within each context
       const pathDirs = fs.readdirSync(contextPath);

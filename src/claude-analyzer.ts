@@ -1,6 +1,12 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { ServerAPI } from '@signalk/server-api';
-import { DataRecord, PluginState, ColumnInfo, Statistics, DataQualityMetrics } from './types';
+import {
+  DataRecord,
+  PluginState,
+  ColumnInfo,
+  Statistics,
+  DataQualityMetrics,
+} from './types';
 import { VesselContextManager } from './vessel-context';
 import { getAvailablePaths } from './utils/path-discovery';
 import * as fs from 'fs-extra';
@@ -73,21 +79,21 @@ export interface DataSummary {
 }
 
 export interface AvailablePathsFilter {
-  vesselContext?: string;     // 'vessels.self', 'vessels.*', 'vessels.urn:mrn:...'
-  pathPattern?: string;       // regex pattern for path filtering
-  source?: string;           // filter by data source
-  hasValue?: boolean;        // only paths with current values
+  vesselContext?: string; // 'vessels.self', 'vessels.*', 'vessels.urn:mrn:...'
+  pathPattern?: string; // regex pattern for path filtering
+  source?: string; // filter by data source
+  hasValue?: boolean; // only paths with current values
   includeMetadata?: boolean; // include _sources, meta, etc.
-  maxDepth?: number;         // maximum depth to traverse
+  maxDepth?: number; // maximum depth to traverse
 }
 
 export interface AvailablePathInfo {
   path: string;
-  fullPath: string;         // complete SignalK path including vessel context
-  vesselId?: string;        // vessel ID if applicable
-  currentValue?: any;       // current value if hasValue=true
-  source?: string;          // data source info
-  lastUpdate?: string;      // last update timestamp
+  fullPath: string; // complete SignalK path including vessel context
+  vesselId?: string; // vessel ID if applicable
+  currentValue?: any; // current value if hasValue=true
+  source?: string; // data source info
+  lastUpdate?: string; // last update timestamp
 }
 
 export class ClaudeAnalyzer {
@@ -99,13 +105,18 @@ export class ClaudeAnalyzer {
   private activeConversations: Map<string, Array<any>> = new Map();
   private state?: PluginState;
 
-  constructor(config: ClaudeAnalyzerConfig, app?: ServerAPI, dataDirectory?: string, state?: PluginState) {
+  constructor(
+    config: ClaudeAnalyzerConfig,
+    app?: ServerAPI,
+    dataDirectory?: string,
+    state?: PluginState
+  ) {
     this.config = config;
     this.app = app;
     this.dataDirectory = dataDirectory;
     this.state = state;
     this.vesselContextManager = new VesselContextManager(app, dataDirectory);
-    
+
     if (!config.apiKey) {
       throw new Error('Claude API key is required for analysis functionality');
     }
@@ -113,8 +124,8 @@ export class ClaudeAnalyzer {
     this.client = new Anthropic({
       apiKey: config.apiKey,
       defaultHeaders: {
-        'anthropic-version': '2023-06-01'
-      }
+        'anthropic-version': '2023-06-01',
+      },
     });
   }
 
@@ -123,43 +134,50 @@ export class ClaudeAnalyzer {
    */
   async analyzeData(request: AnalysisRequest): Promise<AnalysisResponse> {
     try {
-      this.app?.debug(`Starting Claude analysis: ${request.analysisType} for ${request.dataPath}${request.useDatabaseAccess ? ' (DATABASE ACCESS MODE)' : ' (SAMPLING MODE)'}`);
-      
+      this.app?.debug(
+        `Starting Claude analysis: ${request.analysisType} for ${request.dataPath}${request.useDatabaseAccess ? ' (DATABASE ACCESS MODE)' : ' (SAMPLING MODE)'}`
+      );
+
       // Route to appropriate analysis system
       if (request.useDatabaseAccess) {
         return await this.analyzeWithDatabaseAccess(request);
       }
-      
+
       // Legacy system: Prepare data for analysis
       const data = await this.prepareDataForAnalysis(request);
-      
+
       // Build analysis prompt with data structure guidance
       const prompt = this.buildAnalysisPrompt(data, request);
-      
+
       // Call Claude API
       const response = await this.client.messages.create({
         model: this.config.model,
         max_tokens: this.config.maxTokens,
         temperature: this.config.temperature,
-        messages: [{
-          role: 'user',
-          content: prompt
-        }]
+        messages: [
+          {
+            role: 'user',
+            content: prompt,
+          },
+        ],
       });
 
       // Parse response
-      const analysisResult = this.parseAnalysisResponse(response, request, data);
-      
+      const analysisResult = this.parseAnalysisResponse(
+        response,
+        request,
+        data
+      );
+
       // Save analysis to history
       await this.saveAnalysisToHistory(analysisResult);
-      
+
       this.app?.debug(`Claude analysis completed: ${analysisResult.id}`);
       return analysisResult;
-      
     } catch (error) {
       const errorMessage = (error as Error).message;
       this.app?.error(`Claude analysis failed: ${errorMessage}`);
-      
+
       // Prevent recursive error messages
       if (errorMessage.includes('Analysis failed:')) {
         throw error; // Re-throw original error to avoid nesting
@@ -171,7 +189,11 @@ export class ClaudeAnalyzer {
   /**
    * Quick analysis using predefined templates
    */
-  async quickAnalysis(dataPath: string, analysisType: string, timeRange?: { start: Date; end: Date }): Promise<AnalysisResponse> {
+  async quickAnalysis(
+    dataPath: string,
+    analysisType: string,
+    timeRange?: { start: Date; end: Date }
+  ): Promise<AnalysisResponse> {
     const request: AnalysisRequest = {
       dataPath,
       analysisType: analysisType as any,
@@ -185,12 +207,16 @@ export class ClaudeAnalyzer {
   /**
    * Detect anomalies in the data
    */
-  async detectAnomalies(dataPath: string, timeRange?: { start: Date; end: Date }): Promise<AnomalyDetection[]> {
+  async detectAnomalies(
+    dataPath: string,
+    timeRange?: { start: Date; end: Date }
+  ): Promise<AnomalyDetection[]> {
     const request: AnalysisRequest = {
       dataPath,
       analysisType: 'anomaly',
       timeRange,
-      customPrompt: 'Focus specifically on detecting anomalies and unusual patterns in this maritime data. Return detailed anomaly information.'
+      customPrompt:
+        'Focus specifically on detecting anomalies and unusual patterns in this maritime data. Return detailed anomaly information.',
     };
 
     const result = await this.analyzeData(request);
@@ -203,25 +229,31 @@ export class ClaudeAnalyzer {
   private async prepareDataForAnalysis(request: AnalysisRequest): Promise<any> {
     try {
       let data: any[];
-      
+
       // Load data from parquet files using existing method
-      data = await this.loadDataFromPath(request.dataPath, request.timeRange, request.aggregationMethod, request.resolution);
-      
+      data = await this.loadDataFromPath(
+        request.dataPath,
+        request.timeRange,
+        request.aggregationMethod,
+        request.resolution
+      );
+
       // Generate statistical summary
       const summary = this.generateDataSummary(data);
-      
+
       // Sample data very aggressively for production systems with lots of data
       const maxSamples = data.length > 10000 ? 20 : 50; // Ultra-aggressive for large datasets
       const sampledData = this.sampleDataForAnalysis(data, maxSamples);
-      
+
       return {
         summary,
         sampleData: sampledData,
-        originalCount: data.length
+        originalCount: data.length,
       };
-      
     } catch (error) {
-      this.app?.error(`Failed to prepare data for analysis: ${(error as Error).message}`);
+      this.app?.error(
+        `Failed to prepare data for analysis: ${(error as Error).message}`
+      );
       throw error;
     }
   }
@@ -229,86 +261,118 @@ export class ClaudeAnalyzer {
   /**
    * Load data from parquet files based on path and time range
    */
-  private async loadDataFromPath(dataPath: string, timeRange?: { start: Date; end: Date }, aggregationMethod?: string, resolution?: string): Promise<DataRecord[]> {
+  private async loadDataFromPath(
+    dataPath: string,
+    timeRange?: { start: Date; end: Date },
+    aggregationMethod?: string,
+    resolution?: string
+  ): Promise<DataRecord[]> {
     try {
       // Use the existing REST API instead of custom query logic
       const port = process.env.PORT || 3000;
       const baseUrl = `http://localhost:${port}`;
-      
+
       // Construct paths with aggregation method if provided
       // HistoryAPI supports format: "path:aggregateMethod" (e.g., "environment.outside.tempest.observations.solarRadiation:max")
       // For multiple paths, apply aggregation to each path individually
-      const pathsWithAggregation = dataPath.split(',').map(path => {
-        const trimmedPath = path.trim();
-        return aggregationMethod && aggregationMethod !== 'average' 
-          ? `${trimmedPath}:${aggregationMethod}`
-          : trimmedPath; // 'average' is the default, so no need to specify it
-      }).join(',');
-      
+      const pathsWithAggregation = dataPath
+        .split(',')
+        .map(path => {
+          const trimmedPath = path.trim();
+          return aggregationMethod && aggregationMethod !== 'average'
+            ? `${trimmedPath}:${aggregationMethod}`
+            : trimmedPath; // 'average' is the default, so no need to specify it
+        })
+        .join(',');
+
       // Build query parameters for the history API (only valid parameters)
       const params = new URLSearchParams({
         paths: pathsWithAggregation,
-        from: timeRange ? timeRange.start.toISOString() : new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString(),
-        to: timeRange ? timeRange.end.toISOString() : new Date().toISOString()
+        from: timeRange
+          ? timeRange.start.toISOString()
+          : new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString(),
+        to: timeRange ? timeRange.end.toISOString() : new Date().toISOString(),
       });
-      
+
       // Set resolution if provided (empty string = auto/let HistoryAPI choose)
       if (resolution && resolution.trim() !== '') {
         params.set('resolution', resolution);
-        console.log(`📊 CLAUDE ANALYZER: Using custom resolution: ${resolution}ms`);
+        console.log(
+          `📊 CLAUDE ANALYZER: Using custom resolution: ${resolution}ms`
+        );
       } else {
-        console.log(`📊 CLAUDE ANALYZER: Using auto resolution (HistoryAPI will choose optimal bucketing)`);
+        console.log(
+          `📊 CLAUDE ANALYZER: Using auto resolution (HistoryAPI will choose optimal bucketing)`
+        );
       }
-      
+
       const url = `${baseUrl}/api/history/values?${params}`;
       console.log(`🌐 CLAUDE ANALYZER: Making REST API call to ${url}`);
-      console.log(`📊 CLAUDE ANALYZER: Using paths "${pathsWithAggregation}" ${aggregationMethod ? `with aggregation method "${aggregationMethod}"` : 'with default aggregation'}`);
-      
+      console.log(
+        `📊 CLAUDE ANALYZER: Using paths "${pathsWithAggregation}" ${aggregationMethod ? `with aggregation method "${aggregationMethod}"` : 'with default aggregation'}`
+      );
+
       // Make HTTP request to the history API
       const response = await fetch(url);
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}: ${response.statusText}`);
       }
-      
-      const apiResult = await response.json() as any;
-      console.log(`📊 CLAUDE ANALYZER (REST API): Raw API result:`, Object.keys(apiResult));
-      
+
+      const apiResult = (await response.json()) as any;
+      console.log(
+        `📊 CLAUDE ANALYZER (REST API): Raw API result:`,
+        Object.keys(apiResult)
+      );
+
       // Convert API result to DataRecord format
       // API returns: { context, range, values: [{path, method}, ...], data: [[timestamp, value1, value2, ...], ...] }
       const records: DataRecord[] = [];
-      
-      if (apiResult.data && Array.isArray(apiResult.data) && apiResult.values && Array.isArray(apiResult.values)) {
-        console.log(`🔍 CLAUDE ANALYZER: Processing ${apiResult.data.length} data rows with ${apiResult.values.length} value columns`);
+
+      if (
+        apiResult.data &&
+        Array.isArray(apiResult.data) &&
+        apiResult.values &&
+        Array.isArray(apiResult.values)
+      ) {
+        console.log(
+          `🔍 CLAUDE ANALYZER: Processing ${apiResult.data.length} data rows with ${apiResult.values.length} value columns`
+        );
         console.log(`🔍 CLAUDE ANALYZER: Value column info:`, apiResult.values);
-        
+
         // Safety limit to prevent stack overflow
         const maxRows = Math.min(apiResult.data.length, 10000);
         const maxCols = Math.min(apiResult.values.length, 20);
-        
+
         for (let rowIndex = 0; rowIndex < maxRows; rowIndex++) {
           const row = apiResult.data[rowIndex];
-          
+
           if (Array.isArray(row) && row.length >= 2) {
             const timestamp = row[0]; // First column is always timestamp
-            
+
             // Process each data column (starting from index 1)
-            for (let colIndex = 1; colIndex < row.length && colIndex <= maxCols; colIndex++) {
+            for (
+              let colIndex = 1;
+              colIndex < row.length && colIndex <= maxCols;
+              colIndex++
+            ) {
               const value = row[colIndex];
               const valueInfo = apiResult.values[colIndex - 1]; // values array is 0-indexed
-              
+
               if (rowIndex < 3) {
-                console.log(`🔍 Sample row ${rowIndex}, col ${colIndex}: timestamp=${timestamp}, path=${valueInfo?.path}, method=${valueInfo?.method}, value=${value}`);
+                console.log(
+                  `🔍 Sample row ${rowIndex}, col ${colIndex}: timestamp=${timestamp}, path=${valueInfo?.path}, method=${valueInfo?.method}, value=${value}`
+                );
               }
-              
+
               records.push({
                 received_timestamp: timestamp, // Use the actual timestamp from data as-is
-                signalk_timestamp: timestamp,   // Use the actual timestamp from data as-is
+                signalk_timestamp: timestamp, // Use the actual timestamp from data as-is
                 path: valueInfo?.path || 'unknown',
                 value: typeof value === 'bigint' ? Number(value) : value,
                 context: this.app?.selfContext || 'unknown',
                 source: 'rest-api',
                 source_label: `REST API (${valueInfo?.method || 'default'})`,
-                aggregation_method: valueInfo?.method
+                aggregation_method: valueInfo?.method,
               } as DataRecord & { aggregation_method?: string });
             }
           }
@@ -316,24 +380,31 @@ export class ClaudeAnalyzer {
       } else {
         console.log(`🔍 CLAUDE ANALYZER: No data array found in API result`);
       }
-      
-      console.log(`📊 CLAUDE ANALYZER (REST API): Loaded ${records.length} records for analysis from ${pathsWithAggregation}`);
-      this.app?.debug(`REST API loaded ${records.length} records for analysis from ${pathsWithAggregation}`);
+
+      console.log(
+        `📊 CLAUDE ANALYZER (REST API): Loaded ${records.length} records for analysis from ${pathsWithAggregation}`
+      );
+      this.app?.debug(
+        `REST API loaded ${records.length} records for analysis from ${pathsWithAggregation}`
+      );
       return records;
-      
     } catch (error) {
-      this.app?.error(`Failed to load data from ${dataPath}: ${(error as Error).message}`);
-      
+      this.app?.error(
+        `Failed to load data from ${dataPath}: ${(error as Error).message}`
+      );
+
       // Fallback to sample data if query fails
-      const sampleData: DataRecord[] = [{
-        received_timestamp: new Date().toISOString(),
-        signalk_timestamp: new Date().toISOString(),
-        context: 'vessels.self',
-        path: dataPath,
-        value: 0,
-        source: 'fallback-sample'
-      }];
-      
+      const sampleData: DataRecord[] = [
+        {
+          received_timestamp: new Date().toISOString(),
+          signalk_timestamp: new Date().toISOString(),
+          context: 'vessels.self',
+          path: dataPath,
+          value: 0,
+          source: 'fallback-sample',
+        },
+      ];
+
       return sampleData;
     }
   }
@@ -352,8 +423,8 @@ export class ClaudeAnalyzer {
           completeness: 0,
           consistency: 0,
           timeliness: 0,
-          accuracy: 0
-        }
+          accuracy: 0,
+        },
       };
     }
 
@@ -361,7 +432,7 @@ export class ClaudeAnalyzer {
     const timestamps = data.map(d => new Date(d.received_timestamp)).sort();
     const timeRange = {
       start: timestamps[0],
-      end: timestamps[timestamps.length - 1]
+      end: timestamps[timestamps.length - 1],
     };
 
     // Analyze columns
@@ -372,13 +443,15 @@ export class ClaudeAnalyzer {
     });
 
     allKeys.forEach(key => {
-      const values = data.map(d => (d as any)[key]).filter(v => v !== null && v !== undefined);
+      const values = data
+        .map(d => (d as any)[key])
+        .filter(v => v !== null && v !== undefined);
       columns.push({
         name: key,
         type: typeof values[0],
         nullCount: data.length - values.length,
         uniqueCount: new Set(values).size,
-        sampleValues: values.slice(0, 5)
+        sampleValues: values.slice(0, 5),
       });
     });
 
@@ -386,27 +459,31 @@ export class ClaudeAnalyzer {
     const statisticalSummary: Record<string, Statistics> = {};
     columns.forEach(col => {
       if (col.type === 'number') {
-        const values = data.map(d => (d as any)[col.name]).filter(v => typeof v === 'number');
+        const values = data
+          .map(d => (d as any)[col.name])
+          .filter(v => typeof v === 'number');
         if (values.length > 0) {
           const sorted = values.sort((a, b) => a - b);
           const sum = values.reduce((a, b) => a + b, 0);
           const mean = sum / values.length;
-          const variance = values.reduce((acc, val) => acc + Math.pow(val - mean, 2), 0) / values.length;
-          
+          const variance =
+            values.reduce((acc, val) => acc + Math.pow(val - mean, 2), 0) /
+            values.length;
+
           statisticalSummary[col.name] = {
             count: values.length,
             mean,
             median: sorted[Math.floor(sorted.length / 2)],
             min: sorted[0],
             max: sorted[sorted.length - 1],
-            stdDev: Math.sqrt(variance)
+            stdDev: Math.sqrt(variance),
           };
         }
       } else {
         statisticalSummary[col.name] = {
           count: data.length - col.nullCount,
           min: col.sampleValues[0],
-          max: col.sampleValues[col.sampleValues.length - 1]
+          max: col.sampleValues[col.sampleValues.length - 1],
         };
       }
     });
@@ -419,14 +496,17 @@ export class ClaudeAnalyzer {
       timeRange,
       columns,
       statisticalSummary,
-      dataQuality
+      dataQuality,
     };
   }
 
   /**
    * Calculate data quality metrics
    */
-  private calculateDataQuality(data: DataRecord[], columns: ColumnInfo[]): DataQualityMetrics {
+  private calculateDataQuality(
+    data: DataRecord[],
+    columns: ColumnInfo[]
+  ): DataQualityMetrics {
     const totalFields = data.length * columns.length;
     const nullFields = columns.reduce((sum, col) => sum + col.nullCount, 0);
     const completeness = ((totalFields - nullFields) / totalFields) * 100;
@@ -440,7 +520,7 @@ export class ClaudeAnalyzer {
       completeness,
       consistency,
       timeliness,
-      accuracy
+      accuracy,
     };
   }
 
@@ -451,17 +531,23 @@ export class ClaudeAnalyzer {
     if (data.length === 0) return 0;
 
     const now = new Date();
-    const latestRecord = new Date(Math.max(...data.map(d => new Date(d.received_timestamp).getTime())));
-    const ageHours = (now.getTime() - latestRecord.getTime()) / (1000 * 60 * 60);
-    
+    const latestRecord = new Date(
+      Math.max(...data.map(d => new Date(d.received_timestamp).getTime()))
+    );
+    const ageHours =
+      (now.getTime() - latestRecord.getTime()) / (1000 * 60 * 60);
+
     // Timeliness decreases as data gets older
-    return Math.max(0, 100 - (ageHours * 2)); // 2% decrease per hour
+    return Math.max(0, 100 - ageHours * 2); // 2% decrease per hour
   }
 
   /**
    * Sample data for analysis to respect Claude token limits
    */
-  private sampleDataForAnalysis(data: DataRecord[], maxSamples: number): DataRecord[] {
+  private sampleDataForAnalysis(
+    data: DataRecord[],
+    maxSamples: number
+  ): DataRecord[] {
     if (data.length <= maxSamples) {
       return data;
     }
@@ -472,15 +558,19 @@ export class ClaudeAnalyzer {
     // Intelligent sampling - take some from beginning, middle, and end
     const step = Math.floor(data.length / tokenSafeMaxSamples);
     const sampled: DataRecord[] = [];
-    
-    for (let i = 0; i < data.length && sampled.length < tokenSafeMaxSamples; i += step) {
+
+    for (
+      let i = 0;
+      i < data.length && sampled.length < tokenSafeMaxSamples;
+      i += step
+    ) {
       sampled.push(data[i]);
     }
 
-    // Include very few recent records to save tokens  
+    // Include very few recent records to save tokens
     const recentCount = Math.min(5, tokenSafeMaxSamples - sampled.length);
     const recentRecords = data.slice(-recentCount);
-    
+
     return [...sampled, ...recentRecords].slice(0, tokenSafeMaxSamples);
   }
 
@@ -488,9 +578,13 @@ export class ClaudeAnalyzer {
    * Safely stringify data that may contain BigInt values
    */
   private safeStringify(obj: any, space?: number): string {
-    return JSON.stringify(obj, (_, value) => {
-      return typeof value === 'bigint' ? value.toString() : value;
-    }, space);
+    return JSON.stringify(
+      obj,
+      (_, value) => {
+        return typeof value === 'bigint' ? value.toString() : value;
+      },
+      space
+    );
   }
 
   /**
@@ -498,74 +592,112 @@ export class ClaudeAnalyzer {
    */
   private analyzeDataStructure(sampleData: any[]): string {
     if (!sampleData || sampleData.length === 0) {
-      return "- No sample data available for structure analysis";
+      return '- No sample data available for structure analysis';
     }
 
     const firstRecord = sampleData[0];
     const notes: string[] = [];
 
     // Analyze paths and aggregation methods
-    const uniquePaths = new Set(sampleData.map(record => record.path).filter(Boolean));
-    const aggregationMethods = new Set(sampleData.map(record => record.aggregation_method).filter(Boolean));
-    
+    const uniquePaths = new Set(
+      sampleData.map(record => record.path).filter(Boolean)
+    );
+    const aggregationMethods = new Set(
+      sampleData.map(record => record.aggregation_method).filter(Boolean)
+    );
+
     if (uniquePaths.size > 1) {
-      notes.push(`- Multi-path analysis: ${uniquePaths.size} different SignalK paths`);
+      notes.push(
+        `- Multi-path analysis: ${uniquePaths.size} different SignalK paths`
+      );
       notes.push(`- Paths included: ${Array.from(uniquePaths).join(', ')}`);
     } else {
-      notes.push(`- Single path analysis: ${Array.from(uniquePaths)[0] || 'unknown'}`);
+      notes.push(
+        `- Single path analysis: ${Array.from(uniquePaths)[0] || 'unknown'}`
+      );
     }
-    
+
     if (aggregationMethods.size > 0) {
-      notes.push(`- Aggregation methods applied: ${Array.from(aggregationMethods).join(', ')}`);
+      notes.push(
+        `- Aggregation methods applied: ${Array.from(aggregationMethods).join(', ')}`
+      );
     }
 
     // Check for value_json presence
-    const hasValueJson = firstRecord.hasOwnProperty('value_json') && firstRecord.value_json !== null;
-    const hasDirectValues = Object.keys(firstRecord).some(key => key.startsWith('value_') && key !== 'value_json');
+    const hasValueJson =
+      firstRecord.hasOwnProperty('value_json') &&
+      firstRecord.value_json !== null;
+    const hasDirectValues = Object.keys(firstRecord).some(
+      key => key.startsWith('value_') && key !== 'value_json'
+    );
 
     if (hasValueJson) {
       notes.push("- Data contains JSON objects in 'value_json' column");
-      notes.push("- Main data values are stored as JSON objects (e.g., position data with longitude/latitude)");
-      
+      notes.push(
+        '- Main data values are stored as JSON objects (e.g., position data with longitude/latitude)'
+      );
+
       // Try to parse a sample to show structure
       try {
-        const parsed = typeof firstRecord.value_json === 'string' 
-          ? JSON.parse(firstRecord.value_json) 
-          : firstRecord.value_json;
+        const parsed =
+          typeof firstRecord.value_json === 'string'
+            ? JSON.parse(firstRecord.value_json)
+            : firstRecord.value_json;
         const keys = Object.keys(parsed);
         notes.push(`- JSON structure contains: ${keys.join(', ')}`);
       } catch (e) {
-        notes.push("- JSON values present but structure varies");
+        notes.push('- JSON values present but structure varies');
       }
     }
 
     if (hasDirectValues) {
-      const directValueColumns = Object.keys(firstRecord).filter(key => 
-        key.startsWith('value_') && key !== 'value_json' && firstRecord[key] !== null
+      const directValueColumns = Object.keys(firstRecord).filter(
+        key =>
+          key.startsWith('value_') &&
+          key !== 'value_json' &&
+          firstRecord[key] !== null
       );
       if (directValueColumns.length > 0) {
-        notes.push("- Data also contains direct value columns:");
+        notes.push('- Data also contains direct value columns:');
         notes.push(`  ${directValueColumns.join(', ')}`);
       }
     }
 
     // Guidance for Claude
     if (hasValueJson && hasDirectValues) {
-      notes.push("- ANALYSIS NOTE: Use 'value_json' for the primary data values, direct columns may be supplementary");
+      notes.push(
+        "- ANALYSIS NOTE: Use 'value_json' for the primary data values, direct columns may be supplementary"
+      );
     } else if (hasValueJson) {
-      notes.push("- ANALYSIS NOTE: Primary data is in 'value_json' objects - parse this for meaningful values");
+      notes.push(
+        "- ANALYSIS NOTE: Primary data is in 'value_json' objects - parse this for meaningful values"
+      );
     } else if (hasDirectValues) {
-      notes.push("- ANALYSIS NOTE: Data values are in direct columns (value_longitude, value_latitude, etc.)");
+      notes.push(
+        '- ANALYSIS NOTE: Data values are in direct columns (value_longitude, value_latitude, etc.)'
+      );
     }
 
     // Check for other important columns
-    const standardColumns = ['received_timestamp', 'timestamp', 'context', 'path', 'source'];
-    const presentColumns = standardColumns.filter(col => firstRecord.hasOwnProperty(col));
+    const standardColumns = [
+      'received_timestamp',
+      'timestamp',
+      'context',
+      'path',
+      'source',
+    ];
+    const presentColumns = standardColumns.filter(col =>
+      firstRecord.hasOwnProperty(col)
+    );
     if (presentColumns.length > 0) {
-      notes.push(`- Standard SignalK columns available: ${presentColumns.join(', ')}`);
+      notes.push(
+        `- Standard SignalK columns available: ${presentColumns.join(', ')}`
+      );
     }
 
-    return notes.length > 0 ? notes.join('\n') : "- Standard data structure detected";
+    return notes.length > 0
+      ? notes.join('\n')
+      : '- Standard data structure detected';
   }
 
   /**
@@ -573,10 +705,10 @@ export class ClaudeAnalyzer {
    */
   private buildAnalysisPrompt(data: any, request: AnalysisRequest): string {
     const { summary, sampleData } = data;
-    
+
     const dataStructureNote = this.analyzeDataStructure(sampleData);
     const vesselContext = this.vesselContextManager.generateClaudeContext();
-    
+
     let prompt = `You are an expert maritime data analyst. Analyze the following SignalK vessel data and provide insights.
 
 ${vesselContext}
@@ -669,7 +801,6 @@ Please provide detailed analysis addressing the specific request while consideri
 `;
         break;
 
-
       default:
         prompt += `
 ANALYSIS REQUEST: Analyze this maritime data and provide relevant insights for vessel operations.
@@ -695,7 +826,11 @@ Please structure your response as JSON with the following format:
   /**
    * Parse Claude's analysis response into structured format
    */
-  private parseAnalysisResponse(response: any, request: AnalysisRequest, data: any): AnalysisResponse {
+  private parseAnalysisResponse(
+    response: any,
+    request: AnalysisRequest,
+    data: any
+  ): AnalysisResponse {
     try {
       let content = '';
       if (response.content && response.content[0] && response.content[0].text) {
@@ -717,7 +852,7 @@ Please structure your response as JSON with the following format:
             insights: this.extractBulletPoints(content),
             recommendations: [],
             confidence: 0.8,
-            dataQuality: "Analysis completed"
+            dataQuality: 'Analysis completed',
           };
         }
       } else {
@@ -726,7 +861,7 @@ Please structure your response as JSON with the following format:
           insights: this.extractBulletPoints(content),
           recommendations: [],
           confidence: 0.8,
-          dataQuality: "Analysis completed"
+          dataQuality: 'Analysis completed',
         };
       }
 
@@ -740,19 +875,20 @@ Please structure your response as JSON with the following format:
         recommendations: parsedResponse.recommendations || [],
         anomalies: parsedResponse.anomalies || [],
         confidence: parsedResponse.confidence || 0.8,
-        dataQuality: parsedResponse.dataQuality || "Analysis completed",
+        dataQuality: parsedResponse.dataQuality || 'Analysis completed',
         timestamp: new Date().toISOString(),
         metadata: {
           dataPath: request.dataPath,
           analysisType: request.analysisType,
           recordCount: data.originalCount || 0,
           timeRange: request.timeRange,
-          useDatabaseAccess: request.useDatabaseAccess
-        }
+          useDatabaseAccess: request.useDatabaseAccess,
+        },
       };
-
     } catch (error) {
-      this.app?.error(`Failed to parse Claude response: ${(error as Error).message}`);
+      this.app?.error(
+        `Failed to parse Claude response: ${(error as Error).message}`
+      );
       throw new Error(`Response parsing failed: ${(error as Error).message}`);
     }
   }
@@ -767,7 +903,9 @@ Please structure your response as JSON with the following format:
     lines.forEach(line => {
       const trimmed = line.trim();
       if (trimmed.match(/^[-*•]\s/) || trimmed.match(/^\d+\.\s/)) {
-        bulletPoints.push(trimmed.replace(/^[-*•]\s*/, '').replace(/^\d+\.\s*/, ''));
+        bulletPoints.push(
+          trimmed.replace(/^[-*•]\s*/, '').replace(/^\d+\.\s*/, '')
+        );
       }
     });
 
@@ -777,7 +915,9 @@ Please structure your response as JSON with the following format:
   /**
    * Save analysis to history for later retrieval
    */
-  private async saveAnalysisToHistory(analysis: AnalysisResponse): Promise<void> {
+  private async saveAnalysisToHistory(
+    analysis: AnalysisResponse
+  ): Promise<void> {
     try {
       // Create history directory in plugin's data directory
       if (!this.dataDirectory) {
@@ -789,12 +929,13 @@ Please structure your response as JSON with the following format:
       // Save analysis to file
       const filename = `${analysis.id}.json`;
       const filepath = path.join(historyDir, filename);
-      
+
       await fs.writeJson(filepath, analysis, { spaces: 2 });
       this.app?.debug(`Analysis saved to history: ${filepath}`);
-
     } catch (error) {
-      this.app?.error(`Failed to save analysis to history: ${(error as Error).message}`);
+      this.app?.error(
+        `Failed to save analysis to history: ${(error as Error).message}`
+      );
       // Don't throw - this is not critical
     }
   }
@@ -808,28 +949,36 @@ Please structure your response as JSON with the following format:
         return []; // No data directory configured, return empty history
       }
       const historyDir = path.join(this.dataDirectory, 'analysis-history');
-      
-      if (!await fs.pathExists(historyDir)) {
+
+      if (!(await fs.pathExists(historyDir))) {
         return [];
       }
 
       const files = await fs.readdir(historyDir);
-      const analysisFiles = files.filter(f => f.endsWith('.json')).sort().reverse();
-      
+      const analysisFiles = files
+        .filter(f => f.endsWith('.json'))
+        .sort()
+        .reverse();
+
       const history: AnalysisResponse[] = [];
       for (let i = 0; i < Math.min(limit, analysisFiles.length); i++) {
         try {
-          const analysis = await fs.readJson(path.join(historyDir, analysisFiles[i]));
+          const analysis = await fs.readJson(
+            path.join(historyDir, analysisFiles[i])
+          );
           history.push(analysis);
         } catch (error) {
-          this.app?.debug(`Failed to read analysis file ${analysisFiles[i]}: ${(error as Error).message}`);
+          this.app?.debug(
+            `Failed to read analysis file ${analysisFiles[i]}: ${(error as Error).message}`
+          );
         }
       }
 
       return history;
-
     } catch (error) {
-      this.app?.error(`Failed to get analysis history: ${(error as Error).message}`);
+      this.app?.error(
+        `Failed to get analysis history: ${(error as Error).message}`
+      );
       return [];
     }
   }
@@ -837,53 +986,64 @@ Please structure your response as JSON with the following format:
   /**
    * Delete an analysis from history
    */
-  async deleteAnalysis(analysisId: string): Promise<{ success: boolean; error?: string }> {
+  async deleteAnalysis(
+    analysisId: string
+  ): Promise<{ success: boolean; error?: string }> {
     try {
       if (!this.dataDirectory) {
-        return { success: false, error: 'No data directory configured for plugin' };
+        return {
+          success: false,
+          error: 'No data directory configured for plugin',
+        };
       }
-      
+
       const historyDir = path.join(this.dataDirectory, 'analysis-history');
       const filename = `${analysisId}.json`;
       const filePath = path.join(historyDir, filename);
 
-      if (!await fs.pathExists(filePath)) {
+      if (!(await fs.pathExists(filePath))) {
         return { success: false, error: 'Analysis not found' };
       }
 
       await fs.remove(filePath);
       this.app?.debug(`Deleted analysis: ${analysisId}`);
-      
-      return { success: true };
 
+      return { success: true };
     } catch (error) {
       this.app?.error(`Failed to delete analysis: ${(error as Error).message}`);
       return { success: false, error: (error as Error).message };
     }
   }
 
-
   /**
    * Tony's approach: Direct database access analysis
    * Claude can query the database interactively during analysis
    */
-  async analyzeWithDatabaseAccess(request: AnalysisRequest): Promise<AnalysisResponse> {
+  async analyzeWithDatabaseAccess(
+    request: AnalysisRequest
+  ): Promise<AnalysisResponse> {
     try {
       this.app?.debug('🚀 Using direct database access');
-      
+
       // Ensure vessel context is loaded before generating context for Claude
       await this.vesselContextManager.refreshVesselInfo();
       const vesselContext = this.vesselContextManager.generateClaudeContext();
-      this.app?.debug(`🛥️ Vessel context for Claude (${vesselContext.length} chars):\n${vesselContext.substring(0, 500)}${vesselContext.length > 500 ? '...' : ''}`);
+      this.app?.debug(
+        `🛥️ Vessel context for Claude (${vesselContext.length} chars):\n${vesselContext.substring(0, 500)}${vesselContext.length > 500 ? '...' : ''}`
+      );
       const schemaInfo = await this.getEnhancedSchemaForClaude();
-      this.app?.debug(`📊 Schema info for Claude (${schemaInfo.length} chars):\n${schemaInfo.substring(0, 1000)}${schemaInfo.length > 1000 ? '...' : ''}`);
-      
+      this.app?.debug(
+        `📊 Schema info for Claude (${schemaInfo.length} chars):\n${schemaInfo.substring(0, 1000)}${schemaInfo.length > 1000 ? '...' : ''}`
+      );
+
       // Debug: Log if schema is empty or suspicious
       if (!schemaInfo || schemaInfo.length < 100) {
-        this.app?.error(`❌ Schema info appears empty or too short! Length: ${schemaInfo?.length || 0}`);
+        this.app?.error(
+          `❌ Schema info appears empty or too short! Length: ${schemaInfo?.length || 0}`
+        );
         this.app?.error(`Schema content: "${schemaInfo}"`);
       }
-      
+
       // Build time range guidance for Claude
       let timeRangeGuidance = '';
       if (request.timeRange) {
@@ -891,9 +1051,12 @@ Please structure your response as JSON with the following format:
           userRequested: request.customPrompt || request.analysisType,
           actualStart: request.timeRange.start.toISOString(),
           actualEnd: request.timeRange.end.toISOString(),
-          calculatedHours: (request.timeRange.end.getTime() - request.timeRange.start.getTime()) / (1000 * 60 * 60)
+          calculatedHours:
+            (request.timeRange.end.getTime() -
+              request.timeRange.start.getTime()) /
+            (1000 * 60 * 60),
         });
-        
+
         timeRangeGuidance = `
 
 ANALYSIS SCOPE: Focus your analysis on data between ${request.timeRange.start.toISOString().replace('.000Z', 'Z')} and ${request.timeRange.end.toISOString().replace('.000Z', 'Z')}.
@@ -914,7 +1077,7 @@ WHERE signalk_timestamp >= '${sixHoursAgo.toISOString().replace('.000Z', 'Z')}'`
       const systemTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
       const now = new Date();
       const timezoneOffset = -now.getTimezoneOffset() / 60; // Convert to hours from UTC
-      
+
       const initialPrompt = `You are an expert maritime data analyst with direct access to a comprehensive database.
 
 IMPORTANT: Please use the vessel context information provided below for all analysis and responses. This vessel information is critical for accurate maritime analysis.
@@ -925,7 +1088,7 @@ CRITICAL TIMESTAMP INFORMATION:
 - ALL SignalK timestamps in the database are in UTC (ending with 'Z')
 - System timezone: ${systemTimezone} (UTC${timezoneOffset >= 0 ? '+' : ''}${timezoneOffset})
 - When interpreting times for the user, convert UTC timestamps to local time (${systemTimezone})
-- Example: 2025-09-02T00:24:44Z (UTC) = ${new Date('2025-09-02T00:24:44Z').toLocaleString('en-US', {timeZone: systemTimezone, timeZoneName: 'short'})}
+- Example: 2025-09-02T00:24:44Z (UTC) = ${new Date('2025-09-02T00:24:44Z').toLocaleString('en-US', { timeZone: systemTimezone, timeZoneName: 'short' })}
 
 ${schemaInfo}${timeRangeGuidance}
 
@@ -1003,15 +1166,20 @@ Focus on:
 
 Begin your analysis by querying relevant data within the specified time range.`;
 
-      this.app?.debug(`📝 Full prompt for Claude (${initialPrompt.length} chars):\n${initialPrompt.substring(0, 2000)}${initialPrompt.length > 2000 ? '...[TRUNCATED]' : ''}`);
-      
+      this.app?.debug(
+        `📝 Full prompt for Claude (${initialPrompt.length} chars):\n${initialPrompt.substring(0, 2000)}${initialPrompt.length > 2000 ? '...[TRUNCATED]' : ''}`
+      );
+
       // Save full prompt to file for debugging
       const fs = require('fs');
       const debugFile = `/tmp/claude-prompt-debug-${Date.now()}.txt`;
-      fs.writeFileSync(debugFile, `FULL CLAUDE PROMPT (${initialPrompt.length} chars):\n\n${initialPrompt}`);
+      fs.writeFileSync(
+        debugFile,
+        `FULL CLAUDE PROMPT (${initialPrompt.length} chars):\n\n${initialPrompt}`
+      );
       this.app?.debug(`📄 Full prompt saved to: ${debugFile}`);
 
-      // Extract system context and user prompt  
+      // Extract system context and user prompt
       const systemContext = `You are an expert maritime data analyst with direct access to a comprehensive database.
 
 CRITICAL DATA INTEGRITY RULES - VIOLATION OF THESE RULES IS UNACCEPTABLE:
@@ -1234,18 +1402,24 @@ Focus on:
 3. Safety considerations and operational insights
 4. Data quality and completeness assessment`;
 
-      this.app?.debug(`🔧 Final system context (${systemContext.length} chars):`);
-      this.app?.debug(`📋 System context preview:\n${systemContext.substring(0, 2000)}${systemContext.length > 2000 ? '...' : ''}`);
+      this.app?.debug(
+        `🔧 Final system context (${systemContext.length} chars):`
+      );
+      this.app?.debug(
+        `📋 System context preview:\n${systemContext.substring(0, 2000)}${systemContext.length > 2000 ? '...' : ''}`
+      );
 
       const userPrompt = `${request.customPrompt || 'Analyze maritime data and provide insights'}
 
 Begin your analysis by querying relevant data within the specified time range.`;
 
       // Start conversation with Claude with function calling capability
-      let conversationMessages: Array<any> = [{
-        role: 'user',
-        content: userPrompt
-      }];
+      let conversationMessages: Array<any> = [
+        {
+          role: 'user',
+          content: userPrompt,
+        },
+      ];
 
       let analysisResult = '';
       let queryCount = 0;
@@ -1253,172 +1427,214 @@ Begin your analysis by querying relevant data within the specified time range.`;
       let totalTokenUsage = { input_tokens: 0, output_tokens: 0 };
 
       // Check if user is requesting real-time data
-      const needsRealTimeData = this.checkForRealTimeKeywords(request.customPrompt || '', conversationMessages);
-      
+      const needsRealTimeData = this.checkForRealTimeKeywords(
+        request.customPrompt || '',
+        conversationMessages
+      );
+
       // Identify relevant regimens based on keywords
-      const relevantRegimens = this.identifyRelevantRegimens(request.customPrompt || '');
-      
+      const relevantRegimens = this.identifyRelevantRegimens(
+        request.customPrompt || ''
+      );
+
       // Build tools array - always include database access
-      const availableTools: any[] = [{
-        name: 'query_maritime_database',
-        description: 'Execute SQL queries against the maritime Parquet database to explore and analyze data',
-        input_schema: {
-          type: 'object',
-          properties: {
-            sql: {
-              type: 'string',
-              description: 'SQL query to execute against the Parquet database'
+      const availableTools: any[] = [
+        {
+          name: 'query_maritime_database',
+          description:
+            'Execute SQL queries against the maritime Parquet database to explore and analyze data',
+          input_schema: {
+            type: 'object',
+            properties: {
+              sql: {
+                type: 'string',
+                description:
+                  'SQL query to execute against the Parquet database',
+              },
+              purpose: {
+                type: 'string',
+                description:
+                  'Brief description of what this query is trying to discover',
+              },
             },
-            purpose: {
-              type: 'string',
-              description: 'Brief description of what this query is trying to discover'
-            }
+            required: ['sql', 'purpose'],
           },
-          required: ['sql', 'purpose']
-        }
-      }];
+        },
+      ];
 
       // Add real-time SignalK data tool if keywords detected
       if (needsRealTimeData) {
         availableTools.push({
           name: 'get_current_signalk_data',
-          description: 'Get current real-time SignalK data VALUES for specific known paths. Use this ONLY when you already know the specific paths and need their actual values. DO NOT use this for path discovery - use get_available_signalk_paths first to discover what paths exist.',
+          description:
+            'Get current real-time SignalK data VALUES for specific known paths. Use this ONLY when you already know the specific paths and need their actual values. DO NOT use this for path discovery - use get_available_signalk_paths first to discover what paths exist.',
           input_schema: {
             type: 'object',
             properties: {
               paths: {
                 type: 'array',
                 items: { type: 'string' },
-                description: 'Array of SignalK paths to query (e.g., ["navigation.position", "navigation.speedOverGround"]). Leave empty to get all available current values.'
+                description:
+                  'Array of SignalK paths to query (e.g., ["navigation.position", "navigation.speedOverGround"]). Leave empty to get all available current values.',
               },
               purpose: {
                 type: 'string',
-                description: 'Brief description of why you need this real-time data'
+                description:
+                  'Brief description of why you need this real-time data',
               },
               vesselContext: {
                 type: 'string',
-                description: 'Vessel context to query. Use "vessels.*" for ALL vessels (recommended for multi-vessel queries), "vessels.self" for own vessel, or "vessels.urn:mrn:imo:mmsi:123456789" for specific vessel. Defaults to vessels.self if not specified.'
-              }
+                description:
+                  'Vessel context to query. Use "vessels.*" for ALL vessels (recommended for multi-vessel queries), "vessels.self" for own vessel, or "vessels.urn:mrn:imo:mmsi:123456789" for specific vessel. Defaults to vessels.self if not specified.',
+              },
             },
-            required: ['purpose']
-          }
+            required: ['purpose'],
+          },
         });
 
         // Also add path discovery tool for targeted queries
         availableTools.push({
           name: 'get_available_signalk_paths',
-          description: 'DISCOVER what SignalK paths are currently available with filtering options. Use this for ALL path discovery queries like "list paths", "what data is available", "show available paths", etc. ALWAYS use this BEFORE get_current_signalk_data.',
+          description:
+            'DISCOVER what SignalK paths are currently available with filtering options. Use this for ALL path discovery queries like "list paths", "what data is available", "show available paths", etc. ALWAYS use this BEFORE get_current_signalk_data.',
           input_schema: {
             type: 'object',
             properties: {
               vesselContext: {
                 type: 'string',
-                description: 'Vessel context to query. Use "vessels.*" for ALL vessels, "vessels.self" for own vessel, or specific vessel ID. Defaults to vessels.self.'
+                description:
+                  'Vessel context to query. Use "vessels.*" for ALL vessels, "vessels.self" for own vessel, or specific vessel ID. Defaults to vessels.self.',
               },
               pathPattern: {
                 type: 'string',
-                description: 'Regex pattern to filter paths (e.g., "navigation.*" for navigation data, "electrical.*" for electrical data)'
+                description:
+                  'Regex pattern to filter paths (e.g., "navigation.*" for navigation data, "electrical.*" for electrical data)',
               },
               source: {
                 type: 'string',
-                description: 'Filter by data source (e.g., "GPS", "AIS", "NMEA")'
+                description:
+                  'Filter by data source (e.g., "GPS", "AIS", "NMEA")',
               },
               hasValue: {
                 type: 'boolean',
-                description: 'Only return paths that have current values. Defaults to false.'
+                description:
+                  'Only return paths that have current values. Defaults to false.',
               },
               maxDepth: {
                 type: 'number',
-                description: 'Maximum depth to traverse SignalK tree. Defaults to 5.'
-              }
-            }
-          }
+                description:
+                  'Maximum depth to traverse SignalK tree. Defaults to 5.',
+              },
+            },
+          },
         });
 
         // Add source discovery tool for debugging
         availableTools.push({
           name: 'get_available_signalk_sources',
-          description: 'DEBUG: Get a list of all available SignalK data sources. Use this to discover what sources exist before filtering by source.',
+          description:
+            'DEBUG: Get a list of all available SignalK data sources. Use this to discover what sources exist before filtering by source.',
           input_schema: {
             type: 'object',
             properties: {
               vesselContext: {
                 type: 'string',
-                description: 'Vessel context to query. Use "vessels.*" for ALL vessels, "vessels.self" for own vessel. Defaults to vessels.self.'
-              }
-            }
-          }
+                description:
+                  'Vessel context to query. Use "vessels.*" for ALL vessels, "vessels.self" for own vessel. Defaults to vessels.self.',
+              },
+            },
+          },
         });
 
-        this.app?.debug(`🕐 Real-time keywords detected, adding current SignalK data, path discovery, and source discovery tools`);
+        this.app?.debug(
+          `🕐 Real-time keywords detected, adding current SignalK data, path discovery, and source discovery tools`
+        );
       }
 
       // Add episode boundary detection tool if regimens were identified
       if (relevantRegimens.length > 0) {
         availableTools.push({
           name: 'find_regimen_episodes',
-          description: 'REQUIRED for finding episodes/periods when regimens were active. Detects start/end boundaries from command state changes (false->true->false). Use this instead of query_maritime_database for episode detection.',
+          description:
+            'REQUIRED for finding episodes/periods when regimens were active. Detects start/end boundaries from command state changes (false->true->false). Use this instead of query_maritime_database for episode detection.',
           input_schema: {
             type: 'object',
             properties: {
               regimenName: {
                 type: 'string',
-                description: `Regimen to analyze. Available: ${relevantRegimens.join(', ')}`
+                description: `Regimen to analyze. Available: ${relevantRegimens.join(', ')}`,
               },
               timeRange: {
                 type: 'object',
-                description: 'Optional time range constraint (start/end ISO timestamps)'
+                description:
+                  'Optional time range constraint (start/end ISO timestamps)',
               },
               limit: {
-                type: 'number', 
-                description: 'Maximum number of episodes to return (default: 10)'
-              }
+                type: 'number',
+                description:
+                  'Maximum number of episodes to return (default: 10)',
+              },
             },
-            required: ['regimenName']
-          }
+            required: ['regimenName'],
+          },
         });
-        
-        this.app?.debug(`🎬 Added episode detection tool for regimens: [${relevantRegimens.join(', ')}]`);
+
+        this.app?.debug(
+          `🎬 Added episode detection tool for regimens: [${relevantRegimens.join(', ')}]`
+        );
       }
 
       // Add wind analysis tool for detailed wind rose and analysis prompts
-      const windKeywords = ['wind', 'breeze', 'gust', 'rose', 'direction', 'beaufort'];
-      const hasWindKeywords = windKeywords.some(keyword => 
+      const windKeywords = [
+        'wind',
+        'breeze',
+        'gust',
+        'rose',
+        'direction',
+        'beaufort',
+      ];
+      const hasWindKeywords = windKeywords.some(keyword =>
         (request.customPrompt || '').toLowerCase().includes(keyword)
       );
-      
+
       if (hasWindKeywords) {
         availableTools.push({
           name: 'generate_wind_analysis',
-          description: 'Generate detailed wind analysis prompts with proper Beaufort scale categories and radar chart specifications for professional maritime wind analysis',
+          description:
+            'Generate detailed wind analysis prompts with proper Beaufort scale categories and radar chart specifications for professional maritime wind analysis',
           input_schema: {
             type: 'object',
             properties: {
               timeFrame: {
                 type: 'string',
-                description: 'Time period for analysis (e.g., "24 hours", "3 days", "1 week")',
-                default: '48 hours'
+                description:
+                  'Time period for analysis (e.g., "24 hours", "3 days", "1 week")',
+                default: '48 hours',
               },
               chartType: {
                 type: 'string',
-                description: 'Type of wind chart to generate (e.g., "wind rose", "trend analysis", "directional frequency")',
-                default: 'wind rose'
+                description:
+                  'Type of wind chart to generate (e.g., "wind rose", "trend analysis", "directional frequency")',
+                default: 'wind rose',
               },
               windSpeedCategories: {
                 type: 'array',
                 items: { type: 'string' },
-                description: 'Custom wind speed categories (defaults to Beaufort scale if not specified)'
+                description:
+                  'Custom wind speed categories (defaults to Beaufort scale if not specified)',
               },
               vesselName: {
                 type: 'string',
                 description: 'Name of vessel for analysis',
-                default: 'Zennora'
-              }
+                default: 'Zennora',
+              },
             },
-            required: []
-          }
+            required: [],
+          },
         });
-        this.app?.debug(`🌬️ Wind analysis keywords detected, adding wind analysis tool`);
+        this.app?.debug(
+          `🌬️ Wind analysis keywords detected, adding wind analysis tool`
+        );
       }
 
       while (queryCount < maxQueries) {
@@ -1428,20 +1644,22 @@ Begin your analysis by querying relevant data within the specified time range.`;
           temperature: 0.0,
           system: systemContext,
           tools: availableTools,
-          messages: conversationMessages
+          messages: conversationMessages,
         });
 
         // Track token usage
         if (response.usage) {
           totalTokenUsage.input_tokens += response.usage.input_tokens || 0;
           totalTokenUsage.output_tokens += response.usage.output_tokens || 0;
-          this.app?.debug(`Updated totalTokenUsage: ${JSON.stringify(totalTokenUsage)}`);
+          this.app?.debug(
+            `Updated totalTokenUsage: ${JSON.stringify(totalTokenUsage)}`
+          );
         }
 
         // Add Claude's response to conversation
         conversationMessages.push({
           role: 'assistant',
-          content: response.content
+          content: response.content,
         });
 
         // Process each tool use in the response
@@ -1449,41 +1667,56 @@ Begin your analysis by querying relevant data within the specified time range.`;
         for (const contentBlock of response.content) {
           if (contentBlock.type === 'text') {
             const textContent = contentBlock.text;
-            this.app?.debug(`📝 Claude response text (${textContent.length} chars): ${textContent.substring(0, 200)}...`);
-            
+            this.app?.debug(
+              `📝 Claude response text (${textContent.length} chars): ${textContent.substring(0, 200)}...`
+            );
+
             // Debug: Check for JSON chart specs in the response
-            const chartJsonMatches = textContent.match(/```json\s*([\s\S]*?)\s*```/gi);
+            const chartJsonMatches = textContent.match(
+              /```json\s*([\s\S]*?)\s*```/gi
+            );
             if (chartJsonMatches) {
-              this.app?.debug(`🔍 FOUND ${chartJsonMatches.length} JSON BLOCKS IN CLAUDE RESPONSE`);
+              this.app?.debug(
+                `🔍 FOUND ${chartJsonMatches.length} JSON BLOCKS IN CLAUDE RESPONSE`
+              );
               chartJsonMatches.forEach((match: string, index: number) => {
-                const jsonContent = match.replace(/```json\s*/, '').replace(/\s*```/, '');
-                this.app?.debug(`📊 JSON Block ${index + 1} - Length: ${jsonContent.length} chars`);
-                this.app?.debug(`📊 JSON Block ${index + 1} - Preview: ${jsonContent.substring(0, 100)}...`);
-                this.app?.debug(`📊 JSON Block ${index + 1} - Ending: ...${jsonContent.substring(Math.max(0, jsonContent.length - 100))}`);
+                const jsonContent = match
+                  .replace(/```json\s*/, '')
+                  .replace(/\s*```/, '');
+                this.app?.debug(
+                  `📊 JSON Block ${index + 1} - Length: ${jsonContent.length} chars`
+                );
+                this.app?.debug(
+                  `📊 JSON Block ${index + 1} - Preview: ${jsonContent.substring(0, 100)}...`
+                );
+                this.app?.debug(
+                  `📊 JSON Block ${index + 1} - Ending: ...${jsonContent.substring(Math.max(0, jsonContent.length - 100))}`
+                );
               });
             }
-            
+
             analysisResult += textContent + '\n\n';
           } else if (contentBlock.type === 'tool_use') {
             const toolCall = contentBlock;
-            
+
             // Ensure every tool_use gets a tool_result, even if processing fails
             try {
               if (toolCall.name === 'query_maritime_database') {
                 queryCount++;
               }
-              
+
               const toolResult = await this.processToolCall(toolCall);
               toolResults.push(toolResult);
-            
             } catch (toolProcessingError) {
               // Critical: Always provide a tool_result, even if tool processing fails completely
               toolResults.push({
                 type: 'tool_result',
                 tool_use_id: toolCall.id,
-                content: `Tool processing failed: ${(toolProcessingError as Error).message}`
+                content: `Tool processing failed: ${(toolProcessingError as Error).message}`,
               });
-              this.app?.error(`🚨 Tool processing error for ${toolCall.name}: ${(toolProcessingError as Error).message}`);
+              this.app?.error(
+                `🚨 Tool processing error for ${toolCall.name}: ${(toolProcessingError as Error).message}`
+              );
             }
           }
         }
@@ -1492,23 +1725,27 @@ Begin your analysis by querying relevant data within the specified time range.`;
         if (toolResults.length > 0) {
           conversationMessages.push({
             role: 'user',
-            content: toolResults
+            content: toolResults,
           });
         }
 
         // If Claude didn't use any tools, we're done
-        const hasToolUse = response.content.some((block: any) => block.type === 'tool_use');
+        const hasToolUse = response.content.some(
+          (block: any) => block.type === 'tool_use'
+        );
         if (!hasToolUse) {
           break;
         }
       }
 
       const analysisId = `analysis_${Date.now()}_${Math.random().toString(36).substring(2, 11)}`;
-      
+
       // Ensure we have a meaningful analysis result
       const finalAnalysis = analysisResult.trim();
       if (!finalAnalysis) {
-        throw new Error('Analysis completed but no results were generated. This may indicate a configuration issue.');
+        throw new Error(
+          'Analysis completed but no results were generated. This may indicate a configuration issue.'
+        );
       }
 
       const analysisResponse = {
@@ -1517,12 +1754,12 @@ Begin your analysis by querying relevant data within the specified time range.`;
         insights: [
           'Analysis completed using direct database access',
           `Executed ${queryCount} database queries`,
-          'Comprehensive analysis of complete historical dataset'
+          'Comprehensive analysis of complete historical dataset',
         ],
         recommendations: [
           'Review the detailed analysis above',
           'Consider setting up automated monitoring for identified patterns',
-          'Database access enables deeper historical insights than sampling'
+          'Database access enables deeper historical insights than sampling',
         ],
         anomalies: [],
         confidence: 0.95,
@@ -1533,24 +1770,29 @@ Begin your analysis by querying relevant data within the specified time range.`;
           analysisType: request.analysisType,
           recordCount: queryCount, // Number of queries executed
           timeRange: request.timeRange,
-          useDatabaseAccess: true
+          useDatabaseAccess: true,
         },
-        usage: totalTokenUsage
+        usage: totalTokenUsage,
       };
 
-      this.app?.debug(`Final analysis response usage: ${JSON.stringify(analysisResponse.usage)}`);
+      this.app?.debug(
+        `Final analysis response usage: ${JSON.stringify(analysisResponse.usage)}`
+      );
 
       // Store conversation for follow-up questions
       this.activeConversations.set(analysisId, conversationMessages);
-      this.app?.debug(`💾 Stored conversation ${analysisId} with ${conversationMessages.length} messages`);
+      this.app?.debug(
+        `💾 Stored conversation ${analysisId} with ${conversationMessages.length} messages`
+      );
 
       // Save analysis to history
       await this.saveAnalysisToHistory(analysisResponse);
-      
-      return analysisResponse;
 
+      return analysisResponse;
     } catch (error) {
-      this.app?.error(`Database access analysis failed: ${(error as Error).message}`);
+      this.app?.error(
+        `Database access analysis failed: ${(error as Error).message}`
+      );
       throw error;
     }
   }
@@ -1558,30 +1800,39 @@ Begin your analysis by querying relevant data within the specified time range.`;
   /**
    * Call Claude API with retry logic for rate limit and overload errors
    */
-  private async callClaudeWithRetry(params: any, maxRetries: number = 5): Promise<any> {
+  private async callClaudeWithRetry(
+    params: any,
+    maxRetries: number = 5
+  ): Promise<any> {
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
         const response = await this.client.messages.create(params);
-        this.app?.debug(`Claude API response usage: ${JSON.stringify(response.usage)}`);
+        this.app?.debug(
+          `Claude API response usage: ${JSON.stringify(response.usage)}`
+        );
         return response;
       } catch (error: any) {
-        const isRateLimited = error?.status === 429 || 
-                             (error?.message && error.message.includes('rate limit')) ||
-                             (error?.error?.type === 'rate_limit_error');
-                             
-        const isOverloaded = error?.status === 529 || 
-                           (error?.message && error.message.includes('overloaded')) ||
-                           (error?.error?.type === 'overloaded_error');
-        
+        const isRateLimited =
+          error?.status === 429 ||
+          (error?.message && error.message.includes('rate limit')) ||
+          error?.error?.type === 'rate_limit_error';
+
+        const isOverloaded =
+          error?.status === 529 ||
+          (error?.message && error.message.includes('overloaded')) ||
+          error?.error?.type === 'overloaded_error';
+
         if ((isRateLimited || isOverloaded) && attempt < maxRetries) {
           // Exponential backoff with jitter for rate limits
           const baseDelay = isRateLimited ? 5000 : 2000; // 5s for rate limit, 2s for overload
           const exponentialDelay = Math.pow(2, attempt - 1) * baseDelay;
           const jitter = Math.random() * 1000; // Add random jitter
           const delayMs = exponentialDelay + jitter;
-          
+
           const errorType = isRateLimited ? 'rate limited' : 'overloaded';
-          this.app?.debug(`Claude ${errorType} (attempt ${attempt}/${maxRetries}), retrying in ${Math.round(delayMs)}ms...`);
+          this.app?.debug(
+            `Claude ${errorType} (attempt ${attempt}/${maxRetries}), retrying in ${Math.round(delayMs)}ms...`
+          );
           await new Promise(resolve => setTimeout(resolve, delayMs));
           continue;
         }
@@ -1595,22 +1846,30 @@ Begin your analysis by querying relevant data within the specified time range.`;
    */
   async askFollowUp(request: FollowUpRequest): Promise<AnalysisResponse> {
     try {
-      this.app?.debug(`🔄 Processing follow-up question for conversation: ${request.conversationId}`);
+      this.app?.debug(
+        `🔄 Processing follow-up question for conversation: ${request.conversationId}`
+      );
 
       // Get the stored conversation
       this.app?.debug(`🔍 Looking for conversation: ${request.conversationId}`);
-      this.app?.debug(`📚 Active conversations: ${Array.from(this.activeConversations.keys()).join(', ')}`);
-      
-      const conversationMessages = this.activeConversations.get(request.conversationId);
+      this.app?.debug(
+        `📚 Active conversations: ${Array.from(this.activeConversations.keys()).join(', ')}`
+      );
+
+      const conversationMessages = this.activeConversations.get(
+        request.conversationId
+      );
       if (!conversationMessages) {
-        this.app?.error(`❌ Conversation ${request.conversationId} not found. Available: [${Array.from(this.activeConversations.keys()).join(', ')}]`);
+        this.app?.error(
+          `❌ Conversation ${request.conversationId} not found. Available: [${Array.from(this.activeConversations.keys()).join(', ')}]`
+        );
         throw new Error('Conversation not found. Please start a new analysis.');
       }
 
       // Add user's follow-up question
       conversationMessages.push({
         role: 'user',
-        content: request.question
+        content: request.question,
       });
 
       let analysisResult = '';
@@ -1619,133 +1878,167 @@ Begin your analysis by querying relevant data within the specified time range.`;
       let totalTokenUsage = { input_tokens: 0, output_tokens: 0 };
 
       // Check if follow-up question contains real-time keywords
-      const needsRealTimeData = this.checkForRealTimeKeywords(request.question, conversationMessages);
-      this.app?.debug(`🔍 Follow-up real-time check: "${request.question}" -> ${needsRealTimeData}`);
-      
+      const needsRealTimeData = this.checkForRealTimeKeywords(
+        request.question,
+        conversationMessages
+      );
+      this.app?.debug(
+        `🔍 Follow-up real-time check: "${request.question}" -> ${needsRealTimeData}`
+      );
+
       // Build tools array using same logic as initial analysis - identify regimens and build context-aware tools
-      const relevantRegimens = this.identifyRelevantRegimens(request.question, conversationMessages);
-      this.app?.debug(`🎯 Follow-up identified ${relevantRegimens.length} relevant regimens: [${relevantRegimens.join(', ')}]`);
-      
+      const relevantRegimens = this.identifyRelevantRegimens(
+        request.question,
+        conversationMessages
+      );
+      this.app?.debug(
+        `🎯 Follow-up identified ${relevantRegimens.length} relevant regimens: [${relevantRegimens.join(', ')}]`
+      );
+
       // Start with base database access tool
-      const followUpTools: any[] = [{
-        name: 'query_maritime_database',
-        description: 'Execute SQL queries against the maritime Parquet database to explore and analyze data',
-        input_schema: {
-          type: 'object',
-          properties: {
-            sql: {
-              type: 'string',
-              description: 'SQL query to execute against the Parquet database'
+      const followUpTools: any[] = [
+        {
+          name: 'query_maritime_database',
+          description:
+            'Execute SQL queries against the maritime Parquet database to explore and analyze data',
+          input_schema: {
+            type: 'object',
+            properties: {
+              sql: {
+                type: 'string',
+                description:
+                  'SQL query to execute against the Parquet database',
+              },
+              purpose: {
+                type: 'string',
+                description:
+                  'Brief description of what this query is trying to discover',
+              },
             },
-            purpose: {
-              type: 'string',
-              description: 'Brief description of what this query is trying to discover'
-            }
+            required: ['sql', 'purpose'],
           },
-          required: ['sql', 'purpose']
-        }
-      }];
+        },
+      ];
 
       // Add episode boundary detection tool if regimens were identified
       if (relevantRegimens.length > 0) {
         followUpTools.push({
           name: 'find_regimen_episodes',
-          description: 'REQUIRED for finding episodes/periods when regimens were active. Detects start/end boundaries from command state changes (false->true->false). Use this instead of query_maritime_database for episode detection.',
+          description:
+            'REQUIRED for finding episodes/periods when regimens were active. Detects start/end boundaries from command state changes (false->true->false). Use this instead of query_maritime_database for episode detection.',
           input_schema: {
             type: 'object',
             properties: {
               regimenName: {
                 type: 'string',
-                description: `Regimen to analyze. Available: ${relevantRegimens.join(', ')}`
+                description: `Regimen to analyze. Available: ${relevantRegimens.join(', ')}`,
               },
               timeRange: {
                 type: 'object',
-                description: 'Optional time range constraint (start/end ISO timestamps)'
+                description:
+                  'Optional time range constraint (start/end ISO timestamps)',
               },
               limit: {
                 type: 'number',
-                description: 'Maximum number of episodes to return (default 10)'
-              }
+                description:
+                  'Maximum number of episodes to return (default 10)',
+              },
             },
-            required: ['regimenName']
-          }
+            required: ['regimenName'],
+          },
         });
-        this.app?.debug(`🎬 Added episode detection tool for regimens: [${relevantRegimens.join(', ')}]`);
+        this.app?.debug(
+          `🎬 Added episode detection tool for regimens: [${relevantRegimens.join(', ')}]`
+        );
       }
 
       // Add real-time SignalK data tool if keywords detected in follow-up
       if (needsRealTimeData) {
         followUpTools.push({
           name: 'get_current_signalk_data',
-          description: 'Get current real-time SignalK data VALUES for specific known paths. Use this ONLY when you already know the specific paths and need their actual values. DO NOT use this for path discovery - use get_available_signalk_paths first to discover what paths exist.',
+          description:
+            'Get current real-time SignalK data VALUES for specific known paths. Use this ONLY when you already know the specific paths and need their actual values. DO NOT use this for path discovery - use get_available_signalk_paths first to discover what paths exist.',
           input_schema: {
             type: 'object',
             properties: {
               paths: {
                 type: 'array',
                 items: { type: 'string' },
-                description: 'Array of SignalK paths to query (e.g., ["navigation.position", "navigation.speedOverGround"]). Leave empty to get all available current values.'
+                description:
+                  'Array of SignalK paths to query (e.g., ["navigation.position", "navigation.speedOverGround"]). Leave empty to get all available current values.',
               },
               purpose: {
                 type: 'string',
-                description: 'Brief description of why you need this real-time data'
+                description:
+                  'Brief description of why you need this real-time data',
               },
               vesselContext: {
                 type: 'string',
-                description: 'Vessel context to query. Use "vessels.*" for ALL vessels (recommended for multi-vessel queries), "vessels.self" for own vessel, or "vessels.urn:mrn:imo:mmsi:123456789" for specific vessel. Defaults to vessels.self if not specified.'
-              }
+                description:
+                  'Vessel context to query. Use "vessels.*" for ALL vessels (recommended for multi-vessel queries), "vessels.self" for own vessel, or "vessels.urn:mrn:imo:mmsi:123456789" for specific vessel. Defaults to vessels.self if not specified.',
+              },
             },
-            required: ['purpose']
-          }
+            required: ['purpose'],
+          },
         });
 
         // Also add path discovery tool for targeted queries
         followUpTools.push({
           name: 'get_available_signalk_paths',
-          description: 'DISCOVER what SignalK paths are currently available with filtering options. Use this for ALL path discovery queries like "list paths", "what data is available", "show available paths", etc. ALWAYS use this BEFORE get_current_signalk_data.',
+          description:
+            'DISCOVER what SignalK paths are currently available with filtering options. Use this for ALL path discovery queries like "list paths", "what data is available", "show available paths", etc. ALWAYS use this BEFORE get_current_signalk_data.',
           input_schema: {
             type: 'object',
             properties: {
               vesselContext: {
                 type: 'string',
-                description: 'Vessel context to query. Use "vessels.*" for ALL vessels, "vessels.self" for own vessel, or specific vessel ID. Defaults to vessels.self.'
+                description:
+                  'Vessel context to query. Use "vessels.*" for ALL vessels, "vessels.self" for own vessel, or specific vessel ID. Defaults to vessels.self.',
               },
               pathPattern: {
                 type: 'string',
-                description: 'Regex pattern to filter paths (e.g., "navigation.*" for navigation data, "electrical.*" for electrical data)'
+                description:
+                  'Regex pattern to filter paths (e.g., "navigation.*" for navigation data, "electrical.*" for electrical data)',
               },
               source: {
                 type: 'string',
-                description: 'Filter by data source (e.g., "GPS", "AIS", "NMEA")'
+                description:
+                  'Filter by data source (e.g., "GPS", "AIS", "NMEA")',
               },
               hasValue: {
                 type: 'boolean',
-                description: 'Only return paths that have current values. Defaults to false.'
+                description:
+                  'Only return paths that have current values. Defaults to false.',
               },
               maxDepth: {
                 type: 'number',
-                description: 'Maximum depth to traverse SignalK tree. Defaults to 5.'
-              }
-            }
-          }
+                description:
+                  'Maximum depth to traverse SignalK tree. Defaults to 5.',
+              },
+            },
+          },
         });
 
         // Add source discovery tool for debugging
         followUpTools.push({
           name: 'get_available_signalk_sources',
-          description: 'DEBUG: Get a list of all available SignalK data sources. Use this to discover what sources exist before filtering by source.',
+          description:
+            'DEBUG: Get a list of all available SignalK data sources. Use this to discover what sources exist before filtering by source.',
           input_schema: {
             type: 'object',
             properties: {
               vesselContext: {
                 type: 'string',
-                description: 'Vessel context to query. Use "vessels.*" for ALL vessels, "vessels.self" for own vessel. Defaults to vessels.self.'
-              }
-            }
-          }
+                description:
+                  'Vessel context to query. Use "vessels.*" for ALL vessels, "vessels.self" for own vessel. Defaults to vessels.self.',
+              },
+            },
+          },
         });
 
-        this.app?.debug(`🕐 Real-time keywords detected in follow-up, adding current SignalK data, path discovery, and source discovery tools`);
+        this.app?.debug(
+          `🕐 Real-time keywords detected in follow-up, adding current SignalK data, path discovery, and source discovery tools`
+        );
       }
 
       // Continue the conversation with Claude
@@ -1755,20 +2048,22 @@ Begin your analysis by querying relevant data within the specified time range.`;
           max_tokens: Math.max(this.config.maxTokens, 8000),
           temperature: 0.0,
           tools: followUpTools,
-          messages: conversationMessages
+          messages: conversationMessages,
         });
 
         // Track token usage
         if (response.usage) {
           totalTokenUsage.input_tokens += response.usage.input_tokens || 0;
           totalTokenUsage.output_tokens += response.usage.output_tokens || 0;
-          this.app?.debug(`Follow-up updated totalTokenUsage: ${JSON.stringify(totalTokenUsage)}`);
+          this.app?.debug(
+            `Follow-up updated totalTokenUsage: ${JSON.stringify(totalTokenUsage)}`
+          );
         }
 
         // Add Claude's response to conversation
         conversationMessages.push({
           role: 'assistant',
-          content: response.content
+          content: response.content,
         });
 
         // Process the response
@@ -1776,28 +2071,31 @@ Begin your analysis by querying relevant data within the specified time range.`;
         for (const contentBlock of response.content) {
           if (contentBlock.type === 'text') {
             const textContent = contentBlock.text;
-            this.app?.debug(`📝 Follow-up response text (${textContent.length} chars): ${textContent.substring(0, 200)}...`);
+            this.app?.debug(
+              `📝 Follow-up response text (${textContent.length} chars): ${textContent.substring(0, 200)}...`
+            );
             analysisResult += textContent + '\n\n';
           } else if (contentBlock.type === 'tool_use') {
             const toolCall = contentBlock;
-            
+
             // Ensure every tool_use gets a tool_result, even if processing fails
             try {
               if (toolCall.name === 'query_maritime_database') {
                 queryCount++;
               }
-              
+
               const toolResult = await this.processToolCall(toolCall);
               toolResults.push(toolResult);
-            
             } catch (toolProcessingError) {
               // Critical: Always provide a tool_result, even if tool processing fails completely
               toolResults.push({
                 type: 'tool_result',
                 tool_use_id: toolCall.id,
-                content: `Follow-up tool processing failed: ${(toolProcessingError as Error).message}`
+                content: `Follow-up tool processing failed: ${(toolProcessingError as Error).message}`,
               });
-              this.app?.error(`🚨 Follow-up tool processing error for ${toolCall.name}: ${(toolProcessingError as Error).message}`);
+              this.app?.error(
+                `🚨 Follow-up tool processing error for ${toolCall.name}: ${(toolProcessingError as Error).message}`
+              );
             }
           }
         }
@@ -1806,19 +2104,24 @@ Begin your analysis by querying relevant data within the specified time range.`;
         if (toolResults.length > 0) {
           conversationMessages.push({
             role: 'user',
-            content: toolResults
+            content: toolResults,
           });
         }
 
         // Check if Claude used tools - if not, we're done
-        const hasToolUse = response.content.some((block: any) => block.type === 'tool_use');
+        const hasToolUse = response.content.some(
+          (block: any) => block.type === 'tool_use'
+        );
         if (!hasToolUse) {
           break;
         }
       }
 
       // Update stored conversation
-      this.activeConversations.set(request.conversationId, conversationMessages);
+      this.activeConversations.set(
+        request.conversationId,
+        conversationMessages
+      );
 
       const followUpResponse = {
         id: `${request.conversationId}_followup_${Date.now()}`, // Unique ID for follow-up
@@ -1826,11 +2129,11 @@ Begin your analysis by querying relevant data within the specified time range.`;
         insights: [
           'Follow-up question processed',
           `Executed ${queryCount} additional database queries`,
-          'Conversation continued with database access'
+          'Conversation continued with database access',
         ],
         recommendations: [
           'Ask more follow-up questions to explore deeper',
-          'Use specific questions for targeted analysis'
+          'Use specific questions for targeted analysis',
         ],
         anomalies: [],
         confidence: 0.9,
@@ -1843,18 +2146,19 @@ Begin your analysis by querying relevant data within the specified time range.`;
           timeRange: undefined,
           originalConversationId: request.conversationId,
           followUpQuestion: request.question,
-          isFollowUp: true
+          isFollowUp: true,
         },
-        usage: totalTokenUsage
+        usage: totalTokenUsage,
       };
 
-      this.app?.debug(`Final follow-up response usage: ${JSON.stringify(followUpResponse.usage)}`);
+      this.app?.debug(
+        `Final follow-up response usage: ${JSON.stringify(followUpResponse.usage)}`
+      );
 
       // Save follow-up response to history
       await this.saveAnalysisToHistory(followUpResponse);
 
       return followUpResponse;
-
     } catch (error) {
       this.app?.error(`Follow-up question failed: ${(error as Error).message}`);
       throw error;
@@ -1864,15 +2168,22 @@ Begin your analysis by querying relevant data within the specified time range.`;
   /**
    * Get all available SignalK sources (for debugging)
    */
-  private getAvailableSignalKSources(vesselContext: string = 'vessels.self'): string[] {
-    this.app?.debug(`🔍 Getting all available SignalK sources for ${vesselContext}`);
-    
+  private getAvailableSignalKSources(
+    vesselContext: string = 'vessels.self'
+  ): string[] {
+    this.app?.debug(
+      `🔍 Getting all available SignalK sources for ${vesselContext}`
+    );
+
     const sources = new Set<string>();
-    
+
     try {
       if (vesselContext === 'vessels.*') {
         // Cast to Record<string, any> for compatibility with different @signalk/server-api versions
-        const allVessels = (this.app?.getPath('vessels') || {}) as Record<string, any>;
+        const allVessels = (this.app?.getPath('vessels') || {}) as Record<
+          string,
+          any
+        >;
         for (const vesselId in allVessels) {
           if (vesselId === 'self') continue;
           this.collectSources(allVessels[vesselId], sources, '', 0, 10);
@@ -1880,7 +2191,8 @@ Begin your analysis by querying relevant data within the specified time range.`;
       } else if (vesselContext === 'vessels.self') {
         const actualVesselId = this.app?.selfId;
         if (actualVesselId) {
-          const vesselData = this.app?.getPath(`vessels.${actualVesselId}`) || {};
+          const vesselData =
+            this.app?.getPath(`vessels.${actualVesselId}`) || {};
           this.collectSources(vesselData, sources, '', 0, 10);
         }
       } else {
@@ -1889,11 +2201,14 @@ Begin your analysis by querying relevant data within the specified time range.`;
       }
 
       const sourceList = Array.from(sources).sort();
-      this.app?.debug(`📋 Found ${sourceList.length} unique sources: ${sourceList.join(', ')}`);
+      this.app?.debug(
+        `📋 Found ${sourceList.length} unique sources: ${sourceList.join(', ')}`
+      );
       return sourceList;
-
     } catch (error) {
-      this.app?.error(`Failed to get available SignalK sources: ${(error as Error).message}`);
+      this.app?.error(
+        `Failed to get available SignalK sources: ${(error as Error).message}`
+      );
       return [];
     }
   }
@@ -1902,10 +2217,10 @@ Begin your analysis by querying relevant data within the specified time range.`;
    * Recursively collect unique sources from SignalK data
    */
   private collectSources(
-    obj: any, 
-    sources: Set<string>, 
-    currentPath: string, 
-    currentDepth: number, 
+    obj: any,
+    sources: Set<string>,
+    currentPath: string,
+    currentDepth: number,
     maxDepth: number
   ): void {
     if (currentDepth >= maxDepth || !obj || typeof obj !== 'object') {
@@ -1928,7 +2243,13 @@ Begin your analysis by querying relevant data within the specified time range.`;
 
       // Recurse into nested objects
       if (typeof value === 'object' && value !== null) {
-        this.collectSources(value, sources, newPath, currentDepth + 1, maxDepth);
+        this.collectSources(
+          value,
+          sources,
+          newPath,
+          currentDepth + 1,
+          maxDepth
+        );
       }
     }
   }
@@ -1936,37 +2257,48 @@ Begin your analysis by querying relevant data within the specified time range.`;
   /**
    * Get available real-time SignalK paths with filtering options
    */
-  private getAvailableSignalKPaths(filter: AvailablePathsFilter = {}): AvailablePathInfo[] {
+  private getAvailableSignalKPaths(
+    filter: AvailablePathsFilter = {}
+  ): AvailablePathInfo[] {
     const {
       vesselContext = 'vessels.self',
       pathPattern,
       source,
       hasValue = false,
       includeMetadata = false,
-      maxDepth = 10
+      maxDepth = 10,
     } = filter;
 
     // First try using StreamBundle.getAvailablePaths if available
-    if (this.app?.streambundle && typeof this.app.streambundle.getAvailablePaths === 'function') {
+    if (
+      this.app?.streambundle &&
+      typeof this.app.streambundle.getAvailablePaths === 'function'
+    ) {
       this.app?.debug(`🚀 Using StreamBundle.getAvailablePaths() method`);
       try {
         const streamPaths = this.app.streambundle.getAvailablePaths();
-        this.app?.debug(`📋 StreamBundle returned ${streamPaths.length} paths: ${streamPaths.slice(0,5).join(', ')}...`);
+        this.app?.debug(
+          `📋 StreamBundle returned ${streamPaths.length} paths: ${streamPaths.slice(0, 5).join(', ')}...`
+        );
         // TODO: Convert to AvailablePathInfo format and apply filters
         return streamPaths.map((path: string) => ({
           path,
           fullPath: `${vesselContext}.${path}`,
           vesselId: vesselContext.replace('vessels.', ''),
-          source: undefined // Would need to fetch source info separately
+          source: undefined, // Would need to fetch source info separately
         }));
       } catch (streamError) {
-        this.app?.debug(`⚠️ StreamBundle.getAvailablePaths() failed: ${streamError}, NOT falling back to manual traversal`);
+        this.app?.debug(
+          `⚠️ StreamBundle.getAvailablePaths() failed: ${streamError}, NOT falling back to manual traversal`
+        );
         return [];
       }
     }
 
     // Manual traversal system disabled
-    this.app?.debug(`🚫 StreamBundle.getAvailablePaths() not available, manual traversal disabled`);
+    this.app?.debug(
+      `🚫 StreamBundle.getAvailablePaths() not available, manual traversal disabled`
+    );
     return [];
 
     const availablePaths: AvailablePathInfo[] = [];
@@ -1977,20 +2309,23 @@ Begin your analysis by querying relevant data within the specified time range.`;
       if (vesselContext === 'vessels.*') {
         // Get paths from all vessels
         // Cast to Record<string, any> for compatibility with different @signalk/server-api versions
-        const allVessels = (this.app?.getPath('vessels') || {}) as Record<string, any>;
+        const allVessels = (this.app?.getPath('vessels') || {}) as Record<
+          string,
+          any
+        >;
         for (const vesselId in allVessels) {
           if (vesselId === 'self') continue; // Skip self since it's handled separately
           this.traverseSignalKPaths(
-            allVessels[vesselId], 
-            '', 
-            `vessels.${vesselId}`, 
+            allVessels[vesselId],
+            '',
+            `vessels.${vesselId}`,
             vesselId,
-            availablePaths, 
-            pathRegex, 
-            source || '', 
-            hasValue, 
-            includeMetadata, 
-            0, 
+            availablePaths,
+            pathRegex,
+            source || '',
+            hasValue,
+            includeMetadata,
+            0,
             maxDepth
           );
         }
@@ -1998,20 +2333,23 @@ Begin your analysis by querying relevant data within the specified time range.`;
         // Resolve self to actual vessel ID
         const actualVesselId = this.app?.selfId;
         if (actualVesselId) {
-          const vesselData = this.app?.getPath(`vessels.${actualVesselId}`) || {};
+          const vesselData =
+            this.app?.getPath(`vessels.${actualVesselId}`) || {};
           const dataKeys = Object.keys(vesselData);
-          this.app?.debug(`DEBUG: selfId="${actualVesselId}", vessel data has keys: ${dataKeys.slice(0,10).join(',')}`);
+          this.app?.debug(
+            `DEBUG: selfId="${actualVesselId}", vessel data has keys: ${dataKeys.slice(0, 10).join(',')}`
+          );
           this.traverseSignalKPaths(
-            vesselData, 
-            '', 
-            `vessels.${actualVesselId}`, 
+            vesselData,
+            '',
+            `vessels.${actualVesselId}`,
             actualVesselId || '',
-            availablePaths, 
-            pathRegex, 
-            source || '', 
-            hasValue, 
-            includeMetadata, 
-            0, 
+            availablePaths,
+            pathRegex,
+            source || '',
+            hasValue,
+            includeMetadata,
+            0,
             maxDepth
           );
         }
@@ -2020,24 +2358,25 @@ Begin your analysis by querying relevant data within the specified time range.`;
         const vesselData = this.app?.getPath(vesselContext) || {};
         const vesselId = vesselContext.replace('vessels.', '');
         this.traverseSignalKPaths(
-          vesselData, 
-          '', 
-          vesselContext, 
+          vesselData,
+          '',
+          vesselContext,
           vesselId,
-          availablePaths, 
-          pathRegex, 
-          source, 
-          hasValue, 
-          includeMetadata, 
-          0, 
+          availablePaths,
+          pathRegex,
+          source,
+          hasValue,
+          includeMetadata,
+          0,
           maxDepth
         );
       }
 
       return availablePaths.sort((a, b) => a.path.localeCompare(b.path));
-
     } catch (error) {
-      this.app?.error(`Failed to get available SignalK paths: ${(error as Error).message}`);
+      this.app?.error(
+        `Failed to get available SignalK paths: ${(error as Error).message}`
+      );
       return [];
     }
   }
@@ -2064,7 +2403,10 @@ Begin your analysis by querying relevant data within the specified time range.`;
 
     for (const [key, value] of Object.entries(obj)) {
       // Skip metadata unless explicitly requested
-      if (!includeMetadata && ['_updateTimes', '_sources', 'meta'].includes(key)) {
+      if (
+        !includeMetadata &&
+        ['_updateTimes', '_sources', 'meta'].includes(key)
+      ) {
         continue;
       }
 
@@ -2077,18 +2419,19 @@ Begin your analysis by querying relevant data within the specified time range.`;
       const newFullPath = `${fullContextPath}.${newPath}`;
 
       // Check if this is a leaf value (has 'value' property or is a primitive)
-      const isLeafValue = value && typeof value === 'object' && 'value' in value;
+      const isLeafValue =
+        value && typeof value === 'object' && 'value' in value;
       const isPrimitive = typeof value !== 'object' || value === null;
-      
+
       if (isLeafValue || isPrimitive) {
         // This is a data point
         const actualValue = isLeafValue ? value.value : value;
-        
+
         // Apply filters
         if (pathRegex && !pathRegex.test(newPath)) {
           continue;
         }
-        
+
         if (hasValue && (actualValue === null || actualValue === undefined)) {
           continue;
         }
@@ -2096,20 +2439,29 @@ Begin your analysis by querying relevant data within the specified time range.`;
         // Check source filter
         let sourceInfo: string | undefined;
         let hasMatchingSource = false;
-        
+
         if (value && typeof value === 'object' && '$source' in value) {
           sourceInfo = value.$source as string;
-          hasMatchingSource = !sourceFilter || !!(sourceInfo && sourceInfo.includes(sourceFilter));
+          hasMatchingSource =
+            !sourceFilter ||
+            !!(sourceInfo && sourceInfo.includes(sourceFilter));
         }
 
         // Also check the values object for multiple sources
-        if (!hasMatchingSource && sourceFilter && value && typeof value === 'object' && 'values' in value) {
+        if (
+          !hasMatchingSource &&
+          sourceFilter &&
+          value &&
+          typeof value === 'object' &&
+          'values' in value
+        ) {
           const valuesObj = value.values as any;
           if (valuesObj && typeof valuesObj === 'object') {
-            hasMatchingSource = Object.keys(valuesObj).some(key => key.includes(sourceFilter));
+            hasMatchingSource = Object.keys(valuesObj).some(key =>
+              key.includes(sourceFilter)
+            );
           }
         }
-
 
         if (sourceFilter && !hasMatchingSource) {
           continue;
@@ -2128,14 +2480,16 @@ Begin your analysis by querying relevant data within the specified time range.`;
           }
         }
 
-        this.app?.debug(`FOUND PATH: ${newPath} | source: ${sourceInfo} | hasValue: ${hasValue} | actualValue: ${JSON.stringify(actualValue)?.substring(0,50)}`);
+        this.app?.debug(
+          `FOUND PATH: ${newPath} | source: ${sourceInfo} | hasValue: ${hasValue} | actualValue: ${JSON.stringify(actualValue)?.substring(0, 50)}`
+        );
         paths.push({
           path: newPath,
           fullPath: newFullPath,
           vesselId,
           currentValue: hasValue ? actualValue : undefined,
           source: sourceInfo,
-          lastUpdate
+          lastUpdate,
         });
       } else if (typeof value === 'object' && value !== null) {
         // Recurse into nested objects
@@ -2159,10 +2513,16 @@ Begin your analysis by querying relevant data within the specified time range.`;
   /**
    * Get current real-time SignalK data values
    */
-  private getCurrentSignalKData(paths?: string[], purpose?: string, vesselContext?: string): any {
+  private getCurrentSignalKData(
+    paths?: string[],
+    purpose?: string,
+    vesselContext?: string
+  ): any {
     const contextToUse = vesselContext || 'vessels.self';
-    this.app?.debug(`🕐 Getting current SignalK data for ${contextToUse}: ${paths?.length ? paths.join(', ') : 'all paths'}. Purpose: ${purpose}`);
-    
+    this.app?.debug(
+      `🕐 Getting current SignalK data for ${contextToUse}: ${paths?.length ? paths.join(', ') : 'all paths'}. Purpose: ${purpose}`
+    );
+
     try {
       if (!paths || paths.length === 0) {
         // Get all current data for the specified context
@@ -2170,14 +2530,17 @@ Begin your analysis by querying relevant data within the specified time range.`;
           // Resolve 'self' to actual vessel ID and use getPath with full vessel identifier
           const actualVesselId = this.app?.selfId;
           if (actualVesselId) {
-            const vesselData = this.app?.getPath(`vessels.${actualVesselId}`) || {};
+            const vesselData =
+              this.app?.getPath(`vessels.${actualVesselId}`) || {};
             const cleanData = this.cleanSignalKData(vesselData);
-            this.app?.debug(`📊 Retrieved ${Object.keys(cleanData).length} current SignalK data points for vessels.${actualVesselId} (resolved from ${contextToUse})`);
+            this.app?.debug(
+              `📊 Retrieved ${Object.keys(cleanData).length} current SignalK data points for vessels.${actualVesselId} (resolved from ${contextToUse})`
+            );
             return {
               timestamp: new Date().toISOString(),
               source: 'real-time SignalK',
               context: `vessels.${actualVesselId}`,
-              data: cleanData
+              data: cleanData,
             };
           } else {
             this.app?.debug(`⚠️ Could not resolve selfId for ${contextToUse}`);
@@ -2185,47 +2548,51 @@ Begin your analysis by querying relevant data within the specified time range.`;
               timestamp: new Date().toISOString(),
               source: 'real-time SignalK',
               context: contextToUse,
-              data: {}
+              data: {},
             };
           }
         } else if (contextToUse === 'vessels.*') {
           // Get all vessels using getPath
           const allVessels = this.app?.getPath('vessels') || {};
           const cleanData = this.cleanSignalKData(allVessels);
-          this.app?.debug(`📊 Retrieved data from all vessels (${Object.keys(cleanData).length} vessel contexts)`);
+          this.app?.debug(
+            `📊 Retrieved data from all vessels (${Object.keys(cleanData).length} vessel contexts)`
+          );
           return {
             timestamp: new Date().toISOString(),
             source: 'real-time SignalK',
             context: 'vessels.*',
-            data: cleanData
+            data: cleanData,
           };
         } else {
           // Get specific vessel data using getPath
           const vesselData = this.app?.getPath(contextToUse) || {};
           const cleanData = this.cleanSignalKData(vesselData);
-          this.app?.debug(`📊 Retrieved ${Object.keys(cleanData).length} current SignalK data points for ${contextToUse}`);
+          this.app?.debug(
+            `📊 Retrieved ${Object.keys(cleanData).length} current SignalK data points for ${contextToUse}`
+          );
           return {
             timestamp: new Date().toISOString(),
             source: 'real-time SignalK',
             context: contextToUse,
-            data: cleanData
+            data: cleanData,
           };
         }
       } else {
         // Get specific paths
         const pathData: any = {};
-        
+
         if (contextToUse === 'vessels.*') {
           // For wildcard, get paths from all vessels
           const allVessels = this.app?.getPath('vessels') || {};
           for (const vesselId in allVessels) {
             if (vesselId === 'self') continue; // Skip self since it's handled separately
-            
+
             for (const path of paths) {
               try {
                 const fullPath = `vessels.${vesselId}.${path}`;
                 const value = this.app?.getPath(fullPath);
-                
+
                 if (value !== undefined && value !== null) {
                   if (!pathData[path]) pathData[path] = {};
                   pathData[path][vesselId] = value;
@@ -2254,28 +2621,32 @@ Begin your analysis by querying relevant data within the specified time range.`;
                 const fullPath = `${contextToUse}.${path}`;
                 value = this.app?.getPath(fullPath);
               }
-              
+
               pathData[path] = value !== undefined ? value : null;
             } catch (error) {
               pathData[path] = `Error: ${(error as Error).message}`;
             }
           }
         }
-        
-        this.app?.debug(`📊 Retrieved ${Object.keys(pathData).length} specific SignalK paths`);
+
+        this.app?.debug(
+          `📊 Retrieved ${Object.keys(pathData).length} specific SignalK paths`
+        );
         return {
           timestamp: new Date().toISOString(),
           source: 'real-time SignalK',
           context: contextToUse,
           requestedPaths: paths,
-          data: pathData
+          data: pathData,
         };
       }
     } catch (error) {
-      this.app?.error(`Failed to get current SignalK data: ${(error as Error).message}`);
+      this.app?.error(
+        `Failed to get current SignalK data: ${(error as Error).message}`
+      );
       return {
         error: `Failed to retrieve SignalK data: ${(error as Error).message}`,
-        timestamp: new Date().toISOString()
+        timestamp: new Date().toISOString(),
       };
     }
   }
@@ -2290,7 +2661,7 @@ Begin your analysis by querying relevant data within the specified time range.`;
         source: 'real-time SignalK buffers',
         context: context,
         data: {},
-        error: 'Plugin state not available - cannot access data buffers'
+        error: 'Plugin state not available - cannot access data buffers',
       };
     }
 
@@ -2310,7 +2681,7 @@ Begin your analysis by querying relevant data within the specified time range.`;
       if (bufferKey.startsWith(context + ':')) {
         matchingKeys.push(bufferKey);
         const path = bufferKey.split(':')[1];
-        
+
         // If specific paths requested, only include those
         if (!paths || paths.includes(path)) {
           if (buffer.length > 0) {
@@ -2318,8 +2689,10 @@ Begin your analysis by querying relevant data within the specified time range.`;
             const latestRecord = buffer[buffer.length - 1];
             currentData[path] = {
               value: latestRecord.value,
-              timestamp: latestRecord.signalk_timestamp || latestRecord.received_timestamp,
-              source: latestRecord.source_label
+              timestamp:
+                latestRecord.signalk_timestamp ||
+                latestRecord.received_timestamp,
+              source: latestRecord.source_label,
             };
             dataFound = true;
           }
@@ -2327,9 +2700,13 @@ Begin your analysis by querying relevant data within the specified time range.`;
       }
     });
 
-    this.app?.debug(`🔍 DEBUG: Matching keys for "${context}": ${JSON.stringify(matchingKeys.slice(0, 5))}${matchingKeys.length > 5 ? '...' : ''}`);
-    this.app?.debug(`📊 Retrieved ${Object.keys(currentData).length} current data points from buffers for ${context}`);
-    
+    this.app?.debug(
+      `🔍 DEBUG: Matching keys for "${context}": ${JSON.stringify(matchingKeys.slice(0, 5))}${matchingKeys.length > 5 ? '...' : ''}`
+    );
+    this.app?.debug(
+      `📊 Retrieved ${Object.keys(currentData).length} current data points from buffers for ${context}`
+    );
+
     return {
       timestamp: new Date().toISOString(),
       source: 'real-time SignalK buffers',
@@ -2340,8 +2717,8 @@ Begin your analysis by querying relevant data within the specified time range.`;
       debug: {
         totalBuffers: totalBuffers,
         matchingKeys: matchingKeys.length,
-        sampleBufferKeys: bufferKeys.slice(0, 5)
-      }
+        sampleBufferKeys: bufferKeys.slice(0, 5),
+      },
     };
   }
 
@@ -2355,7 +2732,7 @@ Begin your analysis by querying relevant data within the specified time range.`;
         source: 'real-time SignalK buffers',
         context: 'vessels.*',
         data: {},
-        error: 'Plugin state not available - cannot access data buffers'
+        error: 'Plugin state not available - cannot access data buffers',
       };
     }
 
@@ -2365,20 +2742,22 @@ Begin your analysis by querying relevant data within the specified time range.`;
     this.state.dataBuffers.forEach((buffer, bufferKey) => {
       if (bufferKey.includes(':')) {
         const [context, path] = bufferKey.split(':', 2);
-        
+
         // Only include vessel contexts
         if (context.startsWith('vessels.')) {
           if (!allVesselData[context]) {
             allVesselData[context] = {};
           }
-          
+
           if (buffer.length > 0) {
             // Get the latest value from the buffer
             const latestRecord = buffer[buffer.length - 1];
             allVesselData[context][path] = {
               value: latestRecord.value,
-              timestamp: latestRecord.signalk_timestamp || latestRecord.received_timestamp,
-              source: latestRecord.source_label
+              timestamp:
+                latestRecord.signalk_timestamp ||
+                latestRecord.received_timestamp,
+              source: latestRecord.source_label,
             };
           }
         }
@@ -2386,24 +2765,33 @@ Begin your analysis by querying relevant data within the specified time range.`;
     });
 
     const vesselCount = Object.keys(allVesselData).length;
-    const totalPaths = Object.values(allVesselData).reduce((sum: number, vesselData: any) => sum + Object.keys(vesselData).length, 0);
-    
-    this.app?.debug(`📊 Retrieved data from ${vesselCount} vessels with ${totalPaths} total data points from buffers`);
-    
+    const totalPaths = Object.values(allVesselData).reduce(
+      (sum: number, vesselData: any) => sum + Object.keys(vesselData).length,
+      0
+    );
+
+    this.app?.debug(
+      `📊 Retrieved data from ${vesselCount} vessels with ${totalPaths} total data points from buffers`
+    );
+
     return {
       timestamp: new Date().toISOString(),
       source: 'real-time SignalK buffers',
       context: 'vessels.*',
       data: allVesselData,
       vesselCount: vesselCount,
-      totalDataPoints: totalPaths
+      totalDataPoints: totalPaths,
     };
   }
 
   /**
    * Clean SignalK data by removing functions and circular references
    */
-  private cleanSignalKData(obj: any, maxDepth: number = 3, currentDepth: number = 0): any {
+  private cleanSignalKData(
+    obj: any,
+    maxDepth: number = 3,
+    currentDepth: number = 0
+  ): any {
     if (currentDepth >= maxDepth || obj === null || obj === undefined) {
       return obj;
     }
@@ -2421,7 +2809,9 @@ Begin your analysis by querying relevant data within the specified time range.`;
     }
 
     if (Array.isArray(obj)) {
-      return obj.map(item => this.cleanSignalKData(item, maxDepth, currentDepth + 1));
+      return obj.map(item =>
+        this.cleanSignalKData(item, maxDepth, currentDepth + 1)
+      );
     }
 
     const cleaned: any = {};
@@ -2430,64 +2820,80 @@ Begin your analysis by querying relevant data within the specified time range.`;
       if (['_updateTimes', '_sources', 'meta'].includes(key)) {
         continue;
       }
-      
+
       try {
         cleaned[key] = this.cleanSignalKData(value, maxDepth, currentDepth + 1);
       } catch (error) {
         cleaned[key] = '[Circular Reference]';
       }
     }
-    
+
     return cleaned;
   }
 
   /**
    * Identify relevant regimens based on user query keywords
    */
-  private identifyRelevantRegimens(userQuery: string, conversationMessages?: Array<any>): string[] {
+  private identifyRelevantRegimens(
+    userQuery: string,
+    conversationMessages?: Array<any>
+  ): string[] {
     try {
       const { getCurrentCommands } = require('./commands');
       const commands = getCurrentCommands();
       const queryLower = userQuery.toLowerCase();
-      
-      this.app?.debug(`🔍 Analyzing query for regimen keywords: "${userQuery}"`);
-      
-      const relevantRegimens = commands.filter((cmd: any) => {
-        if (!cmd.keywords || cmd.keywords.length === 0) return false;
-        
-        // Check current query
-        const hasMatchingKeyword = cmd.keywords.some((keyword: string) => 
-          queryLower.includes(keyword.toLowerCase())
-        );
-        
-        // If not found in current query, check conversation messages
-        if (!hasMatchingKeyword && conversationMessages) {
-          for (const message of conversationMessages.slice(-3)) { // Check last 3 messages
-            if (message.content && typeof message.content === 'string') {
-              const contentLower = message.content.toLowerCase();
-              const hasContextKeyword = cmd.keywords.some((keyword: string) => 
-                contentLower.includes(keyword.toLowerCase())
-              );
-              if (hasContextKeyword) {
-                this.app?.debug(`✅ Found matching regimen from conversation context: ${cmd.command} (keyword: ${cmd.keywords.join(', ')})`);
-                return true;
+
+      this.app?.debug(
+        `🔍 Analyzing query for regimen keywords: "${userQuery}"`
+      );
+
+      const relevantRegimens = commands
+        .filter((cmd: any) => {
+          if (!cmd.keywords || cmd.keywords.length === 0) return false;
+
+          // Check current query
+          const hasMatchingKeyword = cmd.keywords.some((keyword: string) =>
+            queryLower.includes(keyword.toLowerCase())
+          );
+
+          // If not found in current query, check conversation messages
+          if (!hasMatchingKeyword && conversationMessages) {
+            for (const message of conversationMessages.slice(-3)) {
+              // Check last 3 messages
+              if (message.content && typeof message.content === 'string') {
+                const contentLower = message.content.toLowerCase();
+                const hasContextKeyword = cmd.keywords.some((keyword: string) =>
+                  contentLower.includes(keyword.toLowerCase())
+                );
+                if (hasContextKeyword) {
+                  this.app?.debug(
+                    `✅ Found matching regimen from conversation context: ${cmd.command} (keyword: ${cmd.keywords.join(', ')})`
+                  );
+                  return true;
+                }
               }
             }
           }
-        }
-        
-        if (hasMatchingKeyword) {
-          this.app?.debug(`✅ Found matching regimen: ${cmd.command} (keywords: ${cmd.keywords.join(', ')})`);
-        }
-        
-        return hasMatchingKeyword;
-      }).map((cmd: any) => cmd.command);
-      
-      this.app?.debug(`🎯 Identified ${relevantRegimens.length} relevant regimens: [${relevantRegimens.join(', ')}]`);
-      
+
+          if (hasMatchingKeyword) {
+            this.app?.debug(
+              `✅ Found matching regimen: ${cmd.command} (keywords: ${cmd.keywords.join(', ')})`
+            );
+          }
+
+          return hasMatchingKeyword;
+        })
+        .map((cmd: any) => cmd.command);
+
+      this.app?.debug(
+        `🎯 Identified ${relevantRegimens.length} relevant regimens: [${relevantRegimens.join(', ')}]`
+      );
+
       return relevantRegimens;
     } catch (error) {
-      this.app?.error(`Failed to identify relevant regimens: ${(error as Error).message}`);
+      this.app?.error(
+        `Failed to identify relevant regimens: ${(error as Error).message}`
+      );
       return [];
     }
   }
@@ -2499,17 +2905,21 @@ Begin your analysis by querying relevant data within the specified time range.`;
     try {
       const { loadWebAppConfig } = require('./commands');
       const webAppConfig = loadWebAppConfig(this.app);
-      
+
       // Find all paths where regimen matches the command name
-      const regimenPaths = webAppConfig.paths.filter((pathConfig: any) => 
-        pathConfig.regimen === regimenName
-      ).map((pathConfig: any) => pathConfig.path);
-      
-      this.app?.debug(`📊 Found ${regimenPaths.length} paths for regimen ${regimenName}: [${regimenPaths.join(', ')}]`);
-      
+      const regimenPaths = webAppConfig.paths
+        .filter((pathConfig: any) => pathConfig.regimen === regimenName)
+        .map((pathConfig: any) => pathConfig.path);
+
+      this.app?.debug(
+        `📊 Found ${regimenPaths.length} paths for regimen ${regimenName}: [${regimenPaths.join(', ')}]`
+      );
+
       return regimenPaths;
     } catch (error) {
-      this.app?.error(`Failed to get paths for regimen ${regimenName}: ${(error as Error).message}`);
+      this.app?.error(
+        `Failed to get paths for regimen ${regimenName}: ${(error as Error).message}`
+      );
       return [];
     }
   }
@@ -2517,9 +2927,21 @@ Begin your analysis by querying relevant data within the specified time range.`;
   /**
    * Check if user request contains real-time keywords
    */
-  private checkForRealTimeKeywords(customPrompt: string, conversationMessages: Array<any>): boolean {
-    const keywords = ['now', 'current', 'real-time', 'realtime', 'live', 'present', 'right now', 'at this moment'];
-    
+  private checkForRealTimeKeywords(
+    customPrompt: string,
+    conversationMessages: Array<any>
+  ): boolean {
+    const keywords = [
+      'now',
+      'current',
+      'real-time',
+      'realtime',
+      'live',
+      'present',
+      'right now',
+      'at this moment',
+    ];
+
     // Check custom prompt
     const promptLower = customPrompt.toLowerCase();
     this.app?.debug(`🔍 Checking prompt: "${customPrompt}" (${promptLower})`);
@@ -2529,9 +2951,10 @@ Begin your analysis by querying relevant data within the specified time range.`;
         return true;
       }
     }
-    
+
     // Check recent conversation messages
-    for (const message of conversationMessages.slice(-3)) { // Check last 3 messages
+    for (const message of conversationMessages.slice(-3)) {
+      // Check last 3 messages
       if (message.content && typeof message.content === 'string') {
         const contentLower = message.content.toLowerCase();
         for (const keyword of keywords) {
@@ -2541,7 +2964,7 @@ Begin your analysis by querying relevant data within the specified time range.`;
         }
       }
     }
-    
+
     return false;
   }
 
@@ -2550,172 +2973,208 @@ Begin your analysis by querying relevant data within the specified time range.`;
    */
   private async processToolCall(toolCall: any): Promise<any> {
     if (toolCall.name === 'query_maritime_database') {
-      const { sql, purpose } = toolCall.input as { sql: string; purpose: string };
-      
+      const { sql, purpose } = toolCall.input as {
+        sql: string;
+        purpose: string;
+      };
+
       try {
         const queryResult = await this.executeSQLQuery(sql, purpose);
         const resultSummary = `Query "${purpose}" returned ${queryResult.length} rows:\n\n${JSON.stringify(queryResult, null, 2)}`;
-        
-        this.app?.debug(`✅ Query executed: ${purpose} - ${queryResult.length} rows returned`);
-        
+
+        this.app?.debug(
+          `✅ Query executed: ${purpose} - ${queryResult.length} rows returned`
+        );
+
         return {
           type: 'tool_result',
           tool_use_id: toolCall.id,
-          content: resultSummary
+          content: resultSummary,
         };
-        
       } catch (queryError) {
         return {
           type: 'tool_result',
           tool_use_id: toolCall.id,
-          content: `Query failed: ${(queryError as Error).message}`
+          content: `Query failed: ${(queryError as Error).message}`,
         };
       }
     } else if (toolCall.name === 'get_current_signalk_data') {
-      const { paths, purpose, vesselContext } = toolCall.input as { paths?: string[]; purpose: string; vesselContext?: string };
-      
+      const { paths, purpose, vesselContext } = toolCall.input as {
+        paths?: string[];
+        purpose: string;
+        vesselContext?: string;
+      };
+
       try {
         // Ensure paths is always an array or undefined
-        const safePaths = paths ? (Array.isArray(paths) ? paths : [paths]) : undefined;
-        const currentData = this.getCurrentSignalKData(safePaths, purpose, vesselContext);
-        
+        const safePaths = paths
+          ? Array.isArray(paths)
+            ? paths
+            : [paths]
+          : undefined;
+        const currentData = this.getCurrentSignalKData(
+          safePaths,
+          purpose,
+          vesselContext
+        );
+
         // Debug: Log the actual data structure and size
         const dataStr = JSON.stringify(currentData, null, 2);
         console.log(`🔍 DATA SIZE: ${dataStr.length} characters`);
         console.log(`🔍 DATA STRUCTURE:`, currentData);
-        
+
         const resultSummary = `Current SignalK data "${purpose}":\n\n${dataStr}`;
-        
-        this.app?.debug(`✅ Real-time data retrieved: ${purpose} - ${safePaths?.length || 'all'} paths`);
-        
+
+        this.app?.debug(
+          `✅ Real-time data retrieved: ${purpose} - ${safePaths?.length || 'all'} paths`
+        );
+
         return {
           type: 'tool_result',
           tool_use_id: toolCall.id,
-          content: resultSummary
+          content: resultSummary,
         };
-        
       } catch (realTimeError) {
         return {
           type: 'tool_result',
           tool_use_id: toolCall.id,
-          content: `Real-time data retrieval failed: ${(realTimeError as Error).message}`
+          content: `Real-time data retrieval failed: ${(realTimeError as Error).message}`,
         };
       }
     } else if (toolCall.name === 'get_available_signalk_paths') {
-      const { vesselContext, pathPattern, source, hasValue, maxDepth } = toolCall.input as { 
-        vesselContext?: string; 
-        pathPattern?: string; 
-        source?: string; 
-        hasValue?: boolean; 
-        maxDepth?: number; 
-      };
-      
+      const { vesselContext, pathPattern, source, hasValue, maxDepth } =
+        toolCall.input as {
+          vesselContext?: string;
+          pathPattern?: string;
+          source?: string;
+          hasValue?: boolean;
+          maxDepth?: number;
+        };
+
       try {
         const availablePaths = this.getAvailableSignalKPaths({
           vesselContext,
           pathPattern,
           source,
           hasValue,
-          maxDepth
+          maxDepth,
         });
-        
+
         const resultSummary = `Available SignalK paths (${availablePaths.length} found):\n\n${JSON.stringify(availablePaths, null, 2)}`;
-        
-        this.app?.debug(`📋 Path discovery completed: ${availablePaths.length} paths found with filters: ${JSON.stringify({ vesselContext, pathPattern, source, hasValue })}`);
-        
+
+        this.app?.debug(
+          `📋 Path discovery completed: ${availablePaths.length} paths found with filters: ${JSON.stringify({ vesselContext, pathPattern, source, hasValue })}`
+        );
+
         return {
           type: 'tool_result',
           tool_use_id: toolCall.id,
-          content: resultSummary
+          content: resultSummary,
         };
       } catch (pathDiscoveryError) {
-        this.app?.error(`Path discovery failed: ${(pathDiscoveryError as Error).message}`);
-        
+        this.app?.error(
+          `Path discovery failed: ${(pathDiscoveryError as Error).message}`
+        );
+
         return {
           type: 'tool_result',
           tool_use_id: toolCall.id,
-          content: `Path discovery failed: ${(pathDiscoveryError as Error).message}`
+          content: `Path discovery failed: ${(pathDiscoveryError as Error).message}`,
         };
       }
     } else if (toolCall.name === 'get_available_signalk_sources') {
       const { vesselContext } = toolCall.input as { vesselContext?: string };
-      
+
       try {
         const availableSources = this.getAvailableSignalKSources(vesselContext);
-        
+
         const resultSummary = `Available SignalK sources (${availableSources.length} found):\n\n${availableSources.map(s => `- ${s}`).join('\n')}`;
-        
-        this.app?.debug(`📋 Source discovery completed: ${availableSources.length} sources found`);
-        
+
+        this.app?.debug(
+          `📋 Source discovery completed: ${availableSources.length} sources found`
+        );
+
         return {
           type: 'tool_result',
           tool_use_id: toolCall.id,
-          content: resultSummary
+          content: resultSummary,
         };
       } catch (sourceDiscoveryError) {
-        this.app?.error(`Source discovery failed: ${(sourceDiscoveryError as Error).message}`);
-        
+        this.app?.error(
+          `Source discovery failed: ${(sourceDiscoveryError as Error).message}`
+        );
+
         return {
           type: 'tool_result',
           tool_use_id: toolCall.id,
-          content: `Source discovery failed: ${(sourceDiscoveryError as Error).message}`
+          content: `Source discovery failed: ${(sourceDiscoveryError as Error).message}`,
         };
       }
     } else if (toolCall.name === 'find_regimen_episodes') {
-      const { regimenName, timeRange, limit } = toolCall.input as { regimenName: string; timeRange?: any; limit?: number };
-      
+      const { regimenName, timeRange, limit } = toolCall.input as {
+        regimenName: string;
+        timeRange?: any;
+        limit?: number;
+      };
+
       try {
-        const episodes = await this.findRegimenEpisodes(regimenName, timeRange, limit || 10);
-        
+        const episodes = await this.findRegimenEpisodes(
+          regimenName,
+          timeRange,
+          limit || 10
+        );
+
         // Configure display limit based on total episodes found and request limit
         const displayLimit = Math.min(limit || 10, episodes.length);
         const showAll = limit && limit >= episodes.length;
-        
+
         const resultSummary = `Found ${episodes.length} episodes for regimen "${regimenName}":\n\n${JSON.stringify(episodes.slice(0, displayLimit), null, 2)}${!showAll && episodes.length > displayLimit ? `\n\n... and ${episodes.length - displayLimit} more episodes` : ''}`;
-        
-        this.app?.debug(`✅ Episode detection completed: ${regimenName} - ${episodes.length} episodes found, showing ${displayLimit}`);
-        
+
+        this.app?.debug(
+          `✅ Episode detection completed: ${regimenName} - ${episodes.length} episodes found, showing ${displayLimit}`
+        );
+
         return {
           type: 'tool_result',
           tool_use_id: toolCall.id,
-          content: resultSummary
+          content: resultSummary,
         };
-        
       } catch (episodeError) {
         return {
           type: 'tool_result',
           tool_use_id: toolCall.id,
-          content: `Episode detection failed: ${(episodeError as Error).message}`
+          content: `Episode detection failed: ${(episodeError as Error).message}`,
         };
       }
     } else if (toolCall.name === 'generate_wind_analysis') {
-      const { timeFrame, windSpeedCategories, chartType, vesselName } = toolCall.input as { 
-        timeFrame?: string; 
-        windSpeedCategories?: string[];
-        chartType?: string;
-        vesselName?: string;
-      };
-      
+      const { timeFrame, windSpeedCategories, chartType, vesselName } =
+        toolCall.input as {
+          timeFrame?: string;
+          windSpeedCategories?: string[];
+          chartType?: string;
+          vesselName?: string;
+        };
+
       const categories = windSpeedCategories || [
         'Calm (0-1 knots)',
-        'Light Air (1-3 knots)', 
+        'Light Air (1-3 knots)',
         'Light Breeze (4-6 knots)',
         'Gentle Breeze (7-10 knots)',
         'Moderate Breeze (11-15 knots)',
         'Fresh Breeze (16-21 knots)',
-        'Strong Breeze (22+ knots)'
+        'Strong Breeze (22+ knots)',
       ];
-      
+
       const vessel = vesselName || 'Zennora';
       const period = timeFrame || '48 hours';
       const type = chartType || 'wind rose';
-      
+
       const windAnalysisPrompt = `Query the wind direction and speed data for ${vessel} over the previous ${period}. Create a ${type} chart that shows wind direction frequency by compass sectors (N, NNE, NE, ENE, E, ESE, SE, SSE, S, SSW, SW, WSW, W, WNW, NW, NNW). Group the data into wind speed categories: ${categories.join(', ')}. For each compass direction, count how many hours of wind occurred in each speed category. Display this as a radar chart with ${categories.length} datasets - one for each wind speed range - using different colors (light blue, green, yellow, orange, red, dark red, purple for increasing intensities). The chart should show the frequency distribution of wind directions and intensities as a traditional ${type}.`;
-      
+
       return {
         type: 'tool_result',
         tool_use_id: toolCall.id,
-        content: `Generated detailed wind analysis prompt:\n\n${windAnalysisPrompt}\n\nNow executing this analysis...`
+        content: `Generated detailed wind analysis prompt:\n\n${windAnalysisPrompt}\n\nNow executing this analysis...`,
       };
     } else {
       // Handle unknown tool calls
@@ -2723,7 +3182,7 @@ Begin your analysis by querying relevant data within the specified time range.`;
       return {
         type: 'tool_result',
         tool_use_id: toolCall.id,
-        content: `Unknown tool "${toolCall.name}" requested. Available tools: query_maritime_database, get_current_signalk_data, get_available_signalk_paths, get_available_signalk_sources, find_regimen_episodes, generate_wind_analysis`
+        content: `Unknown tool "${toolCall.name}" requested. Available tools: query_maritime_database, get_current_signalk_data, get_available_signalk_paths, get_available_signalk_sources, find_regimen_episodes, generate_wind_analysis`,
       };
     }
   }
@@ -2731,13 +3190,17 @@ Begin your analysis by querying relevant data within the specified time range.`;
   /**
    * Find episodes for a specific regimen using command state transitions
    */
-  private async findRegimenEpisodes(regimenName: string, timeRange?: any, limit: number = 10): Promise<any[]> {
+  private async findRegimenEpisodes(
+    regimenName: string,
+    timeRange?: any,
+    limit: number = 10
+  ): Promise<any[]> {
     // Build the episode boundary detection SQL
     let timeConstraint = '';
     if (timeRange?.start && timeRange?.end) {
       timeConstraint = `WHERE signalk_timestamp >= '${timeRange.start}' AND signalk_timestamp <= '${timeRange.end}'`;
     }
-    
+
     const episodeSQL = `
       WITH transitions AS (
         SELECT
@@ -2792,12 +3255,15 @@ Begin your analysis by querying relevant data within the specified time range.`;
       ORDER BY start_time DESC
       LIMIT ${limit}
     `;
-    
+
     this.app?.debug(`🎬 Executing episode detection SQL for ${regimenName}`);
-    
+
     try {
-      const episodes = await this.executeSQLQuery(episodeSQL, `Episode boundary detection for ${regimenName}`);
-      
+      const episodes = await this.executeSQLQuery(
+        episodeSQL,
+        `Episode boundary detection for ${regimenName}`
+      );
+
       // Add regimen info and clean up the results
       return episodes.map(episode => ({
         regimen: regimenName,
@@ -2805,25 +3271,30 @@ Begin your analysis by querying relevant data within the specified time range.`;
         endTime: episode.end_time,
         status: episode.status,
         durationMs: episode.duration_ms,
-        paths: this.getPathsForRegimen(regimenName) // Include associated paths
+        paths: this.getPathsForRegimen(regimenName), // Include associated paths
       }));
     } catch (error) {
-      this.app?.error(`Failed to find episodes for ${regimenName}: ${(error as Error).message}`);
+      this.app?.error(
+        `Failed to find episodes for ${regimenName}: ${(error as Error).message}`
+      );
       throw error;
     }
   }
-
 
   /**
    * Determine the appropriate column to use based on SignalK path type
    */
   private getValueColumn(pathName: string): string {
     // Position data and other complex objects use value_json
-    if (pathName.includes('position') || pathName.includes('attitude') || 
-        pathName.includes('coordinate') || pathName.includes('navigation.location')) {
+    if (
+      pathName.includes('position') ||
+      pathName.includes('attitude') ||
+      pathName.includes('coordinate') ||
+      pathName.includes('navigation.location')
+    ) {
       return 'value_json';
     }
-    
+
     // Simple numeric/boolean values use value column
     return 'value';
   }
@@ -2840,20 +3311,20 @@ Begin your analysis by querying relevant data within the specified time range.`;
       /FROM\s+['"]*[^'"]*\/coordinate\/[^'"]*['"]/gi,
       /FROM\s+['"]*[^'"]*\/navigation\/position[^'"]*['"]/gi,
       /FROM\s+['"]*[^'"]*\/navigation\/attitude[^'"]*['"]/gi,
-      
+
       // Path column patterns in WHERE clauses
       /WHERE.*path.*position/gi,
       /WHERE.*path.*attitude/gi,
       /WHERE.*path.*coordinate/gi,
-      
+
       // Direct mention of position/attitude/coordinate paths
       /navigation\.position/gi,
       /navigation\.attitude/gi,
-      /navigation\.coordinate/gi
+      /navigation\.coordinate/gi,
     ];
-    
+
     let correctedSQL = sql;
-    
+
     // Check if query involves JSON object paths
     const hasJsonPath = jsonPatterns.some(pattern => pattern.test(sql));
     if (hasJsonPath) {
@@ -2861,7 +3332,7 @@ Begin your analysis by querying relevant data within the specified time range.`;
       // Use negative lookbehind/lookahead to avoid replacing value_json, value_latitude, etc.
       correctedSQL = correctedSQL.replace(/\bvalue\b(?!_|\w)/gi, 'value_json');
     }
-    
+
     return correctedSQL;
   }
 
@@ -2871,7 +3342,7 @@ Begin your analysis by querying relevant data within the specified time range.`;
   private async executeSQLQuery(sql: string, purpose: string): Promise<any[]> {
     // Auto-correct common column usage patterns
     const correctedSQL = this.correctColumnUsage(sql);
-    
+
     // Validate query is read-only (starts with SELECT or WITH for CTEs)
     const trimmedSQL = correctedSQL.trim().toUpperCase();
     if (!trimmedSQL.startsWith('SELECT') && !trimmedSQL.startsWith('WITH')) {
@@ -2879,7 +3350,15 @@ Begin your analysis by querying relevant data within the specified time range.`;
     }
 
     // Additional safety checks
-    const dangerousKeywords = ['DROP', 'DELETE', 'UPDATE', 'INSERT', 'CREATE', 'ALTER', 'TRUNCATE'];
+    const dangerousKeywords = [
+      'DROP',
+      'DELETE',
+      'UPDATE',
+      'INSERT',
+      'CREATE',
+      'ALTER',
+      'TRUNCATE',
+    ];
     for (const keyword of dangerousKeywords) {
       if (trimmedSQL.includes(keyword)) {
         throw new Error(`Dangerous SQL keyword '${keyword}' is not allowed`);
@@ -2890,8 +3369,8 @@ Begin your analysis by querying relevant data within the specified time range.`;
     const connection = await instance.connect();
 
     // Load spatial extension for geographic queries
-    await connection.runAndReadAll("INSTALL spatial;");
-    await connection.runAndReadAll("LOAD spatial;");
+    await connection.runAndReadAll('INSTALL spatial;');
+    await connection.runAndReadAll('LOAD spatial;');
 
     try {
       this.app?.debug(`🔍 Executing SQL query for: ${purpose}`);
@@ -2899,10 +3378,10 @@ Begin your analysis by querying relevant data within the specified time range.`;
       if (correctedSQL !== sql) {
         this.app?.debug(`🔧 Corrected query: ${correctedSQL}`);
       }
-      
+
       const result = await connection.runAndReadAll(correctedSQL);
       const data = result.getRowObjects();
-      
+
       // Convert BigInt values to regular numbers to prevent serialization errors
       const cleanedData = data.map(row => {
         const cleanRow = { ...row };
@@ -2913,14 +3392,13 @@ Begin your analysis by querying relevant data within the specified time range.`;
         }
         return cleanRow;
       });
-      
+
       // Limit result size aggressively for production systems to prevent memory and token issues
       const maxRows = cleanedData.length > 1000 ? 500 : 1000; // Smaller limits for large datasets
       const limitedData = cleanedData.slice(0, maxRows);
-      
+
       this.app?.debug(`✅ Query returned ${limitedData.length} rows`);
       return limitedData;
-      
     } catch (error) {
       this.app?.error(`SQL query failed: ${(error as Error).message}`);
       throw new Error(`Database query failed: ${(error as Error).message}`);
@@ -2934,7 +3412,7 @@ Begin your analysis by querying relevant data within the specified time range.`;
    */
   private scanVesselPaths(vesselDir: string): string[] {
     const paths: string[] = [];
-    
+
     function walkPaths(currentPath: string, relativePath: string = ''): void {
       try {
         const items = fs.readdirSync(currentPath);
@@ -2943,10 +3421,13 @@ Begin your analysis by querying relevant data within the specified time range.`;
           const stat = fs.statSync(fullPath);
 
           if (stat.isDirectory() && !shouldSkipDirectory(item)) {
-            const newRelativePath = relativePath ? `${relativePath}.${item}` : item;
+            const newRelativePath = relativePath
+              ? `${relativePath}.${item}`
+              : item;
 
             // Check if this directory has parquet files
-            const hasParquetFiles = fs.readdirSync(fullPath)
+            const hasParquetFiles = fs
+              .readdirSync(fullPath)
               .some((file: string) => file.endsWith('.parquet'));
 
             if (hasParquetFiles) {
@@ -2965,7 +3446,7 @@ Begin your analysis by querying relevant data within the specified time range.`;
     if (fs.existsSync(vesselDir)) {
       walkPaths(vesselDir);
     }
-    
+
     return paths;
   }
 
@@ -2976,20 +3457,22 @@ Begin your analysis by querying relevant data within the specified time range.`;
     this.app?.debug('🔧 Getting enhanced schema for Claude...');
     const dataDir = this.dataDirectory || '';
     this.app?.debug(`📂 Data directory: "${dataDir}"`);
-    
+
     let selfContextPath = 'vessels/self';
     if (this.app?.selfContext) {
-      selfContextPath = this.app.selfContext.replace(/\./g, '/').replace(/:/g, '_');
+      selfContextPath = this.app.selfContext
+        .replace(/\./g, '/')
+        .replace(/:/g, '_');
       this.app?.debug(`🛥️ Self context path: "${selfContextPath}"`);
     }
-    
-    // Get actual available paths from the filesystem  
+
+    // Get actual available paths from the filesystem
     let availablePathsInfo = '';
     let otherVesselsInfo = '';
-    
+
     // Get self context dynamically from SignalK
     const selfContext = this.app?.selfContext || 'vessels.self';
-    
+
     try {
       if (this.app && dataDir) {
         // Get your vessel's paths
@@ -2998,7 +3481,9 @@ Begin your analysis by querying relevant data within the specified time range.`;
         const paths = getAvailablePaths(dataDir, this.app);
         this.app?.debug(`📈 Found ${paths.length} available paths`);
         if (paths.length === 0) {
-          this.app?.debug('⚠️ No available paths found - this could cause Claude to not see schema information');
+          this.app?.debug(
+            '⚠️ No available paths found - this could cause Claude to not see schema information'
+          );
         }
         const pathList = paths.map(p => p.path).join('\n- ');
         availablePathsInfo = `
@@ -3013,25 +3498,28 @@ DO NOT USE ANY PATH NOT LISTED ABOVE. DO NOT GUESS PATH NAMES LIKE "windAvg" - O
         // Check for other vessels by scanning the vessels directory
         const vesselsDir = path.join(dataDir, 'vessels');
         if (fs.existsSync(vesselsDir)) {
-          const vesselDirs = fs.readdirSync(vesselsDir, { withFileTypes: true })
+          const vesselDirs = fs
+            .readdirSync(vesselsDir, { withFileTypes: true })
             .filter(dirent => dirent.isDirectory())
             .map(dirent => dirent.name)
             .filter(name => name !== selfContextPath.split('/')[1]); // Exclude own vessel
-          
+
           if (vesselDirs.length > 0) {
             // Scan each other vessel's directory for their available paths
             let otherVesselPaths: string[] = [];
-            
+
             for (const vesselDir of vesselDirs) {
               const vesselPath = path.join(vesselsDir, vesselDir);
               try {
                 const vesselPaths = this.scanVesselPaths(vesselPath);
-                otherVesselPaths = otherVesselPaths.concat(vesselPaths.map(p => `${vesselDir}: ${p}`));
+                otherVesselPaths = otherVesselPaths.concat(
+                  vesselPaths.map(p => `${vesselDir}: ${p}`)
+                );
               } catch (error) {
                 // Skip vessels that can't be scanned
               }
             }
-            
+
             otherVesselsInfo = `
 OTHER VESSELS: ${vesselDirs.length} vessels detected in area
 
@@ -3057,10 +3545,12 @@ OTHER VESSELS: None detected in this dataset`;
         }
       }
     } catch (error) {
-      this.app?.error(`❌ Failed to scan filesystem for paths: ${(error as Error).message}`);
+      this.app?.error(
+        `❌ Failed to scan filesystem for paths: ${(error as Error).message}`
+      );
       availablePathsInfo = '\nAVAILABLE DATA PATHS: Unable to scan filesystem';
     }
-    
+
     const schemaResult = `MARITIME DATABASE SCHEMA:
 Base Directory: ${dataDir}
 File Pattern: {contextPath}/{signalk_path}/{filename}.parquet
@@ -3152,26 +3642,30 @@ DATA LIMITATIONS:
 - NO meta/*.parquet files exist - vessel metadata is provided in the vessel context above
 - For vessel names/specs, refer to the VESSEL CONTEXT section, not database queries`;
 
-    this.app?.debug(`✅ Generated schema result (${schemaResult.length} chars)`);
-    
+    this.app?.debug(
+      `✅ Generated schema result (${schemaResult.length} chars)`
+    );
+
     // Save the actual schema to a file for inspection
     try {
       if (this.dataDirectory) {
         const schemaDir = path.join(this.dataDirectory, 'claude-schemas');
         await fs.ensureDir(schemaDir);
-        
+
         const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
         const filename = `claude-schema-${timestamp}.txt`;
         const filepath = path.join(schemaDir, filename);
-        
+
         await fs.writeFile(filepath, schemaResult, 'utf8');
         this.app?.debug(`📄 Schema saved to: ${filepath}`);
       }
     } catch (error) {
-      this.app?.error(`Failed to save schema to file: ${(error as Error).message}`);
+      this.app?.error(
+        `Failed to save schema to file: ${(error as Error).message}`
+      );
       // Don't throw - this is not critical to the analysis
     }
-    
+
     return schemaResult;
   }
 
@@ -3183,10 +3677,13 @@ DATA LIMITATIONS:
       const response = await this.client.messages.create({
         model: this.config.model,
         max_tokens: 50,
-        messages: [{
-          role: 'user',
-          content: 'Hello! Please respond with "Claude AI connection successful" to test the connection.'
-        }]
+        messages: [
+          {
+            role: 'user',
+            content:
+              'Hello! Please respond with "Claude AI connection successful" to test the connection.',
+          },
+        ],
       });
 
       const content = response.content[0] as any;
@@ -3195,7 +3692,6 @@ DATA LIMITATIONS:
       } else {
         return { success: false, error: 'Unexpected response from Claude API' };
       }
-
     } catch (error) {
       return { success: false, error: (error as Error).message };
     }
@@ -3216,7 +3712,9 @@ DATA LIMITATIONS:
       await this.vesselContextManager.refreshVesselInfo();
       this.app?.debug('Vessel context refreshed from SignalK data');
     } catch (error) {
-      this.app?.error(`Failed to refresh vessel context: ${(error as Error).message}`);
+      this.app?.error(
+        `Failed to refresh vessel context: ${(error as Error).message}`
+      );
       throw error;
     }
   }

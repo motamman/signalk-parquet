@@ -30,7 +30,12 @@ import {
   ValidationViolation,
 } from './types';
 import { SchemaService } from './schema-service';
-import { ProcessType, ProcessState, ProcessStatusApiResponse, ProcessCancelApiResponse } from './types';
+import {
+  ProcessType,
+  ProcessState,
+  ProcessStatusApiResponse,
+  ProcessCancelApiResponse,
+} from './types';
 import { MigrationService } from './services/migration-service';
 import { AggregationService } from './services/aggregation-service';
 import { AggregationTier } from './utils/hive-path-builder';
@@ -50,8 +55,15 @@ import {
 import { updateDataSubscriptions } from './data-handler';
 import { toContextFilePath, toParquetFilePath } from './utils/path-helpers';
 import { ServerAPI, Context } from '@signalk/server-api';
-import { ClaudeAnalyzer, AnalysisRequest, FollowUpRequest } from './claude-analyzer';
-import { AnalysisTemplateManager, TEMPLATE_CATEGORIES } from './analysis-templates';
+import {
+  ClaudeAnalyzer,
+  AnalysisRequest,
+  FollowUpRequest,
+} from './claude-analyzer';
+import {
+  AnalysisTemplateManager,
+  TEMPLATE_CATEGORIES,
+} from './analysis-templates';
 import { VesselContextManager } from './vessel-context';
 // import { initializeStreamingService, shutdownStreamingService } from './index';
 
@@ -128,14 +140,24 @@ let sharedAnalyzer: ClaudeAnalyzer | null = null;
 /**
  * Get or create the shared Claude analyzer instance
  */
-function getSharedAnalyzer(config: any, app: ServerAPI, getDataDir: () => string, state: PluginState): ClaudeAnalyzer {
+function getSharedAnalyzer(
+  config: any,
+  app: ServerAPI,
+  getDataDir: () => string,
+  state: PluginState
+): ClaudeAnalyzer {
   if (!sharedAnalyzer) {
-    sharedAnalyzer = new ClaudeAnalyzer({
-      apiKey: config.claudeIntegration.apiKey,
-      model: migrateClaudeModel(config.claudeIntegration.model, app) as any,
-      maxTokens: config.claudeIntegration.maxTokens || 4000,
-      temperature: config.claudeIntegration.temperature || 0.3
-    }, app, getDataDir(), state);
+    sharedAnalyzer = new ClaudeAnalyzer(
+      {
+        apiKey: config.claudeIntegration.apiKey,
+        model: migrateClaudeModel(config.claudeIntegration.model, app) as any,
+        maxTokens: config.claudeIntegration.maxTokens || 4000,
+        temperature: config.claudeIntegration.temperature || 0.3,
+      },
+      app,
+      getDataDir(),
+      state
+    );
     app.debug('🔧 Created shared Claude analyzer instance');
   }
   return sharedAnalyzer;
@@ -160,7 +182,11 @@ function migrateClaudeModel(model?: string, app?: ServerAPI): string {
 // PROCESS MANAGEMENT UTILITIES
 // ===========================================
 
-function startProcess(state: PluginState, type: ProcessType, totalFiles?: number): boolean {
+function startProcess(
+  state: PluginState,
+  type: ProcessType,
+  totalFiles?: number
+): boolean {
   // Check if another process is already running
   if (state.currentProcess?.isRunning) {
     return false; // Cannot start, another process is active
@@ -174,13 +200,17 @@ function startProcess(state: PluginState, type: ProcessType, totalFiles?: number
     totalFiles,
     processedFiles: 0,
     cancelRequested: false,
-    abortController: new AbortController()
+    abortController: new AbortController(),
   };
 
   return true;
 }
 
-function updateProcessProgress(state: PluginState, processedFiles: number, currentFile?: string): void {
+function updateProcessProgress(
+  state: PluginState,
+  processedFiles: number,
+  currentFile?: string
+): void {
   if (state.currentProcess?.isRunning) {
     state.currentProcess.processedFiles = processedFiles;
     state.currentProcess.currentFile = currentFile;
@@ -212,14 +242,15 @@ function getProcessStatus(state: PluginState): ProcessStatusApiResponse {
   if (!state.currentProcess) {
     return {
       success: true,
-      isRunning: false
+      isRunning: false,
     };
   }
 
   const process = state.currentProcess;
-  const progress = process.totalFiles && process.processedFiles !== undefined
-    ? Math.round((process.processedFiles / process.totalFiles) * 100)
-    : undefined;
+  const progress =
+    process.totalFiles && process.processedFiles !== undefined
+      ? Math.round((process.processedFiles / process.totalFiles) * 100)
+      : undefined;
 
   return {
     success: true,
@@ -229,7 +260,7 @@ function getProcessStatus(state: PluginState): ProcessStatusApiResponse {
     totalFiles: process.totalFiles,
     processedFiles: process.processedFiles,
     currentFile: process.currentFile,
-    progress
+    progress,
   };
 }
 
@@ -249,7 +280,6 @@ export function registerApiRoutes(
     // Use the user-configured output directory, fallback to SignalK default
     return state.currentConfig?.outputDirectory || app.getDataDirPath();
   };
-
 
   // Convert BigInt values to regular numbers for JSON serialization
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -462,10 +492,7 @@ export function registerApiRoutes(
             ) {
               // It's already a file path, use as is
               return;
-            } else if (
-              quotedPath.includes('.') &&
-              !quotedPath.includes('/')
-            ) {
+            } else if (quotedPath.includes('.') && !quotedPath.includes('/')) {
               // It's a SignalK path, convert to file path
               const filePath = toParquetFilePath(
                 dataDir,
@@ -476,7 +503,6 @@ export function registerApiRoutes(
             }
           });
         }
-
 
         // Get connection from pool (spatial extension already loaded)
         const connection = await DuckDBPool.getConnection();
@@ -617,7 +643,12 @@ export function registerApiRoutes(
 
         // Update subscriptions
         if (state.currentConfig) {
-          updateDataSubscriptions(currentPaths, state, state.currentConfig, app);
+          updateDataSubscriptions(
+            currentPaths,
+            state,
+            state.currentConfig,
+            app
+          );
         }
 
         res.json({
@@ -672,7 +703,12 @@ export function registerApiRoutes(
 
         // Update subscriptions
         if (state.currentConfig) {
-          updateDataSubscriptions(currentPaths, state, state.currentConfig, app);
+          updateDataSubscriptions(
+            currentPaths,
+            state,
+            state.currentConfig,
+            app
+          );
         }
 
         res.json({
@@ -720,9 +756,13 @@ export function registerApiRoutes(
 
         // Update subscriptions
         if (state.currentConfig) {
-          updateDataSubscriptions(currentPaths, state, state.currentConfig, app);
+          updateDataSubscriptions(
+            currentPaths,
+            state,
+            state.currentConfig,
+            app
+          );
         }
-
 
         res.json({
           success: true,
@@ -919,9 +959,15 @@ export function registerApiRoutes(
       res: TypedResponse<CommandApiResponse>
     ) => {
       try {
-        const { command, description, keywords, defaultState, thresholds } = req.body;
+        const { command, description, keywords, defaultState, thresholds } =
+          req.body;
 
-        if (!command || !/^[a-zA-Z0-9_]+$/.test(command) || command.length === 0 || command.length > 50) {
+        if (
+          !command ||
+          !/^[a-zA-Z0-9_]+$/.test(command) ||
+          command.length === 0 ||
+          command.length > 50
+        ) {
           return res.status(400).json({
             success: false,
             error:
@@ -929,7 +975,13 @@ export function registerApiRoutes(
           });
         }
 
-        const result = registerCommand(command, description, keywords, defaultState, thresholds);
+        const result = registerCommand(
+          command,
+          description,
+          keywords,
+          defaultState,
+          thresholds
+        );
 
         if (result.state === 'COMPLETED') {
           // Update webapp config
@@ -1055,13 +1107,19 @@ export function registerApiRoutes(
         const { command } = req.params;
         const { description, keywords, defaultState, thresholds } = req.body;
 
-        const result = updateCommand(command, description, keywords, defaultState, thresholds);
+        const result = updateCommand(
+          command,
+          description,
+          keywords,
+          defaultState,
+          thresholds
+        );
         if (result.state === 'COMPLETED') {
           // Update webapp config
           const webAppConfig = loadWebAppConfig(app);
           const currentCommands = getCurrentCommands();
           saveWebAppConfig(webAppConfig.paths, currentCommands, app);
-          
+
           return res.json({
             success: true,
             message: result.message,
@@ -1202,7 +1260,7 @@ export function registerApiRoutes(
   //     }
 
   //     const result = await initializeStreamingService(state, app);
-      
+
   //     if (result.success) {
   //       return res.json({
   //         success: true,
@@ -1226,7 +1284,7 @@ export function registerApiRoutes(
   //   }
   // });
 
-  // // Disable streaming at runtime  
+  // // Disable streaming at runtime
   // router.post('/api/streaming/disable', (req: TypedRequest, res: TypedResponse) => {
   //   try {
   //     if (!state.streamingService) {
@@ -1238,7 +1296,7 @@ export function registerApiRoutes(
   //     }
 
   //     const result = shutdownStreamingService(state, app);
-      
+
   //     if (result.success) {
   //       return res.json({
   //         success: true,
@@ -1267,7 +1325,7 @@ export function registerApiRoutes(
   //   try {
   //     const isEnabled = !!state.streamingService;
   //     const configEnabled = state.currentConfig?.enableStreaming ?? false;
-      
+
   //     // Get streaming service statistics if available
   //     let stats = {};
   //     if (state.streamingService && state.streamingService.getActiveSubscriptions) {
@@ -1326,19 +1384,19 @@ export function registerApiRoutes(
             icon: template.icon,
             complexity: template.complexity,
             estimatedTime: template.estimatedTime,
-            requiredPaths: template.requiredPaths
-          }))
+            requiredPaths: template.requiredPaths,
+          })),
         }));
 
         res.json({
           success: true,
-          templates: templates as any
+          templates: templates as any,
         });
       } catch (error) {
         app.error(`Template retrieval failed: ${(error as Error).message}`);
         res.status(500).json({
           success: false,
-          error: 'Failed to retrieve analysis templates'
+          error: 'Failed to retrieve analysis templates',
         });
       }
     }
@@ -1347,13 +1405,19 @@ export function registerApiRoutes(
   // Test Claude connection
   router.post(
     '/api/analyze/test-connection',
-    async (_req: TypedRequest, res: TypedResponse<ClaudeConnectionTestResponse>) => {
+    async (
+      _req: TypedRequest,
+      res: TypedResponse<ClaudeConnectionTestResponse>
+    ) => {
       try {
         const config = state.currentConfig;
-        if (!config?.claudeIntegration?.enabled || !config.claudeIntegration.apiKey) {
+        if (
+          !config?.claudeIntegration?.enabled ||
+          !config.claudeIntegration.apiKey
+        ) {
           return res.status(400).json({
             success: false,
-            error: 'Claude integration is not configured or enabled'
+            error: 'Claude integration is not configured or enabled',
           });
         }
 
@@ -1368,19 +1432,19 @@ export function registerApiRoutes(
             success: true,
             model: migrateClaudeModel(config.claudeIntegration.model, app),
             responseTime,
-            tokenUsage: 50 // Approximate for test
+            tokenUsage: 50, // Approximate for test
           });
         } else {
           return res.status(400).json({
             success: false,
-            error: testResult.error || 'Connection test failed'
+            error: testResult.error || 'Connection test failed',
           });
         }
       } catch (error) {
         app.error(`Claude connection test failed: ${(error as Error).message}`);
         return res.status(500).json({
           success: false,
-          error: 'Claude connection test failed'
+          error: 'Claude connection test failed',
         });
       }
     }
@@ -1389,35 +1453,55 @@ export function registerApiRoutes(
   // Main analysis endpoint
   router.post(
     '/api/analyze',
-    async (req: TypedRequest<{
-      dataPath: string;
-      analysisType?: string;
-      templateId?: string;
-      customPrompt?: string;
-      timeRange?: { start: string; end: string };
-      aggregationMethod?: string;
-      resolution?: string;
-      claudeModel?: string;
-      useDatabaseAccess?: boolean;
-    }>, res: TypedResponse<AnalysisApiResponse>) => {
+    async (
+      req: TypedRequest<{
+        dataPath: string;
+        analysisType?: string;
+        templateId?: string;
+        customPrompt?: string;
+        timeRange?: { start: string; end: string };
+        aggregationMethod?: string;
+        resolution?: string;
+        claudeModel?: string;
+        useDatabaseAccess?: boolean;
+      }>,
+      res: TypedResponse<AnalysisApiResponse>
+    ) => {
       try {
         const config = state.currentConfig;
-        if (!config?.claudeIntegration?.enabled || !config.claudeIntegration.apiKey) {
+        if (
+          !config?.claudeIntegration?.enabled ||
+          !config.claudeIntegration.apiKey
+        ) {
           return res.status(400).json({
             success: false,
-            error: 'Claude integration is not configured or enabled'
+            error: 'Claude integration is not configured or enabled',
           });
         }
 
-        const { dataPath, analysisType, templateId, customPrompt, timeRange, aggregationMethod, resolution, claudeModel, useDatabaseAccess } = req.body;
+        const {
+          dataPath,
+          analysisType,
+          templateId,
+          customPrompt,
+          timeRange,
+          aggregationMethod,
+          resolution,
+          claudeModel,
+          useDatabaseAccess,
+        } = req.body;
 
-        console.log(`🧠 ANALYSIS REQUEST: dataPath=${dataPath}, templateId=${templateId}, analysisType=${analysisType}, aggregationMethod=${aggregationMethod}, model=${claudeModel || 'config-default'}`);
-        console.log(`🔍 CUSTOM PROMPT DEBUG: "${customPrompt}" (type: ${typeof customPrompt}, length: ${customPrompt?.length || 0})`);
+        console.log(
+          `🧠 ANALYSIS REQUEST: dataPath=${dataPath}, templateId=${templateId}, analysisType=${analysisType}, aggregationMethod=${aggregationMethod}, model=${claudeModel || 'config-default'}`
+        );
+        console.log(
+          `🔍 CUSTOM PROMPT DEBUG: "${customPrompt}" (type: ${typeof customPrompt}, length: ${customPrompt?.length || 0})`
+        );
 
         if (!dataPath) {
           return res.status(400).json({
             success: false,
-            error: 'Data path is required'
+            error: 'Data path is required',
           });
         }
 
@@ -1429,10 +1513,12 @@ export function registerApiRoutes(
 
         if (templateId) {
           // Use template
-          const parsedTimeRange = timeRange ? {
-            start: new Date(timeRange.start),
-            end: new Date(timeRange.end)
-          } : undefined;
+          const parsedTimeRange = timeRange
+            ? {
+                start: new Date(timeRange.start),
+                end: new Date(timeRange.end),
+              }
+            : undefined;
 
           const templateRequest = AnalysisTemplateManager.createAnalysisRequest(
             templateId,
@@ -1444,29 +1530,34 @@ export function registerApiRoutes(
           if (!templateRequest) {
             return res.status(400).json({
               success: false,
-              error: `Template not found: ${templateId}`
+              error: `Template not found: ${templateId}`,
             });
           }
-          
+
           analysisRequest = templateRequest;
         } else {
           // Custom analysis
           analysisRequest = {
             dataPath,
             analysisType: (analysisType as any) || 'custom',
-            customPrompt: customPrompt || 'Analyze this maritime data and provide insights',
-            timeRange: timeRange ? {
-              start: new Date(timeRange.start),
-              end: new Date(timeRange.end)
-            } : undefined,
+            customPrompt:
+              customPrompt || 'Analyze this maritime data and provide insights',
+            timeRange: timeRange
+              ? {
+                  start: new Date(timeRange.start),
+                  end: new Date(timeRange.end),
+                }
+              : undefined,
             aggregationMethod,
             resolution,
-            useDatabaseAccess: useDatabaseAccess || false
+            useDatabaseAccess: useDatabaseAccess || false,
           };
         }
 
         // Execute analysis
-        app.debug(`Starting Claude analysis: ${analysisRequest.analysisType} for ${dataPath}`);
+        app.debug(
+          `Starting Claude analysis: ${analysisRequest.analysisType} for ${dataPath}`
+        );
         const result = await analyzer.analyzeData(analysisRequest);
 
         return res.json({
@@ -1482,21 +1573,20 @@ export function registerApiRoutes(
               expectedRange: a.expectedRange,
               severity: a.severity,
               description: a.description,
-              confidence: a.confidence
+              confidence: a.confidence,
             })),
             confidence: result.confidence,
             dataQuality: result.dataQuality,
             timestamp: result.timestamp,
-            metadata: result.metadata
+            metadata: result.metadata,
           },
-          usage: result.usage
+          usage: result.usage,
         });
-
       } catch (error) {
         app.error(`Analysis failed: ${(error as Error).message}`);
         return res.status(500).json({
           success: false,
-          error: `Analysis failed: ${(error as Error).message}`
+          error: `Analysis failed: ${(error as Error).message}`,
         });
       }
     }
@@ -1505,13 +1595,19 @@ export function registerApiRoutes(
   // Follow-up question endpoint
   router.post(
     '/api/analyze/followup',
-    async (req: TypedRequest<{ conversationId: string; question: string }>, res: TypedResponse<AnalysisApiResponse>) => {
+    async (
+      req: TypedRequest<{ conversationId: string; question: string }>,
+      res: TypedResponse<AnalysisApiResponse>
+    ) => {
       try {
         const config = state.currentConfig;
-        if (!config?.claudeIntegration?.enabled || !config.claudeIntegration.apiKey) {
+        if (
+          !config?.claudeIntegration?.enabled ||
+          !config.claudeIntegration.apiKey
+        ) {
           return res.status(400).json({
             success: false,
-            error: 'Claude integration is not configured or enabled'
+            error: 'Claude integration is not configured or enabled',
           });
         }
 
@@ -1520,11 +1616,13 @@ export function registerApiRoutes(
         if (!conversationId || !question) {
           return res.status(400).json({
             success: false,
-            error: 'Both conversationId and question are required'
+            error: 'Both conversationId and question are required',
           });
         }
 
-        console.log(`🔄 FOLLOW-UP REQUEST: conversationId=${conversationId}, question=${question.substring(0, 100)}...`);
+        console.log(
+          `🔄 FOLLOW-UP REQUEST: conversationId=${conversationId}, question=${question.substring(0, 100)}...`
+        );
 
         // Use shared analyzer instance to access stored conversations
         const analyzer = getSharedAnalyzer(config, app, getDataDir, state);
@@ -1532,7 +1630,7 @@ export function registerApiRoutes(
         // Process follow-up question
         const followUpRequest = {
           conversationId,
-          question
+          question,
         };
 
         const analysisResult = await analyzer.askFollowUp(followUpRequest);
@@ -1540,14 +1638,13 @@ export function registerApiRoutes(
         return res.json({
           success: true,
           data: analysisResult,
-          usage: analysisResult.usage
+          usage: analysisResult.usage,
         });
-
       } catch (error) {
         app.error(`Follow-up question failed: ${(error as Error).message}`);
         return res.status(500).json({
           success: false,
-          error: `Follow-up question failed: ${(error as Error).message}`
+          error: `Follow-up question failed: ${(error as Error).message}`,
         });
       }
     }
@@ -1556,22 +1653,28 @@ export function registerApiRoutes(
   // Get analysis history
   router.get(
     '/api/analyze/history',
-    async (req: TypedRequest<any> & { query: { limit?: string } }, res: TypedResponse<AnalysisApiResponse>) => {
+    async (
+      req: TypedRequest<any> & { query: { limit?: string } },
+      res: TypedResponse<AnalysisApiResponse>
+    ) => {
       try {
         const config = state.currentConfig;
-        if (!config?.claudeIntegration?.enabled || !config.claudeIntegration.apiKey) {
+        if (
+          !config?.claudeIntegration?.enabled ||
+          !config.claudeIntegration.apiKey
+        ) {
           return res.status(400).json({
             success: false,
-            error: 'Claude integration is not configured or enabled'
+            error: 'Claude integration is not configured or enabled',
           });
         }
 
         const limit = parseInt(req.query.limit || '20', 10);
-        
+
         const analyzer = getSharedAnalyzer(config, app, getDataDir, state);
 
         const history = await analyzer.getAnalysisHistory(limit);
-        
+
         return res.json({
           success: true,
           data: history.map(h => ({
@@ -1585,20 +1688,21 @@ export function registerApiRoutes(
               expectedRange: a.expectedRange,
               severity: a.severity,
               description: a.description,
-              confidence: a.confidence
+              confidence: a.confidence,
             })),
             confidence: h.confidence,
             dataQuality: h.dataQuality,
             timestamp: h.timestamp,
-            metadata: h.metadata
-          }))
+            metadata: h.metadata,
+          })),
         });
-
       } catch (error) {
-        app.error(`Analysis history retrieval failed: ${(error as Error).message}`);
+        app.error(
+          `Analysis history retrieval failed: ${(error as Error).message}`
+        );
         return res.status(500).json({
           success: false,
-          error: 'Failed to retrieve analysis history'
+          error: 'Failed to retrieve analysis history',
         });
       }
     }
@@ -1607,39 +1711,44 @@ export function registerApiRoutes(
   // Delete analysis from history
   router.delete(
     '/api/analyze/history/:id',
-    async (req: TypedRequest<any> & { params: { id: string } }, res: TypedResponse<any>) => {
+    async (
+      req: TypedRequest<any> & { params: { id: string } },
+      res: TypedResponse<any>
+    ) => {
       try {
         const config = state.currentConfig;
-        if (!config?.claudeIntegration?.enabled || !config.claudeIntegration.apiKey) {
+        if (
+          !config?.claudeIntegration?.enabled ||
+          !config.claudeIntegration.apiKey
+        ) {
           return res.status(400).json({
             success: false,
-            error: 'Claude integration is not configured or enabled'
+            error: 'Claude integration is not configured or enabled',
           });
         }
 
         const analysisId = req.params.id;
-        
+
         const analyzer = getSharedAnalyzer(config, app, getDataDir, state);
 
         const result = await analyzer.deleteAnalysis(analysisId);
-        
+
         if (result.success) {
           return res.json({
             success: true,
-            message: 'Analysis deleted successfully'
+            message: 'Analysis deleted successfully',
           });
         } else {
           return res.status(404).json({
             success: false,
-            error: result.error
+            error: result.error,
           });
         }
-
       } catch (error) {
         app.error(`Analysis deletion failed: ${(error as Error).message}`);
         return res.status(500).json({
           success: false,
-          error: 'Failed to delete analysis'
+          error: 'Failed to delete analysis',
         });
       }
     }
@@ -1656,17 +1765,16 @@ export function registerApiRoutes(
       try {
         const contextManager = new VesselContextManager(app, getDataDir());
         const context = await contextManager.getVesselContext();
-        
+
         return res.json({
           success: true,
-          data: context
+          data: context,
         });
-
       } catch (error) {
         app.error(`Failed to get vessel context: ${(error as Error).message}`);
         return res.status(500).json({
           success: false,
-          error: 'Failed to get vessel context'
+          error: 'Failed to get vessel context',
         });
       }
     }
@@ -1675,31 +1783,35 @@ export function registerApiRoutes(
   // Update vessel context
   router.post(
     '/api/vessel-context',
-    async (req: TypedRequest<{
-      vesselInfo?: any;
-      customContext?: string;
-    }>, res: TypedResponse<any>) => {
+    async (
+      req: TypedRequest<{
+        vesselInfo?: any;
+        customContext?: string;
+      }>,
+      res: TypedResponse<any>
+    ) => {
       try {
         const { vesselInfo, customContext } = req.body;
-        
+
         const contextManager = new VesselContextManager(app, getDataDir());
         const updatedContext = await contextManager.updateVesselContext(
           vesselInfo,
           customContext,
           false // Not auto-extracted since it's from user input
         );
-        
+
         return res.json({
           success: true,
           data: updatedContext,
-          message: 'Vessel context updated successfully'
+          message: 'Vessel context updated successfully',
         });
-
       } catch (error) {
-        app.error(`Failed to update vessel context: ${(error as Error).message}`);
+        app.error(
+          `Failed to update vessel context: ${(error as Error).message}`
+        );
         return res.status(500).json({
           success: false,
-          error: 'Failed to update vessel context'
+          error: 'Failed to update vessel context',
         });
       }
     }
@@ -1712,18 +1824,19 @@ export function registerApiRoutes(
       try {
         const contextManager = new VesselContextManager(app, getDataDir());
         const refreshedContext = await contextManager.refreshVesselInfo();
-        
+
         return res.json({
           success: true,
           data: refreshedContext,
-          message: 'Vessel context refreshed from SignalK data'
+          message: 'Vessel context refreshed from SignalK data',
         });
-
       } catch (error) {
-        app.error(`Failed to refresh vessel context: ${(error as Error).message}`);
+        app.error(
+          `Failed to refresh vessel context: ${(error as Error).message}`
+        );
         return res.status(500).json({
           success: false,
-          error: 'Failed to refresh vessel context from SignalK'
+          error: 'Failed to refresh vessel context from SignalK',
         });
       }
     }
@@ -1735,17 +1848,18 @@ export function registerApiRoutes(
     (_: TypedRequest, res: TypedResponse<any>) => {
       try {
         const dataPaths = VesselContextManager.getVesselDataPaths();
-        
+
         return res.json({
           success: true,
-          data: dataPaths
+          data: dataPaths,
         });
-
       } catch (error) {
-        app.error(`Failed to get vessel data paths: ${(error as Error).message}`);
+        app.error(
+          `Failed to get vessel data paths: ${(error as Error).message}`
+        );
         return res.status(500).json({
           success: false,
-          error: 'Failed to get vessel data paths'
+          error: 'Failed to get vessel data paths',
         });
       }
     }
@@ -1760,20 +1874,21 @@ export function registerApiRoutes(
         // Ensure context is loaded before generating preview
         await contextManager.getVesselContext();
         const claudeContext = contextManager.generateClaudeContext();
-        
+
         return res.json({
           success: true,
           data: {
             contextText: claudeContext,
-            length: claudeContext.length
-          }
+            length: claudeContext.length,
+          },
         });
-
       } catch (error) {
-        app.error(`Failed to generate Claude context preview: ${(error as Error).message}`);
+        app.error(
+          `Failed to generate Claude context preview: ${(error as Error).message}`
+        );
         return res.status(500).json({
           success: false,
-          error: 'Failed to generate Claude context preview'
+          error: 'Failed to generate Claude context preview',
         });
       }
     }
@@ -1860,7 +1975,7 @@ export function registerApiRoutes(
   // });
 
   // Stream Management API endpoints - DISABLED
-  
+
   // // Get all streams
   // router.get('/api/streams', (_: express.Request, res: express.Response) => {
   //   try {
@@ -1896,7 +2011,7 @@ export function registerApiRoutes(
   //     }
 
   //     const streamConfig = req.body;
-      
+
   //     // Validate required fields
   //     if (!streamConfig.name || !streamConfig.path) {
   //       res.status(400).json({
@@ -1926,7 +2041,7 @@ export function registerApiRoutes(
   //     }
 
   //     const stream = state.historicalStreamingService.createStream(streamConfig);
-      
+
   //     // Handle auto-start if requested
   //     if (streamConfig.autoStart) {
   //       const startResult = state.historicalStreamingService.startStream(stream.id);
@@ -1934,7 +2049,7 @@ export function registerApiRoutes(
   //         stream.status = 'running';
   //       }
   //     }
-      
+
   //     res.json({
   //       success: true,
   //       stream,
@@ -2013,7 +2128,7 @@ export function registerApiRoutes(
 
   //     const streamId = req.params.id;
   //     const result = state.historicalStreamingService.startStream(streamId);
-      
+
   //     if (result.success) {
   //       res.json({
   //         success: true,
@@ -2046,7 +2161,7 @@ export function registerApiRoutes(
 
   //     const streamId = req.params.id;
   //     const result = state.historicalStreamingService.pauseStream(streamId);
-      
+
   //     if (result.success) {
   //       res.json({
   //         success: true,
@@ -2079,7 +2194,7 @@ export function registerApiRoutes(
 
   //     const streamId = req.params.id;
   //     const result = state.historicalStreamingService.stopStream(streamId);
-      
+
   //     if (result.success) {
   //       res.json({
   //         success: true,
@@ -2112,7 +2227,7 @@ export function registerApiRoutes(
 
   //     const streamId = req.params.id;
   //     const result = state.historicalStreamingService.deleteStream(streamId);
-      
+
   //     if (result.success) {
   //       res.json({
   //         success: true,
@@ -2168,9 +2283,9 @@ export function registerApiRoutes(
 
   //     const streamId = req.params.id;
   //     const limit = parseInt(req.query.limit as string) || 50;
-      
+
   //     const timeSeriesData = await (state.historicalStreamingService as any).getStreamTimeSeriesData(streamId, limit);
-      
+
   //     // Always return success, even if no data (return empty array)
   //     res.json({
   //       success: true,
@@ -2207,12 +2322,12 @@ export function registerApiRoutes(
       if (cancelled) {
         res.json({
           success: true,
-          message: `${state.currentProcess?.type || 'Process'} cancellation requested`
+          message: `${state.currentProcess?.type || 'Process'} cancellation requested`,
         });
       } else {
         res.json({
           success: false,
-          message: 'No active process to cancel'
+          message: 'No active process to cancel',
         });
       }
     }
@@ -2232,11 +2347,14 @@ export function registerApiRoutes(
       if (!progress) {
         return res.status(404).json({
           success: false,
-          error: 'Validation job not found'
+          error: 'Validation job not found',
         } as any);
       }
 
-      res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+      res.set(
+        'Cache-Control',
+        'no-store, no-cache, must-revalidate, proxy-revalidate'
+      );
       res.set('Pragma', 'no-cache');
       res.set('Expires', '0');
       res.set('Surrogate-Control', 'no-store');
@@ -2249,7 +2367,12 @@ export function registerApiRoutes(
     '/api/validate-schemas/cancel/:jobId',
     async (
       req: TypedRequest,
-      res: TypedResponse<ValidationApiResponse & { jobId: string; status: ValidationProgress['status'] }>
+      res: TypedResponse<
+        ValidationApiResponse & {
+          jobId: string;
+          status: ValidationProgress['status'];
+        }
+      >
     ) => {
       const { jobId } = req.params;
       const job = validationJobs.get(jobId);
@@ -2259,16 +2382,20 @@ export function registerApiRoutes(
           success: false,
           error: 'Validation job not found',
           jobId,
-          status: 'error'
+          status: 'error',
         } as any);
       }
 
-      if (job.status === 'completed' || job.status === 'cancelled' || job.status === 'error') {
+      if (
+        job.status === 'completed' ||
+        job.status === 'cancelled' ||
+        job.status === 'error'
+      ) {
         return res.json({
           success: true,
           message: `Validation job already ${job.status}`,
           jobId,
-          status: job.status
+          status: job.status,
         });
       }
 
@@ -2280,7 +2407,7 @@ export function registerApiRoutes(
         success: true,
         message: 'Cancellation requested',
         jobId,
-        status: job.status
+        status: job.status,
       });
     }
   );
@@ -2294,11 +2421,14 @@ export function registerApiRoutes(
       if (!progress) {
         return res.status(404).json({
           success: false,
-          message: 'Repair job not found'
+          message: 'Repair job not found',
         } as any);
       }
 
-      res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+      res.set(
+        'Cache-Control',
+        'no-store, no-cache, must-revalidate, proxy-revalidate'
+      );
       res.set('Pragma', 'no-cache');
       res.set('Expires', '0');
       res.set('Surrogate-Control', 'no-store');
@@ -2311,7 +2441,12 @@ export function registerApiRoutes(
     '/api/repair-schemas/cancel/:jobId',
     async (
       req: TypedRequest,
-      res: TypedResponse<{ success: boolean; message: string; jobId: string; status: RepairProgress['status'] }>
+      res: TypedResponse<{
+        success: boolean;
+        message: string;
+        jobId: string;
+        status: RepairProgress['status'];
+      }>
     ) => {
       const { jobId } = req.params;
       const job = repairJobs.get(jobId);
@@ -2321,16 +2456,20 @@ export function registerApiRoutes(
           success: false,
           message: 'Repair job not found',
           jobId,
-          status: 'error'
+          status: 'error',
         });
       }
 
-      if (job.status === 'completed' || job.status === 'cancelled' || job.status === 'error') {
+      if (
+        job.status === 'completed' ||
+        job.status === 'cancelled' ||
+        job.status === 'error'
+      ) {
         return res.json({
           success: true,
           message: `Repair job already ${job.status}`,
           jobId,
-          status: job.status
+          status: job.status,
         });
       }
 
@@ -2343,7 +2482,7 @@ export function registerApiRoutes(
         success: true,
         message: 'Cancellation requested',
         jobId,
-        status: job.status
+        status: job.status,
       });
     }
   );
@@ -2351,7 +2490,12 @@ export function registerApiRoutes(
   // Validate parquet schemas
   router.post(
     '/api/validate-schemas',
-    async (_req: TypedRequest, res: TypedResponse<ValidationApiResponse & { jobId: string; status?: string }>) => {
+    async (
+      _req: TypedRequest,
+      res: TypedResponse<
+        ValidationApiResponse & { jobId: string; status?: string }
+      >
+    ) => {
       const jobId = `val_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
       const progressJob: ValidationProgress = {
         jobId,
@@ -2360,7 +2504,7 @@ export function registerApiRoutes(
         total: 0,
         percent: 0,
         startTime: new Date(),
-        cancelRequested: false
+        cancelRequested: false,
       };
 
       validationJobs.set(jobId, progressJob);
@@ -2376,7 +2520,8 @@ export function registerApiRoutes(
           const glob = require('glob');
           const path = require('path');
 
-          const configOutputDir = state.currentConfig?.outputDirectory || 'data';
+          const configOutputDir =
+            state.currentConfig?.outputDirectory || 'data';
           const pluginDataPath = app.getDataDirPath();
           const signalkDataDir = path.dirname(path.dirname(pluginDataPath));
           const dataDir = path.join(signalkDataDir, configOutputDir);
@@ -2393,7 +2538,12 @@ export function registerApiRoutes(
             app.debug(message);
           };
 
-          const searchPattern = path.join(dataDir, 'vessels', '**', '*.parquet');
+          const searchPattern = path.join(
+            dataDir,
+            'vessels',
+            '**',
+            '*.parquet'
+          );
           addDebug(`🔍 Data directory: ${dataDir}`);
           addDebug(`🔍 Searching pattern: ${searchPattern}`);
 
@@ -2403,8 +2553,8 @@ export function registerApiRoutes(
               `${dataDir}/**/repaired/**`,
               `${dataDir}/**/quarantine/**`,
               `${dataDir}/**/claude-schemas/**`,
-              `${dataDir}/**/failed/**`
-            ]
+              `${dataDir}/**/failed/**`,
+            ],
           });
           addDebug(`📄 Found ${files.length} parquet files`);
 
@@ -2417,7 +2567,9 @@ export function registerApiRoutes(
 
           for (let fileIndex = 0; fileIndex < files.length; fileIndex++) {
             if (progressJob.cancelRequested) {
-              addDebug('⏹️ Validation cancellation requested, stopping processing');
+              addDebug(
+                '⏹️ Validation cancellation requested, stopping processing'
+              );
               progressJob.status = 'cancelled';
               break;
             }
@@ -2425,27 +2577,33 @@ export function registerApiRoutes(
             const filePath = files[fileIndex];
 
             progressJob.processed = Math.min(fileIndex + 1, files.length);
-            progressJob.percent = files.length > 0
-              ? Math.round((progressJob.processed / files.length) * 100)
-              : 100;
+            progressJob.percent =
+              files.length > 0
+                ? Math.round((progressJob.processed / files.length) * 100)
+                : 100;
             progressJob.currentFile = path.basename(filePath);
             progressJob.currentRelativePath = path.relative(dataDir, filePath);
 
             const pathParts = filePath.split(path.sep);
-            const vesselsIndex = pathParts.findIndex((part: string) => part === 'vessels');
-            const vesselName = vesselsIndex !== -1 && vesselsIndex + 1 < pathParts.length
-              ? pathParts[vesselsIndex + 1]
-              : undefined;
+            const vesselsIndex = pathParts.findIndex(
+              (part: string) => part === 'vessels'
+            );
+            const vesselName =
+              vesselsIndex !== -1 && vesselsIndex + 1 < pathParts.length
+                ? pathParts[vesselsIndex + 1]
+                : undefined;
             progressJob.currentVessel = vesselName;
 
             if (vesselName) {
               vessels.add(vesselName);
             }
 
-            if (path.basename(filePath).includes('quarantine') ||
-                path.basename(filePath).includes('corrupted') ||
-                filePath.includes('/processed/') ||
-                filePath.includes('/repaired/')) {
+            if (
+              path.basename(filePath).includes('quarantine') ||
+              path.basename(filePath).includes('corrupted') ||
+              filePath.includes('/processed/') ||
+              filePath.includes('/repaired/')
+            ) {
               continue;
             }
 
@@ -2459,8 +2617,12 @@ export function registerApiRoutes(
               if (schema && schema.schema) {
                 const fields = schema.schema;
 
-                const receivedTimestamp = fields.received_timestamp ? fields.received_timestamp.type : 'MISSING';
-                const signalkTimestamp = fields.signalk_timestamp ? fields.signalk_timestamp.type : 'MISSING';
+                const receivedTimestamp = fields.received_timestamp
+                  ? fields.received_timestamp.type
+                  : 'MISSING';
+                const signalkTimestamp = fields.signalk_timestamp
+                  ? fields.signalk_timestamp.type
+                  : 'MISSING';
 
                 const valueFields: { [key: string]: string } = {};
                 Object.keys(fields).forEach(fieldName => {
@@ -2469,24 +2631,43 @@ export function registerApiRoutes(
                   }
                 });
 
-                const relativePath = progressJob.currentRelativePath || path.relative(dataDir, filePath);
-                const pathMatch = relativePath.match(/vessels\/[^/]+\/(.+?)\/[^/]*\.parquet$/);
-                const signalkPath = pathMatch ? pathMatch[1].replace(/\//g, '.') : '';
+                const relativePath =
+                  progressJob.currentRelativePath ||
+                  path.relative(dataDir, filePath);
+                const pathMatch = relativePath.match(
+                  /vessels\/[^/]+\/(.+?)\/[^/]*\.parquet$/
+                );
+                const signalkPath = pathMatch
+                  ? pathMatch[1].replace(/\//g, '.')
+                  : '';
 
                 let hasViolations = false;
                 const violations: string[] = [];
 
-                if (receivedTimestamp !== 'UTF8' && receivedTimestamp !== 'MISSING') {
-                  violations.push(`received_timestamp should be UTF8, got ${receivedTimestamp}`);
+                if (
+                  receivedTimestamp !== 'UTF8' &&
+                  receivedTimestamp !== 'MISSING'
+                ) {
+                  violations.push(
+                    `received_timestamp should be UTF8, got ${receivedTimestamp}`
+                  );
                   hasViolations = true;
                 }
-                if (signalkTimestamp !== 'UTF8' && signalkTimestamp !== 'MISSING') {
-                  violations.push(`signalk_timestamp should be UTF8, got ${signalkTimestamp}`);
+                if (
+                  signalkTimestamp !== 'UTF8' &&
+                  signalkTimestamp !== 'MISSING'
+                ) {
+                  violations.push(
+                    `signalk_timestamp should be UTF8, got ${signalkTimestamp}`
+                  );
                   hasViolations = true;
                 }
 
-                const isExplodedFile = Object.keys(valueFields).some(fieldName =>
-                  fieldName.startsWith('value_') && fieldName !== 'value' && fieldName !== 'value_json'
+                const isExplodedFile = Object.keys(valueFields).some(
+                  fieldName =>
+                    fieldName.startsWith('value_') &&
+                    fieldName !== 'value' &&
+                    fieldName !== 'value_json'
                 );
                 addDebug(`🔍 Validation: isExplodedFile = ${isExplodedFile}`);
 
@@ -2495,7 +2676,8 @@ export function registerApiRoutes(
                   if (!parquet) {
                     throw new Error('ParquetJS not available');
                   }
-                  const sampleReader = await parquet.ParquetReader.openFile(filePath);
+                  const sampleReader =
+                    await parquet.ParquetReader.openFile(filePath);
                   const sampleCursor = sampleReader.getCursor();
                   let record: any;
                   let count = 0;
@@ -2505,18 +2687,26 @@ export function registerApiRoutes(
                   }
                   await sampleReader.close();
                 } catch (error) {
-                  addDebug(`⚠️ Could not read sample data for validation: ${(error as Error).message}`);
+                  addDebug(
+                    `⚠️ Could not read sample data for validation: ${(error as Error).message}`
+                  );
                   sampleRecords = [];
                 }
 
-                for (const [fieldName, fieldType] of Object.entries(valueFields)) {
+                for (const [fieldName, fieldType] of Object.entries(
+                  valueFields
+                )) {
                   if (fieldName === 'value_json') {
-                    addDebug(`⏭️ ${fieldName}: Skipped entirely (always ignored)`);
+                    addDebug(
+                      `⏭️ ${fieldName}: Skipped entirely (always ignored)`
+                    );
                     continue;
                   }
 
                   if (isExplodedFile && fieldName === 'value') {
-                    addDebug(`⏭️ ${fieldName}: Skipped in exploded file (always empty)`);
+                    addDebug(
+                      `⏭️ ${fieldName}: Skipped in exploded file (always empty)`
+                    );
                     continue;
                   }
 
@@ -2547,13 +2737,21 @@ export function registerApiRoutes(
 
                         if (allNumeric && values.length > 0) {
                           shouldBeNumeric = true;
-                          violations.push(`${fieldName} contains numbers but is ${fieldType}, should be DOUBLE`);
+                          violations.push(
+                            `${fieldName} contains numbers but is ${fieldType}, should be DOUBLE`
+                          );
                           hasViolations = true;
-                          addDebug(`🔍 ${fieldName}: VARCHAR contains numbers, flagged as violation`);
+                          addDebug(
+                            `🔍 ${fieldName}: VARCHAR contains numbers, flagged as violation`
+                          );
                         } else if (allBoolean && values.length > 0) {
-                          violations.push(`${fieldName} contains booleans but is ${fieldType}, should be BOOLEAN`);
+                          violations.push(
+                            `${fieldName} contains booleans but is ${fieldType}, should be BOOLEAN`
+                          );
                           hasViolations = true;
-                          addDebug(`🔍 ${fieldName}: VARCHAR contains booleans, flagged as violation`);
+                          addDebug(
+                            `🔍 ${fieldName}: VARCHAR contains booleans, flagged as violation`
+                          );
                         }
                       }
                     }
@@ -2562,23 +2760,44 @@ export function registerApiRoutes(
                       const isExplodedField = fieldName.startsWith('value_');
 
                       if (!isExplodedField && signalkPath) {
-                        addDebug(`🔍 ${fieldName}: Using metadata fallback (matches repair logic)`);
+                        addDebug(
+                          `🔍 ${fieldName}: Using metadata fallback (matches repair logic)`
+                        );
                         try {
                           const metadata = app.getMetadata(signalkPath) as any;
-                          if (metadata && metadata.units &&
-                              (metadata.units === 'm' || metadata.units === 'deg' || metadata.units === 'm/s' ||
-                               metadata.units === 'rad' || metadata.units === 'K' || metadata.units === 'Pa' ||
-                               metadata.units === 'V' || metadata.units === 'A' || metadata.units === 'Hz' ||
-                               metadata.units === 'ratio' || metadata.units === 'kg' || metadata.units === 'J')) {
-                            violations.push(`${fieldName} has numeric units (${metadata.units}) but is ${fieldType}, should be DOUBLE`);
+                          if (
+                            metadata &&
+                            metadata.units &&
+                            (metadata.units === 'm' ||
+                              metadata.units === 'deg' ||
+                              metadata.units === 'm/s' ||
+                              metadata.units === 'rad' ||
+                              metadata.units === 'K' ||
+                              metadata.units === 'Pa' ||
+                              metadata.units === 'V' ||
+                              metadata.units === 'A' ||
+                              metadata.units === 'Hz' ||
+                              metadata.units === 'ratio' ||
+                              metadata.units === 'kg' ||
+                              metadata.units === 'J')
+                          ) {
+                            violations.push(
+                              `${fieldName} has numeric units (${metadata.units}) but is ${fieldType}, should be DOUBLE`
+                            );
                             hasViolations = true;
-                            addDebug(`🔍 ${fieldName}: Metadata indicates numeric (${metadata.units}), flagged as violation`);
+                            addDebug(
+                              `🔍 ${fieldName}: Metadata indicates numeric (${metadata.units}), flagged as violation`
+                            );
                           }
                         } catch (metadataError) {
-                          addDebug(`🔍 ${fieldName}: Metadata lookup failed, no violation flagged`);
+                          addDebug(
+                            `🔍 ${fieldName}: Metadata lookup failed, no violation flagged`
+                          );
                         }
                       } else {
-                        addDebug(`🔍 ${fieldName}: Exploded field or no path, skipping metadata (matches repair logic)`);
+                        addDebug(
+                          `🔍 ${fieldName}: Exploded field or no path, skipping metadata (matches repair logic)`
+                        );
                       }
                     }
                   }
@@ -2587,11 +2806,13 @@ export function registerApiRoutes(
                 if (hasViolations) {
                   violationSchemas++;
                   const shortPath = path.relative(dataDir, filePath);
-                  violationDetails.push(`[${totalFiles}] ${shortPath}: ${violations.join(', ')}`);
+                  violationDetails.push(
+                    `[${totalFiles}] ${shortPath}: ${violations.join(', ')}`
+                  );
                   violationFiles.push({
                     file: shortPath,
                     vessel: vesselName,
-                    issues: [...violations]
+                    issues: [...violations],
                   });
                 } else {
                   correctSchemas++;
@@ -2599,22 +2820,30 @@ export function registerApiRoutes(
 
                 if (typeof reader.close === 'function') reader.close();
               }
-
             } catch (error) {
-              app.debug(`Error processing ${filePath}: ${(error as Error).message}`);
+              app.debug(
+                `Error processing ${filePath}: ${(error as Error).message}`
+              );
               violationSchemas++;
               const shortPath = path.relative(dataDir, filePath);
-              violationDetails.push(`[${totalFiles}] ${shortPath}: ERROR - ${(error as Error).message}`);
+              violationDetails.push(
+                `[${totalFiles}] ${shortPath}: ERROR - ${(error as Error).message}`
+              );
               violationFiles.push({
                 file: shortPath,
                 vessel: progressJob.currentVessel,
-                issues: [`ERROR - ${(error as Error).message}`]
+                issues: [`ERROR - ${(error as Error).message}`],
               });
             }
           }
 
-          if (progressJob.cancelRequested || progressJob.status === 'cancelled') {
-            addDebug(`⏹️ Validation cancelled by user after processing ${totalFiles} files`);
+          if (
+            progressJob.cancelRequested ||
+            progressJob.status === 'cancelled'
+          ) {
+            addDebug(
+              `⏹️ Validation cancelled by user after processing ${totalFiles} files`
+            );
             progressJob.status = 'cancelled';
             progressJob.completedAt = new Date();
             progressJob.currentFile = undefined;
@@ -2631,13 +2860,15 @@ export function registerApiRoutes(
               violationDetails,
               violationFiles,
               debugMessages,
-              jobId
+              jobId,
             };
             lastValidationViolations = violationFiles;
             return;
           }
 
-          addDebug(`📊 Validation completed: ${totalFiles} files, ${vessels.size} vessels, ${correctSchemas} correct, ${violationSchemas} violations`);
+          addDebug(
+            `📊 Validation completed: ${totalFiles} files, ${vessels.size} vessels, ${correctSchemas} correct, ${violationSchemas} violations`
+          );
 
           progressJob.status = 'completed';
           progressJob.processed = files.length;
@@ -2655,7 +2886,7 @@ export function registerApiRoutes(
             violationDetails,
             violationFiles,
             debugMessages,
-            jobId
+            jobId,
           };
           lastValidationViolations = violationFiles;
         } catch (error) {
@@ -2667,7 +2898,7 @@ export function registerApiRoutes(
             success: false,
             error: (error as Error).message,
             violationFiles,
-            jobId
+            jobId,
           };
           lastValidationViolations = violationFiles;
         } finally {
@@ -2687,347 +2918,112 @@ export function registerApiRoutes(
       return res.json({
         success: true,
         status: 'started',
-        jobId
+        jobId,
       });
     }
   );
 
-    // Repair schema violations endpoint
-  router.post(
-    '/api/repair-schemas',
-    async (_: TypedRequest, res: any) => {
-      try {
-        app.debug('🔧 Starting schema repair...');
+  // Repair schema violations endpoint
+  router.post('/api/repair-schemas', async (_: TypedRequest, res: any) => {
+    try {
+      app.debug('🔧 Starting schema repair...');
 
-        const parquet = require('@dsnp/parquetjs');
-        const path = require('path');
+      const parquet = require('@dsnp/parquetjs');
+      const path = require('path');
 
-        const configOutputDir = state.currentConfig?.outputDirectory || 'data';
-        const pluginDataPath = app.getDataDirPath();
-        const signalkDataDir = path.dirname(path.dirname(pluginDataPath));
-        const dataDir = path.join(signalkDataDir, configOutputDir);
-        const filenamePrefix = state.currentConfig?.filenamePrefix || 'signalk_data';
+      const configOutputDir = state.currentConfig?.outputDirectory || 'data';
+      const pluginDataPath = app.getDataDirPath();
+      const signalkDataDir = path.dirname(path.dirname(pluginDataPath));
+      const dataDir = path.join(signalkDataDir, configOutputDir);
+      const filenamePrefix =
+        state.currentConfig?.filenamePrefix || 'signalk_data';
 
-        const uniqueViolations = new Map<string, ValidationViolation>();
-        for (const violation of lastValidationViolations) {
-          if (violation?.file) {
-            uniqueViolations.set(violation.file, violation);
-          }
+      const uniqueViolations = new Map<string, ValidationViolation>();
+      for (const violation of lastValidationViolations) {
+        if (violation?.file) {
+          uniqueViolations.set(violation.file, violation);
+        }
+      }
+
+      if (uniqueViolations.size === 0) {
+        const message =
+          'No validation violations available for repair. Run validation first.';
+        app.debug(`🔧 ${message}`);
+        return res.status(400).json({ success: false, message });
+      }
+
+      const targetFiles: {
+        relative: string;
+        absolute: string;
+        violation?: ValidationViolation;
+      }[] = [];
+      for (const [relativePath, violation] of uniqueViolations) {
+        const absolutePath = path.isAbsolute(relativePath)
+          ? relativePath
+          : path.join(dataDir, relativePath);
+
+        if (!absolutePath.startsWith(dataDir)) {
+          app.debug(
+            `❌ Skipping flagged file outside data directory: ${relativePath}`
+          );
+          continue;
         }
 
-        if (uniqueViolations.size === 0) {
-          const message = 'No validation violations available for repair. Run validation first.';
-          app.debug(`🔧 ${message}`);
-          return res.status(400).json({ success: false, message });
+        if (await fs.pathExists(absolutePath)) {
+          targetFiles.push({
+            relative: relativePath,
+            absolute: absolutePath,
+            violation,
+          });
+        } else {
+          app.debug(`❌ Flagged file no longer exists: ${relativePath}`);
         }
+      }
 
-        const targetFiles: { relative: string; absolute: string; violation?: ValidationViolation }[] = [];
-        for (const [relativePath, violation] of uniqueViolations) {
-          const absolutePath = path.isAbsolute(relativePath)
-            ? relativePath
-            : path.join(dataDir, relativePath);
+      if (targetFiles.length === 0) {
+        const message =
+          'Validation flagged files are missing; nothing to repair.';
+        app.debug(`🔧 ${message}`);
+        return res.status(400).json({ success: false, message });
+      }
 
-          if (!absolutePath.startsWith(dataDir)) {
-            app.debug(`❌ Skipping flagged file outside data directory: ${relativePath}`);
-            continue;
-          }
+      targetFiles.sort((a, b) => a.relative.localeCompare(b.relative));
 
-          if (await fs.pathExists(absolutePath)) {
-            targetFiles.push({ relative: relativePath, absolute: absolutePath, violation });
-          } else {
-            app.debug(`❌ Flagged file no longer exists: ${relativePath}`);
-          }
-        }
+      const jobId = `rep_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+      const job: RepairProgress = {
+        jobId,
+        status: 'running',
+        processed: 0,
+        total: targetFiles.length,
+        percent: targetFiles.length === 0 ? 100 : 0,
+        startTime: new Date(),
+        message: `Preparing to repair ${targetFiles.length} files`,
+        cancelRequested: false,
+      };
 
-        if (targetFiles.length === 0) {
-          const message = 'Validation flagged files are missing; nothing to repair.';
-          app.debug(`🔧 ${message}`);
-          return res.status(400).json({ success: false, message });
-        }
+      repairJobs.set(jobId, job);
 
-        targetFiles.sort((a, b) => a.relative.localeCompare(b.relative));
+      const runRepairJob = async () => {
+        let repairedFiles = 0;
+        let backedUpFiles = 0;
+        const skippedFiles: string[] = [];
+        const quarantinedFiles: string[] = [];
+        const errors: string[] = [];
+        const handledRelativePaths = new Set<string>();
 
-        const jobId = `rep_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-        const job: RepairProgress = {
-          jobId,
-          status: 'running',
-          processed: 0,
-          total: targetFiles.length,
-          percent: targetFiles.length === 0 ? 100 : 0,
-          startTime: new Date(),
-          message: `Preparing to repair ${targetFiles.length} files`,
-          cancelRequested: false
-        };
+        try {
+          app.debug(
+            `🔧 Repair job ${jobId}: targeting ${targetFiles.length} files`
+          );
 
-        repairJobs.set(jobId, job);
+          job.message = 'Pausing briefly before repair';
+          await new Promise(resolve => setTimeout(resolve, 10000));
+          job.message = 'Starting repair process';
 
-        const runRepairJob = async () => {
-          let repairedFiles = 0;
-          let backedUpFiles = 0;
-          const skippedFiles: string[] = [];
-          const quarantinedFiles: string[] = [];
-          const errors: string[] = [];
-          const handledRelativePaths = new Set<string>();
-
-          try {
-            app.debug(`🔧 Repair job ${jobId}: targeting ${targetFiles.length} files`);
-
-            job.message = 'Pausing briefly before repair';
-            await new Promise(resolve => setTimeout(resolve, 10000));
-            job.message = 'Starting repair process';
-
-            if (job.cancelRequested) {
-              app.debug(`🔧 Repair job ${jobId}: cancelled before processing`);
-              job.status = 'cancelled';
-              job.message = 'Repair cancelled before start';
-              job.completedAt = new Date();
-              job.result = {
-                success: false,
-                repairedFiles: 0,
-                backedUpFiles: 0,
-                skippedFiles: [],
-                quarantinedFiles: [],
-                errors: [],
-                message: 'Repair cancelled before start'
-              };
-              return;
-            }
-
-            for (let i = 0; i < targetFiles.length; i++) {
-              if (job.cancelRequested) {
-                app.debug(`🔧 Repair job ${jobId}: cancellation detected`);
-                job.status = 'cancelled';
-                job.message = 'Repair cancelled by user';
-                break;
-              }
-
-              const { absolute: filePath, relative: relativePath, violation } = targetFiles[i];
-              job.currentFile = relativePath;
-              job.processed = Math.min(i + 1, job.total);
-              job.percent = job.total > 0 ? Math.round(((i + 1) / job.total) * 100) : 100;
-              job.message = `Repairing (${Math.min(i + 1, job.total)}/${job.total}): ${relativePath}`;
-
-              let needsRepair = Array.isArray(violation?.issues) && violation.issues.length > 0;
-
-              app.debug(`🔧 Repair job ${jobId}: processing ${relativePath}`);
-
-
-              try {
-                const stats = await fs.stat(filePath);
-                if (stats.size < 100) {
-                  app.debug(`❌ File too small (${stats.size} bytes), moving to quarantine: ${path.basename(filePath)}`);
-
-                  const quarantineDir = path.join(path.dirname(filePath), 'quarantine');
-                  await fs.ensureDir(quarantineDir);
-                  const quarantineFile = path.join(quarantineDir, path.basename(filePath));
-                  await fs.move(filePath, quarantineFile, { overwrite: true });
-
-                  const logFile = path.join(quarantineDir, 'quarantine.log');
-                  const logEntry = `${new Date().toISOString()} | repair | ${stats.size} bytes | File too small (corrupted) | ${filePath}\n`;
-                  await fs.appendFile(logFile, logEntry);
-
-                  quarantinedFiles.push(relativePath);
-                  handledRelativePaths.add(relativePath);
-                  job.processed = i + 1;
-                  job.percent = job.total > 0 ? Math.round(((i + 1) / job.total) * 100) : 100;
-                  job.message = `Quarantined: ${relativePath}`;
-                  continue;
-                }
-              } catch (statError) {
-                const message = `Error checking file size for ${relativePath}: ${(statError as Error).message}`;
-                app.debug(`❌ ${message}`);
-                errors.push(message);
-                job.processed = i + 1;
-                job.percent = job.total > 0 ? Math.round(((i + 1) / job.total) * 100) : 100;
-                job.message = `Skipped due to error: ${relativePath}`;
-                continue;
-              }
-
-              try {
-                // Get schema and sample data directly from parquet file (same as validation)
-                const parquetReader = await parquet.ParquetReader.openFile(filePath);
-                const parquetCursor = parquetReader.getCursor();
-                const schema = parquetCursor.schema;
-
-                const valueFields: { [key: string]: string } = {};
-                let signalkPath = '';
-
-                // Extract schema fields
-                if (schema && schema.schema) {
-                  const fields = schema.schema;
-
-                  // Get value fields
-                  for (const [fieldName, fieldInfo] of Object.entries(fields)) {
-                    if (fieldName === 'value' || fieldName.startsWith('value_')) {
-                      valueFields[fieldName] = (fieldInfo as any).type || 'UNKNOWN';
-                    }
-                  }
-
-                  // Extract SignalK path from file path (same logic as before)
-                  const pathRegex = new RegExp(`/vessels/[^/]+/(.+)/${filenamePrefix}_`);
-                  const pathMatch = filePath.match(pathRegex);
-                  if (pathMatch) {
-                    signalkPath = pathMatch[1].replace(/\//g, '.');
-                    app.debug(`🔍 Extracted SignalK path: ${signalkPath} from ${path.basename(filePath)}`);
-                  } else {
-                    app.debug(`🔍 Could not extract SignalK path from ${path.basename(filePath)} using prefix ${filenamePrefix}`);
-                  }
-                }
-
-                // Read sample records for analysis
-                const sampleRecords: any[] = [];
-                try {
-                  let record: any;
-                  let count = 0;
-                  while ((record = await parquetCursor.next()) && count < 100) {
-                    sampleRecords.push(record);
-                    count++;
-                  }
-                } catch (sampleError) {
-                  app.debug(`🔧 Could not read sample data for repair: ${(sampleError as Error).message}`);
-                }
-                await parquetReader.close();
-
-                const fieldEntries = Object.entries(valueFields);
-                const hasExplodedFields = fieldEntries.some(([fieldName]) => fieldName.startsWith('value_') && fieldName !== 'value' && fieldName !== 'value_json');
-
-                for (const [fieldName, fieldType] of fieldEntries) {
-                  if (fieldName === 'value_json') continue;
-                  if (hasExplodedFields && fieldName === 'value') continue;
-
-                  if (fieldType === 'UTF8' || fieldType === 'VARCHAR') {
-                    const values = sampleRecords
-                      .map(r => r[fieldName])
-                      .filter(v => v !== null && v !== undefined)
-                      .map(v => String(v).trim());
-
-                    if (values.length > 0) {
-                      const allNumeric = values.every(v => v !== '' && !isNaN(Number(v)) && v !== 'true' && v !== 'false');
-                      const allBoolean = values.every(v => v === 'true' || v === 'false');
-
-                      if (allNumeric) {
-                        needsRepair = true;
-                        app.debug(`🔧 File needs repair: ${relativePath} (${fieldName} contains numbers, should be DOUBLE, not ${fieldType})`);
-                        break;
-                      }
-                      if (allBoolean) {
-                        needsRepair = true;
-                        app.debug(`🔧 File needs repair: ${relativePath} (${fieldName} contains booleans, should be BOOLEAN, not ${fieldType})`);
-                        break;
-                      }
-                    }
-
-                    if (!needsRepair && signalkPath && !fieldName.startsWith('value_')) {
-                      try {
-                        const metadata = app.getMetadata(signalkPath) as any;
-                        if (metadata && metadata.units &&
-                            (metadata.units === 'm' || metadata.units === 'deg' || metadata.units === 'm/s' ||
-                             metadata.units === 'rad' || metadata.units === 'K' || metadata.units === 'Pa' ||
-                             metadata.units === 'V' || metadata.units === 'A' || metadata.units === 'Hz' ||
-                             metadata.units === 'ratio' || metadata.units === 'kg' || metadata.units === 'J')) {
-                          needsRepair = true;
-                          app.debug(`🔧 File needs repair: ${relativePath} (${fieldName} should be DOUBLE per metadata, not ${fieldType})`);
-                          break;
-                        }
-                      } catch (metadataError) {
-                        app.debug(`🔧 Metadata check failed for ${fieldName}: ${(metadataError as Error).message}`);
-                      }
-                    }
-                  } else if (fieldType === 'BIGINT') {
-                    needsRepair = true;
-                    app.debug(`🔧 File needs repair: ${relativePath} (${fieldName} is BIGINT, converting to DOUBLE)`);
-                    break;
-                  }
-                }
-
-                if (!needsRepair) {
-                  skippedFiles.push(relativePath);
-                  handledRelativePaths.add(relativePath);
-                  job.message = `Skipped (no repair needed): ${relativePath}`;
-                  job.processed = i + 1;
-                  job.percent = job.total > 0 ? Math.round(((i + 1) / job.total) * 100) : 100;
-                  continue;
-                }
-
-                const backupDir = path.join(path.dirname(filePath), 'repaired');
-                await fs.mkdir(backupDir, { recursive: true });
-
-                const backupPath = path.join(backupDir, path.basename(filePath));
-                await fs.copyFile(filePath, backupPath);
-                backedUpFiles++;
-                app.debug(`🔧 Backed up: ${path.basename(filePath)}`);
-
-                const reader = await parquet.ParquetReader.openFile(filePath);
-                const cursor = reader.getCursor();
-                const records: any[] = [];
-                let record: any;
-                while ((record = await cursor.next())) {
-                  records.push(record);
-                }
-                await reader.close();
-                const { ParquetWriter } = require('./parquet-writer');
-                const writer = new ParquetWriter({ format: 'parquet', app });
-                const correctedSchema = await writer.createParquetSchema(records, signalkPath);
-
-                const parquetWriter = await parquet.ParquetWriter.openFile(correctedSchema, filePath);
-                for (const row of records) {
-                  const prepared = writer.prepareRecordForParquet(row, correctedSchema);
-                  await parquetWriter.appendRow(prepared);
-                }
-                await parquetWriter.close();
-                repairedFiles++;
-                handledRelativePaths.add(relativePath);
-                job.message = `Repaired: ${relativePath}`;
-                app.debug(`🔧 ✅ Repaired: ${path.basename(filePath)}`);
-
-              } catch (fileError) {
-                const message = `Error processing ${relativePath}: ${(fileError as Error).message}`;
-                app.debug(`🔧 ❌ ${message}`);
-                errors.push(message);
-                job.message = message;
-                job.processed = i + 1;
-                job.percent = job.total > 0 ? Math.round(((i + 1) / job.total) * 100) : 100;
-              }
-
-            }
-
-            if (handledRelativePaths.size > 0) {
-              lastValidationViolations = lastValidationViolations.filter(
-                violation => !handledRelativePaths.has(violation.file)
-              );
-            }
-
-            if (job.status === 'cancelled') {
-              job.completedAt = new Date();
-              job.result = {
-                success: false,
-                repairedFiles,
-                backedUpFiles,
-                skippedFiles,
-                quarantinedFiles,
-                errors,
-                message: 'Repair cancelled'
-              };
-            } else {
-              job.status = errors.length > 0 ? 'error' : 'completed';
-              job.message = errors.length > 0
-                ? 'Repair completed with errors'
-                : 'Repair completed successfully';
-              job.completedAt = new Date();
-              job.result = {
-                success: errors.length === 0,
-                repairedFiles,
-                backedUpFiles,
-                skippedFiles,
-                quarantinedFiles,
-                errors,
-                message: job.message
-              };
-            }
-
-          } catch (jobError) {
-            job.status = 'error';
-            job.message = `Repair job failed: ${(jobError as Error).message}`;
+          if (job.cancelRequested) {
+            app.debug(`🔧 Repair job ${jobId}: cancelled before processing`);
+            job.status = 'cancelled';
+            job.message = 'Repair cancelled before start';
             job.completedAt = new Date();
             job.result = {
               success: false,
@@ -3035,38 +3031,356 @@ export function registerApiRoutes(
               backedUpFiles: 0,
               skippedFiles: [],
               quarantinedFiles: [],
-              errors: [(jobError as Error).message],
+              errors: [],
+              message: 'Repair cancelled before start',
             };
-          } finally {
-            job.currentFile = undefined;
-            job.processed = job.total;
-            job.percent = 100;
-            scheduleRepairJobCleanup(jobId);
+            return;
           }
-        };
 
-        setImmediate(() => {
-          runRepairJob().catch(error => {
-            app.debug(`❌ Unhandled repair job error (${jobId}): ${error}`);
-          });
-        });
+          for (let i = 0; i < targetFiles.length; i++) {
+            if (job.cancelRequested) {
+              app.debug(`🔧 Repair job ${jobId}: cancellation detected`);
+              job.status = 'cancelled';
+              job.message = 'Repair cancelled by user';
+              break;
+            }
 
-        return res.json({
-          success: true,
-          status: 'started',
-          jobId,
-          totalFiles: targetFiles.length
-        });
+            const {
+              absolute: filePath,
+              relative: relativePath,
+              violation,
+            } = targetFiles[i];
+            job.currentFile = relativePath;
+            job.processed = Math.min(i + 1, job.total);
+            job.percent =
+              job.total > 0 ? Math.round(((i + 1) / job.total) * 100) : 100;
+            job.message = `Repairing (${Math.min(i + 1, job.total)}/${job.total}): ${relativePath}`;
 
-      } catch (error) {
-        app.debug(`❌ Schema repair failed: ${(error as Error).message}`);
-        return res.status(500).json({
-          success: false,
-          message: `Repair failed: ${(error as Error).message}`
+            let needsRepair =
+              Array.isArray(violation?.issues) && violation.issues.length > 0;
+
+            app.debug(`🔧 Repair job ${jobId}: processing ${relativePath}`);
+
+            try {
+              const stats = await fs.stat(filePath);
+              if (stats.size < 100) {
+                app.debug(
+                  `❌ File too small (${stats.size} bytes), moving to quarantine: ${path.basename(filePath)}`
+                );
+
+                const quarantineDir = path.join(
+                  path.dirname(filePath),
+                  'quarantine'
+                );
+                await fs.ensureDir(quarantineDir);
+                const quarantineFile = path.join(
+                  quarantineDir,
+                  path.basename(filePath)
+                );
+                await fs.move(filePath, quarantineFile, { overwrite: true });
+
+                const logFile = path.join(quarantineDir, 'quarantine.log');
+                const logEntry = `${new Date().toISOString()} | repair | ${stats.size} bytes | File too small (corrupted) | ${filePath}\n`;
+                await fs.appendFile(logFile, logEntry);
+
+                quarantinedFiles.push(relativePath);
+                handledRelativePaths.add(relativePath);
+                job.processed = i + 1;
+                job.percent =
+                  job.total > 0 ? Math.round(((i + 1) / job.total) * 100) : 100;
+                job.message = `Quarantined: ${relativePath}`;
+                continue;
+              }
+            } catch (statError) {
+              const message = `Error checking file size for ${relativePath}: ${(statError as Error).message}`;
+              app.debug(`❌ ${message}`);
+              errors.push(message);
+              job.processed = i + 1;
+              job.percent =
+                job.total > 0 ? Math.round(((i + 1) / job.total) * 100) : 100;
+              job.message = `Skipped due to error: ${relativePath}`;
+              continue;
+            }
+
+            try {
+              // Get schema and sample data directly from parquet file (same as validation)
+              const parquetReader =
+                await parquet.ParquetReader.openFile(filePath);
+              const parquetCursor = parquetReader.getCursor();
+              const schema = parquetCursor.schema;
+
+              const valueFields: { [key: string]: string } = {};
+              let signalkPath = '';
+
+              // Extract schema fields
+              if (schema && schema.schema) {
+                const fields = schema.schema;
+
+                // Get value fields
+                for (const [fieldName, fieldInfo] of Object.entries(fields)) {
+                  if (fieldName === 'value' || fieldName.startsWith('value_')) {
+                    valueFields[fieldName] =
+                      (fieldInfo as any).type || 'UNKNOWN';
+                  }
+                }
+
+                // Extract SignalK path from file path (same logic as before)
+                const pathRegex = new RegExp(
+                  `/vessels/[^/]+/(.+)/${filenamePrefix}_`
+                );
+                const pathMatch = filePath.match(pathRegex);
+                if (pathMatch) {
+                  signalkPath = pathMatch[1].replace(/\//g, '.');
+                  app.debug(
+                    `🔍 Extracted SignalK path: ${signalkPath} from ${path.basename(filePath)}`
+                  );
+                } else {
+                  app.debug(
+                    `🔍 Could not extract SignalK path from ${path.basename(filePath)} using prefix ${filenamePrefix}`
+                  );
+                }
+              }
+
+              // Read sample records for analysis
+              const sampleRecords: any[] = [];
+              try {
+                let record: any;
+                let count = 0;
+                while ((record = await parquetCursor.next()) && count < 100) {
+                  sampleRecords.push(record);
+                  count++;
+                }
+              } catch (sampleError) {
+                app.debug(
+                  `🔧 Could not read sample data for repair: ${(sampleError as Error).message}`
+                );
+              }
+              await parquetReader.close();
+
+              const fieldEntries = Object.entries(valueFields);
+              const hasExplodedFields = fieldEntries.some(
+                ([fieldName]) =>
+                  fieldName.startsWith('value_') &&
+                  fieldName !== 'value' &&
+                  fieldName !== 'value_json'
+              );
+
+              for (const [fieldName, fieldType] of fieldEntries) {
+                if (fieldName === 'value_json') continue;
+                if (hasExplodedFields && fieldName === 'value') continue;
+
+                if (fieldType === 'UTF8' || fieldType === 'VARCHAR') {
+                  const values = sampleRecords
+                    .map(r => r[fieldName])
+                    .filter(v => v !== null && v !== undefined)
+                    .map(v => String(v).trim());
+
+                  if (values.length > 0) {
+                    const allNumeric = values.every(
+                      v =>
+                        v !== '' &&
+                        !isNaN(Number(v)) &&
+                        v !== 'true' &&
+                        v !== 'false'
+                    );
+                    const allBoolean = values.every(
+                      v => v === 'true' || v === 'false'
+                    );
+
+                    if (allNumeric) {
+                      needsRepair = true;
+                      app.debug(
+                        `🔧 File needs repair: ${relativePath} (${fieldName} contains numbers, should be DOUBLE, not ${fieldType})`
+                      );
+                      break;
+                    }
+                    if (allBoolean) {
+                      needsRepair = true;
+                      app.debug(
+                        `🔧 File needs repair: ${relativePath} (${fieldName} contains booleans, should be BOOLEAN, not ${fieldType})`
+                      );
+                      break;
+                    }
+                  }
+
+                  if (
+                    !needsRepair &&
+                    signalkPath &&
+                    !fieldName.startsWith('value_')
+                  ) {
+                    try {
+                      const metadata = app.getMetadata(signalkPath) as any;
+                      if (
+                        metadata &&
+                        metadata.units &&
+                        (metadata.units === 'm' ||
+                          metadata.units === 'deg' ||
+                          metadata.units === 'm/s' ||
+                          metadata.units === 'rad' ||
+                          metadata.units === 'K' ||
+                          metadata.units === 'Pa' ||
+                          metadata.units === 'V' ||
+                          metadata.units === 'A' ||
+                          metadata.units === 'Hz' ||
+                          metadata.units === 'ratio' ||
+                          metadata.units === 'kg' ||
+                          metadata.units === 'J')
+                      ) {
+                        needsRepair = true;
+                        app.debug(
+                          `🔧 File needs repair: ${relativePath} (${fieldName} should be DOUBLE per metadata, not ${fieldType})`
+                        );
+                        break;
+                      }
+                    } catch (metadataError) {
+                      app.debug(
+                        `🔧 Metadata check failed for ${fieldName}: ${(metadataError as Error).message}`
+                      );
+                    }
+                  }
+                } else if (fieldType === 'BIGINT') {
+                  needsRepair = true;
+                  app.debug(
+                    `🔧 File needs repair: ${relativePath} (${fieldName} is BIGINT, converting to DOUBLE)`
+                  );
+                  break;
+                }
+              }
+
+              if (!needsRepair) {
+                skippedFiles.push(relativePath);
+                handledRelativePaths.add(relativePath);
+                job.message = `Skipped (no repair needed): ${relativePath}`;
+                job.processed = i + 1;
+                job.percent =
+                  job.total > 0 ? Math.round(((i + 1) / job.total) * 100) : 100;
+                continue;
+              }
+
+              const backupDir = path.join(path.dirname(filePath), 'repaired');
+              await fs.mkdir(backupDir, { recursive: true });
+
+              const backupPath = path.join(backupDir, path.basename(filePath));
+              await fs.copyFile(filePath, backupPath);
+              backedUpFiles++;
+              app.debug(`🔧 Backed up: ${path.basename(filePath)}`);
+
+              const reader = await parquet.ParquetReader.openFile(filePath);
+              const cursor = reader.getCursor();
+              const records: any[] = [];
+              let record: any;
+              while ((record = await cursor.next())) {
+                records.push(record);
+              }
+              await reader.close();
+              const { ParquetWriter } = require('./parquet-writer');
+              const writer = new ParquetWriter({ format: 'parquet', app });
+              const correctedSchema = await writer.createParquetSchema(
+                records,
+                signalkPath
+              );
+
+              const parquetWriter = await parquet.ParquetWriter.openFile(
+                correctedSchema,
+                filePath
+              );
+              for (const row of records) {
+                const prepared = writer.prepareRecordForParquet(
+                  row,
+                  correctedSchema
+                );
+                await parquetWriter.appendRow(prepared);
+              }
+              await parquetWriter.close();
+              repairedFiles++;
+              handledRelativePaths.add(relativePath);
+              job.message = `Repaired: ${relativePath}`;
+              app.debug(`🔧 ✅ Repaired: ${path.basename(filePath)}`);
+            } catch (fileError) {
+              const message = `Error processing ${relativePath}: ${(fileError as Error).message}`;
+              app.debug(`🔧 ❌ ${message}`);
+              errors.push(message);
+              job.message = message;
+              job.processed = i + 1;
+              job.percent =
+                job.total > 0 ? Math.round(((i + 1) / job.total) * 100) : 100;
+            }
+          }
+
+          if (handledRelativePaths.size > 0) {
+            lastValidationViolations = lastValidationViolations.filter(
+              violation => !handledRelativePaths.has(violation.file)
+            );
+          }
+
+          if (job.status === 'cancelled') {
+            job.completedAt = new Date();
+            job.result = {
+              success: false,
+              repairedFiles,
+              backedUpFiles,
+              skippedFiles,
+              quarantinedFiles,
+              errors,
+              message: 'Repair cancelled',
+            };
+          } else {
+            job.status = errors.length > 0 ? 'error' : 'completed';
+            job.message =
+              errors.length > 0
+                ? 'Repair completed with errors'
+                : 'Repair completed successfully';
+            job.completedAt = new Date();
+            job.result = {
+              success: errors.length === 0,
+              repairedFiles,
+              backedUpFiles,
+              skippedFiles,
+              quarantinedFiles,
+              errors,
+              message: job.message,
+            };
+          }
+        } catch (jobError) {
+          job.status = 'error';
+          job.message = `Repair job failed: ${(jobError as Error).message}`;
+          job.completedAt = new Date();
+          job.result = {
+            success: false,
+            repairedFiles: 0,
+            backedUpFiles: 0,
+            skippedFiles: [],
+            quarantinedFiles: [],
+            errors: [(jobError as Error).message],
+          };
+        } finally {
+          job.currentFile = undefined;
+          job.processed = job.total;
+          job.percent = 100;
+          scheduleRepairJobCleanup(jobId);
+        }
+      };
+
+      setImmediate(() => {
+        runRepairJob().catch(error => {
+          app.debug(`❌ Unhandled repair job error (${jobId}): ${error}`);
         });
-      }
+      });
+
+      return res.json({
+        success: true,
+        status: 'started',
+        jobId,
+        totalFiles: targetFiles.length,
+      });
+    } catch (error) {
+      app.debug(`❌ Schema repair failed: ${(error as Error).message}`);
+      return res.status(500).json({
+        success: false,
+        message: `Repair failed: ${(error as Error).message}`,
+      });
     }
-  );
+  });
 
   // ===========================================
   // SQLITE BUFFER API ROUTES
@@ -3079,7 +3393,7 @@ export function registerApiRoutes(
         return res.json({
           success: true,
           enabled: false,
-          message: 'SQLite buffer is not enabled'
+          message: 'SQLite buffer is not enabled',
         });
       }
 
@@ -3090,12 +3404,12 @@ export function registerApiRoutes(
         success: true,
         enabled: true,
         stats,
-        exportService: exportStatus
+        exportService: exportStatus,
       });
     } catch (error) {
       return res.status(500).json({
         success: false,
-        error: (error as Error).message
+        error: (error as Error).message,
       });
     }
   });
@@ -3106,19 +3420,19 @@ export function registerApiRoutes(
       if (!state.exportService) {
         return res.status(400).json({
           success: false,
-          error: 'SQLite buffer is not enabled'
+          error: 'SQLite buffer is not enabled',
         });
       }
 
       const result = await state.exportService.forceExport();
       return res.json({
         success: true,
-        ...result
+        ...result,
       });
     } catch (error) {
       return res.status(500).json({
         success: false,
-        error: (error as Error).message
+        error: (error as Error).message,
       });
     }
   });
@@ -3131,7 +3445,7 @@ export function registerApiRoutes(
           success: true,
           enabled: false,
           healthy: true,
-          message: 'SQLite buffer is not enabled (using in-memory buffer)'
+          message: 'SQLite buffer is not enabled (using in-memory buffer)',
         });
       }
 
@@ -3139,12 +3453,12 @@ export function registerApiRoutes(
       return res.json({
         success: true,
         enabled: true,
-        ...health
+        ...health,
       });
     } catch (error) {
       return res.status(500).json({
         success: false,
-        error: (error as Error).message
+        error: (error as Error).message,
       });
     }
   });
@@ -3164,10 +3478,12 @@ export function registerApiRoutes(
       const result = await migrationService.scan(source);
 
       // Convert Map to array for JSON serialization
-      const byPathArray = Array.from(result.byPath.entries()).map(([path, stats]) => ({
-        path,
-        ...stats
-      }));
+      const byPathArray = Array.from(result.byPath.entries()).map(
+        ([path, stats]) => ({
+          path,
+          ...stats,
+        })
+      );
 
       return res.json({
         success: true,
@@ -3176,12 +3492,12 @@ export function registerApiRoutes(
         totalSizeMB: (result.totalSize / 1024 / 1024).toFixed(2),
         byPath: byPathArray,
         estimatedTimeSeconds: result.estimatedTime,
-        sourceStyle: result.sourceStyle
+        sourceStyle: result.sourceStyle,
       });
     } catch (error) {
       return res.status(500).json({
         success: false,
-        error: (error as Error).message
+        error: (error as Error).message,
       });
     }
   });
@@ -3193,7 +3509,7 @@ export function registerApiRoutes(
         sourceDirectory,
         targetDirectory,
         targetTier = 'raw',
-        deleteSource = false
+        deleteSource = false,
       } = req.body;
 
       const source = sourceDirectory || getDataDir();
@@ -3204,7 +3520,7 @@ export function registerApiRoutes(
       if (!validTiers.includes(targetTier)) {
         return res.status(400).json({
           success: false,
-          error: `Invalid tier: ${targetTier}. Must be one of: ${validTiers.join(', ')}`
+          error: `Invalid tier: ${targetTier}. Must be one of: ${validTiers.join(', ')}`,
         });
       }
 
@@ -3212,18 +3528,18 @@ export function registerApiRoutes(
         sourceDirectory: source,
         targetDirectory: target,
         targetTier,
-        deleteSourceAfterMigration: deleteSource
+        deleteSourceAfterMigration: deleteSource,
       });
 
       return res.json({
         success: true,
         jobId,
-        message: 'Migration started'
+        message: 'Migration started',
       });
     } catch (error) {
       return res.status(500).json({
         success: false,
-        error: (error as Error).message
+        error: (error as Error).message,
       });
     }
   });
@@ -3237,19 +3553,19 @@ export function registerApiRoutes(
       if (!progress) {
         return res.status(404).json({
           success: false,
-          error: 'Migration job not found'
+          error: 'Migration job not found',
         });
       }
 
       return res.json({
         success: true,
         ...progress,
-        bytesProcessedMB: (progress.bytesProcessed / 1024 / 1024).toFixed(2)
+        bytesProcessedMB: (progress.bytesProcessed / 1024 / 1024).toFixed(2),
       });
     } catch (error) {
       return res.status(500).json({
         success: false,
-        error: (error as Error).message
+        error: (error as Error).message,
       });
     }
   });
@@ -3263,18 +3579,18 @@ export function registerApiRoutes(
       if (!cancelled) {
         return res.status(400).json({
           success: false,
-          error: 'Migration job not found or not running'
+          error: 'Migration job not found or not running',
         });
       }
 
       return res.json({
         success: true,
-        message: 'Cancellation requested'
+        message: 'Cancellation requested',
       });
     } catch (error) {
       return res.status(500).json({
         success: false,
-        error: (error as Error).message
+        error: (error as Error).message,
       });
     }
   });
@@ -3283,16 +3599,18 @@ export function registerApiRoutes(
   router.get('/api/migrate/jobs', (_req, res) => {
     try {
       const jobIds = migrationService.getJobIds();
-      const jobs = jobIds.map(id => migrationService.getProgress(id)).filter(Boolean);
+      const jobs = jobIds
+        .map(id => migrationService.getProgress(id))
+        .filter(Boolean);
 
       return res.json({
         success: true,
-        jobs
+        jobs,
       });
     } catch (error) {
       return res.status(500).json({
         success: false,
-        error: (error as Error).message
+        error: (error as Error).message,
       });
     }
   });
@@ -3322,16 +3640,20 @@ export function registerApiRoutes(
       const { date } = req.body;
 
       // Use yesterday if no date provided
-      const targetDate = date ? new Date(date) : new Date(Date.now() - 24 * 60 * 60 * 1000);
+      const targetDate = date
+        ? new Date(date)
+        : new Date(Date.now() - 24 * 60 * 60 * 1000);
 
       if (isNaN(targetDate.getTime())) {
         return res.status(400).json({
           success: false,
-          error: 'Invalid date format'
+          error: 'Invalid date format',
         });
       }
 
-      app.debug(`Starting aggregation for ${targetDate.toISOString().slice(0, 10)}`);
+      app.debug(
+        `Starting aggregation for ${targetDate.toISOString().slice(0, 10)}`
+      );
 
       const results = await aggregationService.aggregateDate(targetDate);
 
@@ -3345,13 +3667,13 @@ export function registerApiRoutes(
           recordsAggregated: r.recordsAggregated,
           filesCreated: r.filesCreated,
           durationMs: r.duration,
-          errors: r.errors
-        }))
+          errors: r.errors,
+        })),
       });
     } catch (error) {
       return res.status(500).json({
         success: false,
-        error: (error as Error).message
+        error: (error as Error).message,
       });
     }
   });
@@ -3363,23 +3685,30 @@ export function registerApiRoutes(
       const { date } = req.body;
 
       const validTiers: AggregationTier[] = ['raw', '5s', '60s', '1h'];
-      if (!validTiers.includes(sourceTier as AggregationTier) || !validTiers.includes(targetTier as AggregationTier)) {
+      if (
+        !validTiers.includes(sourceTier as AggregationTier) ||
+        !validTiers.includes(targetTier as AggregationTier)
+      ) {
         return res.status(400).json({
           success: false,
-          error: `Invalid tier. Must be one of: ${validTiers.join(', ')}`
+          error: `Invalid tier. Must be one of: ${validTiers.join(', ')}`,
         });
       }
 
-      const targetDate = date ? new Date(date) : new Date(Date.now() - 24 * 60 * 60 * 1000);
+      const targetDate = date
+        ? new Date(date)
+        : new Date(Date.now() - 24 * 60 * 60 * 1000);
 
       if (isNaN(targetDate.getTime())) {
         return res.status(400).json({
           success: false,
-          error: 'Invalid date format'
+          error: 'Invalid date format',
         });
       }
 
-      app.debug(`Starting aggregation ${sourceTier} -> ${targetTier} for ${targetDate.toISOString().slice(0, 10)}`);
+      app.debug(
+        `Starting aggregation ${sourceTier} -> ${targetTier} for ${targetDate.toISOString().slice(0, 10)}`
+      );
 
       const result = await aggregationService.aggregateTier(
         sourceTier as AggregationTier,
@@ -3396,12 +3725,12 @@ export function registerApiRoutes(
         recordsAggregated: result.recordsAggregated,
         filesCreated: result.filesCreated,
         durationMs: result.duration,
-        errors: result.errors
+        errors: result.errors,
       });
     } catch (error) {
       return res.status(500).json({
         success: false,
-        error: (error as Error).message
+        error: (error as Error).message,
       });
     }
   });
@@ -3414,14 +3743,13 @@ export function registerApiRoutes(
       return res.json({
         success: true,
         deletedFiles: result.deletedFiles,
-        freedMB: (result.freedBytes / 1024 / 1024).toFixed(2)
+        freedMB: (result.freedBytes / 1024 / 1024).toFixed(2),
       });
     } catch (error) {
       return res.status(500).json({
         success: false,
-        error: (error as Error).message
+        error: (error as Error).message,
       });
     }
   });
-
 }

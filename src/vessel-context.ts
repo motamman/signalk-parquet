@@ -19,141 +19,141 @@ export class VesselContextManager {
       path: 'name',
       signalkPath: 'name',
       displayName: 'Vessel Name',
-      category: 'identification'
+      category: 'identification',
     },
     {
       path: 'callsign',
       signalkPath: 'communication.callsignVhf',
       displayName: 'Call Sign',
-      category: 'identification'
+      category: 'identification',
     },
     {
       path: 'mmsi',
       signalkPath: 'mmsi',
       displayName: 'MMSI',
-      category: 'identification'
+      category: 'identification',
     },
-    
+
     // Physical characteristics
     {
       path: 'length',
       signalkPath: 'design.length',
       displayName: 'Length Overall (LOA)',
       unit: 'm',
-      category: 'physical'
+      category: 'physical',
     },
     {
       path: 'beam',
       signalkPath: 'design.beam',
       displayName: 'Beam',
       unit: 'm',
-      category: 'physical'
+      category: 'physical',
     },
     {
       path: 'draft',
       signalkPath: 'design.draft',
       displayName: 'Maximum Draft',
       unit: 'm',
-      category: 'physical'
+      category: 'physical',
     },
     {
       path: 'height',
       signalkPath: 'design.airHeight',
       displayName: 'Air Draft/Height',
       unit: 'm',
-      category: 'physical'
+      category: 'physical',
     },
     {
       path: 'displacement',
       signalkPath: 'design.displacement',
       displayName: 'Displacement',
       unit: 'kg',
-      category: 'physical'
+      category: 'physical',
     },
-    
+
     // Vessel classification
     {
       path: 'vesselType',
       signalkPath: 'design.aisShipAndCargoType',
       displayName: 'Vessel Type',
-      category: 'classification'
+      category: 'classification',
     },
     {
       path: 'flag',
       signalkPath: 'registrations.imo.country',
       displayName: 'Flag State',
-      category: 'classification'
+      category: 'classification',
     },
-    
+
     // Technical specifications
     {
       path: 'grossTonnage',
       signalkPath: 'registrations.imo.grossTonnage',
       displayName: 'Gross Tonnage',
       unit: 'GT',
-      category: 'technical'
+      category: 'technical',
     },
     {
       path: 'netTonnage',
       signalkPath: 'registrations.imo.netTonnage',
       displayName: 'Net Tonnage',
       unit: 'NT',
-      category: 'technical'
+      category: 'technical',
     },
     {
       path: 'deadWeight',
       signalkPath: 'design.deadweight',
       displayName: 'Deadweight',
       unit: 'tonnes',
-      category: 'technical'
+      category: 'technical',
     },
-    
+
     // Build information
     {
       path: 'builder',
       signalkPath: 'design.constructor',
       displayName: 'Builder/Constructor',
-      category: 'build'
+      category: 'build',
     },
     {
       path: 'buildYear',
       signalkPath: 'design.construction.year',
       displayName: 'Build Year',
-      category: 'build'
+      category: 'build',
     },
     {
       path: 'hullNumber',
       signalkPath: 'registrations.other.hullNumber',
       displayName: 'Hull Number',
-      category: 'build'
+      category: 'build',
     },
-    
+
     // Contact information
     {
       path: 'ownerName',
       signalkPath: 'registrations.imo.owner',
       displayName: 'Owner',
-      category: 'contact'
+      category: 'contact',
     },
     {
       path: 'port',
       signalkPath: 'port',
       displayName: 'Port of Registry',
-      category: 'contact'
-    }
+      category: 'contact',
+    },
   ];
 
   constructor(app?: ServerAPI, dataDirectory?: string) {
     this.app = app;
-    
+
     // Must have a data directory - this should be the plugin's configured directory
     if (!dataDirectory) {
       throw new Error('Data directory is required for vessel context manager');
     }
     this.contextFilePath = path.join(dataDirectory, 'vessel-context.json');
-    
+
     this.app?.debug(`Vessel context file path: ${this.contextFilePath}`);
-    
+
     this.loadVesselContext();
   }
 
@@ -172,7 +172,7 @@ export class VesselContextManager {
       // Get vessel context (defaults to vessels.self)
       // Cast to any for compatibility with different @signalk/server-api versions
       const vesselContext = (this.app.getSelfPath('') as any) || 'vessels.self';
-      
+
       this.app.debug(`Extracting vessel info from context: ${vesselContext}`);
 
       // Extract data for each defined path
@@ -181,11 +181,11 @@ export class VesselContextManager {
           // Get value from SignalK path
           // Cast to any for compatibility with different @signalk/server-api versions
           const value = this.app.getSelfPath(extraction.signalkPath) as any;
-          
+
           if (value !== null && value !== undefined) {
             // Convert units and handle different data types
             let processedValue = value;
-            
+
             // Handle specific field processing
             if (extraction.path === 'vesselType') {
               // Handle AIS ship type - could be number or object
@@ -203,7 +203,10 @@ export class VesselContextManager {
               } else if (typeof value === 'string') {
                 vesselInfo.vesselType = value;
               }
-            } else if (extraction.path === 'displacement' && extraction.unit === 'm') {
+            } else if (
+              extraction.path === 'displacement' &&
+              extraction.unit === 'm'
+            ) {
               // Convert kg to tonnes for displacement
               if (typeof value === 'number') {
                 processedValue = value / 1000;
@@ -217,7 +220,7 @@ export class VesselContextManager {
               } else if (typeof value === 'object' && value !== null) {
                 // Handle nested objects - try to extract the actual value
                 let extractedValue = null;
-                
+
                 // Common patterns in SignalK data
                 if (value.overall !== undefined) {
                   extractedValue = value.overall;
@@ -256,26 +259,31 @@ export class VesselContextManager {
                     extractedValue = value[keys[1]];
                   }
                 }
-                
+
                 if (extractedValue !== null && extractedValue !== undefined) {
                   (vesselInfo as any)[extraction.path] = extractedValue;
                   processedValue = extractedValue;
                 }
               }
             }
-            
-            this.app.debug(`Extracted ${extraction.displayName}: ${processedValue}`);
+
+            this.app.debug(
+              `Extracted ${extraction.displayName}: ${processedValue}`
+            );
           }
         } catch (error) {
-          this.app?.debug(`Failed to extract ${extraction.displayName}: ${(error as Error).message}`);
+          this.app?.debug(
+            `Failed to extract ${extraction.displayName}: ${(error as Error).message}`
+          );
         }
       }
 
       // Try to extract additional vessel data from other common paths
       await this.extractAdditionalVesselData(vesselInfo);
-
     } catch (error) {
-      this.app?.error(`Failed to extract vessel information: ${(error as Error).message}`);
+      this.app?.error(
+        `Failed to extract vessel information: ${(error as Error).message}`
+      );
     }
 
     return vesselInfo;
@@ -284,15 +292,20 @@ export class VesselContextManager {
   /**
    * Extract additional vessel data from other SignalK paths
    */
-  private async extractAdditionalVesselData(vesselInfo: VesselInfo): Promise<void> {
+  private async extractAdditionalVesselData(
+    vesselInfo: VesselInfo
+  ): Promise<void> {
     if (!this.app) return;
 
     try {
       // Try alternative paths for common data
       // Cast to any for compatibility with different @signalk/server-api versions
       if (!vesselInfo.name) {
-        const altName = (this.app.getSelfPath('registrations.national.registration') as any) ||
-                       (this.app.getSelfPath('registrations.local.registration') as any);
+        const altName =
+          (this.app.getSelfPath(
+            'registrations.national.registration'
+          ) as any) ||
+          (this.app.getSelfPath('registrations.local.registration') as any);
         if (altName) {
           vesselInfo.name = altName;
         }
@@ -300,14 +313,16 @@ export class VesselContextManager {
 
       if (!vesselInfo.length) {
         // Try alternative length paths
-        let altLength = (this.app.getSelfPath('design.length.hull') as any) ||
-                       (this.app.getSelfPath('design.length.waterline') as any);
+        let altLength =
+          (this.app.getSelfPath('design.length.hull') as any) ||
+          (this.app.getSelfPath('design.length.waterline') as any);
 
         // If we get the whole length object, try to extract a useful value
         if (!altLength) {
           const lengthObj = this.app.getSelfPath('design.length') as any;
           if (lengthObj && typeof lengthObj === 'object') {
-            altLength = lengthObj.overall || lengthObj.hull || lengthObj.waterline;
+            altLength =
+              lengthObj.overall || lengthObj.hull || lengthObj.waterline;
           }
         }
 
@@ -318,8 +333,9 @@ export class VesselContextManager {
 
       if (!vesselInfo.draft) {
         // Try alternative draft paths
-        let altDraft = (this.app.getSelfPath('design.draft.minimum') as any) ||
-                      (this.app.getSelfPath('design.draft.current') as any);
+        let altDraft =
+          (this.app.getSelfPath('design.draft.minimum') as any) ||
+          (this.app.getSelfPath('design.draft.current') as any);
 
         // If we get the whole draft object, try to extract a useful value
         if (!altDraft) {
@@ -339,9 +355,10 @@ export class VesselContextManager {
       if (description && !vesselInfo.notes) {
         vesselInfo.notes = description;
       }
-
     } catch (error) {
-      this.app?.debug(`Failed to extract additional vessel data: ${(error as Error).message}`);
+      this.app?.debug(
+        `Failed to extract additional vessel data: ${(error as Error).message}`
+      );
     }
   }
 
@@ -387,7 +404,7 @@ export class VesselContextManager {
       86: 'Tanker',
       87: 'Tanker',
       88: 'Tanker',
-      89: 'Tanker'
+      89: 'Tanker',
     };
 
     return aisTypes[shipType] || `Unknown vessel type (${shipType})`;
@@ -407,18 +424,20 @@ export class VesselContextManager {
           vesselInfo: {},
           customContext: '',
           lastUpdated: new Date().toISOString(),
-          autoExtracted: false
+          autoExtracted: false,
         };
         await this.saveVesselContext();
       }
     } catch (error) {
-      this.app?.error(`Failed to load vessel context: ${(error as Error).message}`);
+      this.app?.error(
+        `Failed to load vessel context: ${(error as Error).message}`
+      );
       // Create default context on error
       this.vesselContext = {
         vesselInfo: {},
         customContext: '',
         lastUpdated: new Date().toISOString(),
-        autoExtracted: false
+        autoExtracted: false,
       };
     }
   }
@@ -432,16 +451,20 @@ export class VesselContextManager {
 
       // Ensure directory exists
       await fs.ensureDir(path.dirname(this.contextFilePath));
-      
+
       // Update last modified time
       this.vesselContext.lastUpdated = new Date().toISOString();
-      
+
       // Save to file
-      await fs.writeJson(this.contextFilePath, this.vesselContext, { spaces: 2 });
-      
+      await fs.writeJson(this.contextFilePath, this.vesselContext, {
+        spaces: 2,
+      });
+
       this.app?.debug(`Saved vessel context to ${this.contextFilePath}`);
     } catch (error) {
-      this.app?.error(`Failed to save vessel context: ${(error as Error).message}`);
+      this.app?.error(
+        `Failed to save vessel context: ${(error as Error).message}`
+      );
       throw error;
     }
   }
@@ -461,7 +484,7 @@ export class VesselContextManager {
    * Update vessel context with new information
    */
   async updateVesselContext(
-    vesselInfo?: Partial<VesselInfo>, 
+    vesselInfo?: Partial<VesselInfo>,
     customContext?: string,
     autoExtracted: boolean = false
   ): Promise<VesselContext> {
@@ -476,13 +499,16 @@ export class VesselContextManager {
         vesselInfo: {},
         customContext: '',
         lastUpdated: new Date().toISOString(),
-        autoExtracted: false
+        autoExtracted: false,
       };
     }
 
     // Update vessel info if provided
     if (vesselInfo) {
-      this.vesselContext.vesselInfo = { ...this.vesselContext.vesselInfo, ...vesselInfo };
+      this.vesselContext.vesselInfo = {
+        ...this.vesselContext.vesselInfo,
+        ...vesselInfo,
+      };
     }
 
     // Update custom context if provided
@@ -520,47 +546,70 @@ export class VesselContextManager {
 
     // Add vessel identification
     contextParts.push('=== VESSEL CONTEXT ===');
-    
+
     if (vesselInfo.name || vesselInfo.callsign || vesselInfo.mmsi) {
       contextParts.push('\n--- VESSEL IDENTIFICATION ---');
       if (vesselInfo.name) contextParts.push(`Vessel Name: ${vesselInfo.name}`);
-      if (vesselInfo.callsign) contextParts.push(`Call Sign: ${vesselInfo.callsign}`);
+      if (vesselInfo.callsign)
+        contextParts.push(`Call Sign: ${vesselInfo.callsign}`);
       if (vesselInfo.mmsi) contextParts.push(`MMSI: ${vesselInfo.mmsi}`);
       if (vesselInfo.flag) contextParts.push(`Flag: ${vesselInfo.flag}`);
-      if (vesselInfo.port) contextParts.push(`Port of Registry: ${vesselInfo.port}`);
+      if (vesselInfo.port)
+        contextParts.push(`Port of Registry: ${vesselInfo.port}`);
     }
 
     // Add physical characteristics
-    if (vesselInfo.length || vesselInfo.beam || vesselInfo.draft || vesselInfo.height || vesselInfo.displacement) {
+    if (
+      vesselInfo.length ||
+      vesselInfo.beam ||
+      vesselInfo.draft ||
+      vesselInfo.height ||
+      vesselInfo.displacement
+    ) {
       contextParts.push('\n--- PHYSICAL CHARACTERISTICS ---');
-      if (vesselInfo.length) contextParts.push(`Length Overall (LOA): ${vesselInfo.length}m`);
+      if (vesselInfo.length)
+        contextParts.push(`Length Overall (LOA): ${vesselInfo.length}m`);
       if (vesselInfo.beam) contextParts.push(`Beam: ${vesselInfo.beam}m`);
       if (vesselInfo.draft) contextParts.push(`Draft: ${vesselInfo.draft}m`);
-      if (vesselInfo.height) contextParts.push(`Air Draft/Height: ${vesselInfo.height}m`);
-      if (vesselInfo.displacement) contextParts.push(`Displacement: ${vesselInfo.displacement} tonnes`);
+      if (vesselInfo.height)
+        contextParts.push(`Air Draft/Height: ${vesselInfo.height}m`);
+      if (vesselInfo.displacement)
+        contextParts.push(`Displacement: ${vesselInfo.displacement} tonnes`);
     }
 
     // Add vessel type and classification
     if (vesselInfo.vesselType || vesselInfo.classification) {
       contextParts.push('\n--- VESSEL TYPE & CLASSIFICATION ---');
-      if (vesselInfo.vesselType) contextParts.push(`Vessel Type: ${vesselInfo.vesselType}`);
-      if (vesselInfo.classification) contextParts.push(`Classification: ${vesselInfo.classification}`);
+      if (vesselInfo.vesselType)
+        contextParts.push(`Vessel Type: ${vesselInfo.vesselType}`);
+      if (vesselInfo.classification)
+        contextParts.push(`Classification: ${vesselInfo.classification}`);
     }
 
     // Add technical specifications
-    if (vesselInfo.grossTonnage || vesselInfo.netTonnage || vesselInfo.deadWeight) {
+    if (
+      vesselInfo.grossTonnage ||
+      vesselInfo.netTonnage ||
+      vesselInfo.deadWeight
+    ) {
       contextParts.push('\n--- TECHNICAL SPECIFICATIONS ---');
-      if (vesselInfo.grossTonnage) contextParts.push(`Gross Tonnage: ${vesselInfo.grossTonnage} GT`);
-      if (vesselInfo.netTonnage) contextParts.push(`Net Tonnage: ${vesselInfo.netTonnage} NT`);
-      if (vesselInfo.deadWeight) contextParts.push(`Deadweight: ${vesselInfo.deadWeight} tonnes`);
+      if (vesselInfo.grossTonnage)
+        contextParts.push(`Gross Tonnage: ${vesselInfo.grossTonnage} GT`);
+      if (vesselInfo.netTonnage)
+        contextParts.push(`Net Tonnage: ${vesselInfo.netTonnage} NT`);
+      if (vesselInfo.deadWeight)
+        contextParts.push(`Deadweight: ${vesselInfo.deadWeight} tonnes`);
     }
 
     // Add build information
     if (vesselInfo.builder || vesselInfo.buildYear || vesselInfo.hullNumber) {
       contextParts.push('\n--- BUILD INFORMATION ---');
-      if (vesselInfo.builder) contextParts.push(`Builder: ${vesselInfo.builder}`);
-      if (vesselInfo.buildYear) contextParts.push(`Build Year: ${vesselInfo.buildYear}`);
-      if (vesselInfo.hullNumber) contextParts.push(`Hull Number: ${vesselInfo.hullNumber}`);
+      if (vesselInfo.builder)
+        contextParts.push(`Builder: ${vesselInfo.builder}`);
+      if (vesselInfo.buildYear)
+        contextParts.push(`Build Year: ${vesselInfo.buildYear}`);
+      if (vesselInfo.hullNumber)
+        contextParts.push(`Hull Number: ${vesselInfo.hullNumber}`);
     }
 
     // Add contact information

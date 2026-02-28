@@ -6,12 +6,7 @@ import { registerHistoryApiRoute } from './HistoryAPI';
 import { registerApiRoutes } from './api-routes';
 import { CACHE_SIZE } from './config/cache-defaults';
 import { HistoricalStreamingService } from './historical-streaming';
-import {
-  SignalKPlugin,
-  PluginConfig,
-  PluginState,
-  PathConfig,
-} from './types';
+import { SignalKPlugin, PluginConfig, PluginState, PathConfig } from './types';
 import { Context, SourceRef, Timestamp, Path } from '@signalk/server-api';
 import {
   loadWebAppConfig,
@@ -42,7 +37,10 @@ import { ServerAPI } from '@signalk/server-api';
 import { DuckDBPool } from './utils/duckdb-pool';
 import { FormulaCache } from './utils/formula-cache';
 import { LRUCache } from './utils/lru-cache';
-import { registerHistoryApiProvider, unregisterHistoryApiProvider } from './history-provider';
+import {
+  registerHistoryApiProvider,
+  unregisterHistoryApiProvider,
+} from './history-provider';
 import { SQLiteBuffer } from './utils/sqlite-buffer';
 import { ParquetExportService } from './services/parquet-export-service';
 import { AggregationService } from './services/aggregation-service';
@@ -63,7 +61,9 @@ export default function (app: ServerAPI): SignalKPlugin {
   // Plugin state
   const state: PluginState = {
     unsubscribes: [],
-    dataBuffers: new LRUCache<string, import('./types').DataRecord[]>(CACHE_SIZE.DATA_BUFFER_MAX),
+    dataBuffers: new LRUCache<string, import('./types').DataRecord[]>(
+      CACHE_SIZE.DATA_BUFFER_MAX
+    ),
     activeRegimens: new Set(),
     subscribedPaths: new Set(),
     saveInterval: undefined,
@@ -83,11 +83,12 @@ export default function (app: ServerAPI): SignalKPlugin {
   plugin.start = async function (
     options: Partial<PluginConfig>
   ): Promise<void> {
-
     // Get vessel MMSI from SignalK
     // Cast to any for compatibility with different @signalk/server-api versions
     const vesselMMSI =
-      (app.getSelfPath('mmsi') as any) || (app.getSelfPath('name') as any) || 'unknown_vessel';
+      (app.getSelfPath('mmsi') as any) ||
+      (app.getSelfPath('name') as any) ||
+      'unknown_vessel';
 
     // Use SignalK's application data directory
     const defaultOutputDir = path.join(app.getDataDirPath(), 'signalk-parquet');
@@ -97,7 +98,9 @@ export default function (app: ServerAPI): SignalKPlugin {
     if (claudeConfig.model) {
       const validatedModel = getValidClaudeModel(claudeConfig.model);
       if (validatedModel !== claudeConfig.model) {
-        app.debug(`⚠️ Saved Claude model "${claudeConfig.model}" is no longer supported. Migrating to ${validatedModel}`);
+        app.debug(
+          `⚠️ Saved Claude model "${claudeConfig.model}" is no longer supported. Migrating to ${validatedModel}`
+        );
         claudeConfig = { ...claudeConfig, model: validatedModel };
 
         // Save migrated config
@@ -107,7 +110,9 @@ export default function (app: ServerAPI): SignalKPlugin {
             if (err) {
               app.error(`Failed to save migrated Claude model: ${err}`);
             } else {
-              app.debug(`✅ Successfully migrated Claude model to ${validatedModel}`);
+              app.debug(
+                `✅ Successfully migrated Claude model to ${validatedModel}`
+              );
             }
           }
         );
@@ -158,7 +163,10 @@ export default function (app: ServerAPI): SignalKPlugin {
     // Initialize SQLite buffer if enabled
     if (state.currentConfig.useSqliteBuffer) {
       // Use absolute path for buffer.db
-      const dbPath = path.resolve(state.currentConfig.outputDirectory, 'buffer.db');
+      const dbPath = path.resolve(
+        state.currentConfig.outputDirectory,
+        'buffer.db'
+      );
       app.debug(`[SQLite] Initializing buffer at: ${dbPath}`);
 
       try {
@@ -175,8 +183,12 @@ export default function (app: ServerAPI): SignalKPlugin {
 
         app.debug(`[SQLite] Buffer initialized successfully at ${dbPath}`);
       } catch (error) {
-        app.error(`[SQLite] CRITICAL: Failed to initialize SQLite buffer at ${dbPath}: ${error}`);
-        app.error(`[SQLite] Data recording will NOT work. Fix the configuration and restart.`);
+        app.error(
+          `[SQLite] CRITICAL: Failed to initialize SQLite buffer at ${dbPath}: ${error}`
+        );
+        app.error(
+          `[SQLite] Data recording will NOT work. Fix the configuration and restart.`
+        );
         throw error; // Fail loudly - don't continue with broken state
       }
 
@@ -268,11 +280,16 @@ export default function (app: ServerAPI): SignalKPlugin {
 
       // Run aggregation after consolidation if Hive partitioning is enabled
       if (aggregationService) {
-        aggregationService.runDailyAggregation().then(results => {
-          app.debug(`Daily aggregation complete: ${JSON.stringify(results.map(r => ({ tier: r.targetTier, files: r.filesCreated })))}`);
-        }).catch(err => {
-          app.error(`Daily aggregation failed: ${err.message}`);
-        });
+        aggregationService
+          .runDailyAggregation()
+          .then(results => {
+            app.debug(
+              `Daily aggregation complete: ${JSON.stringify(results.map(r => ({ tier: r.targetTier, files: r.filesCreated })))}`
+            );
+          })
+          .catch(err => {
+            app.error(`Daily aggregation failed: ${err.message}`);
+          });
       }
 
       // Then run daily consolidation every 24 hours
@@ -282,11 +299,16 @@ export default function (app: ServerAPI): SignalKPlugin {
 
           // Run aggregation after consolidation
           if (aggregationService) {
-            aggregationService.runDailyAggregation().then(results => {
-              app.debug(`Daily aggregation complete: ${JSON.stringify(results.map(r => ({ tier: r.targetTier, files: r.filesCreated })))}`);
-            }).catch(err => {
-              app.error(`Daily aggregation failed: ${err.message}`);
-            });
+            aggregationService
+              .runDailyAggregation()
+              .then(results => {
+                app.debug(
+                  `Daily aggregation complete: ${JSON.stringify(results.map(r => ({ tier: r.targetTier, files: r.filesCreated })))}`
+                );
+              })
+              .catch(err => {
+                app.error(`Daily aggregation failed: ${err.message}`);
+              });
           }
         },
         24 * 60 * 60 * 1000
@@ -306,7 +328,9 @@ export default function (app: ServerAPI): SignalKPlugin {
     }
 
     // Always initialize auto-discovery service - it checks enabled state at runtime
-    app.debug(`[AutoDiscovery] Config: ${JSON.stringify(state.currentConfig?.autoDiscovery)}`);
+    app.debug(
+      `[AutoDiscovery] Config: ${JSON.stringify(state.currentConfig?.autoDiscovery)}`
+    );
     state.autoDiscoveryService = new AutoDiscoveryService(
       app,
       state.currentConfig,
@@ -315,9 +339,13 @@ export default function (app: ServerAPI): SignalKPlugin {
     );
 
     // Recover counter from existing auto-discovered paths
-    const existingAutoDiscovered = currentPaths.filter(p => p.autoDiscovered).length;
+    const existingAutoDiscovered = currentPaths.filter(
+      p => p.autoDiscovered
+    ).length;
     state.autoDiscoveryService.setInitialCount(existingAutoDiscovered);
-    app.debug(`[AutoDiscovery] Service initialized with ${existingAutoDiscovered} existing auto-discovered paths`);
+    app.debug(
+      `[AutoDiscovery] Service initialized with ${existingAutoDiscovered} existing auto-discovered paths`
+    );
 
     // Register History API routes directly with the main app
     try {
@@ -332,9 +360,13 @@ export default function (app: ServerAPI): SignalKPlugin {
         state.currentConfig.exportIntervalMinutes || 5, // Export interval for buffer cutoff
         state.autoDiscoveryService // Pass auto-discovery service
       );
-      app.debug(`[AutoDiscovery] History API registered with autoDiscoveryService: ${!!state.autoDiscoveryService}`);
+      app.debug(
+        `[AutoDiscovery] History API registered with autoDiscoveryService: ${!!state.autoDiscoveryService}`
+      );
     } catch (error) {
-      app.error(`Failed to register History API routes with main server: ${error}`);
+      app.error(
+        `Failed to register History API routes with main server: ${error}`
+      );
     }
 
     // Register as the official SignalK History API provider
@@ -352,7 +384,10 @@ export default function (app: ServerAPI): SignalKPlugin {
 
     // Initialize historical streaming service (for history API endpoints)
     try {
-      state.historicalStreamingService = new HistoricalStreamingService(app, state.currentConfig.outputDirectory);
+      state.historicalStreamingService = new HistoricalStreamingService(
+        app,
+        state.currentConfig.outputDirectory
+      );
     } catch (error) {
       app.error(`Failed to initialize historical streaming service: ${error}`);
     }
@@ -375,15 +410,20 @@ export default function (app: ServerAPI): SignalKPlugin {
     });
 
     // Publish home port position to SignalK if configured
-    if (state.currentConfig.homePortLatitude && state.currentConfig.homePortLongitude &&
-        state.currentConfig.homePortLatitude !== 0 && state.currentConfig.homePortLongitude !== 0) {
-      publishHomePortToSignalK(state.currentConfig.homePortLatitude, state.currentConfig.homePortLongitude);
+    if (
+      state.currentConfig.homePortLatitude &&
+      state.currentConfig.homePortLongitude &&
+      state.currentConfig.homePortLatitude !== 0 &&
+      state.currentConfig.homePortLongitude !== 0
+    ) {
+      publishHomePortToSignalK(
+        state.currentConfig.homePortLatitude,
+        state.currentConfig.homePortLongitude
+      );
     }
-
   };
 
   plugin.stop = async function (): Promise<void> {
-
     // Unregister as History API provider
     unregisterHistoryApiProvider(app);
 
@@ -525,7 +565,8 @@ export default function (app: ServerAPI): SignalKPlugin {
       exportIntervalMinutes: {
         type: 'number',
         title: 'Export Interval (minutes)',
-        description: 'How often to export data from SQLite buffer to Parquet files.',
+        description:
+          'How often to export data from SQLite buffer to Parquet files.',
         default: 5,
         minimum: 1,
         maximum: 60,
@@ -533,7 +574,8 @@ export default function (app: ServerAPI): SignalKPlugin {
       bufferRetentionHours: {
         type: 'number',
         title: 'Buffer Retention (hours)',
-        description: 'How long to keep exported records in SQLite buffer before cleanup.',
+        description:
+          'How long to keep exported records in SQLite buffer before cleanup.',
         default: 24,
         minimum: 1,
         maximum: 168,
@@ -541,18 +583,21 @@ export default function (app: ServerAPI): SignalKPlugin {
       autoDiscovery: {
         type: 'object',
         title: 'Auto-Discovery',
-        description: 'Automatically configure paths for recording when historical data is requested but not available',
+        description:
+          'Automatically configure paths for recording when historical data is requested but not available',
         properties: {
           enabled: {
             type: 'boolean',
             title: 'Enable auto-discovery',
-            description: 'When enabled, paths requested via history API that are not being recorded will be automatically configured',
+            description:
+              'When enabled, paths requested via history API that are not being recorded will be automatically configured',
             default: true,
           },
           maxAutoConfiguredPaths: {
             type: 'number',
             title: 'Max auto-configured paths',
-            description: 'Maximum number of paths that can be auto-configured to prevent runaway configuration',
+            description:
+              'Maximum number of paths that can be auto-configured to prevent runaway configuration',
             default: 100,
             minimum: 1,
             maximum: 1000,
@@ -560,13 +605,15 @@ export default function (app: ServerAPI): SignalKPlugin {
           requireLiveData: {
             type: 'boolean',
             title: 'Require live data',
-            description: 'Only auto-configure paths that have live data in SignalK',
+            description:
+              'Only auto-configure paths that have live data in SignalK',
             default: true,
           },
           excludePatterns: {
             type: 'array',
             title: 'Exclude patterns',
-            description: 'Glob patterns for paths that should never be auto-configured',
+            description:
+              'Glob patterns for paths that should never be auto-configured',
             items: {
               type: 'string',
             },
@@ -640,7 +687,8 @@ export default function (app: ServerAPI): SignalKPlugin {
       claudeIntegration: {
         type: 'object',
         title: 'Claude AI Analysis',
-        description: 'Configure Claude AI for intelligent data analysis and insights',
+        description:
+          'Configure Claude AI for intelligent data analysis and insights',
         properties: {
           enabled: {
             type: 'boolean',
@@ -651,21 +699,26 @@ export default function (app: ServerAPI): SignalKPlugin {
           apiKey: {
             type: 'string',
             title: 'Claude API Key',
-            description: 'Your Anthropic Claude API key (get one at console.anthropic.com)',
+            description:
+              'Your Anthropic Claude API key (get one at console.anthropic.com)',
             default: '',
           },
           model: {
             type: 'string',
             title: 'Default Claude Model (Optional)',
-            description: 'Default Claude model for analysis. Can be overridden in the web interface.',
+            description:
+              'Default Claude model for analysis. Can be overridden in the web interface.',
             enum: [...SUPPORTED_CLAUDE_MODELS],
-            enumNames: SUPPORTED_CLAUDE_MODELS.map(m => CLAUDE_MODEL_DESCRIPTIONS[m]),
+            enumNames: SUPPORTED_CLAUDE_MODELS.map(
+              m => CLAUDE_MODEL_DESCRIPTIONS[m]
+            ),
             default: DEFAULT_CLAUDE_MODEL,
           },
           maxTokens: {
             type: 'number',
             title: 'Max Tokens',
-            description: 'Maximum tokens for Claude responses (higher = more detailed analysis)',
+            description:
+              'Maximum tokens for Claude responses (higher = more detailed analysis)',
             default: 4000,
             minimum: 1000,
             maximum: 8192,
@@ -692,13 +745,15 @@ export default function (app: ServerAPI): SignalKPlugin {
               anomaly: {
                 type: 'boolean',
                 title: 'Anomaly Detection',
-                description: 'Automatically detect unusual patterns in real-time',
+                description:
+                  'Automatically detect unusual patterns in real-time',
                 default: false,
               },
               threshold: {
                 type: 'number',
                 title: 'Anomaly Threshold',
-                description: 'Statistical threshold for anomaly detection (higher = fewer alerts)',
+                description:
+                  'Statistical threshold for anomaly detection (higher = fewer alerts)',
                 default: 2.5,
                 minimum: 1.0,
                 maximum: 5.0,
@@ -794,7 +849,10 @@ export default function (app: ServerAPI): SignalKPlugin {
             state.currentConfig = updatedConfig;
 
             // Publish home port position to SignalK
-            publishHomePortToSignalK(currentPosition!.latitude, currentPosition!.longitude);
+            publishHomePortToSignalK(
+              currentPosition!.latitude,
+              currentPosition!.longitude
+            );
           }
         });
       } else {
@@ -806,11 +864,20 @@ export default function (app: ServerAPI): SignalKPlugin {
   }
 
   // Get current vessel position from SignalK
-  function getCurrentVesselPosition(): { latitude: number; longitude: number; timestamp: Date } | null {
+  function getCurrentVesselPosition(): {
+    latitude: number;
+    longitude: number;
+    timestamp: Date;
+  } | null {
     try {
       // Cast to any for compatibility with different @signalk/server-api versions
       const position = app.getSelfPath('navigation.position') as any;
-      if (position && position.value && position.value.latitude && position.value.longitude) {
+      if (
+        position &&
+        position.value &&
+        position.value.latitude &&
+        position.value.longitude
+      ) {
         return {
           latitude: position.value.latitude,
           longitude: position.value.longitude,
@@ -847,27 +914,36 @@ export default function (app: ServerAPI): SignalKPlugin {
     };
 
     app.handleMessage(plugin.id, delta);
-    app.debug(`Published home port position to SignalK: ${latitude}, ${longitude}`);
+    app.debug(
+      `Published home port position to SignalK: ${latitude}, ${longitude}`
+    );
   }
 
   return plugin;
 }
 
 // Streaming service lifecycle functions for runtime control
-export async function initializeStreamingService(state: PluginState, app: ServerAPI): Promise<{ success: boolean; error?: string }> {
+export async function initializeStreamingService(
+  state: PluginState,
+  app: ServerAPI
+): Promise<{ success: boolean; error?: string }> {
   try {
     if (state.streamingService) {
       return { success: true, error: 'Streaming service is already running' };
     }
 
     if (!state.currentConfig?.enableStreaming) {
-      return { success: false, error: 'Streaming is disabled in plugin configuration. Enable it in settings first.' };
+      return {
+        success: false,
+        error:
+          'Streaming is disabled in plugin configuration. Enable it in settings first.',
+      };
     }
 
     // Reuse the existing historical streaming service instead of creating a new one
     state.streamingService = state.historicalStreamingService;
     state.streamingEnabled = true;
-    
+
     // Restore any previous subscriptions if available
     // The historical streaming service will automatically handle incoming subscriptions
 
@@ -878,7 +954,10 @@ export async function initializeStreamingService(state: PluginState, app: Server
   }
 }
 
-export function shutdownStreamingService(state: PluginState, app: ServerAPI): { success: boolean; error?: string } {
+export function shutdownStreamingService(
+  state: PluginState,
+  app: ServerAPI
+): { success: boolean; error?: string } {
   try {
     if (!state.streamingService) {
       return { success: true, error: 'Streaming service is not running' };
@@ -886,7 +965,8 @@ export function shutdownStreamingService(state: PluginState, app: ServerAPI): { 
 
     // Store active subscriptions for potential restoration
     if (state.streamingService.getActiveSubscriptions) {
-      const activeSubscriptions = state.streamingService.getActiveSubscriptions();
+      const activeSubscriptions =
+        state.streamingService.getActiveSubscriptions();
       if (activeSubscriptions.length > 0) {
         state.restoredSubscriptions = new Map();
         activeSubscriptions.forEach((sub: any, index: number) => {

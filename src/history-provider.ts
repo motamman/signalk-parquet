@@ -19,7 +19,10 @@ import {
   PathSpec as SignalKPathSpec,
   AggregateMethod,
 } from '@signalk/server-api/dist/history';
-import { getAvailablePathsArray, getAvailablePathsForTimeRange } from './utils/path-discovery';
+import {
+  getAvailablePathsArray,
+  getAvailablePathsForTimeRange,
+} from './utils/path-discovery';
 import { getAvailableContextsForTimeRange } from './utils/context-discovery';
 import { DuckDBPool } from './utils/duckdb-pool';
 import { toContextFilePath } from './index';
@@ -29,7 +32,9 @@ import { getPathComponentSchema } from './utils/schema-cache';
 /**
  * Convert Temporal.Instant or ISO string to ZonedDateTime (UTC)
  */
-function temporalToZonedDateTime(instant: Temporal.Instant | string): ZonedDateTime {
+function temporalToZonedDateTime(
+  instant: Temporal.Instant | string
+): ZonedDateTime {
   // Handle ISO string (e.g., "2025-06-06T00:00:00Z")
   if (typeof instant === 'string') {
     return ZonedDateTime.parse(instant);
@@ -55,7 +60,9 @@ function durationToMillis(duration: Temporal.Duration | number): number {
 /**
  * Parse time range parameters into from/to ZonedDateTime
  */
-function parseTimeRange(params: ValuesRequest | ContextsRequest | PathsRequest): { from: ZonedDateTime; to: ZonedDateTime } {
+function parseTimeRange(
+  params: ValuesRequest | ContextsRequest | PathsRequest
+): { from: ZonedDateTime; to: ZonedDateTime } {
   const now = ZonedDateTime.now(ZoneOffset.UTC);
 
   if ('from' in params && params.from && 'to' in params && params.to) {
@@ -64,13 +71,23 @@ function parseTimeRange(params: ValuesRequest | ContextsRequest | PathsRequest):
       from: temporalToZonedDateTime(params.from),
       to: temporalToZonedDateTime(params.to),
     };
-  } else if ('from' in params && params.from && 'duration' in params && params.duration) {
+  } else if (
+    'from' in params &&
+    params.from &&
+    'duration' in params &&
+    params.duration
+  ) {
     // From + duration: query forward
     const from = temporalToZonedDateTime(params.from);
     const durationMs = durationToMillis(params.duration);
     const to = from.plusNanos(durationMs * 1_000_000);
     return { from, to };
-  } else if ('to' in params && params.to && 'duration' in params && params.duration) {
+  } else if (
+    'to' in params &&
+    params.to &&
+    'duration' in params &&
+    params.duration
+  ) {
     // To + duration: query backward
     const to = temporalToZonedDateTime(params.to);
     const durationMs = durationToMillis(params.duration);
@@ -113,15 +130,27 @@ export class HistoryProvider implements HistoryApi {
    * Get historical values for the specified query
    */
   async getValues(query: ValuesRequest): Promise<ValuesResponse> {
-    console.log('[HistoryProvider] getValues called with:', JSON.stringify(query, (_, v) => typeof v === 'bigint' ? v.toString() : v));
+    console.log(
+      '[HistoryProvider] getValues called with:',
+      JSON.stringify(query, (_, v) =>
+        typeof v === 'bigint' ? v.toString() : v
+      )
+    );
     const { from, to } = parseTimeRange(query);
     // Translate 'vessels.self' to actual vessel URN (same as HTTP endpoint)
-    const context = (!query.context || query.context === 'vessels.self' || query.context === ('self' as Context))
-      ? `vessels.${this.selfId}` as Context
-      : query.context;
-    const resolution = query.resolution || Math.round((to.toEpochSecond() - from.toEpochSecond()) / 500 * 1000);
+    const context =
+      !query.context ||
+      query.context === 'vessels.self' ||
+      query.context === ('self' as Context)
+        ? (`vessels.${this.selfId}` as Context)
+        : query.context;
+    const resolution =
+      query.resolution ||
+      Math.round(((to.toEpochSecond() - from.toEpochSecond()) / 500) * 1000);
 
-    this.debug(`[HistoryProvider] getValues: context=${context}, from=${from}, to=${to}, resolution=${resolution}ms, paths=${query.pathSpecs.length}`);
+    this.debug(
+      `[HistoryProvider] getValues: context=${context}, from=${from}, to=${to}, resolution=${resolution}ms, paths=${query.pathSpecs.length}`
+    );
 
     const fromIso = from.toInstant().toString();
     const toIso = to.toInstant().toString();
@@ -131,10 +160,18 @@ export class HistoryProvider implements HistoryApi {
 
     for (const pathSpec of query.pathSpecs) {
       try {
-        const pathData = await this.queryPath(context, pathSpec, fromIso, toIso, resolution);
+        const pathData = await this.queryPath(
+          context,
+          pathSpec,
+          fromIso,
+          toIso,
+          resolution
+        );
         allData[pathSpec.path] = pathData;
       } catch (error) {
-        this.debug(`[HistoryProvider] Error querying path ${pathSpec.path}: ${error}`);
+        this.debug(
+          `[HistoryProvider] Error querying path ${pathSpec.path}: ${error}`
+        );
         allData[pathSpec.path] = [];
       }
     }
@@ -164,7 +201,11 @@ export class HistoryProvider implements HistoryApi {
 
     this.debug(`[HistoryProvider] getContexts: from=${from}, to=${to}`);
 
-    const contexts = await getAvailableContextsForTimeRange(this.dataDir, from, to);
+    const contexts = await getAvailableContextsForTimeRange(
+      this.dataDir,
+      from,
+      to
+    );
     return contexts as ContextsResponse;
   }
 
@@ -192,7 +233,11 @@ export class HistoryProvider implements HistoryApi {
     resolutionMs: number
   ): Promise<Array<[Timestamp, unknown]>> {
     const contextPath = toContextFilePath(context);
-    const pathDir = path.join(this.dataDir, contextPath, pathSpec.path.replace(/\./g, '/'));
+    const pathDir = path.join(
+      this.dataDir,
+      contextPath,
+      pathSpec.path.replace(/\./g, '/')
+    );
     const filePath = path.join(pathDir, '*.parquet');
     console.log(`[HistoryProvider] Querying: ${filePath}`);
 
@@ -200,20 +245,28 @@ export class HistoryProvider implements HistoryApi {
 
     try {
       // Check if this is an object path (has value_* columns)
-      const componentSchema = await getPathComponentSchema(this.dataDir, context, pathSpec.path);
+      const componentSchema = await getPathComponentSchema(
+        this.dataDir,
+        context,
+        pathSpec.path
+      );
 
       const aggFunc = this.getAggregateFunction(pathSpec.aggregate);
 
       if (componentSchema && componentSchema.components.size > 0) {
         // Object path - aggregate each component
-        const componentSelects = Array.from(componentSchema.components.entries())
+        const componentSelects = Array.from(
+          componentSchema.components.entries()
+        )
           .map(([name, comp]) => {
             const compAggFunc = comp.dataType === 'numeric' ? aggFunc : 'FIRST';
             return `${compAggFunc}(${comp.columnName}) as ${name}`;
           })
           .join(', ');
 
-        const componentWhereConditions = Array.from(componentSchema.components.values())
+        const componentWhereConditions = Array.from(
+          componentSchema.components.values()
+        )
           .map(comp => `${comp.columnName} IS NOT NULL`)
           .join(' OR ');
 
@@ -239,8 +292,11 @@ export class HistoryProvider implements HistoryApi {
           const timestamp = row.timestamp as Timestamp;
           // For navigation.position, return as [longitude, latitude] array for compatibility
           // with plugins like signalk-pmtiles-plugin that expect this format
-          if (pathSpec.path === 'navigation.position' &&
-              row.longitude !== undefined && row.latitude !== undefined) {
+          if (
+            pathSpec.path === 'navigation.position' &&
+            row.longitude !== undefined &&
+            row.latitude !== undefined
+          ) {
             return [timestamp, [row.longitude, row.latitude]];
           }
           // For other object paths, return as object
@@ -252,7 +308,6 @@ export class HistoryProvider implements HistoryApi {
           });
           return [timestamp, obj];
         });
-
       } else {
         // Scalar path
         const query = `
@@ -285,14 +340,22 @@ export class HistoryProvider implements HistoryApi {
    */
   private getAggregateFunction(method: AggregateMethod): string {
     switch (method) {
-      case 'average': return 'AVG';
-      case 'min': return 'MIN';
-      case 'max': return 'MAX';
-      case 'first': return 'FIRST';
-      case 'last': return 'LAST';
-      case 'mid': return 'MEDIAN';
-      case 'middle_index': return 'FIRST'; // Fallback
-      default: return 'AVG';
+      case 'average':
+        return 'AVG';
+      case 'min':
+        return 'MIN';
+      case 'max':
+        return 'MAX';
+      case 'first':
+        return 'FIRST';
+      case 'last':
+        return 'LAST';
+      case 'mid':
+        return 'MEDIAN';
+      case 'middle_index':
+        return 'FIRST'; // Fallback
+      default:
+        return 'AVG';
     }
   }
 
@@ -348,7 +411,10 @@ export function registerHistoryApiProvider(
     debug('[HistoryProvider] Successfully registered as History API provider');
     console.log('[signalk-parquet] Registered as SignalK History API provider');
   } catch (error) {
-    console.error('[signalk-parquet] Failed to register as History API provider:', error);
+    console.error(
+      '[signalk-parquet] Failed to register as History API provider:',
+      error
+    );
     debug(`[HistoryProvider] Registration failed: ${error}`);
   }
 }
@@ -359,7 +425,9 @@ export function registerHistoryApiProvider(
 export function unregisterHistoryApiProvider(app: ServerAPI): void {
   try {
     app.unregisterHistoryApiProvider();
-    console.log('[signalk-parquet] Unregistered as SignalK History API provider');
+    console.log(
+      '[signalk-parquet] Unregistered as SignalK History API provider'
+    );
   } catch (error) {
     // Ignore errors during unregistration
   }

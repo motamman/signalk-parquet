@@ -5,7 +5,13 @@ export interface AnalysisTemplate {
   id: string;
   name: string;
   description: string;
-  category: 'navigation' | 'environment' | 'electrical' | 'safety' | 'performance' | 'maintenance';
+  category:
+    | 'navigation'
+    | 'environment'
+    | 'electrical'
+    | 'safety'
+    | 'performance'
+    | 'maintenance';
   requiredPaths: string[];
   optionalPaths?: string[];
   icon: string;
@@ -30,10 +36,15 @@ export const ANALYSIS_TEMPLATES: Record<string, AnalysisTemplate> = {
   'navigation-summary': {
     id: 'navigation-summary',
     name: 'Navigation Summary',
-    description: 'Comprehensive analysis of recent navigation patterns and route efficiency',
+    description:
+      'Comprehensive analysis of recent navigation patterns and route efficiency',
     category: 'navigation',
     requiredPaths: ['navigation.position'],
-    optionalPaths: ['navigation.courseOverGround', 'navigation.speedOverGround', 'navigation.headingTrue'],
+    optionalPaths: [
+      'navigation.courseOverGround',
+      'navigation.speedOverGround',
+      'navigation.headingTrue',
+    ],
     icon: '🧭',
     analysisType: 'summary',
     prompt: `Analyze this vessel's navigation data and provide insights on:
@@ -47,13 +58,14 @@ export const ANALYSIS_TEMPLATES: Record<string, AnalysisTemplate> = {
 Focus on practical operational insights for the vessel operator.`,
     defaultTimeRange: '24h',
     complexity: 'moderate',
-    estimatedTime: '45 seconds'
+    estimatedTime: '45 seconds',
   },
 
   'route-optimization': {
     id: 'route-optimization',
     name: 'Route Optimization',
-    description: 'Identify opportunities to optimize routes for efficiency and safety',
+    description:
+      'Identify opportunities to optimize routes for efficiency and safety',
     category: 'navigation',
     requiredPaths: ['navigation.position', 'navigation.courseOverGround'],
     optionalPaths: ['navigation.speedOverGround', 'environment.wind.speedTrue'],
@@ -70,13 +82,14 @@ Focus on practical operational insights for the vessel operator.`,
 Provide specific, actionable recommendations for future route planning.`,
     defaultTimeRange: '7d',
     complexity: 'complex',
-    estimatedTime: '90 seconds'
+    estimatedTime: '90 seconds',
   },
 
   'anchoring-analysis': {
     id: 'anchoring-analysis',
     name: 'Anchoring Behavior Analysis',
-    description: 'Analyze anchoring patterns, duration, and safety considerations',
+    description:
+      'Analyze anchoring patterns, duration, and safety considerations',
     category: 'navigation',
     requiredPaths: ['navigation.position'],
     optionalPaths: ['navigation.state', 'environment.depth.belowKeel'],
@@ -93,17 +106,22 @@ Provide specific, actionable recommendations for future route planning.`,
 Provide insights on anchoring safety and best practices.`,
     defaultTimeRange: '30d',
     complexity: 'moderate',
-    estimatedTime: '60 seconds'
+    estimatedTime: '60 seconds',
   },
 
   // Environment Templates
   'weather-impact': {
     id: 'weather-impact',
     name: 'Weather Impact Analysis',
-    description: 'Analyze how weather conditions affect vessel performance and operations',
+    description:
+      'Analyze how weather conditions affect vessel performance and operations',
     category: 'environment',
     requiredPaths: ['environment.wind.speedTrue'],
-    optionalPaths: ['environment.wind.directionTrue', 'navigation.speedOverGround', 'environment.outside.pressure'],
+    optionalPaths: [
+      'environment.wind.directionTrue',
+      'navigation.speedOverGround',
+      'environment.outside.pressure',
+    ],
     icon: '🌊',
     analysisType: 'correlation',
     prompt: `Analyze the relationship between weather conditions and vessel performance:
@@ -117,7 +135,7 @@ Provide insights on anchoring safety and best practices.`,
 Provide practical guidance for weather-based operational planning.`,
     defaultTimeRange: '7d',
     complexity: 'complex',
-    estimatedTime: '75 seconds'
+    estimatedTime: '75 seconds',
   },
 
   'wind-patterns': {
@@ -125,8 +143,14 @@ Provide practical guidance for weather-based operational planning.`,
     name: 'Wind Pattern Analysis',
     description: 'Detailed analysis of wind conditions and sailing performance',
     category: 'environment',
-    requiredPaths: ['environment.wind.speedTrue', 'environment.wind.directionTrue'],
-    optionalPaths: ['environment.wind.speedApparent', 'navigation.speedOverGround'],
+    requiredPaths: [
+      'environment.wind.speedTrue',
+      'environment.wind.directionTrue',
+    ],
+    optionalPaths: [
+      'environment.wind.speedApparent',
+      'navigation.speedOverGround',
+    ],
     icon: '💨',
     analysisType: 'trend',
     prompt: `Provide detailed wind analysis for sailing optimization:
@@ -140,17 +164,21 @@ Provide practical guidance for weather-based operational planning.`,
 Focus on actionable insights for sailing strategy and route planning.`,
     defaultTimeRange: '7d',
     complexity: 'moderate',
-    estimatedTime: '60 seconds'
+    estimatedTime: '60 seconds',
   },
 
   // Electrical Templates
   'battery-health': {
     id: 'battery-health',
     name: 'Battery Health Assessment',
-    description: 'Comprehensive analysis of battery performance and charging patterns',
+    description:
+      'Comprehensive analysis of battery performance and charging patterns',
     category: 'electrical',
     requiredPaths: ['electrical.batteries.*.voltage'],
-    optionalPaths: ['electrical.batteries.*.current', 'electrical.batteries.*.temperature'],
+    optionalPaths: [
+      'electrical.batteries.*.current',
+      'electrical.batteries.*.temperature',
+    ],
     icon: '🔋',
     analysisType: 'trend',
     prompt: `Analyze battery system health and performance:
@@ -165,7 +193,7 @@ Focus on actionable insights for sailing strategy and route planning.`,
 Provide maintenance schedule recommendations and battery replacement guidance.`,
     defaultTimeRange: '30d',
     complexity: 'moderate',
-    estimatedTime: '60 seconds'
+    estimatedTime: '60 seconds',
   },
 
   'power-consumption': {
@@ -174,7 +202,10 @@ Provide maintenance schedule recommendations and battery replacement guidance.`,
     description: 'Analyze electrical power usage patterns and efficiency',
     category: 'electrical',
     requiredPaths: ['electrical.batteries.*.current'],
-    optionalPaths: ['electrical.batteries.*.voltage', 'electrical.batteries.*.power'],
+    optionalPaths: [
+      'electrical.batteries.*.voltage',
+      'electrical.batteries.*.power',
+    ],
     icon: '⚡',
     analysisType: 'summary',
     prompt: `Analyze electrical power consumption patterns:
@@ -189,7 +220,7 @@ Provide maintenance schedule recommendations and battery replacement guidance.`,
 Provide practical advice for improving energy efficiency and battery life.`,
     defaultTimeRange: '7d',
     complexity: 'moderate',
-    estimatedTime: '45 seconds'
+    estimatedTime: '45 seconds',
   },
 
   // Safety Templates
@@ -213,7 +244,7 @@ Provide practical advice for improving energy efficiency and battery life.`,
 Priority focus on immediate safety concerns requiring attention.`,
     defaultTimeRange: '24h',
     complexity: 'complex',
-    estimatedTime: '90 seconds'
+    estimatedTime: '90 seconds',
   },
 
   'equipment-monitoring': {
@@ -237,17 +268,22 @@ Priority focus on immediate safety concerns requiring attention.`,
 Focus on preventing failures and optimizing maintenance schedules.`,
     defaultTimeRange: '30d',
     complexity: 'complex',
-    estimatedTime: '75 seconds'
+    estimatedTime: '75 seconds',
   },
 
   // Performance Templates
   'fuel-efficiency': {
     id: 'fuel-efficiency',
     name: 'Fuel Efficiency Analysis',
-    description: 'Analyze fuel consumption patterns and identify efficiency opportunities',
+    description:
+      'Analyze fuel consumption patterns and identify efficiency opportunities',
     category: 'performance',
     requiredPaths: ['navigation.speedOverGround'],
-    optionalPaths: ['propulsion.*.fuel.rate', 'environment.wind.speedTrue', 'navigation.courseOverGround'],
+    optionalPaths: [
+      'propulsion.*.fuel.rate',
+      'environment.wind.speedTrue',
+      'navigation.courseOverGround',
+    ],
     icon: '⛽',
     analysisType: 'correlation',
     prompt: `Analyze vessel fuel efficiency and consumption patterns:
@@ -262,7 +298,7 @@ Focus on preventing failures and optimizing maintenance schedules.`,
 Provide specific recommendations for reducing fuel costs while maintaining operational efficiency.`,
     defaultTimeRange: '30d',
     complexity: 'complex',
-    estimatedTime: '90 seconds'
+    estimatedTime: '90 seconds',
   },
 
   'performance-trends': {
@@ -271,7 +307,11 @@ Provide specific recommendations for reducing fuel costs while maintaining opera
     description: 'Comprehensive analysis of vessel performance over time',
     category: 'performance',
     requiredPaths: ['navigation.speedOverGround'],
-    optionalPaths: ['navigation.position', 'electrical.batteries.*.voltage', 'environment.wind.speedTrue'],
+    optionalPaths: [
+      'navigation.position',
+      'electrical.batteries.*.voltage',
+      'environment.wind.speedTrue',
+    ],
     icon: '📊',
     analysisType: 'trend',
     prompt: `Analyze overall vessel performance trends:
@@ -286,8 +326,8 @@ Provide specific recommendations for reducing fuel costs while maintaining opera
 Provide insights for improving overall vessel performance and operational efficiency.`,
     defaultTimeRange: '30d',
     complexity: 'complex',
-    estimatedTime: '90 seconds'
-  }
+    estimatedTime: '90 seconds',
+  },
 };
 
 // Organized template categories for UI display
@@ -300,8 +340,8 @@ export const TEMPLATE_CATEGORIES: TemplateCategory[] = [
     templates: [
       ANALYSIS_TEMPLATES['navigation-summary'],
       ANALYSIS_TEMPLATES['route-optimization'],
-      ANALYSIS_TEMPLATES['anchoring-analysis']
-    ]
+      ANALYSIS_TEMPLATES['anchoring-analysis'],
+    ],
   },
   {
     id: 'environment',
@@ -310,18 +350,19 @@ export const TEMPLATE_CATEGORIES: TemplateCategory[] = [
     icon: '🌊',
     templates: [
       ANALYSIS_TEMPLATES['weather-impact'],
-      ANALYSIS_TEMPLATES['wind-patterns']
-    ]
+      ANALYSIS_TEMPLATES['wind-patterns'],
+    ],
   },
   {
     id: 'electrical',
     name: 'Electrical Systems',
-    description: 'Battery health, power consumption, and electrical system analysis',
+    description:
+      'Battery health, power consumption, and electrical system analysis',
     icon: '🔋',
     templates: [
       ANALYSIS_TEMPLATES['battery-health'],
-      ANALYSIS_TEMPLATES['power-consumption']
-    ]
+      ANALYSIS_TEMPLATES['power-consumption'],
+    ],
   },
   {
     id: 'safety',
@@ -330,8 +371,8 @@ export const TEMPLATE_CATEGORIES: TemplateCategory[] = [
     icon: '⚠️',
     templates: [
       ANALYSIS_TEMPLATES['safety-anomalies'],
-      ANALYSIS_TEMPLATES['equipment-monitoring']
-    ]
+      ANALYSIS_TEMPLATES['equipment-monitoring'],
+    ],
   },
   {
     id: 'performance',
@@ -340,9 +381,9 @@ export const TEMPLATE_CATEGORIES: TemplateCategory[] = [
     icon: '📊',
     templates: [
       ANALYSIS_TEMPLATES['fuel-efficiency'],
-      ANALYSIS_TEMPLATES['performance-trends']
-    ]
-  }
+      ANALYSIS_TEMPLATES['performance-trends'],
+    ],
+  },
 ];
 
 // Template Management Class
@@ -358,7 +399,9 @@ export class AnalysisTemplateManager {
    * Get templates by category
    */
   static getTemplatesByCategory(category: string): AnalysisTemplate[] {
-    return Object.values(ANALYSIS_TEMPLATES).filter(template => template.category === category);
+    return Object.values(ANALYSIS_TEMPLATES).filter(
+      template => template.category === category
+    );
   }
 
   /**
@@ -398,7 +441,7 @@ export class AnalysisTemplateManager {
    * Create analysis request from template
    */
   static createAnalysisRequest(
-    templateId: string, 
+    templateId: string,
     dataPath: string,
     customPrompt?: string,
     timeRange?: { start: Date; end: Date }
@@ -410,12 +453,13 @@ export class AnalysisTemplateManager {
       dataPath,
       analysisType: template.analysisType,
       customPrompt: customPrompt || template.prompt,
-      timeRange: timeRange || this.getDefaultTimeRange(template.defaultTimeRange),
+      timeRange:
+        timeRange || this.getDefaultTimeRange(template.defaultTimeRange),
       context: {
         templateId: template.id,
         templateName: template.name,
-        category: template.category
-      }
+        category: template.category,
+      },
     };
 
     return request;
@@ -424,7 +468,10 @@ export class AnalysisTemplateManager {
   /**
    * Convert default time range string to actual dates
    */
-  private static getDefaultTimeRange(timeRange: string): { start: Date; end: Date } {
+  private static getDefaultTimeRange(timeRange: string): {
+    start: Date;
+    end: Date;
+  } {
     const end = new Date();
     const start = new Date();
 
@@ -456,7 +503,7 @@ export class AnalysisTemplateManager {
    */
   static getTemplateSuggestions(dataPath: string): AnalysisTemplate[] {
     const suggestions: AnalysisTemplate[] = [];
-    
+
     // Navigation path suggestions
     if (dataPath.includes('navigation.position')) {
       suggestions.push(
@@ -465,7 +512,7 @@ export class AnalysisTemplateManager {
         ANALYSIS_TEMPLATES['anchoring-analysis']
       );
     }
-    
+
     // Wind data suggestions
     if (dataPath.includes('environment.wind')) {
       suggestions.push(
@@ -474,7 +521,7 @@ export class AnalysisTemplateManager {
         ANALYSIS_TEMPLATES['fuel-efficiency']
       );
     }
-    
+
     // Battery data suggestions
     if (dataPath.includes('electrical.batteries')) {
       suggestions.push(
@@ -482,28 +529,35 @@ export class AnalysisTemplateManager {
         ANALYSIS_TEMPLATES['power-consumption']
       );
     }
-    
+
     // Speed data suggestions
-    if (dataPath.includes('speedOverGround') || dataPath.includes('speedThroughWater')) {
+    if (
+      dataPath.includes('speedOverGround') ||
+      dataPath.includes('speedThroughWater')
+    ) {
       suggestions.push(
         ANALYSIS_TEMPLATES['performance-trends'],
         ANALYSIS_TEMPLATES['fuel-efficiency']
       );
     }
-    
+
     // Always include safety monitoring for any data
     suggestions.push(ANALYSIS_TEMPLATES['safety-anomalies']);
-    
+
     // Remove duplicates
-    return suggestions.filter((template, index, self) => 
-      index === self.findIndex(t => t.id === template.id)
+    return suggestions.filter(
+      (template, index, self) =>
+        index === self.findIndex(t => t.id === template.id)
     );
   }
 
   /**
    * Validate template configuration
    */
-  static validateTemplate(template: AnalysisTemplate): { valid: boolean; errors: string[] } {
+  static validateTemplate(template: AnalysisTemplate): {
+    valid: boolean;
+    errors: string[];
+  } {
     const errors: string[] = [];
 
     if (!template.id || template.id.trim() === '') {
@@ -526,13 +580,22 @@ export class AnalysisTemplateManager {
       errors.push('Template complexity must be simple, moderate, or complex');
     }
 
-    if (!['navigation', 'environment', 'electrical', 'safety', 'performance', 'maintenance'].includes(template.category)) {
+    if (
+      ![
+        'navigation',
+        'environment',
+        'electrical',
+        'safety',
+        'performance',
+        'maintenance',
+      ].includes(template.category)
+    ) {
       errors.push('Template category must be valid');
     }
 
     return {
       valid: errors.length === 0,
-      errors
+      errors,
     };
   }
 }

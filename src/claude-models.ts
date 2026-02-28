@@ -26,7 +26,7 @@ export const CLAUDE_MODEL_DESCRIPTIONS = {
   [CLAUDE_MODELS.SONNET_4_5]: 'Claude Sonnet 4.5 (Latest Sonnet)',
 } as const;
 
-export type ClaudeModel = typeof SUPPORTED_CLAUDE_MODELS[number];
+export type ClaudeModel = (typeof SUPPORTED_CLAUDE_MODELS)[number];
 
 /**
  * Check if a model string is a valid supported Claude model
