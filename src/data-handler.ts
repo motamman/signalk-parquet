@@ -376,6 +376,14 @@ export function updateDataSubscriptions(
             }
           }
 
+          // Skip meta deltas in filter - they contain metadata, not actual data values
+          // This must be done BEFORE debounce, otherwise meta deltas consume the debounce
+          // window and value deltas get dropped
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          if ((normalizedDelta as any).isMeta) {
+            return false;
+          }
+
           return true;
         })
         .debounceImmediate(1000) // Built-in debouncing as recommended
@@ -387,6 +395,7 @@ export function updateDataSubscriptions(
       state.streamSubscriptions = state.streamSubscriptions || [];
       state.streamSubscriptions.push(stream);
       state.subscribedPaths.add(pathConfig.path);
+
     });
   });
 }
@@ -463,6 +472,19 @@ function handleStreamData(
       typeof normalizedDelta.value === 'object' &&
       normalizedDelta.value !== null
     ) {
+      const valueObj = normalizedDelta.value as Record<string, unknown>;
+      const objKeys = Object.keys(valueObj);
+
+      // Skip if this looks like a meta-only update (only has units, meta, description keys)
+      // These are metadata updates, not actual data values
+      const metaOnlyKeys = ['units', 'meta', 'description', 'displayUnits', 'zones', 'timeout'];
+      const isMetaOnly = objKeys.length > 0 && objKeys.every(k => metaOnlyKeys.includes(k));
+
+      if (isMetaOnly) {
+        // This is a metadata update, not real data - skip it
+        return;
+      }
+
       record.value_json = normalizedDelta.value; // Store as object, serialize at write time
       // Extract key properties as columns for easier querying
       Object.entries(normalizedDelta.value).forEach(([key, val]) => {
@@ -494,6 +516,21 @@ function bufferData(
   state: PluginState,
   app: ServerAPI
 ): void {
+  // Use SQLite buffer if enabled
+  if (config.useSqliteBuffer) {
+    if (!state.sqliteBuffer) {
+      app.error(`[DataHandler] SQLite buffer is enabled but not initialized! Data for ${signalkPath} will be lost.`);
+      return;
+    }
+    if (!state.sqliteBuffer.isOpen()) {
+      app.error(`[DataHandler] SQLite buffer is closed! Data for ${signalkPath} will be lost.`);
+      return;
+    }
+    state.sqliteBuffer.insert(record);
+    return;
+  }
+
+  // LRU cache only used when SQLite is disabled
   if (!state.dataBuffers.has(signalkPath)) {
     state.dataBuffers.set(signalkPath, []);
   }

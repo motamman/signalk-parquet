@@ -32,6 +32,15 @@ export interface SignalKPlugin {
 }
 
 // Plugin Configuration
+// Auto-discovery configuration for automatic path recording
+export interface AutoDiscoveryConfig {
+  enabled: boolean;                    // Master switch (default: false)
+  excludePatterns?: string[];          // Paths to never auto-configure (glob patterns)
+  includePatterns?: string[];          // Restrict to matching paths only (glob patterns)
+  maxAutoConfiguredPaths?: number;     // Limit (default: 100)
+  requireLiveData: boolean;            // Only configure if path has live SignalK data
+}
+
 export interface PluginConfig {
   bufferSize: number;
   saveIntervalSeconds: number;
@@ -49,6 +58,12 @@ export interface PluginConfig {
     setCurrentLocation: boolean;
   };
   unitConversionCacheMinutes?: number; // Cache duration for unit conversions from signalk-units-preference
+  // SQLite buffer and Hive partitioning options
+  useSqliteBuffer?: boolean; // Use SQLite WAL buffer instead of in-memory LRU
+  exportIntervalMinutes?: number; // How often to export from SQLite to Parquet (default 5)
+  bufferRetentionHours?: number; // How long to keep exported records in SQLite (default 24)
+  useHivePartitioning?: boolean; // Use Hive-style partitioning for Parquet files
+  autoDiscovery?: AutoDiscoveryConfig; // Auto-discovery configuration
 }
 
 import type { ClaudeModel } from './claude-models';
@@ -128,6 +143,7 @@ export interface PathConfig {
   source?: string;
   context?: Context;
   excludeMMSI?: string[]; // Array of MMSI numbers to exclude when using vessels.*
+  autoDiscovered?: boolean; // Track which paths were auto-discovered
 }
 
 // Command Registration Types
@@ -479,6 +495,57 @@ export interface ProcessState {
   abortController?: AbortController;
 }
 
+// Forward declaration for SQLiteBuffer to avoid circular dependency
+export interface SQLiteBufferInterface {
+  isOpen(): boolean;
+  insert(record: DataRecord): void;
+  insertBatch(records: DataRecord[]): void;
+  getPendingRecords(limit?: number): unknown[];
+  getPendingRecordsGrouped(limit?: number): Map<string, DataRecord[]>;
+  markAsExported(recordIds: number[], batchId: string): void;
+  cleanup(): number;
+  getStats(): {
+    totalRecords: number;
+    pendingRecords: number;
+    exportedRecords: number;
+    oldestPendingTimestamp: string | null;
+    newestRecordTimestamp: string | null;
+    dbSizeBytes: number;
+    walSizeBytes: number;
+  };
+  getPendingCount(): number;
+  getRecordsForPath(context: string, signalkPath: string, from?: string, to?: string): DataRecord[];
+  getDbPath(): string;
+  close(): void;
+}
+
+// Forward declaration for ParquetExportService to avoid circular dependency
+export interface ParquetExportServiceInterface {
+  start(): void;
+  stop(): void;
+  forceExport(): Promise<{
+    batchId: string;
+    recordsExported: number;
+    filesCreated: string[];
+    duration: number;
+    errors: string[];
+  }>;
+  getStatus(): {
+    isRunning: boolean;
+    isExporting: boolean;
+    lastExportTime: Date | null;
+    totalExported: number;
+    pendingRecords: number;
+    exportIntervalMinutes: number;
+  };
+  getHealth(): {
+    healthy: boolean;
+    lastExportTime: Date | null;
+    pendingRecords: number;
+    bufferStats: ReturnType<SQLiteBufferInterface['getStats']>;
+  };
+}
+
 export interface PluginState {
   unsubscribes: Array<() => void>;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -500,6 +567,12 @@ export interface PluginState {
   // Process management
   currentProcess?: ProcessState;
   formulaCache?: FormulaCache;
+  // SQLite buffer and export service (new)
+  sqliteBuffer?: SQLiteBufferInterface;
+  exportService?: ParquetExportServiceInterface;
+  // Auto-discovery service
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  autoDiscoveryService?: any; // AutoDiscoveryService - avoiding circular import
 }
 
 // Parquet Writer Class Interface

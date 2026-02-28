@@ -658,7 +658,7 @@ The History API supports 5 standard SignalK time query patterns:
 | Parameter | Description | Format | Examples |
 |-----------|-------------|---------|----------|
 | **Required for `/values`:** | | | |
-| `paths` | SignalK paths with optional aggregation | `path:method,path:method` | `navigation.position:first,wind.speed:average` |
+| `paths` | SignalK paths with optional aggregation and smoothing | `path:method:smoothing:param` | `navigation.speedOverGround:average:sma:5` |
 | **Time Range:** | Use one of the 5 standard patterns above | | |
 | `duration` | Time period | `[number][unit]` | `1h`, `30m`, `15s`, `2d` |
 | `from` | Start time (ISO 8601) | ISO datetime | `2025-01-01T00:00:00Z` |
@@ -1172,9 +1172,61 @@ journalctl -u signalk -f | grep -i claude
 
 ## Moving Averages (EMA & SMA)
 
-The plugin calculates **Exponential Moving Average (EMA)** and **Simple Moving Average (SMA)** for numeric values when explicitly requested via the `includeMovingAverages` parameter, providing enhanced trend analysis capabilities.
+The plugin calculates **Exponential Moving Average (EMA)** and **Simple Moving Average (SMA)** for numeric values, providing enhanced trend analysis capabilities. There are two ways to enable smoothing:
 
-### How to Enable
+### Per-Path Smoothing Syntax (NEW in v0.6.5)
+
+Apply smoothing directly in the path specification using the `path:method:smoothing:param` syntax:
+
+```bash
+# SMA with 5-point window
+curl "http://localhost:3000/signalk/v1/history/values?duration=1h&paths=navigation.speedOverGround:average:sma:5"
+
+# EMA with alpha=0.3
+curl "http://localhost:3000/signalk/v1/history/values?duration=1h&paths=environment.wind.speedApparent:max:ema:0.3"
+
+# Mixed: some paths with smoothing, some without
+curl "http://localhost:3000/signalk/v1/history/values?duration=1h&paths=navigation.speedOverGround:average:sma:5,navigation.courseOverGround:average"
+
+# SMA with default period (10)
+curl "http://localhost:3000/signalk/v1/history/values?duration=1h&paths=navigation.speedOverGround:average:sma"
+
+# EMA with default alpha (0.2)
+curl "http://localhost:3000/signalk/v1/history/values?duration=1h&paths=navigation.speedOverGround:average:ema"
+```
+
+**Path Syntax Format:** `path:aggregateMethod:smoothingType:smoothingParam`
+- `path` - SignalK path (e.g., `navigation.speedOverGround`)
+- `aggregateMethod` - Aggregation method: `average`, `min`, `max`, `first`, `last`, `mid` (default: `average`)
+- `smoothingType` - `sma` (Simple Moving Average) or `ema` (Exponential Moving Average)
+- `smoothingParam` - For SMA: window size (default: 10), for EMA: alpha value 0-1 (default: 0.2)
+
+**Per-Path Response Format:**
+```json
+{
+  "values": [
+    {
+      "path": "navigation.speedOverGround",
+      "method": "average"
+    },
+    {
+      "path": "navigation.speedOverGround",
+      "method": "average",
+      "smoothing": "sma",
+      "window": 5
+    }
+  ],
+  "data": [
+    ["2025-01-01T00:00:00Z", 5.05, 5.05],
+    ["2025-01-01T00:01:00Z", 5.12, 5.09],
+    ["2025-01-01T00:02:00Z", 4.98, 5.05]
+  ]
+}
+```
+
+**Note:** With per-path smoothing, the response includes both the raw value AND the smoothed value as separate columns. Paths without smoothing specified only get a single column.
+
+### Global Moving Averages (Legacy)
 
 **History API:**
 ```bash
@@ -1500,7 +1552,16 @@ curl "http://localhost:3000/signalk/v1/history/contexts"
 
 See [CHANGELOG.md](CHANGELOG.md) for complete version history.
 
-### Version 0.5.6-beta.1 (Latest)
+### Version 0.6.5-beta.3 (Latest)
+- **🎯 Per-Path Smoothing Syntax**: New `path:method:smoothing:param` syntax for applying SMA/EMA smoothing
+  - Apply smoothing per-path instead of globally (e.g., `navigation.speedOverGround:average:sma:5`)
+  - SMA with configurable window size (default: 10)
+  - EMA with configurable alpha value (default: 0.2)
+  - Mixed queries: some paths with smoothing, some without
+  - Response includes smoothing metadata (`smoothing`, `window` fields)
+  - Backwards compatible with existing `includeMovingAverages=true` global mode
+
+### Version 0.5.6-beta.1
 - **🎯 SignalK History API Compliance**: Full support for all 5 standard time range patterns
 - **⏪ Backward Compatibility**: Legacy `start` parameter supported with deprecation warnings
 - **🎛️ Optional Moving Averages**: EMA/SMA now opt-in via `includeMovingAverages` parameter

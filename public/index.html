@@ -504,6 +504,7 @@
             <button class="tab-button" onclick="showTab('dataPaths')">🗄️ Query Database</button>
             <button class="tab-button" onclick="showTab('aiAnalysis')">🧠 AI Analysis <small>(EXPERIMENTAL)</small></button>
             <button class="tab-button" onclick="showTab('dataValidation')">🔍 Data Validation</button>
+            <button class="tab-button" onclick="showTab('migration')">📦 Migration</button>
             <button class="tab-button" onclick="showTab('s3Config')">☁️ Cloud Status</button>
         </div>
 
@@ -1199,7 +1200,7 @@
                     <div id="availablePaths">
                         <div class="loading">Loading available paths...</div>
                     </div>
-                    
+
                     <!-- Query Section for Data Paths -->
                     <div style="margin-top: 30px; padding-top: 20px; border-top: 1px solid #ddd;">
                         <h3>Query Data</h3>
@@ -1209,9 +1210,72 @@
                         </div>
                         <button onclick="executeDataPathsQuery()">▶️ Execute Query</button>
                         <button class="btn-secondary" onclick="clearDataPathsQuery()">🗑️ Clear</button>
-                        
+
                         <div id="dataPathsResultsContainer" class="results">
                             <p>Run a query to see results here...</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Migration Tab -->
+            <div id="migration" class="tab-panel">
+                <div class="section">
+                    <h2>📦 Data Migration & Buffer Status</h2>
+                    <p>Migrate existing flat-structure Parquet files to Hive-style partitioning and monitor the SQLite buffer.</p>
+
+                    <!-- Buffer Status Section -->
+                    <div style="margin-bottom: 30px; padding: 20px; background: #e3f2fd; border-radius: 8px; border: 2px solid #2196F3;">
+                        <h3 style="margin-top: 0; color: #1565C0;">💾 SQLite Buffer Status</h3>
+                        <div id="bufferStatus">
+                            <p><span class="loading">Loading buffer status...</span></p>
+                        </div>
+                        <div style="margin-top: 15px;">
+                            <button onclick="refreshBufferStatus()" style="background: #2196F3;">🔄 Refresh</button>
+                            <button onclick="forceBufferExport()" style="background: #4CAF50; margin-left: 10px;">📤 Force Export</button>
+                        </div>
+                    </div>
+
+                    <!-- Migration Section -->
+                    <div style="padding: 20px; background: #fff3e0; border-radius: 8px; border: 2px solid #FF9800;">
+                        <h3 style="margin-top: 0; color: #E65100;">📁 Migrate to Hive Partitioning</h3>
+                        <p style="color: #666; margin-bottom: 15px;">Convert existing flat-structure Parquet files to Hive-style partitioned structure for better query performance.</p>
+
+                        <div class="form-group">
+                            <label for="migrationTier">Target Tier:</label>
+                            <select id="migrationTier">
+                                <option value="raw">Raw (original resolution)</option>
+                                <option value="5s">5 Second Aggregates</option>
+                                <option value="60s">1 Minute Aggregates</option>
+                                <option value="1h">Hourly Aggregates</option>
+                            </select>
+                        </div>
+
+                        <div class="form-group" style="display: flex; align-items: center; gap: 10px;">
+                            <input type="checkbox" id="migrationDeleteSource" style="width: auto;">
+                            <label for="migrationDeleteSource" style="margin: 0; font-weight: normal;">Delete source files after migration</label>
+                        </div>
+
+                        <div style="margin-top: 20px; display: flex; gap: 10px;">
+                            <button onclick="scanForMigration()" style="background: #FF9800;">🔍 Scan Files</button>
+                            <button onclick="startMigration()" style="background: #4CAF50;" id="startMigrationBtn" disabled>▶️ Start Migration</button>
+                            <button onclick="cancelMigration()" style="background: #f44336;" id="cancelMigrationBtn" disabled>❌ Cancel</button>
+                        </div>
+
+                        <!-- Scan Results -->
+                        <div id="migrationScanResults" style="margin-top: 20px; display: none; padding: 15px; background: white; border-radius: 5px; border: 1px solid #ddd;">
+                            <h4 style="margin-top: 0;">Scan Results</h4>
+                            <div id="migrationScanContent"></div>
+                        </div>
+
+                        <!-- Migration Progress -->
+                        <div id="migrationProgress" style="margin-top: 20px; display: none; padding: 15px; background: white; border-radius: 5px; border: 1px solid #ddd;">
+                            <h4 style="margin-top: 0;">Migration Progress</h4>
+                            <div style="background: #e0e0e0; border-radius: 5px; height: 20px; overflow: hidden; margin-bottom: 10px;">
+                                <div id="migrationProgressBar" style="background: linear-gradient(90deg, #4CAF50, #8BC34A); height: 100%; width: 0%; transition: width 0.3s;"></div>
+                            </div>
+                            <div id="migrationProgressText">0% complete</div>
+                            <div id="migrationCurrentFile" style="color: #666; font-size: 0.9em; margin-top: 5px;"></div>
                         </div>
                     </div>
                 </div>
@@ -1221,6 +1285,7 @@
     </div>
 
     <script type="module" src="js/main.js"></script>
+    <script src="js/migration.js"></script>
 
     <!-- Analysis History Modal -->
     <div id="analysisHistoryModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 1001; overflow-y: auto;">

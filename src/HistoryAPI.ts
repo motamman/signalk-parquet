@@ -22,6 +22,9 @@ import { getPathComponentSchema, PathComponentSchema, ComponentInfo } from './ut
 import { FormulaCache } from './utils/formula-cache';
 import { ConcurrencyLimiter } from './utils/concurrency-limiter';
 import { CONCURRENCY } from './config/cache-defaults';
+import { SQLiteBufferInterface, DataRecord } from './types';
+import { HivePathBuilder, AggregationTier } from './utils/hive-path-builder';
+import { AutoDiscoveryService, AutoDiscoveryResult } from './services/auto-discovery';
 
 // ============================================================================
 // Unit Conversion Helper Functions
@@ -263,12 +266,15 @@ export function registerHistoryApiRoute(
   dataDir: string,
   debug: (k: string) => void,
   app: any,
-  unitConversionCacheMinutes: number = 5
+  unitConversionCacheMinutes: number = 5,
+  sqliteBuffer?: SQLiteBufferInterface,
+  exportIntervalMinutes: number = 5,
+  autoDiscoveryService?: AutoDiscoveryService
 ) {
   // Set the cache TTL from configuration
   CONVERSIONS_CACHE_TTL_MS = unitConversionCacheMinutes * 60 * 1000;
   console.log(`[Unit Conversion] Cache TTL set to ${unitConversionCacheMinutes} minutes`);
-  const historyApi = new HistoryAPI(selfId, dataDir);
+  const historyApi = new HistoryAPI(selfId, dataDir, sqliteBuffer, exportIntervalMinutes, autoDiscoveryService);
   router.get('/signalk/v1/history/values', (req: Request, res: Response) => {
     const { from, to, context, shouldRefresh } = getRequestParams(
       req as FromToContextRequest,
@@ -617,11 +623,171 @@ function getContext(contextFromQuery: string | undefined, selfId: string): Conte
 
 export class HistoryAPI {
   readonly selfContextPath: string;
+  private sqliteBuffer?: SQLiteBufferInterface;
+  private exportIntervalMinutes: number;
+  private hivePathBuilder: HivePathBuilder;
+  private autoDiscoveryService?: AutoDiscoveryService;
+
   constructor(
     private selfId: string,
-    private dataDir: string
+    private dataDir: string,
+    sqliteBuffer?: SQLiteBufferInterface,
+    exportIntervalMinutes: number = 5,
+    autoDiscoveryService?: AutoDiscoveryService
   ) {
     this.selfContextPath = toContextFilePath(`vessels.${selfId}` as Context);
+    this.sqliteBuffer = sqliteBuffer;
+    this.exportIntervalMinutes = exportIntervalMinutes;
+    this.hivePathBuilder = new HivePathBuilder();
+    this.autoDiscoveryService = autoDiscoveryService;
+  }
+
+  /**
+   * Set the auto-discovery service
+   */
+  setAutoDiscoveryService(service: AutoDiscoveryService | undefined): void {
+    this.autoDiscoveryService = service;
+  }
+
+  /**
+   * Set the SQLite buffer for federated queries
+   */
+  setSqliteBuffer(buffer: SQLiteBufferInterface | undefined): void {
+    this.sqliteBuffer = buffer;
+  }
+
+  /**
+   * Auto-select the optimal tier based on requested resolution
+   * Returns undefined to use raw/flat data, or a tier name for aggregated data
+   *
+   * Logic:
+   * - resolution >= 1 hour (3600000ms) → use 1h tier
+   * - resolution >= 1 minute (60000ms) → use 60s tier
+   * - resolution >= 5 seconds (5000ms) → use 5s tier
+   * - resolution < 5 seconds → use raw data (no tier)
+   *
+   * Falls back through tiers if preferred tier doesn't exist
+   */
+  private selectOptimalTier(resolutionMillis: number): AggregationTier | undefined {
+    const fs = require('fs');
+
+    // Determine preferred tier based on resolution
+    let preferredTiers: AggregationTier[] = [];
+
+    if (resolutionMillis >= 3600000) {
+      preferredTiers = ['1h', '60s', '5s'];
+    } else if (resolutionMillis >= 60000) {
+      preferredTiers = ['60s', '5s'];
+    } else if (resolutionMillis >= 5000) {
+      preferredTiers = ['5s'];
+    } else {
+      // Use raw data for sub-5-second resolution
+      return undefined;
+    }
+
+    // Check which tiers exist and return the best available
+    for (const tier of preferredTiers) {
+      const tierPath = path.join(this.dataDir, `tier=${tier}`);
+      try {
+        if (fs.existsSync(tierPath)) {
+          return tier;
+        }
+      } catch {
+        // Directory doesn't exist or not accessible
+      }
+    }
+
+    // No aggregated tiers available, use raw data
+    return undefined;
+  }
+
+  /**
+   * Query recent data from SQLite buffer (within export interval)
+   * Returns records for a specific context and path
+   */
+  private getRecentBufferData(
+    context: Context,
+    signalkPath: Path,
+    from: ZonedDateTime,
+    to: ZonedDateTime,
+    debug: (k: string) => void
+  ): DataRecord[] {
+    if (!this.sqliteBuffer) {
+      return [];
+    }
+
+    const cutoffTime = new Date();
+    cutoffTime.setMinutes(cutoffTime.getMinutes() - this.exportIntervalMinutes);
+
+    // Only query buffer if 'to' time is recent (within export interval)
+    const toDate = new Date(to.toInstant().toString());
+    if (toDate < cutoffTime) {
+      debug(`Query end time ${toDate.toISOString()} is before buffer cutoff ${cutoffTime.toISOString()}, skipping buffer query`);
+      return [];
+    }
+
+    // Adjust 'from' to be at least the cutoff time for buffer query
+    const fromDate = new Date(from.toInstant().toString());
+    const bufferFrom = fromDate > cutoffTime ? fromDate : cutoffTime;
+
+    debug(`Querying SQLite buffer for recent data: ${context}:${signalkPath} from ${bufferFrom.toISOString()}`);
+
+    try {
+      const records = this.sqliteBuffer.getRecordsForPath(
+        context,
+        signalkPath,
+        bufferFrom.toISOString(),
+        toDate.toISOString()
+      );
+      debug(`Found ${records.length} records in SQLite buffer`);
+      return records;
+    } catch (error) {
+      debug(`Error querying SQLite buffer: ${(error as Error).message}`);
+      return [];
+    }
+  }
+
+  /**
+   * Merge parquet results with buffer results, removing duplicates by timestamp
+   */
+  private mergeWithBufferData(
+    parquetData: Array<[Timestamp, unknown]>,
+    bufferRecords: DataRecord[],
+    debug: (k: string) => void
+  ): Array<[Timestamp, unknown]> {
+    if (bufferRecords.length === 0) {
+      return parquetData;
+    }
+
+    // Convert buffer records to the same format
+    const bufferData: Array<[Timestamp, unknown]> = bufferRecords.map(record => {
+      const timestamp = record.signalk_timestamp as Timestamp;
+      const value = record.value_json
+        ? (typeof record.value_json === 'string' ? JSON.parse(record.value_json) : record.value_json)
+        : record.value;
+      return [timestamp, value];
+    });
+
+    // Create a map of parquet data by timestamp for deduplication
+    const resultMap = new Map<string, [Timestamp, unknown]>();
+
+    // Add parquet data first
+    for (const [timestamp, value] of parquetData) {
+      resultMap.set(timestamp, [timestamp, value]);
+    }
+
+    // Add buffer data (will overwrite parquet data if same timestamp)
+    for (const [timestamp, value] of bufferData) {
+      resultMap.set(timestamp, [timestamp, value]);
+    }
+
+    // Sort by timestamp and return
+    const merged = Array.from(resultMap.values()).sort((a, b) =>
+      a[0].localeCompare(b[0])
+    );
+
+    debug(`Merged ${parquetData.length} parquet + ${bufferRecords.length} buffer records = ${merged.length} total`);
+    return merged;
   }
   async getValues(
     context: Context,
@@ -649,6 +815,21 @@ export class HistoryAPI {
         .split(',');
       const pathSpecs: PathSpec[] = pathExpressions.map(splitPathExpression);
 
+      // Parse tier parameter (raw, 5s, 60s, 1h) or auto-select based on resolution
+      const tierParam = req.query.tier as string | undefined;
+      const validTiers: AggregationTier[] = ['raw', '5s', '60s', '1h'];
+      let tier: AggregationTier | undefined;
+
+      if (tierParam === 'auto' || !tierParam) {
+        // Auto-select tier based on resolution
+        tier = this.selectOptimalTier(timeResolutionMillis);
+        if (tier) {
+          debug(`Auto-selected tier=${tier} for resolution=${timeResolutionMillis}ms`);
+        }
+      } else if (validTiers.includes(tierParam as AggregationTier)) {
+        tier = tierParam as AggregationTier;
+      }
+
       // Handle position and numeric paths together
       let allResult = pathSpecs.length
         ? await this.getNumericValues(
@@ -658,7 +839,8 @@ export class HistoryAPI {
             timeResolutionMillis,
             pathSpecs,
             includeMovingAverages,
-            debug
+            debug,
+            tier
           )
         : {
             context,
@@ -669,6 +851,46 @@ export class HistoryAPI {
             values: [],
             data: [],
           };
+
+      // Check for auto-discovery on paths with no data
+      debug(`[AutoDiscovery] Checking auto-discovery: service=${!!this.autoDiscoveryService}, pathSpecs.length=${pathSpecs.length}`);
+      if (this.autoDiscoveryService && pathSpecs.length > 0) {
+        const autoConfiguredPaths: AutoDiscoveryResult[] = [];
+
+        for (let i = 0; i < pathSpecs.length; i++) {
+          const pathSpec = pathSpecs[i];
+          // Check if this path has any data in the result
+          // Data array format: [timestamp, value1, value2, ...]
+          // Each path corresponds to a position in the values array
+          const hasData = allResult.data.some(row => {
+            const valueIndex = i + 1; // +1 because index 0 is timestamp
+            return row[valueIndex] !== null && row[valueIndex] !== undefined;
+          });
+
+          if (!hasData) {
+            debug(`[AutoDiscovery] No data found for path ${pathSpec.path}, checking auto-discovery`);
+            const result = await this.autoDiscoveryService.maybeAutoConfigurePath(
+              pathSpec.path as Path,
+              context
+            );
+            if (result.configured) {
+              autoConfiguredPaths.push(result);
+              debug(`[AutoDiscovery] Auto-configured path: ${pathSpec.path}`);
+            } else {
+              debug(`[AutoDiscovery] Path ${pathSpec.path} not auto-configured: ${result.reason}`);
+            }
+          }
+        }
+
+        // Add meta to response if any paths were auto-configured
+        if (autoConfiguredPaths.length > 0) {
+          allResult.meta = {
+            autoConfigured: true,
+            paths: autoConfiguredPaths.map(r => r.path),
+            message: `${autoConfiguredPaths.length} path(s) auto-configured for recording. Data will be available shortly.`,
+          };
+        }
+      }
 
       // Apply unit conversions if requested
       if (convertUnits) {
@@ -713,7 +935,8 @@ export class HistoryAPI {
     timeResolutionMillis: number,
     pathSpecs: PathSpec[],
     includeMovingAverages: boolean,
-    debug: (k: string) => void
+    debug: (k: string) => void,
+    tier?: AggregationTier
   ): Promise<DataResult> {
     const allData: { [path: string]: Array<[Timestamp, unknown]> } = {};
     const objectPaths = new Set<string>(); // Track which paths are object paths
@@ -728,14 +951,31 @@ export class HistoryAPI {
             .replace(/[^a-zA-Z0-9._]/g, '') // Only allow alphanumeric, dots, underscores
             .replace(/\./g, '/');
 
-          const filePath = path.join(
-            this.dataDir,
-            this.selfContextPath,
-            sanitizedPath,
-            '*.parquet'
-          );
+          let filePath: string;
 
-          debug(`Querying parquet files at: ${filePath}`);
+          if (tier) {
+            // Use Hive-style path for aggregated tiers
+            const sanitizedContext = this.hivePathBuilder.sanitizeContext(context);
+            const sanitizedSkPath = this.hivePathBuilder.sanitizePath(pathSpec.path);
+            filePath = path.join(
+              this.dataDir,
+              `tier=${tier}`,
+              `context=${sanitizedContext}`,
+              `path=${sanitizedSkPath}`,
+              '**',
+              '*.parquet'
+            );
+            debug(`Querying Hive tier=${tier} at: ${filePath}`);
+          } else {
+            // Use legacy flat path
+            filePath = path.join(
+              this.dataDir,
+              this.selfContextPath,
+              sanitizedPath,
+              '*.parquet'
+            );
+            debug(`Querying parquet files at: ${filePath}`);
+          }
 
           // Convert ZonedDateTime to ISO string format matching parquet schema
           const fromIso = from.toInstant().toString();
@@ -800,7 +1040,15 @@ export class HistoryAPI {
                 return [timestamp, reconstructedObject];
               });
 
-              allData[pathSpec.path] = pathData;
+              // Merge with SQLite buffer data for recent records (federated query)
+              const bufferRecords = this.getRecentBufferData(
+                context,
+                pathSpec.path as Path,
+                from,
+                to,
+                debug
+              );
+              allData[pathSpec.path] = this.mergeWithBufferData(pathData, bufferRecords, debug);
 
             } else {
               // Scalar path - use original logic
@@ -854,7 +1102,15 @@ export class HistoryAPI {
                 }
               );
 
-              allData[pathSpec.path] = pathData;
+              // Merge with SQLite buffer data for recent records (federated query)
+              const bufferRecords = this.getRecentBufferData(
+                context,
+                pathSpec.path as Path,
+                from,
+                to,
+                debug
+              );
+              allData[pathSpec.path] = this.mergeWithBufferData(pathData, bufferRecords, debug);
             }
           } finally {
             connection.disconnectSync();
@@ -862,21 +1118,46 @@ export class HistoryAPI {
         } catch (error) {
           console.error(`[HistoryAPI] Error querying path ${pathSpec.path}:`, error);
           debug(`Error querying path ${pathSpec.path}: ${error}`);
-          allData[pathSpec.path] = [];
+
+          // Even if parquet query fails, try to get buffer data
+          const bufferRecords = this.getRecentBufferData(
+            context,
+            pathSpec.path as Path,
+            from,
+            to,
+            debug
+          );
+          if (bufferRecords.length > 0) {
+            allData[pathSpec.path] = this.mergeWithBufferData([], bufferRecords, debug);
+          } else {
+            allData[pathSpec.path] = [];
+          }
         }
     });
 
     // Merge all path data into time-ordered rows
     const mergedData = this.mergePathData(allData, pathSpecs);
 
-    // Conditionally add EMA and SMA calculations based on includeMovingAverages parameter
-    const finalData = includeMovingAverages
-      ? this.addMovingAverages(mergedData, pathSpecs)
-      : mergedData;
+    // Check if any path has per-path smoothing defined
+    const hasPerPathSmoothing = pathSpecs.some(ps => ps.smoothing !== undefined);
 
-    const finalValues = includeMovingAverages
-      ? this.buildValuesWithMovingAverages(pathSpecs, objectPaths)
-      : pathSpecs.map(({ path, aggregateMethod }) => ({ path, method: aggregateMethod }));
+    // Determine final data and values based on smoothing mode
+    let finalData: Array<[Timestamp, ...unknown[]]>;
+    let finalValues: Array<{path: Path; method: AggregateMethod; smoothing?: string; window?: number}>;
+
+    if (hasPerPathSmoothing) {
+      // Per-path smoothing mode: apply smoothing only to paths that have it defined
+      finalData = this.addMovingAverages(mergedData, pathSpecs, true);
+      finalValues = this.buildValuesWithMovingAverages(pathSpecs, objectPaths, true);
+    } else if (includeMovingAverages) {
+      // Global moving averages mode (legacy ?includeMovingAverages=true)
+      finalData = this.addMovingAverages(mergedData, pathSpecs, false);
+      finalValues = this.buildValuesWithMovingAverages(pathSpecs, objectPaths, false);
+    } else {
+      // No smoothing
+      finalData = mergedData;
+      finalValues = pathSpecs.map(({ path, aggregateMethod }) => ({ path, method: aggregateMethod }));
+    }
 
     return {
       context,
@@ -917,12 +1198,14 @@ export class HistoryAPI {
 
   private addMovingAverages(
     data: Array<[Timestamp, ...unknown[]]>,
-    pathSpecs: PathSpec[]
+    pathSpecs: PathSpec[],
+    usePerPathSmoothing: boolean = false
   ): Array<[Timestamp, ...unknown[]]> {
     if (data.length === 0) return data;
 
-    const smaPeriod = 10;
-    const emaAlpha = 0.2;
+    // Default values for global moving averages mode
+    const defaultSmaPeriod = 10;
+    const defaultEmaAlpha = 0.2;
 
     // For each column, track EMA and SMA state
     // For objects, we need to track per-component state
@@ -943,9 +1226,27 @@ export class HistoryAPI {
       const enhancedValues: unknown[] = [];
 
       values.forEach((value, colIndex) => {
+        const pathSpec = pathSpecs[colIndex];
+        const hasSmoothing = pathSpec.smoothing !== undefined;
+
+        // In per-path smoothing mode, only process paths with smoothing defined
+        if (usePerPathSmoothing && !hasSmoothing) {
+          enhancedValues.push(value);
+          return;
+        }
+
+        // Get smoothing parameters
+        const smoothingType = pathSpec.smoothing;
+        const smaPeriod = smoothingType === 'sma' && pathSpec.smoothingParam
+          ? pathSpec.smoothingParam
+          : defaultSmaPeriod;
+        const emaAlpha = smoothingType === 'ema' && pathSpec.smoothingParam
+          ? pathSpec.smoothingParam
+          : defaultEmaAlpha;
+
         // Check if this is an object value (like navigation.position)
         if (value && typeof value === 'object' && !Array.isArray(value)) {
-          // Object with components - calculate EMA/SMA for each numeric component
+          // Object with components - calculate smoothing for each numeric component
           const enhancedObject: any = { ...value };
           const colState = columnStates.get(colIndex)!;
 
@@ -957,33 +1258,47 @@ export class HistoryAPI {
               }
               const componentState = colState.get(componentName)!;
 
-              // Calculate EMA
-              if (componentState.ema === null) {
-                componentState.ema = componentValue;
+              if (usePerPathSmoothing) {
+                // Per-path mode: only apply the specific smoothing requested
+                if (smoothingType === 'ema') {
+                  if (componentState.ema === null) {
+                    componentState.ema = componentValue;
+                  } else {
+                    componentState.ema = emaAlpha * componentValue + (1 - emaAlpha) * componentState.ema;
+                  }
+                  enhancedObject[componentName] = Math.round(componentState.ema * 1000) / 1000;
+                } else if (smoothingType === 'sma') {
+                  componentState.smaWindow.push(componentValue);
+                  if (componentState.smaWindow.length > smaPeriod) {
+                    componentState.smaWindow = componentState.smaWindow.slice(-smaPeriod);
+                  }
+                  const sma = componentState.smaWindow.reduce((sum, val) => sum + val, 0) / componentState.smaWindow.length;
+                  enhancedObject[componentName] = Math.round(sma * 1000) / 1000;
+                }
               } else {
-                componentState.ema = emaAlpha * componentValue + (1 - emaAlpha) * componentState.ema;
-              }
+                // Global mode: add both EMA and SMA as separate properties
+                if (componentState.ema === null) {
+                  componentState.ema = componentValue;
+                } else {
+                  componentState.ema = defaultEmaAlpha * componentValue + (1 - defaultEmaAlpha) * componentState.ema;
+                }
 
-              // Calculate SMA
-              componentState.smaWindow.push(componentValue);
-              if (componentState.smaWindow.length > smaPeriod) {
-                componentState.smaWindow = componentState.smaWindow.slice(-smaPeriod);
-              }
-              const sma = componentState.smaWindow.reduce((sum, val) => sum + val, 0) / componentState.smaWindow.length;
+                componentState.smaWindow.push(componentValue);
+                if (componentState.smaWindow.length > defaultSmaPeriod) {
+                  componentState.smaWindow = componentState.smaWindow.slice(-defaultSmaPeriod);
+                }
+                const sma = componentState.smaWindow.reduce((sum, val) => sum + val, 0) / componentState.smaWindow.length;
 
-              // Add EMA and SMA to the object with _ema and _sma suffixes
-              enhancedObject[`${componentName}_ema`] = Math.round(componentState.ema * 1000) / 1000;
-              enhancedObject[`${componentName}_sma`] = Math.round(sma * 1000) / 1000;
+                enhancedObject[`${componentName}_ema`] = Math.round(componentState.ema * 1000) / 1000;
+                enhancedObject[`${componentName}_sma`] = Math.round(sma * 1000) / 1000;
+              }
             }
-            // Non-numeric components don't get EMA/SMA
           });
 
           enhancedValues.push(enhancedObject);
 
         } else if (typeof value === 'number' && !isNaN(value)) {
-          // Scalar numeric value - use simple column-based tracking
-          enhancedValues.push(value);
-
+          // Scalar numeric value
           const colState = columnStates.get(colIndex)!;
           const scalarKey = '__scalar__';
 
@@ -992,29 +1307,54 @@ export class HistoryAPI {
           }
           const componentState = colState.get(scalarKey)!;
 
-          // Calculate EMA
-          if (componentState.ema === null) {
-            componentState.ema = value;
+          if (usePerPathSmoothing) {
+            // Per-path mode: include raw value AND smoothed value
+            enhancedValues.push(value); // Raw value first
+
+            if (smoothingType === 'ema') {
+              if (componentState.ema === null) {
+                componentState.ema = value;
+              } else {
+                componentState.ema = emaAlpha * value + (1 - emaAlpha) * componentState.ema;
+              }
+              enhancedValues.push(Math.round(componentState.ema * 1000) / 1000);
+            } else if (smoothingType === 'sma') {
+              componentState.smaWindow.push(value);
+              if (componentState.smaWindow.length > smaPeriod) {
+                componentState.smaWindow = componentState.smaWindow.slice(-smaPeriod);
+              }
+              const sma = componentState.smaWindow.reduce((sum, val) => sum + val, 0) / componentState.smaWindow.length;
+              enhancedValues.push(Math.round(sma * 1000) / 1000);
+            }
           } else {
-            componentState.ema = emaAlpha * value + (1 - emaAlpha) * componentState.ema;
-          }
+            // Global mode: add value, EMA, and SMA as separate columns
+            enhancedValues.push(value);
 
-          // Calculate SMA
-          componentState.smaWindow.push(value);
-          if (componentState.smaWindow.length > smaPeriod) {
-            componentState.smaWindow = componentState.smaWindow.slice(-smaPeriod);
-          }
-          const sma = componentState.smaWindow.reduce((sum, val) => sum + val, 0) / componentState.smaWindow.length;
+            if (componentState.ema === null) {
+              componentState.ema = value;
+            } else {
+              componentState.ema = defaultEmaAlpha * value + (1 - defaultEmaAlpha) * componentState.ema;
+            }
 
-          // Add EMA and SMA as additional values
-          enhancedValues.push(Math.round(componentState.ema * 1000) / 1000); // EMA
-          enhancedValues.push(Math.round(sma * 1000) / 1000); // SMA
+            componentState.smaWindow.push(value);
+            if (componentState.smaWindow.length > defaultSmaPeriod) {
+              componentState.smaWindow = componentState.smaWindow.slice(-defaultSmaPeriod);
+            }
+            const sma = componentState.smaWindow.reduce((sum, val) => sum + val, 0) / componentState.smaWindow.length;
+
+            enhancedValues.push(Math.round(componentState.ema * 1000) / 1000); // EMA
+            enhancedValues.push(Math.round(sma * 1000) / 1000); // SMA
+          }
 
         } else {
           // Non-numeric, non-object values (null, string, etc.)
           enhancedValues.push(value);
-          enhancedValues.push(null); // EMA
-          enhancedValues.push(null); // SMA
+          if (usePerPathSmoothing && hasSmoothing) {
+            enhancedValues.push(null); // Smoothed value placeholder
+          } else if (!usePerPathSmoothing) {
+            enhancedValues.push(null); // EMA
+            enhancedValues.push(null); // SMA
+          }
         }
       });
 
@@ -1024,12 +1364,28 @@ export class HistoryAPI {
 
   private buildValuesWithMovingAverages(
     pathSpecs: PathSpec[],
-    objectPaths: Set<string>
-  ): Array<{path: Path; method: AggregateMethod}> {
-    const result: Array<{path: Path; method: AggregateMethod}> = [];
+    objectPaths: Set<string>,
+    usePerPathSmoothing: boolean = false
+  ): Array<{path: Path; method: AggregateMethod; smoothing?: string; window?: number}> {
+    const result: Array<{path: Path; method: AggregateMethod; smoothing?: string; window?: number}> = [];
 
-    pathSpecs.forEach(({ path, aggregateMethod }) => {
-      if (objectPaths.has(path)) {
+    pathSpecs.forEach(({ path, aggregateMethod, smoothing, smoothingParam }) => {
+      if (usePerPathSmoothing) {
+        // Per-path smoothing mode
+        // First add the raw value entry
+        result.push({ path, method: aggregateMethod });
+
+        // Then add smoothed entry if smoothing is defined
+        if (smoothing) {
+          const smoothedEntry: {path: Path; method: AggregateMethod; smoothing: string; window: number} = {
+            path,
+            method: aggregateMethod,
+            smoothing,
+            window: smoothingParam !== undefined ? smoothingParam : (smoothing === 'sma' ? 10 : 0.2),
+          };
+          result.push(smoothedEntry);
+        }
+      } else if (objectPaths.has(path)) {
         // Object path - EMA/SMA are embedded in the object as component properties
         // Just add the single path entry
         result.push({ path, method: aggregateMethod });
@@ -1241,12 +1597,28 @@ function splitPathExpression(pathExpression: string): PathSpec {
     aggregateMethod = 'average' as AggregateMethod;
   }
 
+  // Parse smoothing method (parts[2]) and parameter (parts[3])
+  // Syntax: path:aggregateMethod:smoothing:param
+  // Example: navigation.speedOverGround:average:sma:5
+  let smoothing: 'sma' | 'ema' | undefined;
+  let smoothingParam: number | undefined;
+
+  if (parts[2] === 'sma' || parts[2] === 'ema') {
+    smoothing = parts[2];
+    if (parts[3]) {
+      smoothingParam = parseFloat(parts[3]);
+      if (isNaN(smoothingParam)) smoothingParam = undefined;
+    }
+  }
+
   return {
     path: parts[0] as Path,
     queryResultName: parts[0].replace(/\./g, '_'),
     aggregateMethod,
     aggregateFunction:
       (functionForAggregate[aggregateMethod] as string) || 'avg',
+    smoothing,
+    smoothingParam,
   };
 }
 

@@ -42,6 +42,11 @@ import { ServerAPI } from '@signalk/server-api';
 import { DuckDBPool } from './utils/duckdb-pool';
 import { FormulaCache } from './utils/formula-cache';
 import { LRUCache } from './utils/lru-cache';
+import { registerHistoryApiProvider, unregisterHistoryApiProvider } from './history-provider';
+import { SQLiteBuffer } from './utils/sqlite-buffer';
+import { ParquetExportService } from './services/parquet-export-service';
+import { AggregationService } from './services/aggregation-service';
+import { AutoDiscoveryService } from './services/auto-discovery';
 
 export default function (app: ServerAPI): SignalKPlugin {
   const plugin: SignalKPlugin = {
@@ -124,6 +129,18 @@ export default function (app: ServerAPI): SignalKPlugin {
         setCurrentLocation: false,
       },
       // enableStreaming: options?.enableStreaming ?? false,
+      // SQLite buffer options (new)
+      useSqliteBuffer: options?.useSqliteBuffer ?? false,
+      exportIntervalMinutes: options?.exportIntervalMinutes || 5,
+      bufferRetentionHours: options?.bufferRetentionHours || 24,
+      useHivePartitioning: options?.useHivePartitioning ?? false,
+      // Auto-discovery configuration
+      autoDiscovery: options?.autoDiscovery || {
+        enabled: false,
+        requireLiveData: true,
+        maxAutoConfiguredPaths: 100,
+        excludePatterns: ['design.*', 'communication.*', 'notifications.*'],
+      },
     };
 
     // Load webapp configuration including commands
@@ -136,6 +153,48 @@ export default function (app: ServerAPI): SignalKPlugin {
       format: state.currentConfig.fileFormat,
       app: app,
     });
+
+    // Initialize SQLite buffer if enabled
+    if (state.currentConfig.useSqliteBuffer) {
+      // Use absolute path for buffer.db
+      const dbPath = path.resolve(state.currentConfig.outputDirectory, 'buffer.db');
+      app.debug(`[SQLite] Initializing buffer at: ${dbPath}`);
+
+      try {
+        state.sqliteBuffer = new SQLiteBuffer({
+          dbPath,
+          maxBatchSize: state.currentConfig.bufferSize,
+          retentionHours: state.currentConfig.bufferRetentionHours,
+        });
+
+        // Verify the buffer is actually open
+        if (!state.sqliteBuffer.isOpen()) {
+          throw new Error('SQLite buffer created but database is not open');
+        }
+
+        app.debug(`[SQLite] Buffer initialized successfully at ${dbPath}`);
+      } catch (error) {
+        app.error(`[SQLite] CRITICAL: Failed to initialize SQLite buffer at ${dbPath}: ${error}`);
+        app.error(`[SQLite] Data recording will NOT work. Fix the configuration and restart.`);
+        throw error; // Fail loudly - don't continue with broken state
+      }
+
+      // Initialize export service
+      state.exportService = new ParquetExportService(
+        state.sqliteBuffer as SQLiteBuffer,
+        state.parquetWriter,
+        {
+          exportIntervalMinutes: state.currentConfig.exportIntervalMinutes!,
+          outputDirectory: state.currentConfig.outputDirectory,
+          filenamePrefix: state.currentConfig.filenamePrefix,
+          useHivePartitioning: state.currentConfig.useHivePartitioning!,
+          s3Upload: state.currentConfig.s3Upload,
+        },
+        app
+      );
+      state.exportService.start();
+      app.debug('Parquet export service started');
+    }
 
     // Initialize S3 client if enabled
     await initializeS3(state.currentConfig, app);
@@ -154,11 +213,12 @@ export default function (app: ServerAPI): SignalKPlugin {
     // Check current command values at startup
     initializeRegimenStates(currentPaths, state, app);
 
+    // Start threshold monitoring system BEFORE initializing command state
+    // so that pluginConfig (with homePort) is available during command registration
+    startThresholdMonitoring(app, state.currentConfig);
+
     // Initialize command state
     initializeCommandState(currentPaths, app);
-
-    // Start threshold monitoring system
-    startThresholdMonitoring(app, state.currentConfig);
 
     // Subscribe to data paths based on initial regimen states
     updateDataSubscriptions(currentPaths, state, state.currentConfig, app);
@@ -183,13 +243,50 @@ export default function (app: ServerAPI): SignalKPlugin {
     );
     const msUntilMidnightUTC = nextMidnightUTC.getTime() - now.getTime();
 
+    // Initialize aggregation service if Hive partitioning is enabled
+    let aggregationService: AggregationService | undefined;
+    if (state.currentConfig.useHivePartitioning) {
+      aggregationService = new AggregationService(
+        {
+          outputDirectory: state.currentConfig.outputDirectory,
+          filenamePrefix: state.currentConfig.filenamePrefix,
+          retentionDays: {
+            raw: state.currentConfig.retentionDays,
+            '5s': state.currentConfig.retentionDays * 2,
+            '60s': state.currentConfig.retentionDays * 4,
+            '1h': state.currentConfig.retentionDays * 12,
+          },
+        },
+        app
+      );
+      app.debug('Aggregation service initialized');
+    }
+
     setTimeout(() => {
       consolidateYesterday(state.currentConfig!, state, app);
+
+      // Run aggregation after consolidation if Hive partitioning is enabled
+      if (aggregationService) {
+        aggregationService.runDailyAggregation().then(results => {
+          app.debug(`Daily aggregation complete: ${JSON.stringify(results.map(r => ({ tier: r.targetTier, files: r.filesCreated })))}`);
+        }).catch(err => {
+          app.error(`Daily aggregation failed: ${err.message}`);
+        });
+      }
 
       // Then run daily consolidation every 24 hours
       state.consolidationInterval = setInterval(
         () => {
           consolidateYesterday(state.currentConfig!, state, app);
+
+          // Run aggregation after consolidation
+          if (aggregationService) {
+            aggregationService.runDailyAggregation().then(results => {
+              app.debug(`Daily aggregation complete: ${JSON.stringify(results.map(r => ({ tier: r.targetTier, files: r.filesCreated })))}`);
+            }).catch(err => {
+              app.error(`Daily aggregation failed: ${err.message}`);
+            });
+          }
         },
         24 * 60 * 60 * 1000
       );
@@ -207,6 +304,20 @@ export default function (app: ServerAPI): SignalKPlugin {
       }, 10000); // Wait 10 seconds after startup to avoid conflicts
     }
 
+    // Always initialize auto-discovery service - it checks enabled state at runtime
+    app.debug(`[AutoDiscovery] Config: ${JSON.stringify(state.currentConfig?.autoDiscovery)}`);
+    state.autoDiscoveryService = new AutoDiscoveryService(
+      app,
+      state.currentConfig,
+      state,
+      currentPaths
+    );
+
+    // Recover counter from existing auto-discovered paths
+    const existingAutoDiscovered = currentPaths.filter(p => p.autoDiscovered).length;
+    state.autoDiscoveryService.setInitialCount(existingAutoDiscovered);
+    app.debug(`[AutoDiscovery] Service initialized with ${existingAutoDiscovered} existing auto-discovered paths`);
+
     // Register History API routes directly with the main app
     try {
       registerHistoryApiRoute(
@@ -215,10 +326,27 @@ export default function (app: ServerAPI): SignalKPlugin {
         state.currentConfig.outputDirectory,
         app.debug,
         app,
-        state.currentConfig.unitConversionCacheMinutes || 5 // Default to 5 minutes
+        state.currentConfig.unitConversionCacheMinutes || 5, // Default to 5 minutes
+        state.sqliteBuffer, // Pass SQLite buffer for federated queries
+        state.currentConfig.exportIntervalMinutes || 5, // Export interval for buffer cutoff
+        state.autoDiscoveryService // Pass auto-discovery service
       );
+      app.debug(`[AutoDiscovery] History API registered with autoDiscoveryService: ${!!state.autoDiscoveryService}`);
     } catch (error) {
       app.error(`Failed to register History API routes with main server: ${error}`);
+    }
+
+    // Register as the official SignalK History API provider
+    // This allows other plugins to discover and use our history implementation
+    try {
+      registerHistoryApiProvider(
+        app,
+        app.selfId,
+        state.currentConfig.outputDirectory,
+        app.debug
+      );
+    } catch (error) {
+      app.error(`Failed to register as History API provider: ${error}`);
     }
 
     // Initialize historical streaming service (for history API endpoints)
@@ -255,6 +383,9 @@ export default function (app: ServerAPI): SignalKPlugin {
 
   plugin.stop = async function (): Promise<void> {
 
+    // Unregister as History API provider
+    unregisterHistoryApiProvider(app);
+
     // Stop threshold monitoring system
     stopThresholdMonitoring();
 
@@ -269,6 +400,28 @@ export default function (app: ServerAPI): SignalKPlugin {
     // Save any remaining buffered data
     if (state.currentConfig) {
       saveAllBuffers(state.currentConfig, state, app);
+    }
+
+    // Stop export service and flush SQLite buffer
+    if (state.exportService) {
+      try {
+        state.exportService.stop();
+        // Force final export of pending records
+        await state.exportService.forceExport();
+        app.debug('Parquet export service stopped');
+      } catch (error) {
+        app.error(`Error stopping export service: ${error}`);
+      }
+    }
+
+    // Close SQLite buffer
+    if (state.sqliteBuffer) {
+      try {
+        state.sqliteBuffer.close();
+        app.debug('SQLite buffer closed');
+      } catch (error) {
+        app.error(`Error closing SQLite buffer: ${error}`);
+      }
     }
 
     // Unsubscribe from all paths
@@ -375,6 +528,70 @@ export default function (app: ServerAPI): SignalKPlugin {
         default: 5,
         minimum: 1,
         maximum: 60,
+      },
+      useSqliteBuffer: {
+        type: 'boolean',
+        title: 'Use SQLite Buffer (Experimental)',
+        description: 'Use SQLite WAL buffer for crash-safe data ingestion instead of in-memory buffer. Provides better durability and crash recovery.',
+        default: false,
+      },
+      exportIntervalMinutes: {
+        type: 'number',
+        title: 'Export Interval (minutes)',
+        description: 'How often to export data from SQLite buffer to Parquet files. Only used when SQLite buffer is enabled.',
+        default: 5,
+        minimum: 1,
+        maximum: 60,
+      },
+      bufferRetentionHours: {
+        type: 'number',
+        title: 'Buffer Retention (hours)',
+        description: 'How long to keep exported records in SQLite buffer before cleanup. Only used when SQLite buffer is enabled.',
+        default: 24,
+        minimum: 1,
+        maximum: 168,
+      },
+      useHivePartitioning: {
+        type: 'boolean',
+        title: 'Use Hive Partitioning (Experimental)',
+        description: 'Use Hive-style partitioning for Parquet files (tier/context/path/year/day structure). Enables efficient time-range queries.',
+        default: false,
+      },
+      autoDiscovery: {
+        type: 'object',
+        title: 'Auto-Discovery',
+        description: 'Automatically configure paths for recording when historical data is requested but not available',
+        properties: {
+          enabled: {
+            type: 'boolean',
+            title: 'Enable auto-discovery',
+            description: 'When enabled, paths requested via history API that are not being recorded will be automatically configured',
+            default: false,
+          },
+          maxAutoConfiguredPaths: {
+            type: 'number',
+            title: 'Max auto-configured paths',
+            description: 'Maximum number of paths that can be auto-configured to prevent runaway configuration',
+            default: 100,
+            minimum: 1,
+            maximum: 1000,
+          },
+          requireLiveData: {
+            type: 'boolean',
+            title: 'Require live data',
+            description: 'Only auto-configure paths that have live data in SignalK',
+            default: true,
+          },
+          excludePatterns: {
+            type: 'array',
+            title: 'Exclude patterns',
+            description: 'Glob patterns for paths that should never be auto-configured',
+            items: {
+              type: 'string',
+            },
+            default: ['design.*', 'communication.*', 'notifications.*'],
+          },
+        },
       },
       s3Upload: {
         type: 'object',

@@ -35,6 +35,11 @@ export interface DataResult {
     offset: string;
     description: string;
   };
+  meta?: {
+    autoConfigured: boolean;
+    paths: string[];
+    message: string;
+  };
 }
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 const _demo: DataResult = {
@@ -95,6 +100,7 @@ export type FromToContextRequest = Request<
     convertUnits?: string; // 'true' | '1' to convert to user's preferred units
     convertTimesToLocal?: string; // 'true' | '1' to convert timestamps to local time
     timezone?: string; // Optional timezone ID (e.g., 'America/New_York', 'Europe/London'). If not specified, uses server local time
+    tier?: string; // Aggregation tier: 'raw' (default), '5s', '60s', '1h'
   }
 >;
 
@@ -103,6 +109,8 @@ export interface PathSpec {
   queryResultName: string;
   aggregateMethod: AggregateMethod;
   aggregateFunction: string;
+  smoothing?: 'sma' | 'ema';      // Per-path smoothing method
+  smoothingParam?: number;         // SMA period or EMA alpha
 }
 
 // Unit conversion types

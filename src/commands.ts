@@ -75,6 +75,7 @@ export function loadWebAppConfig(app?: ServerAPI): WebAppPathConfig {
           source: path.source || undefined,
           context: path.context,
           excludeMMSI: path.excludeMMSI,
+          autoDiscovered: path.autoDiscovered,
         })
       );
 

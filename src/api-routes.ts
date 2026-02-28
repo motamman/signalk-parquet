@@ -31,6 +31,9 @@ import {
 } from './types';
 import { SchemaService } from './schema-service';
 import { ProcessType, ProcessState, ProcessStatusApiResponse, ProcessCancelApiResponse } from './types';
+import { MigrationService } from './services/migration-service';
+import { AggregationService } from './services/aggregation-service';
+import { AggregationTier } from './utils/hive-path-builder';
 import {
   loadWebAppConfig,
   saveWebAppConfig,
@@ -3058,5 +3061,361 @@ export function registerApiRoutes(
       }
     }
   );
+
+  // ===========================================
+  // SQLITE BUFFER API ROUTES
+  // ===========================================
+
+  // Get buffer statistics
+  router.get('/api/buffer/stats', (_req, res) => {
+    try {
+      if (!state.sqliteBuffer) {
+        return res.json({
+          success: true,
+          enabled: false,
+          message: 'SQLite buffer is not enabled'
+        });
+      }
+
+      const stats = state.sqliteBuffer.getStats();
+      const exportStatus = state.exportService?.getStatus();
+
+      return res.json({
+        success: true,
+        enabled: true,
+        stats,
+        exportService: exportStatus
+      });
+    } catch (error) {
+      return res.status(500).json({
+        success: false,
+        error: (error as Error).message
+      });
+    }
+  });
+
+  // Force export pending records
+  router.post('/api/buffer/export', async (_req, res) => {
+    try {
+      if (!state.exportService) {
+        return res.status(400).json({
+          success: false,
+          error: 'SQLite buffer is not enabled'
+        });
+      }
+
+      const result = await state.exportService.forceExport();
+      return res.json({
+        success: true,
+        ...result
+      });
+    } catch (error) {
+      return res.status(500).json({
+        success: false,
+        error: (error as Error).message
+      });
+    }
+  });
+
+  // Buffer health check
+  router.get('/api/buffer/health', (_req, res) => {
+    try {
+      if (!state.exportService) {
+        return res.json({
+          success: true,
+          enabled: false,
+          healthy: true,
+          message: 'SQLite buffer is not enabled (using in-memory buffer)'
+        });
+      }
+
+      const health = state.exportService.getHealth();
+      return res.json({
+        success: true,
+        enabled: true,
+        ...health
+      });
+    } catch (error) {
+      return res.status(500).json({
+        success: false,
+        error: (error as Error).message
+      });
+    }
+  });
+
+  // ===========================================
+  // MIGRATION API ROUTES
+  // ===========================================
+
+  const migrationService = new MigrationService(app);
+
+  // Scan for files to migrate
+  router.post('/api/migrate/scan', async (req, res) => {
+    try {
+      const { sourceDirectory } = req.body;
+      const source = sourceDirectory || getDataDir();
+
+      const result = await migrationService.scan(source);
+
+      // Convert Map to array for JSON serialization
+      const byPathArray = Array.from(result.byPath.entries()).map(([path, stats]) => ({
+        path,
+        ...stats
+      }));
+
+      return res.json({
+        success: true,
+        totalFiles: result.totalFiles,
+        totalSize: result.totalSize,
+        totalSizeMB: (result.totalSize / 1024 / 1024).toFixed(2),
+        byPath: byPathArray,
+        estimatedTimeSeconds: result.estimatedTime,
+        sourceStyle: result.sourceStyle
+      });
+    } catch (error) {
+      return res.status(500).json({
+        success: false,
+        error: (error as Error).message
+      });
+    }
+  });
+
+  // Start migration
+  router.post('/api/migrate', async (req, res) => {
+    try {
+      const {
+        sourceDirectory,
+        targetDirectory,
+        targetTier = 'raw',
+        deleteSource = false
+      } = req.body;
+
+      const source = sourceDirectory || getDataDir();
+      const target = targetDirectory || getDataDir();
+
+      // Validate tier
+      const validTiers: AggregationTier[] = ['raw', '5s', '60s', '1h'];
+      if (!validTiers.includes(targetTier)) {
+        return res.status(400).json({
+          success: false,
+          error: `Invalid tier: ${targetTier}. Must be one of: ${validTiers.join(', ')}`
+        });
+      }
+
+      const jobId = await migrationService.migrate({
+        sourceDirectory: source,
+        targetDirectory: target,
+        targetTier,
+        deleteSourceAfterMigration: deleteSource
+      });
+
+      return res.json({
+        success: true,
+        jobId,
+        message: 'Migration started'
+      });
+    } catch (error) {
+      return res.status(500).json({
+        success: false,
+        error: (error as Error).message
+      });
+    }
+  });
+
+  // Get migration progress
+  router.get('/api/migrate/progress/:jobId', (req, res) => {
+    try {
+      const { jobId } = req.params;
+      const progress = migrationService.getProgress(jobId);
+
+      if (!progress) {
+        return res.status(404).json({
+          success: false,
+          error: 'Migration job not found'
+        });
+      }
+
+      return res.json({
+        success: true,
+        ...progress,
+        bytesProcessedMB: (progress.bytesProcessed / 1024 / 1024).toFixed(2)
+      });
+    } catch (error) {
+      return res.status(500).json({
+        success: false,
+        error: (error as Error).message
+      });
+    }
+  });
+
+  // Cancel migration
+  router.post('/api/migrate/cancel/:jobId', (req, res) => {
+    try {
+      const { jobId } = req.params;
+      const cancelled = migrationService.cancel(jobId);
+
+      if (!cancelled) {
+        return res.status(400).json({
+          success: false,
+          error: 'Migration job not found or not running'
+        });
+      }
+
+      return res.json({
+        success: true,
+        message: 'Cancellation requested'
+      });
+    } catch (error) {
+      return res.status(500).json({
+        success: false,
+        error: (error as Error).message
+      });
+    }
+  });
+
+  // List all migration jobs
+  router.get('/api/migrate/jobs', (_req, res) => {
+    try {
+      const jobIds = migrationService.getJobIds();
+      const jobs = jobIds.map(id => migrationService.getProgress(id)).filter(Boolean);
+
+      return res.json({
+        success: true,
+        jobs
+      });
+    } catch (error) {
+      return res.status(500).json({
+        success: false,
+        error: (error as Error).message
+      });
+    }
+  });
+
+  // ===========================================
+  // AGGREGATION API ROUTES
+  // ===========================================
+
+  // Initialize aggregation service
+  const aggregationService = new AggregationService(
+    {
+      outputDirectory: getDataDir(),
+      filenamePrefix: state.currentConfig?.filenamePrefix || 'signalk_data',
+      retentionDays: {
+        raw: state.currentConfig?.retentionDays || 7,
+        '5s': (state.currentConfig?.retentionDays || 7) * 2,
+        '60s': (state.currentConfig?.retentionDays || 7) * 4,
+        '1h': (state.currentConfig?.retentionDays || 7) * 12,
+      },
+    },
+    app
+  );
+
+  // Run aggregation for a specific date
+  router.post('/api/aggregate', async (req, res) => {
+    try {
+      const { date } = req.body;
+
+      // Use yesterday if no date provided
+      const targetDate = date ? new Date(date) : new Date(Date.now() - 24 * 60 * 60 * 1000);
+
+      if (isNaN(targetDate.getTime())) {
+        return res.status(400).json({
+          success: false,
+          error: 'Invalid date format'
+        });
+      }
+
+      app.debug(`Starting aggregation for ${targetDate.toISOString().slice(0, 10)}`);
+
+      const results = await aggregationService.aggregateDate(targetDate);
+
+      return res.json({
+        success: true,
+        date: targetDate.toISOString().slice(0, 10),
+        results: results.map(r => ({
+          sourceTier: r.sourceTier,
+          targetTier: r.targetTier,
+          filesProcessed: r.filesProcessed,
+          recordsAggregated: r.recordsAggregated,
+          filesCreated: r.filesCreated,
+          durationMs: r.duration,
+          errors: r.errors
+        }))
+      });
+    } catch (error) {
+      return res.status(500).json({
+        success: false,
+        error: (error as Error).message
+      });
+    }
+  });
+
+  // Run aggregation for a specific tier only
+  router.post('/api/aggregate/:sourceTier/:targetTier', async (req, res) => {
+    try {
+      const { sourceTier, targetTier } = req.params;
+      const { date } = req.body;
+
+      const validTiers: AggregationTier[] = ['raw', '5s', '60s', '1h'];
+      if (!validTiers.includes(sourceTier as AggregationTier) || !validTiers.includes(targetTier as AggregationTier)) {
+        return res.status(400).json({
+          success: false,
+          error: `Invalid tier. Must be one of: ${validTiers.join(', ')}`
+        });
+      }
+
+      const targetDate = date ? new Date(date) : new Date(Date.now() - 24 * 60 * 60 * 1000);
+
+      if (isNaN(targetDate.getTime())) {
+        return res.status(400).json({
+          success: false,
+          error: 'Invalid date format'
+        });
+      }
+
+      app.debug(`Starting aggregation ${sourceTier} -> ${targetTier} for ${targetDate.toISOString().slice(0, 10)}`);
+
+      const result = await aggregationService.aggregateTier(
+        sourceTier as AggregationTier,
+        targetTier as AggregationTier,
+        targetDate
+      );
+
+      return res.json({
+        success: true,
+        date: targetDate.toISOString().slice(0, 10),
+        sourceTier: result.sourceTier,
+        targetTier: result.targetTier,
+        filesProcessed: result.filesProcessed,
+        recordsAggregated: result.recordsAggregated,
+        filesCreated: result.filesCreated,
+        durationMs: result.duration,
+        errors: result.errors
+      });
+    } catch (error) {
+      return res.status(500).json({
+        success: false,
+        error: (error as Error).message
+      });
+    }
+  });
+
+  // Cleanup old aggregated data
+  router.post('/api/aggregate/cleanup', async (_req, res) => {
+    try {
+      const result = await aggregationService.cleanupOldData();
+
+      return res.json({
+        success: true,
+        deletedFiles: result.deletedFiles,
+        freedMB: (result.freedBytes / 1024 / 1024).toFixed(2)
+      });
+    } catch (error) {
+      return res.status(500).json({
+        success: false,
+        error: (error as Error).message
+      });
+    }
+  });
 
 }
