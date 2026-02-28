@@ -45,6 +45,7 @@ import {
   getCommandHistory,
   getCommandState,
   setManualOverride,
+  updatePluginConfig,
 } from './commands';
 import { updateDataSubscriptions } from './data-handler';
 import { toContextFilePath, toParquetFilePath } from './utils/path-helpers';
@@ -828,6 +829,9 @@ export function registerApiRoutes(
       // Update the config
       state.currentConfig.homePortLatitude = latitude;
       state.currentConfig.homePortLongitude = longitude;
+
+      // Update the cached config in commands module so thresholds use new home port
+      updatePluginConfig(state.currentConfig);
 
       // Save to plugin options
       app.savePluginOptions(state.currentConfig, (err?: unknown) => {

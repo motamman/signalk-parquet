@@ -250,7 +250,8 @@ export function initializeCommandState(
       commandConfig.description,
       commandConfig.keywords,
       commandConfig.defaultState,
-      commandConfig.thresholds
+      commandConfig.thresholds,
+      true  // skipThresholdSetup - let startThresholdMonitoring handle it
     );
     if (result.state === 'COMPLETED') {
     } else {
@@ -319,7 +320,8 @@ export function registerCommand(
   description?: string,
   keywords?: string[],
   defaultState?: boolean,
-  thresholds?: ThresholdConfig[]
+  thresholds?: ThresholdConfig[],
+  skipThresholdSetup: boolean = false
 ): CommandExecutionResult {
   try {
     // Validate command name
@@ -367,12 +369,17 @@ export function registerCommand(
       path: string,
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       value: any,
-      _callback?: (result: CommandExecutionResult) => void
+      callback?: (result: CommandExecutionResult) => void
     ): CommandExecutionResult => {
       appInstance.debug(
         `Handling PUT for commands.${commandName} with value: ${JSON.stringify(value)}`
       );
-      return executeCommand(commandName, Boolean(value));
+      // Extract value from object if needed (PUT body may be {value: true/false, source: "..."})
+      const rawValue = (value !== null && typeof value === 'object' && 'value' in value) ? value.value : value;
+      const result = executeCommand(commandName, Boolean(rawValue));
+      // Call callback to signal completion (returns 200 instead of 202)
+      if (callback) callback(result);
+      return result;
     };
 
     // Register PUT handler with SignalK
@@ -406,8 +413,9 @@ export function registerCommand(
         `Handling PUT for ${autoPath} with value: ${JSON.stringify(value)}`
       );
 
-      // Update the .auto value
-      const autoValue = Boolean(value);
+      // Update the .auto value - extract from object if needed
+      const rawValue = (value !== null && typeof value === 'object' && 'value' in value) ? value.value : value;
+      const autoValue = Boolean(rawValue);
       const timestamp = new Date().toISOString();
 
       // One-time transition operations when .auto toggles
@@ -442,10 +450,11 @@ export function registerCommand(
         appInstance.debug(`👤 Disabling automation for ${commandName}, state unchanged`);
       }
 
-      appInstance.handleMessage('zennora-parquet-commands', {
+      appInstance.handleMessage('signalk-parquet-commands', {
         context: 'vessels.self' as Context,
         updates: [
           {
+            $source: 'signalk-parquet-commands' as SourceRef,
             timestamp: timestamp as Timestamp,
             values: [
               {
@@ -457,12 +466,17 @@ export function registerCommand(
         ],
       });
 
-      return {
+      const result: CommandExecutionResult = {
         success: true,
         state: 'COMPLETED',
+        statusCode: 200,
         message: `Automation ${autoValue ? 'enabled' : 'disabled'} for ${commandName}`,
         timestamp
       };
+
+      // Call callback to signal completion (returns 200 instead of 202)
+      if (_callback) _callback(result);
+      return result;
     };
 
     // Register .auto PUT handler with SignalK
@@ -470,11 +484,12 @@ export function registerCommand(
       'vessels.self',
       autoPath,
       autoPutHandler as any,
-      'zennora-parquet-commands'
+      'signalk-parquet-commands'
     );
 
     // Start threshold monitoring for this command if thresholds are defined
-    if (commandConfig.thresholds && commandConfig.thresholds.length > 0) {
+    // Skip during initialization - startThresholdMonitoring() will set them up
+    if (!skipThresholdSetup && commandConfig.thresholds && commandConfig.thresholds.length > 0) {
       commandConfig.thresholds.forEach(threshold => {
         if (threshold.enabled) {
           setupThresholdMonitoring(commandConfig, threshold);
@@ -805,6 +820,68 @@ export function setCurrentCommands(commands: CommandConfig[]): void {
   currentCommands = commands;
 }
 
+export function updatePluginConfig(config: PluginConfig): void {
+  pluginConfig = config;
+  appInstance?.debug(`📍 Plugin config updated (homePort: ${config.homePortLatitude}, ${config.homePortLongitude})`);
+
+  // Re-evaluate all position-based thresholds with new home port
+  // This uses level-triggered logic (not edge-triggered like processThresholdValue)
+  // because config changes require immediate state reconciliation
+  currentCommands.forEach(command => {
+    if (command.thresholds) {
+      command.thresholds.forEach(threshold => {
+        if (threshold.enabled && isPositionOperator(threshold.operator)) {
+          // Check if automation is enabled for this command
+          const autoEnabledRaw = appInstance?.getSelfPath(`commands.${command.command}.auto` as Path);
+          const autoEnabled = (autoEnabledRaw && typeof autoEnabledRaw === 'object' && 'value' in autoEnabledRaw)
+            ? autoEnabledRaw.value : autoEnabledRaw;
+
+          if (!autoEnabled) {
+            appInstance?.debug(`🚫 Skipping threshold re-evaluation for ${command.command} (automation disabled)`);
+            return;
+          }
+
+          const currentValue = appInstance?.getSelfPath(threshold.watchPath as Path);
+          if (currentValue !== undefined) {
+            const normalizedValue = normalizeThresholdValue(currentValue, threshold);
+
+            const homePort = pluginConfig && pluginConfig.homePortLatitude && pluginConfig.homePortLongitude
+              ? { latitude: pluginConfig.homePortLatitude, longitude: pluginConfig.homePortLongitude }
+              : undefined;
+
+            const conditionMet = evaluateThreshold(threshold, normalizedValue, homePort);
+
+            // Level-triggered: set to activateOnMatch when condition met, opposite when not met
+            const desiredState = conditionMet ? Boolean(threshold.activateOnMatch) : !Boolean(threshold.activateOnMatch);
+
+            // Get current command state
+            const currentCommandValue = appInstance?.getSelfPath(`commands.${command.command}` as Path);
+            const actualValue = (currentCommandValue && typeof currentCommandValue === 'object' && 'value' in currentCommandValue)
+              ? currentCommandValue.value
+              : currentCommandValue;
+            const currentlyActive = Boolean(actualValue);
+
+            appInstance?.debug(`🔄 Config change re-eval: ${command.command} conditionMet=${conditionMet}, current=${currentlyActive}, desired=${desiredState}`);
+
+            if (currentlyActive !== desiredState) {
+              appInstance?.debug(`📍 Config change triggers state change: ${command.command} → ${desiredState ? 'ON' : 'OFF'}`);
+              executeCommand(command.command, desiredState);
+
+              // Update command state
+              command.active = desiredState;
+              commandState.registeredCommands.set(command.command, command);
+            }
+          }
+        }
+      });
+    }
+  });
+}
+
+function isPositionOperator(operator: string): boolean {
+  return ['withinRadius', 'outsideRadius', 'inBoundingBox', 'outsideBoundingBox'].includes(operator);
+}
+
 // Threshold monitoring system
 export function startThresholdMonitoring(app: ServerAPI, config?: PluginConfig): void {
   appInstance = app;
@@ -987,6 +1064,29 @@ function processThresholdValue(command: CommandConfig, threshold: ThresholdConfi
     appInstance?.debug(`📉 Threshold evaluation for ${commandName}:${threshold.watchPath} operator=${threshold.operator} ${thresholdDesc} conditionMet=${conditionMet}`);
 
     if (!conditionMet) {
+      // For position-based operators, we need bidirectional triggering:
+      // When condition becomes FALSE, set command to opposite of activateOnMatch
+      if (isPositionOperator(threshold.operator)) {
+        const desiredState = !Boolean(threshold.activateOnMatch);
+
+        // Get current command state
+        const currentCommandValue = appInstance?.getSelfPath(`commands.${commandName}` as Path);
+        const actualValue = (currentCommandValue && typeof currentCommandValue === 'object' && 'value' in currentCommandValue)
+          ? currentCommandValue.value
+          : currentCommandValue;
+        const currentlyActive = Boolean(actualValue);
+
+        if (currentlyActive !== desiredState) {
+          appInstance?.debug(`📍 Position threshold condition FALSE: ${commandName} → ${desiredState ? 'ON' : 'OFF'}`);
+          const result = executeCommand(commandName, desiredState);
+          if (result.success) {
+            command.active = desiredState;
+            commandState.registeredCommands.set(commandName, command);
+            currentCommands = Array.from(commandState.registeredCommands.values());
+          }
+        }
+      }
+
       state.lastConditionMet = false;
       state.lastValue = normalizedValue;
       return;

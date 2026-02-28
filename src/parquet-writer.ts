@@ -724,6 +724,14 @@ export class ParquetWriter {
 
       // Group files by directory for consolidation
       for (const fileInfo of matchingFiles) {
+        // Skip aggregated tier files - they don't need consolidation
+        // Only consolidate raw tier (hive) or flat structure (vessels/)
+        if (fileInfo.path.includes('/tier=5s/') ||
+            fileInfo.path.includes('/tier=60s/') ||
+            fileInfo.path.includes('/tier=1h/')) {
+          continue;
+        }
+
         const topicDir = fileInfo.directory;
         const consolidatedFile = path.join(
           topicDir,
@@ -749,6 +757,12 @@ export class ParquetWriter {
         this.app?.debug(
           `Consolidated ${entry.sources.length} files into ${entry.target} (${recordCount} records)`
         );
+
+        // Skip validation if no records were written (no file created)
+        if (recordCount === 0) {
+          this.app?.debug(`⚠️ No records to consolidate for ${entry.target}, skipping`);
+          continue;
+        }
 
         // Validate consolidated parquet file
         const isValid = await this.validateParquetFile(entry.target);

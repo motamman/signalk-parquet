@@ -265,7 +265,7 @@ export class AggregationService {
           FROM read_parquet([${fileListStr}], union_by_name=true)
           GROUP BY bucket_time, context, path
           ORDER BY bucket_time
-        ) TO '${outputFile}' (FORMAT PARQUET, COMPRESSION 'ZSTD');
+        ) TO '${outputFile}' (FORMAT PARQUET, COMPRESSION 'SNAPPY');
       `
       : `
         COPY (
@@ -285,7 +285,7 @@ export class AggregationService {
           ) src
           GROUP BY time_bucket(INTERVAL '${intervalSeconds} seconds', src_bucket_time::TIMESTAMP), context, path
           ORDER BY 1
-        ) TO '${outputFile}' (FORMAT PARQUET, COMPRESSION 'ZSTD');
+        ) TO '${outputFile}' (FORMAT PARQUET, COMPRESSION 'SNAPPY');
       `;
 
     try {
