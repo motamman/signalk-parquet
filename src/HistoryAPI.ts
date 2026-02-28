@@ -1138,14 +1138,26 @@ export class HistoryAPI {
     // Merge all path data into time-ordered rows
     const mergedData = this.mergePathData(allData, pathSpecs);
 
-    // Conditionally add EMA and SMA calculations based on includeMovingAverages parameter
-    const finalData = includeMovingAverages
-      ? this.addMovingAverages(mergedData, pathSpecs)
-      : mergedData;
+    // Check if any path has per-path smoothing defined
+    const hasPerPathSmoothing = pathSpecs.some(ps => ps.smoothing !== undefined);
 
-    const finalValues = includeMovingAverages
-      ? this.buildValuesWithMovingAverages(pathSpecs, objectPaths)
-      : pathSpecs.map(({ path, aggregateMethod }) => ({ path, method: aggregateMethod }));
+    // Determine final data and values based on smoothing mode
+    let finalData: Array<[Timestamp, ...unknown[]]>;
+    let finalValues: Array<{path: Path; method: AggregateMethod; smoothing?: string; window?: number}>;
+
+    if (hasPerPathSmoothing) {
+      // Per-path smoothing mode: apply smoothing only to paths that have it defined
+      finalData = this.addMovingAverages(mergedData, pathSpecs, true);
+      finalValues = this.buildValuesWithMovingAverages(pathSpecs, objectPaths, true);
+    } else if (includeMovingAverages) {
+      // Global moving averages mode (legacy ?includeMovingAverages=true)
+      finalData = this.addMovingAverages(mergedData, pathSpecs, false);
+      finalValues = this.buildValuesWithMovingAverages(pathSpecs, objectPaths, false);
+    } else {
+      // No smoothing
+      finalData = mergedData;
+      finalValues = pathSpecs.map(({ path, aggregateMethod }) => ({ path, method: aggregateMethod }));
+    }
 
     return {
       context,
@@ -1186,12 +1198,14 @@ export class HistoryAPI {
 
   private addMovingAverages(
     data: Array<[Timestamp, ...unknown[]]>,
-    pathSpecs: PathSpec[]
+    pathSpecs: PathSpec[],
+    usePerPathSmoothing: boolean = false
   ): Array<[Timestamp, ...unknown[]]> {
     if (data.length === 0) return data;
 
-    const smaPeriod = 10;
-    const emaAlpha = 0.2;
+    // Default values for global moving averages mode
+    const defaultSmaPeriod = 10;
+    const defaultEmaAlpha = 0.2;
 
     // For each column, track EMA and SMA state
     // For objects, we need to track per-component state
@@ -1212,9 +1226,27 @@ export class HistoryAPI {
       const enhancedValues: unknown[] = [];
 
       values.forEach((value, colIndex) => {
+        const pathSpec = pathSpecs[colIndex];
+        const hasSmoothing = pathSpec.smoothing !== undefined;
+
+        // In per-path smoothing mode, only process paths with smoothing defined
+        if (usePerPathSmoothing && !hasSmoothing) {
+          enhancedValues.push(value);
+          return;
+        }
+
+        // Get smoothing parameters
+        const smoothingType = pathSpec.smoothing;
+        const smaPeriod = smoothingType === 'sma' && pathSpec.smoothingParam
+          ? pathSpec.smoothingParam
+          : defaultSmaPeriod;
+        const emaAlpha = smoothingType === 'ema' && pathSpec.smoothingParam
+          ? pathSpec.smoothingParam
+          : defaultEmaAlpha;
+
         // Check if this is an object value (like navigation.position)
         if (value && typeof value === 'object' && !Array.isArray(value)) {
-          // Object with components - calculate EMA/SMA for each numeric component
+          // Object with components - calculate smoothing for each numeric component
           const enhancedObject: any = { ...value };
           const colState = columnStates.get(colIndex)!;
 
@@ -1226,33 +1258,47 @@ export class HistoryAPI {
               }
               const componentState = colState.get(componentName)!;
 
-              // Calculate EMA
-              if (componentState.ema === null) {
-                componentState.ema = componentValue;
+              if (usePerPathSmoothing) {
+                // Per-path mode: only apply the specific smoothing requested
+                if (smoothingType === 'ema') {
+                  if (componentState.ema === null) {
+                    componentState.ema = componentValue;
+                  } else {
+                    componentState.ema = emaAlpha * componentValue + (1 - emaAlpha) * componentState.ema;
+                  }
+                  enhancedObject[componentName] = Math.round(componentState.ema * 1000) / 1000;
+                } else if (smoothingType === 'sma') {
+                  componentState.smaWindow.push(componentValue);
+                  if (componentState.smaWindow.length > smaPeriod) {
+                    componentState.smaWindow = componentState.smaWindow.slice(-smaPeriod);
+                  }
+                  const sma = componentState.smaWindow.reduce((sum, val) => sum + val, 0) / componentState.smaWindow.length;
+                  enhancedObject[componentName] = Math.round(sma * 1000) / 1000;
+                }
               } else {
-                componentState.ema = emaAlpha * componentValue + (1 - emaAlpha) * componentState.ema;
-              }
+                // Global mode: add both EMA and SMA as separate properties
+                if (componentState.ema === null) {
+                  componentState.ema = componentValue;
+                } else {
+                  componentState.ema = defaultEmaAlpha * componentValue + (1 - defaultEmaAlpha) * componentState.ema;
+                }
 
-              // Calculate SMA
-              componentState.smaWindow.push(componentValue);
-              if (componentState.smaWindow.length > smaPeriod) {
-                componentState.smaWindow = componentState.smaWindow.slice(-smaPeriod);
-              }
-              const sma = componentState.smaWindow.reduce((sum, val) => sum + val, 0) / componentState.smaWindow.length;
+                componentState.smaWindow.push(componentValue);
+                if (componentState.smaWindow.length > defaultSmaPeriod) {
+                  componentState.smaWindow = componentState.smaWindow.slice(-defaultSmaPeriod);
+                }
+                const sma = componentState.smaWindow.reduce((sum, val) => sum + val, 0) / componentState.smaWindow.length;
 
-              // Add EMA and SMA to the object with _ema and _sma suffixes
-              enhancedObject[`${componentName}_ema`] = Math.round(componentState.ema * 1000) / 1000;
-              enhancedObject[`${componentName}_sma`] = Math.round(sma * 1000) / 1000;
+                enhancedObject[`${componentName}_ema`] = Math.round(componentState.ema * 1000) / 1000;
+                enhancedObject[`${componentName}_sma`] = Math.round(sma * 1000) / 1000;
+              }
             }
-            // Non-numeric components don't get EMA/SMA
           });
 
           enhancedValues.push(enhancedObject);
 
         } else if (typeof value === 'number' && !isNaN(value)) {
-          // Scalar numeric value - use simple column-based tracking
-          enhancedValues.push(value);
-
+          // Scalar numeric value
           const colState = columnStates.get(colIndex)!;
           const scalarKey = '__scalar__';
 
@@ -1261,29 +1307,54 @@ export class HistoryAPI {
           }
           const componentState = colState.get(scalarKey)!;
 
-          // Calculate EMA
-          if (componentState.ema === null) {
-            componentState.ema = value;
+          if (usePerPathSmoothing) {
+            // Per-path mode: include raw value AND smoothed value
+            enhancedValues.push(value); // Raw value first
+
+            if (smoothingType === 'ema') {
+              if (componentState.ema === null) {
+                componentState.ema = value;
+              } else {
+                componentState.ema = emaAlpha * value + (1 - emaAlpha) * componentState.ema;
+              }
+              enhancedValues.push(Math.round(componentState.ema * 1000) / 1000);
+            } else if (smoothingType === 'sma') {
+              componentState.smaWindow.push(value);
+              if (componentState.smaWindow.length > smaPeriod) {
+                componentState.smaWindow = componentState.smaWindow.slice(-smaPeriod);
+              }
+              const sma = componentState.smaWindow.reduce((sum, val) => sum + val, 0) / componentState.smaWindow.length;
+              enhancedValues.push(Math.round(sma * 1000) / 1000);
+            }
           } else {
-            componentState.ema = emaAlpha * value + (1 - emaAlpha) * componentState.ema;
-          }
+            // Global mode: add value, EMA, and SMA as separate columns
+            enhancedValues.push(value);
 
-          // Calculate SMA
-          componentState.smaWindow.push(value);
-          if (componentState.smaWindow.length > smaPeriod) {
-            componentState.smaWindow = componentState.smaWindow.slice(-smaPeriod);
-          }
-          const sma = componentState.smaWindow.reduce((sum, val) => sum + val, 0) / componentState.smaWindow.length;
+            if (componentState.ema === null) {
+              componentState.ema = value;
+            } else {
+              componentState.ema = defaultEmaAlpha * value + (1 - defaultEmaAlpha) * componentState.ema;
+            }
 
-          // Add EMA and SMA as additional values
-          enhancedValues.push(Math.round(componentState.ema * 1000) / 1000); // EMA
-          enhancedValues.push(Math.round(sma * 1000) / 1000); // SMA
+            componentState.smaWindow.push(value);
+            if (componentState.smaWindow.length > defaultSmaPeriod) {
+              componentState.smaWindow = componentState.smaWindow.slice(-defaultSmaPeriod);
+            }
+            const sma = componentState.smaWindow.reduce((sum, val) => sum + val, 0) / componentState.smaWindow.length;
+
+            enhancedValues.push(Math.round(componentState.ema * 1000) / 1000); // EMA
+            enhancedValues.push(Math.round(sma * 1000) / 1000); // SMA
+          }
 
         } else {
           // Non-numeric, non-object values (null, string, etc.)
           enhancedValues.push(value);
-          enhancedValues.push(null); // EMA
-          enhancedValues.push(null); // SMA
+          if (usePerPathSmoothing && hasSmoothing) {
+            enhancedValues.push(null); // Smoothed value placeholder
+          } else if (!usePerPathSmoothing) {
+            enhancedValues.push(null); // EMA
+            enhancedValues.push(null); // SMA
+          }
         }
       });
 
@@ -1293,12 +1364,28 @@ export class HistoryAPI {
 
   private buildValuesWithMovingAverages(
     pathSpecs: PathSpec[],
-    objectPaths: Set<string>
-  ): Array<{path: Path; method: AggregateMethod}> {
-    const result: Array<{path: Path; method: AggregateMethod}> = [];
+    objectPaths: Set<string>,
+    usePerPathSmoothing: boolean = false
+  ): Array<{path: Path; method: AggregateMethod; smoothing?: string; window?: number}> {
+    const result: Array<{path: Path; method: AggregateMethod; smoothing?: string; window?: number}> = [];
 
-    pathSpecs.forEach(({ path, aggregateMethod }) => {
-      if (objectPaths.has(path)) {
+    pathSpecs.forEach(({ path, aggregateMethod, smoothing, smoothingParam }) => {
+      if (usePerPathSmoothing) {
+        // Per-path smoothing mode
+        // First add the raw value entry
+        result.push({ path, method: aggregateMethod });
+
+        // Then add smoothed entry if smoothing is defined
+        if (smoothing) {
+          const smoothedEntry: {path: Path; method: AggregateMethod; smoothing: string; window: number} = {
+            path,
+            method: aggregateMethod,
+            smoothing,
+            window: smoothingParam !== undefined ? smoothingParam : (smoothing === 'sma' ? 10 : 0.2),
+          };
+          result.push(smoothedEntry);
+        }
+      } else if (objectPaths.has(path)) {
         // Object path - EMA/SMA are embedded in the object as component properties
         // Just add the single path entry
         result.push({ path, method: aggregateMethod });
@@ -1510,12 +1597,28 @@ function splitPathExpression(pathExpression: string): PathSpec {
     aggregateMethod = 'average' as AggregateMethod;
   }
 
+  // Parse smoothing method (parts[2]) and parameter (parts[3])
+  // Syntax: path:aggregateMethod:smoothing:param
+  // Example: navigation.speedOverGround:average:sma:5
+  let smoothing: 'sma' | 'ema' | undefined;
+  let smoothingParam: number | undefined;
+
+  if (parts[2] === 'sma' || parts[2] === 'ema') {
+    smoothing = parts[2];
+    if (parts[3]) {
+      smoothingParam = parseFloat(parts[3]);
+      if (isNaN(smoothingParam)) smoothingParam = undefined;
+    }
+  }
+
   return {
     path: parts[0] as Path,
     queryResultName: parts[0].replace(/\./g, '_'),
     aggregateMethod,
     aggregateFunction:
       (functionForAggregate[aggregateMethod] as string) || 'avg',
+    smoothing,
+    smoothingParam,
   };
 }
 
