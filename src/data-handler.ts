@@ -233,8 +233,9 @@ function shouldExcludeVessel(
 
   try {
     // For vessels.self, use getSelfPath
+    // Cast to any for compatibility with different @signalk/server-api versions
     if (vesselContext === 'vessels.self') {
-      const mmsiData = app.getSelfPath('mmsi');
+      const mmsiData = app.getSelfPath('mmsi') as any;
       if (mmsiData && mmsiData.value) {
         const mmsi = String(mmsiData.value);
         return pathConfig.excludeMMSI.includes(mmsi);
@@ -332,10 +333,11 @@ export function updateDataSubscriptions(
             }
           } else if (targetContext === 'vessels.self') {
             // For vessels.self, check if this is the server's own vessel
+            // Cast to any for compatibility with different @signalk/server-api versions
             const selfContext = app.selfContext;
-            const selfVessel = app.getSelfPath('') || {};
+            const selfVessel = (app.getSelfPath('') as any) || {};
             const selfMMSI = selfVessel.mmsi;
-            const selfUuid = app.getSelfPath('uuid');
+            const selfUuid = app.getSelfPath('uuid') as any;
 
             // Check if the context matches the server's self vessel
             let isSelfVessel = false;
@@ -649,7 +651,8 @@ export function initializeRegimenStates(
   commandPaths.forEach((pathConfig: PathConfig) => {
     try {
       // Get current value from SignalK API
-      const currentData = app.getSelfPath(pathConfig.path);
+      // Cast to any for compatibility with different @signalk/server-api versions
+      const currentData = app.getSelfPath(pathConfig.path) as any;
 
       if (currentData !== undefined && currentData !== null) {
 

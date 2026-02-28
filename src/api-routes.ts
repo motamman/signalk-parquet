@@ -858,7 +858,8 @@ export function registerApiRoutes(
   // Get current vessel position
   router.get('/api/position/current', (_req, res) => {
     try {
-      const position = app.getSelfPath('navigation.position');
+      // Cast to any for compatibility with different @signalk/server-api versions
+      const position = app.getSelfPath('navigation.position') as any;
       if (position && position.value) {
         return res.json({
           success: true,
@@ -1154,7 +1155,8 @@ export function registerApiRoutes(
         }
 
         // Get current value from SignalK
-        const currentValue = app.getSelfPath(`commands.${command}`);
+        // Cast to any for compatibility with different @signalk/server-api versions
+        const currentValue = app.getSelfPath(`commands.${command}`) as any;
 
         return res.json({
           success: true,

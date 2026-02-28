@@ -170,7 +170,8 @@ export class VesselContextManager {
 
     try {
       // Get vessel context (defaults to vessels.self)
-      const vesselContext = this.app.getSelfPath('') || 'vessels.self';
+      // Cast to any for compatibility with different @signalk/server-api versions
+      const vesselContext = (this.app.getSelfPath('') as any) || 'vessels.self';
       
       this.app.debug(`Extracting vessel info from context: ${vesselContext}`);
 
@@ -178,7 +179,8 @@ export class VesselContextManager {
       for (const extraction of VesselContextManager.VESSEL_DATA_PATHS) {
         try {
           // Get value from SignalK path
-          const value = this.app.getSelfPath(extraction.signalkPath);
+          // Cast to any for compatibility with different @signalk/server-api versions
+          const value = this.app.getSelfPath(extraction.signalkPath) as any;
           
           if (value !== null && value !== undefined) {
             // Convert units and handle different data types
@@ -287,9 +289,10 @@ export class VesselContextManager {
 
     try {
       // Try alternative paths for common data
+      // Cast to any for compatibility with different @signalk/server-api versions
       if (!vesselInfo.name) {
-        const altName = this.app.getSelfPath('registrations.national.registration') || 
-                       this.app.getSelfPath('registrations.local.registration');
+        const altName = (this.app.getSelfPath('registrations.national.registration') as any) ||
+                       (this.app.getSelfPath('registrations.local.registration') as any);
         if (altName) {
           vesselInfo.name = altName;
         }
@@ -297,17 +300,17 @@ export class VesselContextManager {
 
       if (!vesselInfo.length) {
         // Try alternative length paths
-        let altLength = this.app.getSelfPath('design.length.hull') || 
-                       this.app.getSelfPath('design.length.waterline');
-                       
+        let altLength = (this.app.getSelfPath('design.length.hull') as any) ||
+                       (this.app.getSelfPath('design.length.waterline') as any);
+
         // If we get the whole length object, try to extract a useful value
         if (!altLength) {
-          const lengthObj = this.app.getSelfPath('design.length');
+          const lengthObj = this.app.getSelfPath('design.length') as any;
           if (lengthObj && typeof lengthObj === 'object') {
             altLength = lengthObj.overall || lengthObj.hull || lengthObj.waterline;
           }
         }
-        
+
         if (altLength && typeof altLength === 'number') {
           vesselInfo.length = altLength;
         }
@@ -315,24 +318,24 @@ export class VesselContextManager {
 
       if (!vesselInfo.draft) {
         // Try alternative draft paths
-        let altDraft = this.app.getSelfPath('design.draft.minimum') || 
-                      this.app.getSelfPath('design.draft.current');
-                      
+        let altDraft = (this.app.getSelfPath('design.draft.minimum') as any) ||
+                      (this.app.getSelfPath('design.draft.current') as any);
+
         // If we get the whole draft object, try to extract a useful value
         if (!altDraft) {
-          const draftObj = this.app.getSelfPath('design.draft');
+          const draftObj = this.app.getSelfPath('design.draft') as any;
           if (draftObj && typeof draftObj === 'object') {
             altDraft = draftObj.maximum || draftObj.minimum || draftObj.current;
           }
         }
-        
+
         if (altDraft && typeof altDraft === 'number') {
           vesselInfo.draft = altDraft;
         }
       }
 
       // Extract additional notes from description fields
-      const description = this.app.getSelfPath('design.description');
+      const description = this.app.getSelfPath('design.description') as any;
       if (description && !vesselInfo.notes) {
         vesselInfo.notes = description;
       }

@@ -85,8 +85,9 @@ export default function (app: ServerAPI): SignalKPlugin {
   ): Promise<void> {
 
     // Get vessel MMSI from SignalK
+    // Cast to any for compatibility with different @signalk/server-api versions
     const vesselMMSI =
-      app.getSelfPath('mmsi') || app.getSelfPath('name') || 'unknown_vessel';
+      (app.getSelfPath('mmsi') as any) || (app.getSelfPath('name') as any) || 'unknown_vessel';
 
     // Use SignalK's application data directory
     const defaultOutputDir = path.join(app.getDataDirPath(), 'signalk-parquet');
@@ -827,7 +828,8 @@ export default function (app: ServerAPI): SignalKPlugin {
   // Get current vessel position from SignalK
   function getCurrentVesselPosition(): { latitude: number; longitude: number; timestamp: Date } | null {
     try {
-      const position = app.getSelfPath('navigation.position');
+      // Cast to any for compatibility with different @signalk/server-api versions
+      const position = app.getSelfPath('navigation.position') as any;
       if (position && position.value && position.value.latitude && position.value.longitude) {
         return {
           latitude: position.value.latitude,
