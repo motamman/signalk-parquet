@@ -1,4 +1,10 @@
-import { ServerAPI, Context, Path, Timestamp, SourceRef } from '@signalk/server-api';
+import {
+  ServerAPI,
+  Context,
+  Path,
+  Timestamp,
+  SourceRef,
+} from '@signalk/server-api';
 import { HistoryAPI } from './HistoryAPI';
 import { AggregateMethod } from './HistoryAPI-types';
 import { ZonedDateTime, ZoneOffset } from '@js-joda/core';
@@ -37,7 +43,10 @@ export class HistoricalStreamingService {
       const now = Date.now();
       if (delta && ((delta as any).subscribe || (delta as any).unsubscribe)) {
         // Only process subscription checks once per second
-        if (now - this.lastSubscriptionCheck > this.SUBSCRIPTION_CHECK_INTERVAL) {
+        if (
+          now - this.lastSubscriptionCheck >
+          this.SUBSCRIPTION_CHECK_INTERVAL
+        ) {
           this.handleSubscriptionRequest(delta);
           this.lastSubscriptionCheck = now;
         }
@@ -45,7 +54,6 @@ export class HistoricalStreamingService {
       next(delta);
     });
   }
-  
 
   private isSubscriptionMessage(delta: any): boolean {
     // Check if this looks like a subscription message
@@ -54,7 +62,6 @@ export class HistoricalStreamingService {
   }
 
   private handleSubscriptionRequest(subscriptionMessage: any) {
-
     if (subscriptionMessage.subscribe) {
       this.handleSubscribe(subscriptionMessage);
     } else if (subscriptionMessage.unsubscribe) {
@@ -64,11 +71,11 @@ export class HistoricalStreamingService {
 
   private handleSubscribe(subscriptionMessage: any) {
     const { context, subscribe } = subscriptionMessage;
-    
+
     if (subscribe && Array.isArray(subscribe)) {
       subscribe.forEach((subscription: any) => {
         const { path } = subscription;
-        
+
         // Check if this is a request for historical data
         if (this.isHistoricalDataPath(path)) {
           this.startHistoricalStream(context, path, subscription);
@@ -84,49 +91,51 @@ export class HistoricalStreamingService {
   private isHistoricalDataPath(path: string): boolean {
     // Define which paths should trigger historical data streaming
     // For now, let's make all navigation paths historical
-    return !!(path && (
-      path.startsWith('navigation.') ||
-      path.startsWith('environment.') ||
-      path.includes('history.')  // Special prefix for historical requests
-    ));
+    return !!(
+      path &&
+      (path.startsWith('navigation.') ||
+        path.startsWith('environment.') ||
+        path.includes('history.')) // Special prefix for historical requests
+    );
   }
 
-  private async startHistoricalStream(context: string, path: string, subscription: any) {
+  private async startHistoricalStream(
+    context: string,
+    path: string,
+    subscription: any
+  ) {
     try {
       // Generate a subscription ID
       const subscriptionId = `historical_${Date.now()}_${Math.random().toString(36).substring(2, 11)}`;
-      
+
       // Store the subscription
       this.activeSubscriptions.set(subscriptionId, {
         context,
         path,
         subscription,
-        startedAt: new Date()
+        startedAt: new Date(),
       });
-
 
       // Stream real historical data from Parquet files
       this.streamHistoricalData(subscriptionId, path);
-
     } catch (error) {
       this.app.error(`Error starting historical stream for ${path}`);
     }
   }
 
   private async streamHistoricalData(_subscriptionId: string, path: string) {
-
     try {
       // Get historical data for the last hour with 30 second resolution
       const to = ZonedDateTime.now(ZoneOffset.UTC);
       const from = to.minusHours(1);
       const timeResolutionMillis = 30000; // 30 seconds
-      
+
       // Create a mock request/response for the HistoryAPI
       const mockReq = {
         query: {
           paths: path,
-          resolution: timeResolutionMillis.toString()
-        }
+          resolution: timeResolutionMillis.toString(),
+        },
       } as any;
 
       const mockRes = {
@@ -135,11 +144,12 @@ export class HistoricalStreamingService {
         },
         status: (code: number) => ({
           json: (error: any) => {
-            this.app.error(`❌ Historical data query failed with status ${code}: ${JSON.stringify(error)}`);
-          }
-        })
+            this.app.error(
+              `❌ Historical data query failed with status ${code}: ${JSON.stringify(error)}`
+            );
+          },
+        }),
       } as any;
-
 
       // Call the HistoryAPI to get real historical data
       await this.historyAPI.getValues(
@@ -157,17 +167,17 @@ export class HistoricalStreamingService {
         mockReq,
         mockRes
       );
-
     } catch (error) {
-      this.app.error(`❌ Error streaming historical data for ${path}: ${error}`);
-      
+      this.app.error(
+        `❌ Error streaming historical data for ${path}: ${error}`
+      );
+
       // Fallback to sample data if real data fails
       this.streamSampleDataFallback(path);
     }
   }
 
   private processHistoricalDataResponse(historyResponse: any, path: string) {
-
     if (!historyResponse.data || historyResponse.data.length === 0) {
       this.streamSampleDataFallback(path);
       return;
@@ -190,30 +200,34 @@ export class HistoricalStreamingService {
           if (value !== null && value !== undefined) {
             const delta = {
               context: this.app.selfContext as Context,
-              updates: [{
-                $source: 'signalk-parquet-historical' as SourceRef,
-                timestamp: timestamp as Timestamp,
-                values: [{
-                  path: path as Path,
-                  value: value
-                }]
-              }]
+              updates: [
+                {
+                  $source: 'signalk-parquet-historical' as SourceRef,
+                  timestamp: timestamp as Timestamp,
+                  values: [
+                    {
+                      path: path as Path,
+                      value: value,
+                    },
+                  ],
+                },
+              ],
             };
 
             try {
               this.app.handleMessage('signalk-parquet-historical', delta);
             } catch (error) {
-              this.app.error(`❌ Error injecting historical data point: ${error}`);
+              this.app.error(
+                `❌ Error injecting historical data point: ${error}`
+              );
             }
           }
         });
       }, batchIndex * 100); // 100ms between batches
     });
-
   }
 
   private streamSampleDataFallback(path: string) {
-    
     const sampleData = [
       { timestamp: new Date(Date.now() - 3600000), value: Math.random() * 100 },
       { timestamp: new Date(Date.now() - 1800000), value: Math.random() * 100 },
@@ -223,14 +237,18 @@ export class HistoricalStreamingService {
     sampleData.forEach((data, index) => {
       const delta = {
         context: this.app.selfContext as Context,
-        updates: [{
-          $source: 'signalk-parquet-historical-sample' as SourceRef,
-          timestamp: data.timestamp.toISOString() as Timestamp,
-          values: [{
-            path: path as Path,
-            value: data.value
-          }]
-        }]
+        updates: [
+          {
+            $source: 'signalk-parquet-historical-sample' as SourceRef,
+            timestamp: data.timestamp.toISOString() as Timestamp,
+            values: [
+              {
+                path: path as Path,
+                value: data.value,
+              },
+            ],
+          },
+        ],
       };
 
       setTimeout(() => {
@@ -281,14 +299,17 @@ export class HistoricalStreamingService {
   public getActiveSubscriptions() {
     return Array.from(this.activeSubscriptions.entries()).map(([id, sub]) => ({
       id,
-      ...sub
+      ...sub,
     }));
   }
 
   // Manual trigger for testing historical data streaming
   public triggerHistoricalStream(path: string) {
     try {
-      this.startHistoricalStream(this.app.selfContext, path, { path, period: 1000 });
+      this.startHistoricalStream(this.app.selfContext, path, {
+        path,
+        period: 1000,
+      });
     } catch (error) {
       this.app.error(`Error in triggerHistoricalStream: ${error}`);
     }
@@ -304,16 +325,21 @@ export class HistoricalStreamingService {
     if (!match) {
       return 60 * 60 * 1000; // 1 hour default
     }
-    
+
     const value = parseInt(match[1]);
     const unit = match[2];
-    
+
     switch (unit) {
-      case 's': return value * 1000;                    // seconds
-      case 'm': return value * 60 * 1000;               // minutes
-      case 'h': return value * 60 * 60 * 1000;          // hours  
-      case 'd': return value * 24 * 60 * 60 * 1000;     // days
-      default: return 60 * 60 * 1000; // 1 hour default
+      case 's':
+        return value * 1000; // seconds
+      case 'm':
+        return value * 60 * 1000; // minutes
+      case 'h':
+        return value * 60 * 60 * 1000; // hours
+      case 'd':
+        return value * 24 * 60 * 60 * 1000; // days
+      default:
+        return 60 * 60 * 1000; // 1 hour default
     }
   }
 
@@ -323,12 +349,12 @@ export class HistoricalStreamingService {
       return;
     }
     this.streamsAlreadyLoaded = true;
-    
+
     try {
       if (fs.existsSync(this.streamsConfigPath)) {
         const data = fs.readFileSync(this.streamsConfigPath, 'utf8');
         const persistedStreams = JSON.parse(data);
-        
+
         if (Array.isArray(persistedStreams)) {
           persistedStreams.forEach((streamConfig, index) => {
             // Restore stream but keep status as stopped initially
@@ -337,18 +363,20 @@ export class HistoricalStreamingService {
               status: 'stopped',
               dataPointsStreamed: 0,
               connectedClients: 0,
-              restoredAt: new Date().toISOString()
+              restoredAt: new Date().toISOString(),
             };
-            
+
             this.streams.set(stream.id, stream);
             this.streamBuffers.set(stream.id, []);
             // Clear timestamp and data to force initial data load after restart
             this.streamLastTimestamps.delete(stream.id);
             this.streamTimeSeriesData.delete(stream.id);
-            
+
             // Debug: Verify timestamp was cleared
-            const timestampAfterClear = this.streamLastTimestamps.get(stream.id);
-            
+            const timestampAfterClear = this.streamLastTimestamps.get(
+              stream.id
+            );
+
             // Auto-start streams that were running when server stopped
             if (streamConfig.autoRestart === true) {
               setTimeout(() => {
@@ -360,11 +388,9 @@ export class HistoricalStreamingService {
               }, 2000); // Wait 2 seconds after startup
             }
           });
-          
         }
       }
-    } catch (error) {
-    }
+    } catch (error) {}
   }
 
   private saveStreamsConfig() {
@@ -378,12 +404,15 @@ export class HistoricalStreamingService {
       // Save all streams with their current state
       const streamsToSave = Array.from(this.streams.values()).map(stream => ({
         ...stream,
-        autoRestart: stream.status === 'running' // Mark running streams for auto-restart
+        autoRestart: stream.status === 'running', // Mark running streams for auto-restart
       }));
-      
-      fs.writeFileSync(this.streamsConfigPath, JSON.stringify(streamsToSave, null, 2), 'utf8');
-    } catch (error) {
-    }
+
+      fs.writeFileSync(
+        this.streamsConfigPath,
+        JSON.stringify(streamsToSave, null, 2),
+        'utf8'
+      );
+    } catch (error) {}
   }
 
   public createStream(streamConfig: any) {
@@ -399,9 +428,10 @@ export class HistoricalStreamingService {
       rate: streamConfig.rate || 5000,
       resolution: streamConfig.resolution || 30000,
       timeRange: streamConfig.timeRange || '1h',
-      aggregateMethod: (streamConfig.aggregateMethod || 'average') as AggregateMethod,
+      aggregateMethod: (streamConfig.aggregateMethod ||
+        'average') as AggregateMethod,
       windowSize: streamConfig.windowSize || 10,
-      ...streamConfig
+      ...streamConfig,
     };
     this.streams.set(streamId, stream);
     this.streamBuffers.set(streamId, []);
@@ -418,33 +448,33 @@ export class HistoricalStreamingService {
     if (!stream) {
       return { success: false, error: 'Stream not found' };
     }
-    
+
     // Prevent duplicate starts
     if (stream.status === 'running') {
       return { success: true, message: 'Stream already running' };
     }
-    
+
     // Clear existing interval if any
     const existingInterval = this.streamIntervals.get(streamId);
     if (existingInterval) {
       clearInterval(existingInterval);
     }
-    
+
     stream.status = 'running';
     stream.startedAt = new Date().toISOString();
     stream.dataPointsStreamed = 0;
     this.saveStreamsConfig();
-    
+
     // Set streaming time window
     const now = new Date();
     const timeRangeDuration = this.parseTimeRange(stream.timeRange || '1h');
     const windowStart = new Date(now.getTime() - timeRangeDuration);
-    
+
     stream.startTime = windowStart.toLocaleTimeString();
     stream.endTime = 'Live'; // For real-time streaming
     stream.actualStartTime = windowStart.toISOString();
     stream.actualEndTime = null; // null means live/ongoing
-    
+
     // Start continuous streaming
     try {
       this.startContinuousStreaming(streamId);
@@ -469,43 +499,56 @@ export class HistoricalStreamingService {
         // Get historical data window with proper time bucketing and statistics
         const historicalDataWindow = await this.getHistoricalDataWindow(
           streamId,
-          stream.path, 
-          stream.resolution, 
+          stream.path,
+          stream.resolution,
           stream.aggregateMethod || ('average' as AggregateMethod),
           stream.timeRange || '1h'
         );
-        
-        if (historicalDataWindow && historicalDataWindow.dataPoints && historicalDataWindow.dataPoints.length > 0) {
+
+        if (
+          historicalDataWindow &&
+          historicalDataWindow.dataPoints &&
+          historicalDataWindow.dataPoints.length > 0
+        ) {
           // Store time-series data points for API access
-          this.storeTimeSeriesData(streamId, historicalDataWindow.dataPoints, historicalDataWindow.isIncremental);
-          
+          this.storeTimeSeriesData(
+            streamId,
+            historicalDataWindow.dataPoints,
+            historicalDataWindow.isIncremental
+          );
+
           // Send all bucketed data points to WebSocket clients
           this.broadcastTimeSeriesData(streamId, historicalDataWindow);
-          
+
           // Update stream statistics
           const dataPointCount = historicalDataWindow.dataPoints.length;
-          stream.dataPointsStreamed = (stream.dataPointsStreamed || 0) + dataPointCount;
+          stream.dataPointsStreamed =
+            (stream.dataPointsStreamed || 0) + dataPointCount;
           stream.lastDataPoint = new Date().toISOString();
           stream.connectedClients = this.connectedClients.size;
           stream.totalBuckets = (stream.totalBuckets || 0) + dataPointCount;
           stream.lastTimeWindow = `${historicalDataWindow.from} to ${historicalDataWindow.to}`;
           stream.isIncremental = historicalDataWindow.isIncremental;
-          
+
           // Get the most recent value for display
-          const latestPoint = historicalDataWindow.dataPoints[historicalDataWindow.dataPoints.length - 1];
+          const latestPoint =
+            historicalDataWindow.dataPoints[
+              historicalDataWindow.dataPoints.length - 1
+            ];
           stream.lastValue = latestPoint.value;
           stream.lastTimestamp = latestPoint.timestamp;
-          
+
           this.streams.set(streamId, stream);
-          
-          const mode = historicalDataWindow.isIncremental ? 'incremental' : 'initial';
-          
+
+          const mode = historicalDataWindow.isIncremental
+            ? 'incremental'
+            : 'initial';
+
           // Mark that initial data was successfully loaded after restoration
           if (!historicalDataWindow.isIncremental && stream.restoredAt) {
             stream.hasInitialDataAfterRestore = true;
             this.streams.set(streamId, stream);
           }
-          
         } else {
           // No new data available - this is normal for incremental streaming
           const lastTimestamp = this.streamLastTimestamps.get(streamId);
@@ -514,7 +557,9 @@ export class HistoricalStreamingService {
           }
         }
       } catch (error) {
-        this.app.error(`Error in continuous streaming for ${streamId}: ${error}`);
+        this.app.error(
+          `Error in continuous streaming for ${streamId}: ${error}`
+        );
       }
     }, stream.rate);
 
@@ -526,7 +571,7 @@ export class HistoricalStreamingService {
       type: 'streamData',
       streamId: streamId,
       timestamp: new Date().toISOString(),
-      data: data
+      data: data,
     });
 
     this.connectedClients.forEach(client => {
@@ -549,13 +594,13 @@ export class HistoricalStreamingService {
         totalPoints: timeSeriesData.totalPoints,
         isIncremental: timeSeriesData.isIncremental || false,
         from: timeSeriesData.from,
-        to: timeSeriesData.to
+        to: timeSeriesData.to,
       },
       data: timeSeriesData.dataPoints.map((point: any) => ({
         timestamp: point.timestamp,
         value: point.value,
-        bucketIndex: point.bucketIndex
-      }))
+        bucketIndex: point.bucketIndex,
+      })),
     });
 
     this.connectedClients.forEach(client => {
@@ -563,10 +608,10 @@ export class HistoricalStreamingService {
         client.send(message);
       }
     });
-    
+
     // Also emit SignalK delta messages for other apps to subscribe to
     this.emitSignalKStreamData(streamId, timeSeriesData);
-    
+
     const mode = timeSeriesData.isIncremental ? 'incremental' : 'initial';
   }
 
@@ -589,41 +634,45 @@ export class HistoricalStreamingService {
       const timeout = setTimeout(() => {
         batch.forEach((point: any) => {
           // Create a SignalK path for the stream data
-          const streamPath = `streaming.${stream.name.replace(/[^a-zA-Z0-9]/g, '_').toLowerCase()}.${stream.aggregateMethod}` as Path;
+          const streamPath =
+            `streaming.${stream.name.replace(/[^a-zA-Z0-9]/g, '_').toLowerCase()}.${stream.aggregateMethod}` as Path;
 
           const delta = {
             context: this.app.selfContext as Context,
-            updates: [{
-              $source: `signalk-parquet-stream-${streamId}` as SourceRef,
-              timestamp: point.timestamp as Timestamp,
-              values: [{
-                path: streamPath,
-                value: {
-                  // Original path being streamed
-                  sourcePath: timeSeriesData.path,
-                  // Statistical aggregate value
-                  statisticalValue: point.value,
-                  // Aggregation method used
-                  method: timeSeriesData.aggregateMethod,
-                  // Time bucket information
-                  bucketIndex: point.bucketIndex,
-                  resolution: timeSeriesData.resolution,
-                  // Stream metadata
-                  streamId: streamId,
-                  streamName: stream.name,
-                  isIncremental: timeSeriesData.isIncremental || false,
-                  // Time range info
-                  windowFrom: timeSeriesData.from,
-                  windowTo: timeSeriesData.to
-                }
-              }]
-            }]
+            updates: [
+              {
+                $source: `signalk-parquet-stream-${streamId}` as SourceRef,
+                timestamp: point.timestamp as Timestamp,
+                values: [
+                  {
+                    path: streamPath,
+                    value: {
+                      // Original path being streamed
+                      sourcePath: timeSeriesData.path,
+                      // Statistical aggregate value
+                      statisticalValue: point.value,
+                      // Aggregation method used
+                      method: timeSeriesData.aggregateMethod,
+                      // Time bucket information
+                      bucketIndex: point.bucketIndex,
+                      resolution: timeSeriesData.resolution,
+                      // Stream metadata
+                      streamId: streamId,
+                      streamName: stream.name,
+                      isIncremental: timeSeriesData.isIncremental || false,
+                      // Time range info
+                      windowFrom: timeSeriesData.from,
+                      windowTo: timeSeriesData.to,
+                    },
+                  },
+                ],
+              },
+            ],
           };
 
           try {
             this.app.handleMessage(`signalk-parquet-stream-${streamId}`, delta);
-          } catch (error) {
-          }
+          } catch (error) {}
         });
       }, batchIndex * 100); // 100ms between batches
       timeouts.push(timeout);
@@ -634,36 +683,46 @@ export class HistoricalStreamingService {
     this.streamTimeouts.set(streamId, [...existingTimeouts, ...timeouts]);
 
     // Also emit stream status/metadata as a separate path
-    const statusPath = `streaming.${stream.name.replace(/[^a-zA-Z0-9]/g, '_').toLowerCase()}.status` as Path;
+    const statusPath =
+      `streaming.${stream.name.replace(/[^a-zA-Z0-9]/g, '_').toLowerCase()}.status` as Path;
     const statusDelta = {
       context: this.app.selfContext as Context,
-      updates: [{
-        $source: `signalk-parquet-stream-${streamId}` as SourceRef,
-        timestamp: new Date().toISOString() as Timestamp,
-        values: [{
-          path: statusPath,
-          value: {
-            streamId: streamId,
-            streamName: stream.name,
-            status: stream.status,
-            sourcePath: timeSeriesData.path,
-            aggregateMethod: timeSeriesData.aggregateMethod,
-            resolution: timeSeriesData.resolution,
-            totalPoints: timeSeriesData.totalPoints,
-            dataPointsStreamed: stream.dataPointsStreamed || 0,
-            lastUpdate: new Date().toISOString()
-          }
-        }]
-      }]
+      updates: [
+        {
+          $source: `signalk-parquet-stream-${streamId}` as SourceRef,
+          timestamp: new Date().toISOString() as Timestamp,
+          values: [
+            {
+              path: statusPath,
+              value: {
+                streamId: streamId,
+                streamName: stream.name,
+                status: stream.status,
+                sourcePath: timeSeriesData.path,
+                aggregateMethod: timeSeriesData.aggregateMethod,
+                resolution: timeSeriesData.resolution,
+                totalPoints: timeSeriesData.totalPoints,
+                dataPointsStreamed: stream.dataPointsStreamed || 0,
+                lastUpdate: new Date().toISOString(),
+              },
+            },
+          ],
+        },
+      ],
     };
 
     try {
       this.app.handleMessage(`signalk-parquet-stream-${streamId}`, statusDelta);
-    } catch (error) {
-    }
+    } catch (error) {}
   }
 
-  private async getHistoricalDataWindow(streamId: string, path: string, resolution: number, aggregateMethod: AggregateMethod, timeRange: string): Promise<any> {
+  private async getHistoricalDataWindow(
+    streamId: string,
+    path: string,
+    resolution: number,
+    aggregateMethod: AggregateMethod,
+    timeRange: string
+  ): Promise<any> {
     try {
       const stream = this.streams.get(streamId);
       if (!stream) {
@@ -672,14 +731,17 @@ export class HistoricalStreamingService {
 
       const to = ZonedDateTime.now(ZoneOffset.UTC);
       const lastTimestamp = this.streamLastTimestamps.get(streamId);
-      
+
       let from: ZonedDateTime;
       let isIncremental = false;
-      
+
       // Debug: Check if stream was restored and should start fresh
       const currentStream = this.streams.get(streamId);
-      const wasRestored = currentStream && currentStream.restoredAt && !currentStream.hasInitialDataAfterRestore;
-      
+      const wasRestored =
+        currentStream &&
+        currentStream.restoredAt &&
+        !currentStream.hasInitialDataAfterRestore;
+
       if (lastTimestamp) {
         // Use sliding window: get new data since last timestamp
         from = ZonedDateTime.parse(lastTimestamp).plusSeconds(1); // Start 1 second after last data
@@ -691,41 +753,43 @@ export class HistoricalStreamingService {
       }
 
       // Skip if time window is too small (less than resolution)
-      const timeDiffMs = to.toInstant().toEpochMilli() - from.toInstant().toEpochMilli();
+      const timeDiffMs =
+        to.toInstant().toEpochMilli() - from.toInstant().toEpochMilli();
       if (timeDiffMs < resolution) {
         return null;
       }
-      
+
       // Create a mock request for HistoryAPI with aggregation method
       const mockReq = {
         query: {
           paths: `${path}:${aggregateMethod}`,
-          resolution: resolution.toString()
-        }
+          resolution: resolution.toString(),
+        },
       } as any;
 
-      return new Promise((resolve) => {
+      return new Promise(resolve => {
         const mockRes = {
           json: (data: any) => {
             if (data.data && data.data.length > 0) {
-              
               // Process all time-bucketed data points
-              const processedData = data.data.map((dataPoint: any, index: number) => {
-                const [timestamp, value] = dataPoint;
-                return {
-                  path: path,
-                  timestamp: timestamp,
-                  value: value,
-                  bucketIndex: index,
-                  aggregateMethod: aggregateMethod,
-                  resolution: resolution
-                };
-              });
+              const processedData = data.data.map(
+                (dataPoint: any, index: number) => {
+                  const [timestamp, value] = dataPoint;
+                  return {
+                    path: path,
+                    timestamp: timestamp,
+                    value: value,
+                    bucketIndex: index,
+                    aggregateMethod: aggregateMethod,
+                    resolution: resolution,
+                  };
+                }
+              );
 
               // Update last timestamp for sliding window
               const lastDataPoint = processedData[processedData.length - 1];
               this.streamLastTimestamps.set(streamId, lastDataPoint.timestamp);
-              
+
               // Return all processed data points
               resolve({
                 path: path,
@@ -736,18 +800,25 @@ export class HistoricalStreamingService {
                 totalPoints: processedData.length,
                 isIncremental: isIncremental,
                 from: from.toString(),
-                to: to.toString()
+                to: to.toString(),
               });
-              
             } else if (!isIncremental) {
               // Generate sample time series only for initial load if no historical data available
-              const sampleData = this.generateSampleTimeSeries(path, from, to, resolution);
-              
+              const sampleData = this.generateSampleTimeSeries(
+                path,
+                from,
+                to,
+                resolution
+              );
+
               // Set last timestamp for sample data
               if (sampleData.length > 0) {
-                this.streamLastTimestamps.set(streamId, sampleData[sampleData.length - 1].timestamp);
+                this.streamLastTimestamps.set(
+                  streamId,
+                  sampleData[sampleData.length - 1].timestamp
+                );
               }
-              
+
               resolve({
                 path: path,
                 aggregateMethod: aggregateMethod,
@@ -757,19 +828,21 @@ export class HistoricalStreamingService {
                 totalPoints: sampleData.length,
                 isIncremental: false,
                 from: from.toString(),
-                to: to.toString()
+                to: to.toString(),
               });
             } else {
               // No new data in incremental mode
               resolve(null);
             }
           },
-          status: () => ({ 
+          status: () => ({
             json: (error: any) => {
-              this.app.error(`❌ Historical data query failed: ${JSON.stringify(error)}`);
+              this.app.error(
+                `❌ Historical data query failed: ${JSON.stringify(error)}`
+              );
               resolve(null);
-            }
-          })
+            },
+          }),
         } as any;
 
         this.historyAPI.getValues(
@@ -793,38 +866,43 @@ export class HistoricalStreamingService {
     }
   }
 
-
-  private generateSampleTimeSeries(path: string, from: ZonedDateTime, to: ZonedDateTime, resolution: number): any[] {
+  private generateSampleTimeSeries(
+    path: string,
+    from: ZonedDateTime,
+    to: ZonedDateTime,
+    resolution: number
+  ): any[] {
     const dataPoints = [];
-    const durationMs = to.toInstant().toEpochMilli() - from.toInstant().toEpochMilli();
+    const durationMs =
+      to.toInstant().toEpochMilli() - from.toInstant().toEpochMilli();
     const numPoints = Math.floor(durationMs / resolution);
-    
-    
+
     for (let i = 0; i < numPoints; i++) {
       const timestamp = from.plusSeconds(Math.floor((i * resolution) / 1000));
       const value = this.generateSampleValue(path, i, numPoints);
-      
+
       dataPoints.push({
         path: path,
         timestamp: timestamp.toString(),
         value: value,
         bucketIndex: i,
         aggregateMethod: 'sample',
-        resolution: resolution
+        resolution: resolution,
       });
     }
-    
+
     return dataPoints;
   }
 
   private generateSampleValue(path: string, index: number, total: number): any {
     const progress = index / total;
-    
+
     switch (path) {
       case 'navigation.position':
         return {
           latitude: 41.329265 + Math.sin(progress * Math.PI * 4) * 0.001,
-          longitude: -72.08793666666666 + Math.cos(progress * Math.PI * 4) * 0.001
+          longitude:
+            -72.08793666666666 + Math.cos(progress * Math.PI * 4) * 0.001,
         };
       case 'environment.wind.speedApparent':
         return 10 + Math.sin(progress * Math.PI * 6) * 5 + Math.random() * 2; // 5-17 m/s with variation
@@ -834,7 +912,6 @@ export class HistoricalStreamingService {
         return 50 + Math.sin(progress * Math.PI * 10) * 25 + Math.random() * 10; // 15-85 with variation
     }
   }
-
 
   public pauseStream(streamId: string) {
     const stream = this.streams.get(streamId);
@@ -915,17 +992,17 @@ export class HistoricalStreamingService {
     if (!stream) {
       return { success: false, error: 'Stream not found' };
     }
-    
+
     // Stop the stream first
     this.stopStream(streamId);
-    
+
     // Clean up stream data
     this.streams.delete(streamId);
     this.streamBuffers.delete(streamId);
     this.streamLastTimestamps.delete(streamId);
     this.streamTimeSeriesData.delete(streamId);
     this.saveStreamsConfig();
-    
+
     return { success: true };
   }
 
@@ -950,7 +1027,7 @@ export class HistoricalStreamingService {
       resolution: streamConfig.resolution || 30000,
       rate: streamConfig.rate || 1000,
       aggregateMethod: streamConfig.aggregateMethod || 'average',
-      windowSize: streamConfig.windowSize || 50
+      windowSize: streamConfig.windowSize || 50,
     };
 
     // Handle custom time range
@@ -972,8 +1049,11 @@ export class HistoricalStreamingService {
 
   public getStreamStats() {
     const streams = Array.from(this.streams.values());
-    const totalDataPoints = streams.reduce((sum, stream) => sum + (stream.dataPointsStreamed || 0), 0);
-    
+    const totalDataPoints = streams.reduce(
+      (sum, stream) => sum + (stream.dataPointsStreamed || 0),
+      0
+    );
+
     return {
       totalStreams: streams.length,
       runningStreams: streams.filter(s => s.status === 'running').length,
@@ -981,7 +1061,7 @@ export class HistoricalStreamingService {
       stoppedStreams: streams.filter(s => s.status === 'stopped').length,
       totalDataPointsStreamed: totalDataPoints,
       connectedClients: this.connectedClients.size,
-      streams: streams
+      streams: streams,
     };
   }
 
@@ -995,23 +1075,31 @@ export class HistoricalStreamingService {
   }
 
   // Time-series data storage and retrieval methods
-  private storeTimeSeriesData(streamId: string, dataPoints: any[], isIncremental: boolean) {
+  private storeTimeSeriesData(
+    streamId: string,
+    dataPoints: any[],
+    isIncremental: boolean
+  ) {
     const stream = this.streams.get(streamId);
     if (!stream) return;
 
     let storedData = this.streamTimeSeriesData.get(streamId) || [];
-    
+
     // Add metadata and moving averages to each data point
     const enrichedDataPoints = this.enrichDataPointsWithMovingAverages(
-      dataPoints, 
-      streamId, 
-      stream, 
-      storedData, 
+      dataPoints,
+      streamId,
+      stream,
+      storedData,
       isIncremental
     );
 
     // Filter out duplicate data points
-    const filteredDataPoints = this.deduplicateDataPoints(enrichedDataPoints, storedData, isIncremental);
+    const filteredDataPoints = this.deduplicateDataPoints(
+      enrichedDataPoints,
+      storedData,
+      isIncremental
+    );
 
     if (filteredDataPoints.length === 0) {
       // No new unique data to add
@@ -1032,10 +1120,13 @@ export class HistoricalStreamingService {
     }
 
     this.streamTimeSeriesData.set(streamId, storedData);
-    
   }
 
-  private deduplicateDataPoints(newDataPoints: any[], existingData: any[], isIncremental: boolean): any[] {
+  private deduplicateDataPoints(
+    newDataPoints: any[],
+    existingData: any[],
+    isIncremental: boolean
+  ): any[] {
     // For initial load, deduplicate within the new data itself
     if (!isIncremental) {
       const seen = new Set<string>();
@@ -1059,41 +1150,43 @@ export class HistoricalStreamingService {
 
     return newDataPoints.filter(point => {
       const key = `${point.timestamp}_${point.value}`;
-      
+
       // Skip if already exists in stored data or in this batch
       if (existingKeys.has(key) || newKeys.has(key)) {
         return false;
       }
-      
+
       newKeys.add(key);
       return true;
     });
   }
 
   private enrichDataPointsWithMovingAverages(
-    dataPoints: any[], 
-    streamId: string, 
-    stream: any, 
-    storedData: any[], 
+    dataPoints: any[],
+    streamId: string,
+    stream: any,
+    storedData: any[],
     isIncremental: boolean
   ): any[] {
     const enrichedPoints: any[] = [];
-    
+
     // Get existing numeric values for SMA calculation
     const existingNumericValues = storedData
       .map(point => point.value)
       .filter(value => typeof value === 'number' && !isNaN(value));
-    
+
     // Get the last EMA value for continuous calculation
-    let currentEma = storedData.length > 0 && typeof storedData[storedData.length - 1].ema === 'number'
-      ? storedData[storedData.length - 1].ema
-      : null;
-    
+    let currentEma =
+      storedData.length > 0 &&
+      typeof storedData[storedData.length - 1].ema === 'number'
+        ? storedData[storedData.length - 1].ema
+        : null;
+
     // For SMA, maintain a rolling window
     let smaValues = [...existingNumericValues];
     const smaPeriod = 10;
     const emaAlpha = 0.2;
-    
+
     for (const point of dataPoints) {
       const enrichedPoint = {
         ...point,
@@ -1102,7 +1195,7 @@ export class HistoricalStreamingService {
         aggregateMethod: stream.aggregateMethod,
         resolution: stream.resolution,
         isIncremental: isIncremental,
-        deliveryTime: new Date().toISOString()
+        deliveryTime: new Date().toISOString(),
       };
 
       // Calculate EMA and SMA for numeric values
@@ -1115,14 +1208,15 @@ export class HistoricalStreamingService {
           // EMA formula: EMA = α * currentValue + (1 - α) * previousEMA
           currentEma = emaAlpha * point.value + (1 - emaAlpha) * currentEma;
         }
-        
+
         // Calculate SMA
         smaValues.push(point.value);
         if (smaValues.length > smaPeriod) {
           smaValues = smaValues.slice(-smaPeriod); // Keep only last N values
         }
-        const sma = smaValues.reduce((sum, val) => sum + val, 0) / smaValues.length;
-        
+        const sma =
+          smaValues.reduce((sum, val) => sum + val, 0) / smaValues.length;
+
         // Round to reasonable precision
         enrichedPoint.ema = Math.round(currentEma * 1000) / 1000;
         enrichedPoint.sma = Math.round(sma * 1000) / 1000;
@@ -1130,17 +1224,19 @@ export class HistoricalStreamingService {
 
       enrichedPoints.push(enrichedPoint);
     }
-    
+
     return enrichedPoints;
   }
 
-
-  public getStreamTimeSeriesData(streamId: string, limit: number = 50): any[] | null {
+  public getStreamTimeSeriesData(
+    streamId: string,
+    limit: number = 50
+  ): any[] | null {
     const data = this.streamTimeSeriesData.get(streamId);
     if (!data) return null;
 
     const limitedData = data.slice(-limit); // Get the LAST N points (most recent)
-    
+
     return limitedData;
   }
 }

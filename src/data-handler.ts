@@ -31,11 +31,14 @@ let S3Client: any,
 
 let appInstance: ServerAPI;
 
-export async function initializeS3(config: PluginConfig, app: ServerAPI): Promise<void> {
+export async function initializeS3(
+  config: PluginConfig,
+  app: ServerAPI
+): Promise<void> {
   appInstance = app;
-  
+
   // Initialize S3 client if enabled
-  
+
   if (config.s3Upload.enabled) {
     // Wait for AWS SDK import to complete
     try {
@@ -66,10 +69,7 @@ export function createS3Client(config: PluginConfig, app: ServerAPI): any {
     };
 
     // Add credentials if provided
-    if (
-      config.s3Upload.accessKeyId &&
-      config.s3Upload.secretAccessKey
-    ) {
+    if (config.s3Upload.accessKeyId && config.s3Upload.secretAccessKey) {
       s3Config.credentials = {
         accessKeyId: config.s3Upload.accessKeyId,
         secretAccessKey: config.s3Upload.secretAccessKey,
@@ -115,12 +115,10 @@ export function subscribeToCommandPaths(
     })),
   };
 
-
   app.subscriptionmanager.subscribe(
     commandSubscription,
     state.unsubscribes,
-    (subscriptionError: unknown) => {
-    },
+    (subscriptionError: unknown) => {},
     (delta: Delta) => {
       // Process each update in the delta
       if (delta.updates) {
@@ -130,7 +128,14 @@ export function subscribeToCommandPaths(
               // O(1) Map lookup instead of O(n) array.find()
               const pathConfig = commandPathsMap.get(valueUpdate.path);
               if (pathConfig) {
-                handleCommandMessage(valueUpdate, pathConfig, config, update, state, app);
+                handleCommandMessage(
+                  valueUpdate,
+                  pathConfig,
+                  config,
+                  update,
+                  state,
+                  app
+                );
               }
             });
           }
@@ -154,7 +159,6 @@ function handleCommandMessage(
   app: ServerAPI
 ): void {
   try {
-
     // Check source filter if specified for commands too
     if (pathConfig.source && pathConfig.source.trim() !== '') {
       const messageSource =
@@ -167,7 +171,6 @@ function handleCommandMessage(
     if (valueUpdate.value !== undefined) {
       const commandName = extractCommandName(pathConfig.path);
       const isActive = Boolean(valueUpdate.value);
-
 
       if (isActive) {
         state.activeRegimens.add(commandName);
@@ -189,8 +192,7 @@ function handleCommandMessage(
           value: valueUpdate.value,
           source: update.source || undefined, // Store as object, serialize at write time
           source_label:
-            update.$source ||
-            (update.source ? update.source.label : undefined),
+            update.$source || (update.source ? update.source.label : undefined),
           source_type: update.source ? update.source.type : undefined,
           source_pgn: update.source ? update.source.pgn : undefined,
           source_src: update.source ? update.source.src : undefined,
@@ -200,8 +202,7 @@ function handleCommandMessage(
         app
       );
     }
-  } catch (error) {
-  }
+  } catch (error) {}
 }
 
 // Helper function to handle wildcard contexts
@@ -244,8 +245,7 @@ function shouldExcludeVessel(
       // For other vessels, we would need to get their MMSI from the delta or other means
       // For now, we'll skip MMSI filtering for other vessels
     }
-  } catch (error) {
-  }
+  } catch (error) {}
 
   return false; // Don't exclude if we can't determine MMSI
 }
@@ -266,16 +266,13 @@ export function updateDataSubscriptions(
   state.unsubscribes = [];
   state.subscribedPaths.clear();
 
-
   // Re-subscribe to command paths
   subscribeToCommandPaths(currentPaths, state, config, app);
 
   // Now subscribe to data paths using currentPaths
   const dataPaths = currentPaths.filter(
     (pathConfig: PathConfig) =>
-      pathConfig &&
-      pathConfig.path &&
-      !pathConfig.path.startsWith('commands.')
+      pathConfig && pathConfig.path && !pathConfig.path.startsWith('commands.')
   );
 
   const shouldSubscribePaths = dataPaths.filter((pathConfig: PathConfig) =>
@@ -304,7 +301,6 @@ export function updateDataSubscriptions(
   // Use app.streambundle approach as recommended by SignalK developer
   // This avoids server arbitration and provides true source filtering
   contextGroups.forEach((pathConfigs, context) => {
-
     pathConfigs.forEach((pathConfig: PathConfig) => {
       // Show MMSI exclusion config for troubleshooting
       if (pathConfig.excludeMMSI && pathConfig.excludeMMSI.length > 0) {
@@ -346,15 +342,9 @@ export function updateDataSubscriptions(
               isSelfVessel = true;
             } else if (normalizedDelta.context === selfContext) {
               isSelfVessel = true;
-            } else if (
-              selfMMSI &&
-              normalizedDelta.context.includes(selfMMSI)
-            ) {
+            } else if (selfMMSI && normalizedDelta.context.includes(selfMMSI)) {
               isSelfVessel = true;
-            } else if (
-              selfUuid &&
-              normalizedDelta.context.includes(selfUuid)
-            ) {
+            } else if (selfUuid && normalizedDelta.context.includes(selfUuid)) {
               isSelfVessel = true;
             }
 
@@ -397,7 +387,6 @@ export function updateDataSubscriptions(
       state.streamSubscriptions = state.streamSubscriptions || [];
       state.streamSubscriptions.push(stream);
       state.subscribedPaths.add(pathConfig.path);
-
     });
   });
 }
@@ -448,10 +437,8 @@ function handleStreamData(
 
     const record: DataRecord = {
       received_timestamp: new Date().toISOString(),
-      signalk_timestamp:
-        normalizedDelta.timestamp || new Date().toISOString(),
-      context:
-        normalizedDelta.context || pathConfig.context || 'vessels.self',
+      signalk_timestamp: normalizedDelta.timestamp || new Date().toISOString(),
+      context: normalizedDelta.context || pathConfig.context || 'vessels.self',
       path: normalizedDelta.path,
       value: null,
       value_json: undefined,
@@ -479,8 +466,16 @@ function handleStreamData(
 
       // Skip if this looks like a meta-only update (only has units, meta, description keys)
       // These are metadata updates, not actual data values
-      const metaOnlyKeys = ['units', 'meta', 'description', 'displayUnits', 'zones', 'timeout'];
-      const isMetaOnly = objKeys.length > 0 && objKeys.every(k => metaOnlyKeys.includes(k));
+      const metaOnlyKeys = [
+        'units',
+        'meta',
+        'description',
+        'displayUnits',
+        'zones',
+        'timeout',
+      ];
+      const isMetaOnly =
+        objKeys.length > 0 && objKeys.every(k => metaOnlyKeys.includes(k));
 
       if (isMetaOnly) {
         // This is a metadata update, not real data - skip it
@@ -506,8 +501,7 @@ function handleStreamData(
     // Use actual context + path as buffer key to separate data from different vessels
     const bufferKey = `${normalizedDelta.context}:${pathConfig.path}`;
     bufferData(bufferKey, record, config, state, app);
-  } catch (error) {
-  }
+  } catch (error) {}
 }
 
 // Buffer data and trigger save if buffer is full
@@ -521,11 +515,15 @@ function bufferData(
   // Use SQLite buffer if enabled
   if (config.useSqliteBuffer) {
     if (!state.sqliteBuffer) {
-      app.error(`[DataHandler] SQLite buffer is enabled but not initialized! Data for ${signalkPath} will be lost.`);
+      app.error(
+        `[DataHandler] SQLite buffer is enabled but not initialized! Data for ${signalkPath} will be lost.`
+      );
       return;
     }
     if (!state.sqliteBuffer.isOpen()) {
-      app.error(`[DataHandler] SQLite buffer is closed! Data for ${signalkPath} will be lost.`);
+      app.error(
+        `[DataHandler] SQLite buffer is closed! Data for ${signalkPath} will be lost.`
+      );
       return;
     }
     state.sqliteBuffer.insert(record);
@@ -553,7 +551,11 @@ function bufferData(
 }
 
 // Save all buffers (called periodically and on shutdown)
-export function saveAllBuffers(config: PluginConfig, state: PluginState, app: ServerAPI): void {
+export function saveAllBuffers(
+  config: PluginConfig,
+  state: PluginState,
+  app: ServerAPI
+): void {
   state.dataBuffers.forEach((buffer, signalkPath) => {
     if (buffer.length > 0) {
       // Extract the actual SignalK path from the buffer key (context:path format)
@@ -620,17 +622,13 @@ async function saveBufferToParquet(
     const filepath = path.join(dirPath, filename);
 
     // Use ParquetWriter to save in the configured format
-    const savedPath = await state.parquetWriter!.writeRecords(
-      filepath,
-      buffer
-    );
+    const savedPath = await state.parquetWriter!.writeRecords(filepath, buffer);
 
     // Upload to S3 if enabled and timing is real-time
     if (config.s3Upload.enabled && config.s3Upload.timing === 'realtime') {
       await uploadToS3(savedPath, config, state, app);
     }
-  } catch (error) {
-  }
+  } catch (error) {}
 }
 
 // Initialize regimen states from current API values at startup
@@ -647,7 +645,6 @@ export function initializeRegimenStates(
       pathConfig.enabled
   );
 
-
   commandPaths.forEach((pathConfig: PathConfig) => {
     try {
       // Get current value from SignalK API
@@ -655,7 +652,6 @@ export function initializeRegimenStates(
       const currentData = app.getSelfPath(pathConfig.path) as any;
 
       if (currentData !== undefined && currentData !== null) {
-
         // Check if there's source information
         const shouldProcess = true;
 
@@ -663,7 +659,6 @@ export function initializeRegimenStates(
         if (pathConfig.source && pathConfig.source.trim() !== '') {
           // For startup, we need to check the API source info
           // This is a simplified check - in real deltas we get more source info
-
           // For now, we'll process the value if it exists and log a warning
           // In practice, you might want to check the source here too
         }
@@ -671,7 +666,6 @@ export function initializeRegimenStates(
         if (shouldProcess && currentData.value !== undefined) {
           const commandName = extractCommandName(pathConfig.path);
           const isActive = Boolean(currentData.value);
-
 
           if (isActive) {
             state.activeRegimens.add(commandName);
@@ -681,16 +675,17 @@ export function initializeRegimenStates(
         }
       } else {
       }
-    } catch (error) {
-    }
+    } catch (error) {}
   });
-
 }
 
 // Startup consolidation for missed previous days (last 7 days, excludes current day)
-export async function consolidateMissedDays(config: PluginConfig, state: PluginState, app: ServerAPI): Promise<void> {
+export async function consolidateMissedDays(
+  config: PluginConfig,
+  state: PluginState,
+  app: ServerAPI
+): Promise<void> {
   try {
-
     const outputDir = config.outputDirectory;
     if (!(await fs.pathExists(outputDir))) {
       return;
@@ -711,11 +706,16 @@ export async function consolidateMissedDays(config: PluginConfig, state: PluginS
       const dateStr = targetDate.toISOString().slice(0, 10); // "2025-07-14"
 
       // Targeted glob: only match files from this specific date
-      const datePattern = path.join(outputDir, `**/${prefix}_${dateStr}T*.parquet`);
+      const datePattern = path.join(
+        outputDir,
+        `**/${prefix}_${dateStr}T*.parquet`
+      );
       const filesForDate = await glob(datePattern);
 
       // Check if there are unconsolidated files for this date
-      const hasUnconsolidatedFiles = filesForDate.some(f => !f.includes('_consolidated.parquet'));
+      const hasUnconsolidatedFiles = filesForDate.some(
+        f => !f.includes('_consolidated.parquet')
+      );
 
       if (hasUnconsolidatedFiles) {
         datesNeedingConsolidation.add(dateStr);
@@ -733,16 +733,13 @@ export async function consolidateMissedDays(config: PluginConfig, state: PluginS
         parseInt(dayStr)
       );
 
-
       const consolidatedCount = await state.parquetWriter!.consolidateDaily(
         config.outputDirectory,
         date,
         config.filenamePrefix
       );
 
-
       if (consolidatedCount > 0) {
-
         // Upload consolidated files to S3 if enabled and timing is consolidation
         if (
           config.s3Upload.enabled &&
@@ -764,7 +761,11 @@ export async function consolidateMissedDays(config: PluginConfig, state: PluginS
 }
 
 // Daily consolidation function
-export async function consolidateYesterday(config: PluginConfig, state: PluginState, app: ServerAPI): Promise<void> {
+export async function consolidateYesterday(
+  config: PluginConfig,
+  state: PluginState,
+  app: ServerAPI
+): Promise<void> {
   try {
     const yesterday = new Date();
     yesterday.setUTCDate(yesterday.getUTCDate() - 1);
@@ -775,9 +776,7 @@ export async function consolidateYesterday(config: PluginConfig, state: PluginSt
       config.filenamePrefix
     );
 
-
     if (consolidatedCount > 0) {
-
       // Upload consolidated files to S3 if enabled and timing is consolidation
       if (
         config.s3Upload.enabled &&
@@ -787,7 +786,9 @@ export async function consolidateYesterday(config: PluginConfig, state: PluginSt
       }
     }
   } catch (error) {
-    app.error(`Failed to consolidate yesterday's files: ${(error as Error).message}`);
+    app.error(
+      `Failed to consolidate yesterday's files: ${(error as Error).message}`
+    );
     app.debug(`Consolidation error stack: ${(error as Error).stack}`);
   }
 }
@@ -827,7 +828,9 @@ export async function uploadAllConsolidatedFilesToS3(
     }
 
     if (uploadedCount > 0) {
-      app.debug(`S3 catchup: uploaded ${uploadedCount} consolidated files from last ${daysToCheck} days`);
+      app.debug(
+        `S3 catchup: uploaded ${uploadedCount} consolidated files from last ${daysToCheck} days`
+      );
     }
   } catch (error) {
     app.error(`S3 catchup upload failed: ${(error as Error).message}`);
@@ -845,7 +848,6 @@ async function uploadConsolidatedFilesToS3(
     const dateStr = date.toISOString().split('T')[0];
     const consolidatedPattern = `**/*_${dateStr}_consolidated.parquet`;
 
-
     // Find all consolidated files for the date
     const consolidatedFiles = await glob(consolidatedPattern, {
       cwd: config.outputDirectory,
@@ -853,13 +855,11 @@ async function uploadConsolidatedFilesToS3(
       nodir: true,
     });
 
-
     // Upload each consolidated file
     for (const filePath of consolidatedFiles) {
       await uploadToS3(filePath, config, state, app);
     }
-  } catch (error) {
-  }
+  } catch (error) {}
 }
 
 // S3 upload function

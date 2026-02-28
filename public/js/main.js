@@ -59,7 +59,6 @@ registerGlobals({
   loadAvailablePaths: PathBrowser.loadAvailablePaths,
   updateSelectedPath: PathBrowser.updateSelectedPath,
   generateQueryForSelectedPath: PathBrowser.generateQueryForSelectedPath,
-  analyzeSelectedPath: PathBrowser.analyzeSelectedPath,
   generateExampleQueries: PathBrowser.generateExampleQueries,
   executeQuery: DataPaths.executeQuery,
   executeDataPathsQuery: DataPaths.executeDataPathsQuery,

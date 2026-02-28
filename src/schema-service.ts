@@ -51,13 +51,20 @@ export class SchemaService {
    * CORE SCHEMA DETECTION LOGIC
    * Extracted and consolidated from createParquetSchema() in parquet-writer.ts
    */
-  async detectOptimalSchema(records: DataRecord[], currentPath?: string): Promise<SchemaDetectionResult> {
+  async detectOptimalSchema(
+    records: DataRecord[],
+    currentPath?: string
+  ): Promise<SchemaDetectionResult> {
     if (!parquet || records.length === 0) {
-      this.app?.debug('SchemaService: No parquet lib or empty records, throwing error');
+      this.app?.debug(
+        'SchemaService: No parquet lib or empty records, throwing error'
+      );
       throw new Error('Cannot create Parquet schema');
     }
 
-    this.app?.debug(`🔍 Schema Detection: Starting for ${records.length} records`);
+    this.app?.debug(
+      `🔍 Schema Detection: Starting for ${records.length} records`
+    );
     this.app?.debug(`📍 Current Path: ${currentPath || 'unknown'}`);
 
     // Find all unique column names
@@ -72,8 +79,11 @@ export class SchemaService {
     const schemaFields: { [key: string]: ParquetField } = {};
 
     // Determine if this is an exploded file
-    const hasExplodedFields = columns.some(colName =>
-      colName.startsWith('value_') && colName !== 'value' && colName !== 'value_json'
+    const hasExplodedFields = columns.some(
+      colName =>
+        colName.startsWith('value_') &&
+        colName !== 'value' &&
+        colName !== 'value_json'
     );
     const isExplodedFile = hasExplodedFields;
     this.app?.debug(`🔍 Schema Detection: isExplodedFile = ${isExplodedFile}`);
@@ -90,15 +100,24 @@ export class SchemaService {
 
       // Skip value field in exploded files
       if (isExplodedFile && colName === 'value') {
-        this.app?.debug(`  ⏭️ ${colName}: Skipped in exploded file (always empty)`);
+        this.app?.debug(
+          `  ⏭️ ${colName}: Skipped in exploded file (always empty)`
+        );
         continue;
       }
 
       // Force timestamps, metadata, and source columns to UTF8
-      if (colName === 'received_timestamp' || colName === 'signalk_timestamp' ||
-          colName === 'meta' || colName.startsWith('source') ||
-          colName === 'context' || colName === 'path') {
-        this.app?.debug(`  ⏰ ${colName}: Forced to UTF8 (timestamp/meta/source/context/path rule)`);
+      if (
+        colName === 'received_timestamp' ||
+        colName === 'signalk_timestamp' ||
+        colName === 'meta' ||
+        colName.startsWith('source') ||
+        colName === 'context' ||
+        colName === 'path'
+      ) {
+        this.app?.debug(
+          `  ⏰ ${colName}: Forced to UTF8 (timestamp/meta/source/context/path rule)`
+        );
         schemaFields[colName] = { type: 'UTF8', optional: true };
         continue;
       }
@@ -108,7 +127,9 @@ export class SchemaService {
         .map(r => (r as any)[colName])
         .filter(v => v !== null && v !== undefined);
 
-      this.app?.debug(`  📊 ${colName}: ${values.length}/${records.length} non-null values`);
+      this.app?.debug(
+        `  📊 ${colName}: ${values.length}/${records.length} non-null values`
+      );
 
       // Handle BIGINT fields (BIGINT -> DOUBLE)
       const hasBigInts = values.some(v => typeof v === 'bigint');
@@ -162,16 +183,31 @@ export class SchemaService {
           this.app?.debug(`  🔍 ${colName}: Using metadata fallback`);
           try {
             const metadata = this.app?.getMetadata(currentPath) as any;
-            if (metadata && metadata.units &&
-                (metadata.units === 'm' || metadata.units === 'deg' || metadata.units === 'm/s' ||
-                 metadata.units === 'rad' || metadata.units === 'K' || metadata.units === 'Pa' ||
-                 metadata.units === 'V' || metadata.units === 'A' || metadata.units === 'Hz' ||
-                 metadata.units === 'ratio' || metadata.units === 'kg' || metadata.units === 'J')) {
+            if (
+              metadata &&
+              metadata.units &&
+              (metadata.units === 'm' ||
+                metadata.units === 'deg' ||
+                metadata.units === 'm/s' ||
+                metadata.units === 'rad' ||
+                metadata.units === 'K' ||
+                metadata.units === 'Pa' ||
+                metadata.units === 'V' ||
+                metadata.units === 'A' ||
+                metadata.units === 'Hz' ||
+                metadata.units === 'ratio' ||
+                metadata.units === 'kg' ||
+                metadata.units === 'J')
+            ) {
               schemaType = 'DOUBLE';
-              this.app?.debug(`  ✅ ${colName}: DOUBLE (from metadata units: ${metadata.units})`);
+              this.app?.debug(
+                `  ✅ ${colName}: DOUBLE (from metadata units: ${metadata.units})`
+              );
             } else {
               schemaType = 'UTF8';
-              this.app?.debug(`  ✅ ${colName}: UTF8 (metadata has no numeric units)`);
+              this.app?.debug(
+                `  ✅ ${colName}: UTF8 (metadata has no numeric units)`
+              );
             }
           } catch (metadataError) {
             schemaType = 'UTF8';
@@ -187,12 +223,14 @@ export class SchemaService {
     }
 
     const finalSchema = new parquet.ParquetSchema(schemaFields);
-    this.app?.debug(`🎯 Schema Detection: Complete. Final schema has ${Object.keys(schemaFields).length} fields`);
+    this.app?.debug(
+      `🎯 Schema Detection: Complete. Final schema has ${Object.keys(schemaFields).length} fields`
+    );
 
     return {
       schema: finalSchema,
       isExplodedFile,
-      fieldCount: Object.keys(schemaFields).length
+      fieldCount: Object.keys(schemaFields).length,
     };
   }
 
@@ -216,7 +254,7 @@ export class SchemaService {
           isValid: false,
           violations: ['No schema found'],
           isExplodedFile: false,
-          hasSchema: false
+          hasSchema: false,
         };
       }
 
@@ -224,15 +262,23 @@ export class SchemaService {
       const violations: string[] = [];
 
       // Check timestamps
-      const receivedTimestamp = fields.received_timestamp ? fields.received_timestamp.type : 'MISSING';
-      const signalkTimestamp = fields.signalk_timestamp ? fields.signalk_timestamp.type : 'MISSING';
+      const receivedTimestamp = fields.received_timestamp
+        ? fields.received_timestamp.type
+        : 'MISSING';
+      const signalkTimestamp = fields.signalk_timestamp
+        ? fields.signalk_timestamp.type
+        : 'MISSING';
 
       // Rule 1: Timestamps should be UTF8/VARCHAR
       if (receivedTimestamp !== 'UTF8' && receivedTimestamp !== 'MISSING') {
-        violations.push(`received_timestamp should be UTF8, got ${receivedTimestamp}`);
+        violations.push(
+          `received_timestamp should be UTF8, got ${receivedTimestamp}`
+        );
       }
       if (signalkTimestamp !== 'UTF8' && signalkTimestamp !== 'MISSING') {
-        violations.push(`signalk_timestamp should be UTF8, got ${signalkTimestamp}`);
+        violations.push(
+          `signalk_timestamp should be UTF8, got ${signalkTimestamp}`
+        );
       }
 
       // Find all value fields
@@ -244,13 +290,21 @@ export class SchemaService {
       });
 
       // Determine if this is an exploded file
-      const isExplodedFile = Object.keys(valueFields).some(fieldName =>
-        fieldName.startsWith('value_') && fieldName !== 'value' && fieldName !== 'value_json'
+      const isExplodedFile = Object.keys(valueFields).some(
+        fieldName =>
+          fieldName.startsWith('value_') &&
+          fieldName !== 'value' &&
+          fieldName !== 'value_json'
       );
 
       // Extract SignalK path for metadata lookup
-      const relativePath = path.relative(path.dirname(path.dirname(filePath)), filePath);
-      const pathMatch = relativePath.match(/vessels\/[^/]+\/(.+?)\/[^/]*\.parquet$/);
+      const relativePath = path.relative(
+        path.dirname(path.dirname(filePath)),
+        filePath
+      );
+      const pathMatch = relativePath.match(
+        /vessels\/[^/]+\/(.+?)\/[^/]*\.parquet$/
+      );
       const signalkPath = pathMatch ? pathMatch[1].replace(/\//g, '.') : '';
 
       // Read sample data for content analysis
@@ -266,7 +320,9 @@ export class SchemaService {
         }
         await sampleReader.close();
       } catch (error) {
-        this.app?.debug(`⚠️ Could not read sample data for validation: ${(error as Error).message}`);
+        this.app?.debug(
+          `⚠️ Could not read sample data for validation: ${(error as Error).message}`
+        );
         sampleRecords = [];
       }
 
@@ -310,9 +366,13 @@ export class SchemaService {
 
               if (allNumeric && values.length > 0) {
                 shouldBeNumeric = true;
-                violations.push(`${fieldName} contains numbers but is ${fieldType}, should be DOUBLE`);
+                violations.push(
+                  `${fieldName} contains numbers but is ${fieldType}, should be DOUBLE`
+                );
               } else if (allBoolean && values.length > 0) {
-                violations.push(`${fieldName} contains booleans but is ${fieldType}, should be BOOLEAN`);
+                violations.push(
+                  `${fieldName} contains booleans but is ${fieldType}, should be BOOLEAN`
+                );
               }
             }
           }
@@ -324,12 +384,25 @@ export class SchemaService {
             if (!isExplodedField && signalkPath) {
               try {
                 const metadata = this.app?.getMetadata(signalkPath) as any;
-                if (metadata && metadata.units &&
-                    (metadata.units === 'm' || metadata.units === 'deg' || metadata.units === 'm/s' ||
-                     metadata.units === 'rad' || metadata.units === 'K' || metadata.units === 'Pa' ||
-                     metadata.units === 'V' || metadata.units === 'A' || metadata.units === 'Hz' ||
-                     metadata.units === 'ratio' || metadata.units === 'kg' || metadata.units === 'J')) {
-                  violations.push(`${fieldName} has numeric units (${metadata.units}) but is ${fieldType}, should be DOUBLE`);
+                if (
+                  metadata &&
+                  metadata.units &&
+                  (metadata.units === 'm' ||
+                    metadata.units === 'deg' ||
+                    metadata.units === 'm/s' ||
+                    metadata.units === 'rad' ||
+                    metadata.units === 'K' ||
+                    metadata.units === 'Pa' ||
+                    metadata.units === 'V' ||
+                    metadata.units === 'A' ||
+                    metadata.units === 'Hz' ||
+                    metadata.units === 'ratio' ||
+                    metadata.units === 'kg' ||
+                    metadata.units === 'J')
+                ) {
+                  violations.push(
+                    `${fieldName} has numeric units (${metadata.units}) but is ${fieldType}, should be DOUBLE`
+                  );
                 }
               } catch (metadataError) {
                 // Metadata lookup failed, no violation flagged
@@ -348,16 +421,17 @@ export class SchemaService {
         isValid: violations.length === 0,
         violations,
         isExplodedFile,
-        hasSchema: true
+        hasSchema: true,
       };
-
     } catch (error) {
-      this.app?.debug(`Error validating ${filePath}: ${(error as Error).message}`);
+      this.app?.debug(
+        `Error validating ${filePath}: ${(error as Error).message}`
+      );
       return {
         isValid: false,
         violations: [`ERROR - ${(error as Error).message}`],
         isExplodedFile: false,
-        hasSchema: false
+        hasSchema: false,
       };
     }
   }
@@ -366,7 +440,10 @@ export class SchemaService {
    * SCHEMA REPAIR LOGIC
    * Extracted and consolidated from repair logic in api-routes.ts
    */
-  async repairFileSchema(filePath: string, filenamePrefix: string = 'signalk_data'): Promise<RepairResult> {
+  async repairFileSchema(
+    filePath: string,
+    filenamePrefix: string = 'signalk_data'
+  ): Promise<RepairResult> {
     try {
       if (!parquet) {
         throw new Error('ParquetJS not available');
@@ -378,7 +455,7 @@ export class SchemaService {
       if (validation.isValid) {
         return {
           needsRepair: false,
-          violations: []
+          violations: [],
         };
       }
 
@@ -387,7 +464,10 @@ export class SchemaService {
       await fs.mkdir(backupDir, { recursive: true });
 
       const originalFilename = path.basename(filePath);
-      const backupFilename = originalFilename.replace('.parquet', '_BACKUP.parquet');
+      const backupFilename = originalFilename.replace(
+        '.parquet',
+        '_BACKUP.parquet'
+      );
       const backupPath = path.join(backupDir, backupFilename);
 
       // Create backup
@@ -406,23 +486,34 @@ export class SchemaService {
       if (records.length === 0) {
         return {
           needsRepair: false,
-          violations: ['File contains no data']
+          violations: ['File contains no data'],
         };
       }
 
       // Extract SignalK path for schema detection
-      const relativePath = path.relative(path.dirname(path.dirname(filePath)), filePath);
-      const pathMatch = relativePath.match(/vessels\/[^/]+\/(.+?)\/[^/]*\.parquet$/);
+      const relativePath = path.relative(
+        path.dirname(path.dirname(filePath)),
+        filePath
+      );
+      const pathMatch = relativePath.match(
+        /vessels\/[^/]+\/(.+?)\/[^/]*\.parquet$/
+      );
       const signalkPath = pathMatch ? pathMatch[1].replace(/\//g, '.') : '';
 
       // Generate optimal schema for the data
       const schemaResult = await this.detectOptimalSchema(records, signalkPath);
 
       // Write repaired file with correct schema
-      const repairedFilename = originalFilename.replace('.parquet', '_REPAIRED.parquet');
+      const repairedFilename = originalFilename.replace(
+        '.parquet',
+        '_REPAIRED.parquet'
+      );
       const repairedPath = path.join(backupDir, repairedFilename);
 
-      const writer = await parquet.ParquetWriter.openFile(schemaResult.schema, repairedPath);
+      const writer = await parquet.ParquetWriter.openFile(
+        schemaResult.schema,
+        repairedPath
+      );
 
       for (const record of records) {
         // Prepare record for typed Parquet schema
@@ -463,14 +554,15 @@ export class SchemaService {
         needsRepair: true,
         violations: validation.violations,
         repairedFilePath: repairedPath,
-        backupFilePath: backupPath
+        backupFilePath: backupPath,
       };
-
     } catch (error) {
-      this.app?.debug(`Error repairing ${filePath}: ${(error as Error).message}`);
+      this.app?.debug(
+        `Error repairing ${filePath}: ${(error as Error).message}`
+      );
       return {
         needsRepair: false,
-        violations: [`REPAIR ERROR - ${(error as Error).message}`]
+        violations: [`REPAIR ERROR - ${(error as Error).message}`],
       };
     }
   }

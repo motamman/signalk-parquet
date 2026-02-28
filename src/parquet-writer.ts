@@ -145,7 +145,6 @@ export class ParquetWriter {
         return await this.writeJSON(filepath, records);
       }
 
-
       // Extract path from records for intelligent schema detection
       const currentPath = records.length > 0 ? records[0].path : undefined;
 
@@ -190,11 +189,18 @@ export class ParquetWriter {
         // Move invalid file to quarantine and log
         const quarantineDir = path.join(path.dirname(filepath), 'quarantine');
         await fs.ensureDir(quarantineDir);
-        const quarantineFile = path.join(quarantineDir, path.basename(filepath));
+        const quarantineFile = path.join(
+          quarantineDir,
+          path.basename(filepath)
+        );
         await fs.move(filepath, quarantineFile);
-        
-        await this.logQuarantine(quarantineFile, 'write', 'File failed validation after write');
-        
+
+        await this.logQuarantine(
+          quarantineFile,
+          'write',
+          'File failed validation after write'
+        );
+
         throw new Error(
           `Parquet file failed validation after write, moved to quarantine: ${quarantineFile}`
         );
@@ -232,12 +238,18 @@ export class ParquetWriter {
   // Create Parquet schema based on sample records
   // Now uses consolidated SchemaService
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  async createParquetSchema(records: DataRecord[], currentPath?: string): Promise<any> {
+  async createParquetSchema(
+    records: DataRecord[],
+    currentPath?: string
+  ): Promise<any> {
     if (!this.schemaService) {
       throw new Error('SchemaService not available');
     }
 
-    const result = await this.schemaService.detectOptimalSchema(records, currentPath);
+    const result = await this.schemaService.detectOptimalSchema(
+      records,
+      currentPath
+    );
     return result.schema;
   }
 
@@ -249,7 +261,9 @@ export class ParquetWriter {
     metadataCache?: Map<string, any>,
     filenamePrefix?: string
   ): Promise<string> {
-    this.app?.debug(`    🔍 Empty column fallback for: ${colName} (path: ${currentPath || 'unknown'})`);
+    this.app?.debug(
+      `    🔍 Empty column fallback for: ${colName} (path: ${currentPath || 'unknown'})`
+    );
 
     // For non-value columns, default to UTF8
     if (colName !== 'value') {
@@ -259,24 +273,36 @@ export class ParquetWriter {
 
     // Try SignalK metadata first
     if (currentPath && this.app && metadataCache) {
-      this.app?.debug(`    🔎 Checking SignalK metadata for path: ${currentPath}`);
+      this.app?.debug(
+        `    🔎 Checking SignalK metadata for path: ${currentPath}`
+      );
 
       if (!metadataCache.has(currentPath)) {
         try {
-          this.app?.debug(`    🔍 Trying metadata lookup for path: "${currentPath}"`);
+          this.app?.debug(
+            `    🔍 Trying metadata lookup for path: "${currentPath}"`
+          );
 
           // Use app's getMetadata method
           let metadata = null;
           try {
             metadata = this.app.getMetadata(currentPath);
-            this.app?.debug(`    📡 Metadata result: ${metadata ? JSON.stringify(metadata) : 'null'}`);
+            this.app?.debug(
+              `    📡 Metadata result: ${metadata ? JSON.stringify(metadata) : 'null'}`
+            );
           } catch (error) {
-            this.app?.debug(`    ❌ Metadata lookup error: ${(error as Error).message}`);
+            this.app?.debug(
+              `    ❌ Metadata lookup error: ${(error as Error).message}`
+            );
           }
           metadataCache.set(currentPath, metadata);
-          this.app?.debug(`    📡 Retrieved metadata: ${metadata ? JSON.stringify(metadata) : 'null'}`);
+          this.app?.debug(
+            `    📡 Retrieved metadata: ${metadata ? JSON.stringify(metadata) : 'null'}`
+          );
         } catch (error) {
-          this.app?.debug(`    ❌ Metadata API call failed: ${(error as Error).message}`);
+          this.app?.debug(
+            `    ❌ Metadata API call failed: ${(error as Error).message}`
+          );
           metadataCache.set(currentPath, null);
         }
       } else {
@@ -286,16 +312,35 @@ export class ParquetWriter {
       const metadata = metadataCache.get(currentPath);
       if (metadata && metadata.units) {
         // If metadata suggests numeric units (m/s, degrees, etc.), assume numeric
-        const numericUnits = ['m/s', 'm', 'deg', 'rad', 'Pa', 'K', 'Hz', 'V', 'A', 'W'];
-        const matchedUnit = numericUnits.find(unit => metadata.units.includes(unit));
+        const numericUnits = [
+          'm/s',
+          'm',
+          'deg',
+          'rad',
+          'Pa',
+          'K',
+          'Hz',
+          'V',
+          'A',
+          'W',
+        ];
+        const matchedUnit = numericUnits.find(unit =>
+          metadata.units.includes(unit)
+        );
         if (matchedUnit) {
-          this.app?.debug(`    ✅ Metadata indicates numeric unit '${matchedUnit}', using DOUBLE`);
+          this.app?.debug(
+            `    ✅ Metadata indicates numeric unit '${matchedUnit}', using DOUBLE`
+          );
           return 'DOUBLE';
         } else {
-          this.app?.debug(`    ↪️ Metadata has units '${metadata.units}' but not recognized as numeric`);
+          this.app?.debug(
+            `    ↪️ Metadata has units '${metadata.units}' but not recognized as numeric`
+          );
         }
       } else {
-        this.app?.debug(`    ↪️ No useful metadata found (metadata: ${!!metadata}, units: ${metadata?.units})`);
+        this.app?.debug(
+          `    ↪️ No useful metadata found (metadata: ${!!metadata}, units: ${metadata?.units})`
+        );
       }
     }
 
@@ -318,8 +363,17 @@ export class ParquetWriter {
   }
 
   // Guideline 4: Get type for exploded value_ fields by parsing actual values
-  private async getTypeForExplodedField(colName: string, currentPath?: string, outputDirectory?: string, values?: any[], metadataCache?: Map<string, any>, filenamePrefix?: string): Promise<string> {
-    this.app?.debug(`    🧩 Exploded field analysis for: ${colName} (path: ${currentPath || 'unknown'})`);
+  private async getTypeForExplodedField(
+    colName: string,
+    currentPath?: string,
+    outputDirectory?: string,
+    values?: any[],
+    metadataCache?: Map<string, any>,
+    filenamePrefix?: string
+  ): Promise<string> {
+    this.app?.debug(
+      `    🧩 Exploded field analysis for: ${colName} (path: ${currentPath || 'unknown'})`
+    );
 
     // Always keep value_json as VARCHAR
     if (colName === 'value_json') {
@@ -350,28 +404,59 @@ export class ParquetWriter {
         }
       }
 
-      const hasNumbers = values.some(v => typeof v === 'number') || parsedNumbers > 0;
-      const hasStrings = values.some(v => typeof v === 'string' && v.trim() !== '' && isNaN(Number(v.trim())) && v.trim() !== 'true' && v.trim() !== 'false') || actualStrings > 0;
-      const hasBooleans = values.some(v => typeof v === 'boolean') || parsedBooleans > 0;
+      const hasNumbers =
+        values.some(v => typeof v === 'number') || parsedNumbers > 0;
+      const hasStrings =
+        values.some(
+          v =>
+            typeof v === 'string' &&
+            v.trim() !== '' &&
+            isNaN(Number(v.trim())) &&
+            v.trim() !== 'true' &&
+            v.trim() !== 'false'
+        ) || actualStrings > 0;
+      const hasBooleans =
+        values.some(v => typeof v === 'boolean') || parsedBooleans > 0;
 
-      this.app?.debug(`    🧮 ${colName}: Parsed - numbers:${parsedNumbers}, booleans:${parsedBooleans}, strings:${actualStrings}, unparseable:${unparseable}`);
-      this.app?.debug(`    🧮 ${colName}: Final - hasNumbers:${hasNumbers}, hasStrings:${hasStrings}, hasBooleans:${hasBooleans}`);
+      this.app?.debug(
+        `    🧮 ${colName}: Parsed - numbers:${parsedNumbers}, booleans:${parsedBooleans}, strings:${actualStrings}, unparseable:${unparseable}`
+      );
+      this.app?.debug(
+        `    🧮 ${colName}: Final - hasNumbers:${hasNumbers}, hasStrings:${hasStrings}, hasBooleans:${hasBooleans}`
+      );
 
       if (hasNumbers && !hasStrings && !hasBooleans) {
         // All numbers - check if integers or floats
         // Always use DOUBLE for numeric maritime data (never INT64/BIGINT)
         const finalType = 'DOUBLE';
-        this.app?.debug(`    ✅ ${colName}: ${finalType} (parsed numbers, always DOUBLE for maritime data)`);
+        this.app?.debug(
+          `    ✅ ${colName}: ${finalType} (parsed numbers, always DOUBLE for maritime data)`
+        );
         return finalType;
       } else if (hasBooleans && !hasNumbers && !hasStrings) {
         this.app?.debug(`    ✅ ${colName}: BOOLEAN (parsed booleans)`);
         return 'BOOLEAN';
-      } else if (unparseable > 0 && !hasNumbers && !hasStrings && !hasBooleans) {
+      } else if (
+        unparseable > 0 &&
+        !hasNumbers &&
+        !hasStrings &&
+        !hasBooleans
+      ) {
         // Only unparseable (empty) values - use HTTP metadata
         if (currentPath && metadataCache) {
-          this.app?.debug(`    🔍 ${colName}: Only empty values, using HTTP metadata fallback`);
-          const fallbackType = await this.getTypeForEmptyColumn(colName, currentPath, outputDirectory, metadataCache, filenamePrefix);
-          this.app?.debug(`    ✅ ${colName}: ${fallbackType} (from HTTP metadata for empty values)`);
+          this.app?.debug(
+            `    🔍 ${colName}: Only empty values, using HTTP metadata fallback`
+          );
+          const fallbackType = await this.getTypeForEmptyColumn(
+            colName,
+            currentPath,
+            outputDirectory,
+            metadataCache,
+            filenamePrefix
+          );
+          this.app?.debug(
+            `    ✅ ${colName}: ${fallbackType} (from HTTP metadata for empty values)`
+          );
           return fallbackType;
         }
       } else if (hasStrings || actualStrings > 0) {
@@ -381,25 +466,44 @@ export class ParquetWriter {
     }
 
     // Fallback to field name inference if no values or unclear parsing
-    this.app?.debug(`    ↪️ No clear type from value parsing, using field name inference`);
+    this.app?.debug(
+      `    ↪️ No clear type from value parsing, using field name inference`
+    );
     return this.inferTypeFromFieldName(colName);
   }
 
   // Helper: Search other consolidated files for type information
-  private getTypeFromOtherFiles(currentPath: string, outputDirectory: string, specificColumn?: string, filenamePrefix?: string): string | null {
+  private getTypeFromOtherFiles(
+    currentPath: string,
+    outputDirectory: string,
+    specificColumn?: string,
+    filenamePrefix?: string
+  ): string | null {
     const targetColumn = specificColumn || 'value';
-    this.app?.debug(`      🔍 Searching files for column '${targetColumn}' in path '${currentPath}'`);
+    this.app?.debug(
+      `      🔍 Searching files for column '${targetColumn}' in path '${currentPath}'`
+    );
 
     try {
       const glob = require('glob');
       const prefix = filenamePrefix || 'signalk_data';
-      const pathPattern = path.join(outputDirectory, 'vessels', '*', currentPath.replace(/\./g, '/'), `${prefix}_*.parquet`);
+      const pathPattern = path.join(
+        outputDirectory,
+        'vessels',
+        '*',
+        currentPath.replace(/\./g, '/'),
+        `${prefix}_*.parquet`
+      );
       this.app?.debug(`      📁 Search pattern: ${pathPattern}`);
 
       const allFiles = glob.sync(pathPattern);
       // Filter out consolidated files
-      const files = allFiles.filter((file: string) => !file.includes('_consolidated.parquet'));
-      this.app?.debug(`      📄 Found ${files.length} regular files to check (excluding consolidated)`);
+      const files = allFiles.filter(
+        (file: string) => !file.includes('_consolidated.parquet')
+      );
+      this.app?.debug(
+        `      📄 Found ${files.length} regular files to check (excluding consolidated)`
+      );
 
       for (const filePath of files) {
         try {
@@ -411,8 +515,13 @@ export class ParquetWriter {
           }
 
           // Skip corrupted parquet files to prevent crashes
-          if (path.basename(filePath).includes('corrupted') || path.basename(filePath).includes('quarantine')) {
-            this.app?.debug(`      ⚠️ Skipping quarantined file: ${path.basename(filePath)}`);
+          if (
+            path.basename(filePath).includes('corrupted') ||
+            path.basename(filePath).includes('quarantine')
+          ) {
+            this.app?.debug(
+              `      ⚠️ Skipping quarantined file: ${path.basename(filePath)}`
+            );
             continue;
           }
 
@@ -422,24 +531,34 @@ export class ParquetWriter {
 
             if (schema && schema.schema && schema.schema[targetColumn]) {
               const columnType = schema.schema[targetColumn].type;
-              this.app?.debug(`      ✅ Found type ${columnType} for column '${targetColumn}' in ${path.basename(filePath)}`);
+              this.app?.debug(
+                `      ✅ Found type ${columnType} for column '${targetColumn}' in ${path.basename(filePath)}`
+              );
               if (typeof reader.close === 'function') reader.close();
               return columnType;
             } else {
-              this.app?.debug(`      ↪️ Column '${targetColumn}' not found in ${path.basename(filePath)}`);
+              this.app?.debug(
+                `      ↪️ Column '${targetColumn}' not found in ${path.basename(filePath)}`
+              );
             }
             if (typeof reader.close === 'function') reader.close();
           } catch (fileError) {
-            this.app?.debug(`      ⚠️ Corrupted file, skipping: ${path.basename(filePath)} - ${(fileError as Error).message}`);
+            this.app?.debug(
+              `      ⚠️ Corrupted file, skipping: ${path.basename(filePath)} - ${(fileError as Error).message}`
+            );
             continue;
           }
         } catch (error) {
-          this.app?.debug(`      ❌ Error reading file ${path.basename(filePath)}: ${(error as Error).message}`);
+          this.app?.debug(
+            `      ❌ Error reading file ${path.basename(filePath)}: ${(error as Error).message}`
+          );
           continue;
         }
       }
     } catch (error) {
-      this.app?.debug(`      ❌ File search error: ${(error as Error).message}`);
+      this.app?.debug(
+        `      ❌ File search error: ${(error as Error).message}`
+      );
     }
 
     this.app?.debug(`      ❌ No type information found in any files`);
@@ -452,25 +571,45 @@ export class ParquetWriter {
     const field = fieldName.toLowerCase();
 
     // Coordinate fields
-    if (field.includes('latitude') || field.includes('longitude') ||
-        field.includes('lat') || field.includes('lon')) {
+    if (
+      field.includes('latitude') ||
+      field.includes('longitude') ||
+      field.includes('lat') ||
+      field.includes('lon')
+    ) {
       this.app?.debug(`      ✅ Coordinate field detected, using DOUBLE`);
       return 'DOUBLE';
     }
 
     // Numeric measurements
-    if (field.includes('speed') || field.includes('distance') || field.includes('depth') ||
-        field.includes('temperature') || field.includes('pressure') || field.includes('angle') ||
-        field.includes('bearing') || field.includes('course') || field.includes('heading')) {
-      this.app?.debug(`      ✅ Numeric measurement field detected, using DOUBLE`);
+    if (
+      field.includes('speed') ||
+      field.includes('distance') ||
+      field.includes('depth') ||
+      field.includes('temperature') ||
+      field.includes('pressure') ||
+      field.includes('angle') ||
+      field.includes('bearing') ||
+      field.includes('course') ||
+      field.includes('heading')
+    ) {
+      this.app?.debug(
+        `      ✅ Numeric measurement field detected, using DOUBLE`
+      );
       return 'DOUBLE';
     }
 
     // Time/duration fields
-    if (field.includes('time') || field.includes('duration') || field.includes('age')) {
+    if (
+      field.includes('time') ||
+      field.includes('duration') ||
+      field.includes('age')
+    ) {
       const isTimestamp = field.includes('timestamp');
       const resultType = isTimestamp ? 'UTF8' : 'DOUBLE';
-      this.app?.debug(`      ✅ Time field detected, using ${resultType} (timestamp: ${isTimestamp})`);
+      this.app?.debug(
+        `      ✅ Time field detected, using ${resultType} (timestamp: ${isTimestamp})`
+      );
       return resultType;
     }
 
@@ -508,14 +647,29 @@ export class ParquetWriter {
     // Serialize object fields to JSON strings (deferred from delta processing)
     // This improves performance by avoiding JSON.stringify() on every delta message
     const recordWithSerializedFields = { ...record };
-    if (recordWithSerializedFields.source && typeof recordWithSerializedFields.source === 'object') {
-      recordWithSerializedFields.source = JSON.stringify(recordWithSerializedFields.source);
+    if (
+      recordWithSerializedFields.source &&
+      typeof recordWithSerializedFields.source === 'object'
+    ) {
+      recordWithSerializedFields.source = JSON.stringify(
+        recordWithSerializedFields.source
+      );
     }
-    if (recordWithSerializedFields.value_json && typeof recordWithSerializedFields.value_json === 'object') {
-      recordWithSerializedFields.value_json = JSON.stringify(recordWithSerializedFields.value_json);
+    if (
+      recordWithSerializedFields.value_json &&
+      typeof recordWithSerializedFields.value_json === 'object'
+    ) {
+      recordWithSerializedFields.value_json = JSON.stringify(
+        recordWithSerializedFields.value_json
+      );
     }
-    if (recordWithSerializedFields.meta && typeof recordWithSerializedFields.meta === 'object') {
-      recordWithSerializedFields.meta = JSON.stringify(recordWithSerializedFields.meta);
+    if (
+      recordWithSerializedFields.meta &&
+      typeof recordWithSerializedFields.meta === 'object'
+    ) {
+      recordWithSerializedFields.meta = JSON.stringify(
+        recordWithSerializedFields.meta
+      );
     }
 
     const schemaFields = schema.schema;
@@ -648,9 +802,11 @@ export class ParquetWriter {
       // Check file size (must be > 100 bytes as per existing logic)
       const stats = await fs.stat(filepath);
       const fileSize = stats.size;
-      
+
       if (fileSize < 100) {
-        this.app?.debug(`❌ Parquet file too small: ${filepath} (${fileSize} bytes)`);
+        this.app?.debug(
+          `❌ Parquet file too small: ${filepath} (${fileSize} bytes)`
+        );
         return false;
       }
 
@@ -658,27 +814,37 @@ export class ParquetWriter {
       try {
         const reader = await parquet.ParquetReader.openFile(filepath);
         const cursor = reader.getCursor();
-        
+
         // Try to read first record to verify file structure
         const firstRecord = await cursor.next();
         await reader.close();
-        
+
         // Log file size for debugging (matches your stat command format)
-        this.app?.debug(`✅ Valid parquet file: ${fileSize.toString().padStart(12, ' ')}  ${filepath}`);
-        
+        this.app?.debug(
+          `✅ Valid parquet file: ${fileSize.toString().padStart(12, ' ')}  ${filepath}`
+        );
+
         return firstRecord !== null;
       } catch (readError) {
-        this.app?.debug(`❌ Parquet file read failed: ${filepath} - ${(readError as Error).message}`);
+        this.app?.debug(
+          `❌ Parquet file read failed: ${filepath} - ${(readError as Error).message}`
+        );
         return false;
       }
     } catch (error) {
-      this.app?.debug(`❌ Parquet validation error: ${filepath} - ${(error as Error).message}`);
+      this.app?.debug(
+        `❌ Parquet validation error: ${filepath} - ${(error as Error).message}`
+      );
       return false;
     }
   }
 
   // Log quarantined files
-  private async logQuarantine(filepath: string, operation: string, reason: string): Promise<void> {
+  private async logQuarantine(
+    filepath: string,
+    operation: string,
+    reason: string
+  ): Promise<void> {
     try {
       const stats = await fs.stat(filepath);
       const logEntry = {
@@ -687,19 +853,21 @@ export class ParquetWriter {
         fileSize: stats.size,
         operation,
         reason,
-        formattedSize: `${stats.size.toString().padStart(12, ' ')}  ${filepath}`
+        formattedSize: `${stats.size.toString().padStart(12, ' ')}  ${filepath}`,
       };
 
       const quarantineDir = path.dirname(filepath);
       const logFile = path.join(quarantineDir, 'quarantine.log');
-      
+
       // Append to log file
       const logLine = `${logEntry.timestamp} | ${logEntry.operation} | ${logEntry.fileSize} bytes | ${logEntry.reason} | ${filepath}\n`;
       await fs.appendFile(logFile, logLine);
-      
+
       this.app?.debug(`📋 Quarantine logged: ${logEntry.formattedSize}`);
     } catch (error) {
-      this.app?.debug(`Failed to log quarantine entry: ${(error as Error).message}`);
+      this.app?.debug(
+        `Failed to log quarantine entry: ${(error as Error).message}`
+      );
     }
   }
 
@@ -726,9 +894,11 @@ export class ParquetWriter {
       for (const fileInfo of matchingFiles) {
         // Skip aggregated tier files - they don't need consolidation
         // Only consolidate raw tier (hive) or flat structure (vessels/)
-        if (fileInfo.path.includes('/tier=5s/') ||
-            fileInfo.path.includes('/tier=60s/') ||
-            fileInfo.path.includes('/tier=1h/')) {
+        if (
+          fileInfo.path.includes('/tier=5s/') ||
+          fileInfo.path.includes('/tier=60s/') ||
+          fileInfo.path.includes('/tier=1h/')
+        ) {
           continue;
         }
 
@@ -760,7 +930,9 @@ export class ParquetWriter {
 
         // Skip validation if no records were written (no file created)
         if (recordCount === 0) {
-          this.app?.debug(`⚠️ No records to consolidate for ${entry.target}, skipping`);
+          this.app?.debug(
+            `⚠️ No records to consolidate for ${entry.target}, skipping`
+          );
           continue;
         }
 
@@ -768,15 +940,27 @@ export class ParquetWriter {
         const isValid = await this.validateParquetFile(entry.target);
         if (!isValid) {
           // Move corrupt file to quarantine
-          const quarantineDir = path.join(path.dirname(entry.target), 'quarantine');
+          const quarantineDir = path.join(
+            path.dirname(entry.target),
+            'quarantine'
+          );
           await fs.ensureDir(quarantineDir);
-          const quarantineFile = path.join(quarantineDir, path.basename(entry.target));
+          const quarantineFile = path.join(
+            quarantineDir,
+            path.basename(entry.target)
+          );
           await fs.move(entry.target, quarantineFile);
-          
+
           // Log to quarantine log
-          await this.logQuarantine(quarantineFile, 'consolidation', 'File failed validation after consolidation');
-          
-          this.app?.debug(`⚠️ Moved corrupt file to quarantine: ${quarantineFile}`);
+          await this.logQuarantine(
+            quarantineFile,
+            'consolidation',
+            'File failed validation after consolidation'
+          );
+
+          this.app?.debug(
+            `⚠️ Moved corrupt file to quarantine: ${quarantineFile}`
+          );
           continue; // Skip moving source files since consolidation failed
         }
 

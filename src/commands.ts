@@ -20,7 +20,11 @@ import {
 import * as fs from 'fs-extra';
 import * as path from 'path';
 import { degreesToRadians, radiansToDegrees } from './utils/angle-converter';
-import { calculateDistance, isPointInBoundingBox, calculateBoundingBoxFromHomePort } from './utils/geo-calculator';
+import {
+  calculateDistance,
+  isPointInBoundingBox,
+  calculateBoundingBoxFromHomePort,
+} from './utils/geo-calculator';
 import { BoundingBox } from './types';
 
 // Global variables for command management
@@ -40,12 +44,15 @@ const commandState: CommandRegistrationState = {
 };
 
 // Threshold monitoring state
-const thresholdState = new Map<string, {
-  lastValue: any;
-  lastTriggered: number;
-  lastConditionMet?: boolean;
-  unsubscribe?: () => void;
-}>();
+const thresholdState = new Map<
+  string,
+  {
+    lastValue: any;
+    lastTriggered: number;
+    lastConditionMet?: boolean;
+    unsubscribe?: () => void;
+  }
+>();
 
 // Configuration management functions
 export function loadWebAppConfig(app?: ServerAPI): WebAppPathConfig {
@@ -53,7 +60,7 @@ export function loadWebAppConfig(app?: ServerAPI): WebAppPathConfig {
   if (!appToUse) {
     throw new Error('App instance not provided and not initialized');
   }
-  
+
   const webAppConfigPath = path.join(
     appToUse.getDataDirPath(),
     'signalk-parquet',
@@ -100,9 +107,7 @@ export function loadWebAppConfig(app?: ServerAPI): WebAppPathConfig {
           'Saved migrated configuration with source field compatibility'
         );
       } catch (saveError) {
-        appToUse.debug(
-          `Warning: Could not save migrated config: ${saveError}`
-        );
+        appToUse.debug(`Warning: Could not save migrated config: ${saveError}`);
       }
 
       return migratedConfig;
@@ -210,7 +215,7 @@ export function saveWebAppConfig(
   if (!appToUse) {
     throw new Error('App instance not provided and not initialized');
   }
-  
+
   const webAppConfigPath = path.join(
     appToUse.getDataDirPath(),
     'signalk-parquet',
@@ -238,7 +243,7 @@ export function initializeCommandState(
   app: ServerAPI
 ): void {
   appInstance = app;
-  
+
   // Clear existing command state
   commandState.registeredCommands.clear();
   commandState.putHandlers.clear();
@@ -251,7 +256,7 @@ export function initializeCommandState(
       commandConfig.keywords,
       commandConfig.defaultState,
       commandConfig.thresholds,
-      true  // skipThresholdSetup - let startThresholdMonitoring handle it
+      true // skipThresholdSetup - let startThresholdMonitoring handle it
     );
     if (result.state === 'COMPLETED') {
     } else {
@@ -311,7 +316,6 @@ export function initializeCommandState(
   currentCommands.forEach((commandConfig: CommandConfig) => {
     initializeCommandValue(commandConfig.command, false);
   });
-
 }
 
 // Command registration with full type safety
@@ -375,7 +379,10 @@ export function registerCommand(
         `Handling PUT for commands.${commandName} with value: ${JSON.stringify(value)}`
       );
       // Extract value from object if needed (PUT body may be {value: true/false, source: "..."})
-      const rawValue = (value !== null && typeof value === 'object' && 'value' in value) ? value.value : value;
+      const rawValue =
+        value !== null && typeof value === 'object' && 'value' in value
+          ? value.value
+          : value;
       const result = executeCommand(commandName, Boolean(rawValue));
       // Call callback to signal completion (returns 200 instead of 202)
       if (callback) callback(result);
@@ -399,7 +406,9 @@ export function registerCommand(
 
     // Initialize .auto path for threshold automation control
     const autoPath = `commands.${commandName}.auto`;
-    const autoEnabled = !!(commandConfig.thresholds && commandConfig.thresholds.length > 0);
+    const autoEnabled = !!(
+      commandConfig.thresholds && commandConfig.thresholds.length > 0
+    );
     initializeCommandValue(`${commandName}.auto`, autoEnabled);
 
     // Register PUT handler for .auto control
@@ -414,7 +423,10 @@ export function registerCommand(
       );
 
       // Update the .auto value - extract from object if needed
-      const rawValue = (value !== null && typeof value === 'object' && 'value' in value) ? value.value : value;
+      const rawValue =
+        value !== null && typeof value === 'object' && 'value' in value
+          ? value.value
+          : value;
       const autoValue = Boolean(rawValue);
       const timestamp = new Date().toISOString();
 
@@ -426,28 +438,46 @@ export function registerCommand(
         // 1. Set command state to OFF/false
         const offResult = executeCommand(commandName, false);
         if (offResult.success) {
-          appInstance.debug(`🔧 Command ${commandName} set to OFF before threshold evaluation`);
+          appInstance.debug(
+            `🔧 Command ${commandName} set to OFF before threshold evaluation`
+          );
         } else {
-          appInstance.error(`❌ Failed to set ${commandName} to OFF: ${offResult.message}`);
+          appInstance.error(
+            `❌ Failed to set ${commandName} to OFF: ${offResult.message}`
+          );
         }
 
         // 2. Immediately evaluate all thresholds
         if (commandConfig.thresholds && commandConfig.thresholds.length > 0) {
           commandConfig.thresholds.forEach(threshold => {
-            const currentValue = appInstance.getSelfPath(threshold.watchPath as Path);
+            const currentValue = appInstance.getSelfPath(
+              threshold.watchPath as Path
+            );
             if (currentValue !== undefined) {
-              const monitorKey = buildThresholdMonitorKey(commandName, threshold);
+              const monitorKey = buildThresholdMonitorKey(
+                commandName,
+                threshold
+              );
               const state = thresholdState.get(monitorKey);
               if (state) {
-                processThresholdValue(commandConfig, threshold, currentValue, monitorKey);
-                appInstance.debug(`🎯 Evaluated threshold for ${commandName}:${threshold.watchPath}`);
+                processThresholdValue(
+                  commandConfig,
+                  threshold,
+                  currentValue,
+                  monitorKey
+                );
+                appInstance.debug(
+                  `🎯 Evaluated threshold for ${commandName}:${threshold.watchPath}`
+                );
               }
             }
           });
         }
       } else {
         // Disabling automation: 1) Stop monitoring (handled by threshold checks), 2) Leave state as-is, 3) Enable manual control
-        appInstance.debug(`👤 Disabling automation for ${commandName}, state unchanged`);
+        appInstance.debug(
+          `👤 Disabling automation for ${commandName}, state unchanged`
+        );
       }
 
       appInstance.handleMessage('signalk-parquet-commands', {
@@ -471,7 +501,7 @@ export function registerCommand(
         state: 'COMPLETED',
         statusCode: 200,
         message: `Automation ${autoValue ? 'enabled' : 'disabled'} for ${commandName}`,
-        timestamp
+        timestamp,
       };
 
       // Call callback to signal completion (returns 200 instead of 202)
@@ -489,7 +519,11 @@ export function registerCommand(
 
     // Start threshold monitoring for this command if thresholds are defined
     // Skip during initialization - startThresholdMonitoring() will set them up
-    if (!skipThresholdSetup && commandConfig.thresholds && commandConfig.thresholds.length > 0) {
+    if (
+      !skipThresholdSetup &&
+      commandConfig.thresholds &&
+      commandConfig.thresholds.length > 0
+    ) {
       commandConfig.thresholds.forEach(threshold => {
         if (threshold.enabled) {
           setupThresholdMonitoring(commandConfig, threshold);
@@ -548,14 +582,19 @@ export function updateCommand(
 
     // Get existing command config
     const existingCommand = commandState.registeredCommands.get(commandName)!;
-    
+
     // Update only the fields that were provided
     const updatedCommand: CommandConfig = {
       ...existingCommand,
-      description: description !== undefined ? description : existingCommand.description,
+      description:
+        description !== undefined ? description : existingCommand.description,
       keywords: keywords !== undefined ? keywords : existingCommand.keywords,
-      defaultState: defaultState !== undefined ? defaultState : existingCommand.defaultState,
-      thresholds: thresholds !== undefined ? thresholds : existingCommand.thresholds,
+      defaultState:
+        defaultState !== undefined
+          ? defaultState
+          : existingCommand.defaultState,
+      thresholds:
+        thresholds !== undefined ? thresholds : existingCommand.thresholds,
     };
 
     // Update the command in the registry
@@ -589,9 +628,9 @@ export function updateCommand(
 
     // Log the update
     addCommandHistoryEntry(commandName, 'UPDATE', undefined, true);
-    
+
     appInstance.debug(`✅ Updated command: ${commandName}`);
-    
+
     return {
       success: true,
       state: 'COMPLETED',
@@ -599,9 +638,10 @@ export function updateCommand(
       message: `Command '${commandName}' updated successfully`,
       timestamp: new Date().toISOString(),
     };
-    
   } catch (error) {
-    appInstance.error(`Failed to update command ${commandName}: ${(error as Error).message}`);
+    appInstance.error(
+      `Failed to update command ${commandName}: ${(error as Error).message}`
+    );
     return {
       success: false,
       state: 'FAILED',
@@ -722,13 +762,7 @@ export function executeCommand(
     const errorMessage = `Failed to execute command '${commandName}': ${error}`;
     appInstance.error(errorMessage);
 
-    addCommandHistoryEntry(
-      commandName,
-      'EXECUTE',
-      value,
-      false,
-      errorMessage
-    );
+    addCommandHistoryEntry(commandName, 'EXECUTE', value, false, errorMessage);
 
     return {
       success: false,
@@ -822,7 +856,9 @@ export function setCurrentCommands(commands: CommandConfig[]): void {
 
 export function updatePluginConfig(config: PluginConfig): void {
   pluginConfig = config;
-  appInstance?.debug(`📍 Plugin config updated (homePort: ${config.homePortLatitude}, ${config.homePortLongitude})`);
+  appInstance?.debug(
+    `📍 Plugin config updated (homePort: ${config.homePortLatitude}, ${config.homePortLongitude})`
+  );
 
   // Re-evaluate all position-based thresholds with new home port
   // This uses level-triggered logic (not edge-triggered like processThresholdValue)
@@ -832,39 +868,73 @@ export function updatePluginConfig(config: PluginConfig): void {
       command.thresholds.forEach(threshold => {
         if (threshold.enabled && isPositionOperator(threshold.operator)) {
           // Check if automation is enabled for this command
-          const autoEnabledRaw = appInstance?.getSelfPath(`commands.${command.command}.auto` as Path);
-          const autoEnabled = (autoEnabledRaw && typeof autoEnabledRaw === 'object' && 'value' in autoEnabledRaw)
-            ? autoEnabledRaw.value : autoEnabledRaw;
+          const autoEnabledRaw = appInstance?.getSelfPath(
+            `commands.${command.command}.auto` as Path
+          );
+          const autoEnabled =
+            autoEnabledRaw &&
+            typeof autoEnabledRaw === 'object' &&
+            'value' in autoEnabledRaw
+              ? autoEnabledRaw.value
+              : autoEnabledRaw;
 
           if (!autoEnabled) {
-            appInstance?.debug(`🚫 Skipping threshold re-evaluation for ${command.command} (automation disabled)`);
+            appInstance?.debug(
+              `🚫 Skipping threshold re-evaluation for ${command.command} (automation disabled)`
+            );
             return;
           }
 
-          const currentValue = appInstance?.getSelfPath(threshold.watchPath as Path);
+          const currentValue = appInstance?.getSelfPath(
+            threshold.watchPath as Path
+          );
           if (currentValue !== undefined) {
-            const normalizedValue = normalizeThresholdValue(currentValue, threshold);
+            const normalizedValue = normalizeThresholdValue(
+              currentValue,
+              threshold
+            );
 
-            const homePort = pluginConfig && pluginConfig.homePortLatitude && pluginConfig.homePortLongitude
-              ? { latitude: pluginConfig.homePortLatitude, longitude: pluginConfig.homePortLongitude }
-              : undefined;
+            const homePort =
+              pluginConfig &&
+              pluginConfig.homePortLatitude &&
+              pluginConfig.homePortLongitude
+                ? {
+                    latitude: pluginConfig.homePortLatitude,
+                    longitude: pluginConfig.homePortLongitude,
+                  }
+                : undefined;
 
-            const conditionMet = evaluateThreshold(threshold, normalizedValue, homePort);
+            const conditionMet = evaluateThreshold(
+              threshold,
+              normalizedValue,
+              homePort
+            );
 
             // Level-triggered: set to activateOnMatch when condition met, opposite when not met
-            const desiredState = conditionMet ? Boolean(threshold.activateOnMatch) : !Boolean(threshold.activateOnMatch);
+            const desiredState = conditionMet
+              ? Boolean(threshold.activateOnMatch)
+              : !Boolean(threshold.activateOnMatch);
 
             // Get current command state
-            const currentCommandValue = appInstance?.getSelfPath(`commands.${command.command}` as Path);
-            const actualValue = (currentCommandValue && typeof currentCommandValue === 'object' && 'value' in currentCommandValue)
-              ? currentCommandValue.value
-              : currentCommandValue;
+            const currentCommandValue = appInstance?.getSelfPath(
+              `commands.${command.command}` as Path
+            );
+            const actualValue =
+              currentCommandValue &&
+              typeof currentCommandValue === 'object' &&
+              'value' in currentCommandValue
+                ? currentCommandValue.value
+                : currentCommandValue;
             const currentlyActive = Boolean(actualValue);
 
-            appInstance?.debug(`🔄 Config change re-eval: ${command.command} conditionMet=${conditionMet}, current=${currentlyActive}, desired=${desiredState}`);
+            appInstance?.debug(
+              `🔄 Config change re-eval: ${command.command} conditionMet=${conditionMet}, current=${currentlyActive}, desired=${desiredState}`
+            );
 
             if (currentlyActive !== desiredState) {
-              appInstance?.debug(`📍 Config change triggers state change: ${command.command} → ${desiredState ? 'ON' : 'OFF'}`);
+              appInstance?.debug(
+                `📍 Config change triggers state change: ${command.command} → ${desiredState ? 'ON' : 'OFF'}`
+              );
               executeCommand(command.command, desiredState);
 
               // Update command state
@@ -879,11 +949,19 @@ export function updatePluginConfig(config: PluginConfig): void {
 }
 
 function isPositionOperator(operator: string): boolean {
-  return ['withinRadius', 'outsideRadius', 'inBoundingBox', 'outsideBoundingBox'].includes(operator);
+  return [
+    'withinRadius',
+    'outsideRadius',
+    'inBoundingBox',
+    'outsideBoundingBox',
+  ].includes(operator);
 }
 
 // Threshold monitoring system
-export function startThresholdMonitoring(app: ServerAPI, config?: PluginConfig): void {
+export function startThresholdMonitoring(
+  app: ServerAPI,
+  config?: PluginConfig
+): void {
   appInstance = app;
   if (config) {
     pluginConfig = config;
@@ -913,14 +991,23 @@ function applyDefaultState(command: CommandConfig): void {
   }
 
   // Apply default state if specified and command is not already active
-  if (command.defaultState !== undefined && command.active !== command.defaultState) {
-    appInstance?.debug(`🔧 Applying default state for ${command.command}: ${command.defaultState ? 'ON' : 'OFF'}`);
+  if (
+    command.defaultState !== undefined &&
+    command.active !== command.defaultState
+  ) {
+    appInstance?.debug(
+      `🔧 Applying default state for ${command.command}: ${command.defaultState ? 'ON' : 'OFF'}`
+    );
 
     const result = executeCommand(command.command, command.defaultState);
     if (result.success) {
-      appInstance?.debug(`✅ Default state applied: ${command.command} = ${command.defaultState}`);
+      appInstance?.debug(
+        `✅ Default state applied: ${command.command} = ${command.defaultState}`
+      );
     } else {
-      appInstance?.error(`❌ Failed to apply default state: ${command.command} - ${result.message}`);
+      appInstance?.error(
+        `❌ Failed to apply default state: ${command.command} - ${result.message}`
+      );
     }
   }
 }
@@ -937,13 +1024,18 @@ export function stopThresholdMonitoring(): void {
   thresholdState.clear();
 }
 
-function setupThresholdMonitoring(command: CommandConfig, threshold: ThresholdConfig): void {
+function setupThresholdMonitoring(
+  command: CommandConfig,
+  threshold: ThresholdConfig
+): void {
   if (threshold?.enabled === false || !threshold.watchPath) {
     return;
   }
   const monitorKey = buildThresholdMonitorKey(command.command, threshold);
 
-  appInstance?.debug(`🎯 Setting up threshold monitoring for ${command.command} watching ${threshold.watchPath}`);
+  appInstance?.debug(
+    `🎯 Setting up threshold monitoring for ${command.command} watching ${threshold.watchPath}`
+  );
 
   // Clean up existing monitoring for this command
   const existingState = thresholdState.get(monitorKey);
@@ -952,20 +1044,24 @@ function setupThresholdMonitoring(command: CommandConfig, threshold: ThresholdCo
   }
 
   // Subscribe to the watch path
-  const unsubscribe = appInstance?.streambundle?.getSelfStream(threshold.watchPath as Path)?.onValue((value: any) => {
-    try {
-      processThresholdValue(command, threshold, value, monitorKey);
-    } catch (error) {
-      appInstance?.error(`❌ Error processing threshold for ${command.command}: ${(error as Error).message}`);
-    }
-  });
+  const unsubscribe = appInstance?.streambundle
+    ?.getSelfStream(threshold.watchPath as Path)
+    ?.onValue((value: any) => {
+      try {
+        processThresholdValue(command, threshold, value, monitorKey);
+      } catch (error) {
+        appInstance?.error(
+          `❌ Error processing threshold for ${command.command}: ${(error as Error).message}`
+        );
+      }
+    });
 
   // Store the monitoring state
   thresholdState.set(monitorKey, {
     lastValue: undefined,
     lastTriggered: 0,
     lastConditionMet: undefined,
-    unsubscribe
+    unsubscribe,
   });
 
   // Evaluate immediately with current value if available
@@ -975,11 +1071,18 @@ function setupThresholdMonitoring(command: CommandConfig, threshold: ThresholdCo
       processThresholdValue(command, threshold, currentValue, monitorKey);
     }
   } catch (error) {
-    appInstance?.debug(`ℹ️ Unable to read current value for ${threshold.watchPath}: ${(error as Error).message}`);
+    appInstance?.debug(
+      `ℹ️ Unable to read current value for ${threshold.watchPath}: ${(error as Error).message}`
+    );
   }
 }
 
-function processThresholdValue(command: CommandConfig, threshold: ThresholdConfig, value: any, monitorKey: string): void {
+function processThresholdValue(
+  command: CommandConfig,
+  threshold: ThresholdConfig,
+  value: any,
+  monitorKey: string
+): void {
   const state = thresholdState.get(monitorKey);
   if (!state) return;
 
@@ -987,7 +1090,9 @@ function processThresholdValue(command: CommandConfig, threshold: ThresholdConfi
 
   // Check if threshold processing is already running for this command (first-in rule)
   if (thresholdProcessingLocks.get(commandName)) {
-    appInstance?.debug(`🔒 Threshold processing already running for ${commandName}, skipping`);
+    appInstance?.debug(
+      `🔒 Threshold processing already running for ${commandName}, skipping`
+    );
     return;
   }
 
@@ -997,22 +1102,34 @@ function processThresholdValue(command: CommandConfig, threshold: ThresholdConfi
   // Set timeout to prevent deadlocks
   const timeoutId = setTimeout(() => {
     if (thresholdProcessingLocks.get(commandName)) {
-      appInstance?.error(`⚠️ Threshold processing timeout for ${commandName}, releasing lock`);
+      appInstance?.error(
+        `⚠️ Threshold processing timeout for ${commandName}, releasing lock`
+      );
       thresholdProcessingLocks.set(commandName, false);
     }
   }, THRESHOLD_PROCESSING_TIMEOUT);
 
   try {
     const normalizedValue = normalizeThresholdValue(value, threshold);
-    appInstance?.debug(`📈 Threshold monitor ${commandName}:${threshold.watchPath} received value: ${JSON.stringify(normalizedValue)}`);
+    appInstance?.debug(
+      `📈 Threshold monitor ${commandName}:${threshold.watchPath} received value: ${JSON.stringify(normalizedValue)}`
+    );
 
     // Check if automation is enabled for this command
-    const autoEnabledRaw = appInstance?.getSelfPath(`commands.${commandName}.auto` as Path);
-    const autoEnabled = (autoEnabledRaw && typeof autoEnabledRaw === 'object' && 'value' in autoEnabledRaw)
-      ? autoEnabledRaw.value : autoEnabledRaw;
+    const autoEnabledRaw = appInstance?.getSelfPath(
+      `commands.${commandName}.auto` as Path
+    );
+    const autoEnabled =
+      autoEnabledRaw &&
+      typeof autoEnabledRaw === 'object' &&
+      'value' in autoEnabledRaw
+        ? autoEnabledRaw.value
+        : autoEnabledRaw;
 
     if (!autoEnabled) {
-      appInstance?.debug(`🚫 Threshold automation disabled for ${commandName} (auto=${autoEnabled})`);
+      appInstance?.debug(
+        `🚫 Threshold automation disabled for ${commandName} (auto=${autoEnabled})`
+      );
       return;
     }
 
@@ -1039,15 +1156,28 @@ function processThresholdValue(command: CommandConfig, threshold: ThresholdConfi
     const now = Date.now();
 
     // Get homePort from config for position-based thresholds
-    const homePort = pluginConfig && pluginConfig.homePortLatitude && pluginConfig.homePortLongitude
-      ? { latitude: pluginConfig.homePortLatitude, longitude: pluginConfig.homePortLongitude }
-      : undefined;
+    const homePort =
+      pluginConfig &&
+      pluginConfig.homePortLatitude &&
+      pluginConfig.homePortLongitude
+        ? {
+            latitude: pluginConfig.homePortLatitude,
+            longitude: pluginConfig.homePortLongitude,
+          }
+        : undefined;
 
-    const conditionMet = evaluateThreshold(threshold, normalizedValue, homePort);
+    const conditionMet = evaluateThreshold(
+      threshold,
+      normalizedValue,
+      homePort
+    );
 
     // Better debug logging for different threshold types
     let thresholdDesc = '';
-    if (threshold.operator === 'inBoundingBox' || threshold.operator === 'outsideBoundingBox') {
+    if (
+      threshold.operator === 'inBoundingBox' ||
+      threshold.operator === 'outsideBoundingBox'
+    ) {
       if (threshold.useHomePort && threshold.boxSize && threshold.boxAnchor) {
         thresholdDesc = `homePort-based box: size=${threshold.boxSize}m anchor=${threshold.boxAnchor} homePort=${JSON.stringify(homePort)}`;
       } else if (threshold.boundingBox) {
@@ -1055,13 +1185,18 @@ function processThresholdValue(command: CommandConfig, threshold: ThresholdConfi
       } else {
         thresholdDesc = 'NO BOX CONFIGURED';
       }
-    } else if (threshold.operator === 'withinRadius' || threshold.operator === 'outsideRadius') {
+    } else if (
+      threshold.operator === 'withinRadius' ||
+      threshold.operator === 'outsideRadius'
+    ) {
       thresholdDesc = `radius=${threshold.radius}m useHomePort=${threshold.useHomePort} lat=${threshold.latitude} lon=${threshold.longitude}`;
     } else {
       thresholdDesc = `value=${threshold.value}`;
     }
 
-    appInstance?.debug(`📉 Threshold evaluation for ${commandName}:${threshold.watchPath} operator=${threshold.operator} ${thresholdDesc} conditionMet=${conditionMet}`);
+    appInstance?.debug(
+      `📉 Threshold evaluation for ${commandName}:${threshold.watchPath} operator=${threshold.operator} ${thresholdDesc} conditionMet=${conditionMet}`
+    );
 
     if (!conditionMet) {
       // For position-based operators, we need bidirectional triggering:
@@ -1070,19 +1205,28 @@ function processThresholdValue(command: CommandConfig, threshold: ThresholdConfi
         const desiredState = !Boolean(threshold.activateOnMatch);
 
         // Get current command state
-        const currentCommandValue = appInstance?.getSelfPath(`commands.${commandName}` as Path);
-        const actualValue = (currentCommandValue && typeof currentCommandValue === 'object' && 'value' in currentCommandValue)
-          ? currentCommandValue.value
-          : currentCommandValue;
+        const currentCommandValue = appInstance?.getSelfPath(
+          `commands.${commandName}` as Path
+        );
+        const actualValue =
+          currentCommandValue &&
+          typeof currentCommandValue === 'object' &&
+          'value' in currentCommandValue
+            ? currentCommandValue.value
+            : currentCommandValue;
         const currentlyActive = Boolean(actualValue);
 
         if (currentlyActive !== desiredState) {
-          appInstance?.debug(`📍 Position threshold condition FALSE: ${commandName} → ${desiredState ? 'ON' : 'OFF'}`);
+          appInstance?.debug(
+            `📍 Position threshold condition FALSE: ${commandName} → ${desiredState ? 'ON' : 'OFF'}`
+          );
           const result = executeCommand(commandName, desiredState);
           if (result.success) {
             command.active = desiredState;
             commandState.registeredCommands.set(commandName, command);
-            currentCommands = Array.from(commandState.registeredCommands.values());
+            currentCommands = Array.from(
+              commandState.registeredCommands.values()
+            );
           }
         }
       }
@@ -1095,8 +1239,10 @@ function processThresholdValue(command: CommandConfig, threshold: ThresholdConfi
     // Apply hysteresis window only when condition remains true
     if (threshold.hysteresis && state.lastTriggered) {
       const timeSinceLastTrigger = now - state.lastTriggered;
-      if (timeSinceLastTrigger < (threshold.hysteresis * 1000)) {
-        appInstance?.debug(`⏱️ Hysteresis active for ${commandName}, skipping trigger (${timeSinceLastTrigger}ms < ${threshold.hysteresis * 1000}ms)`);
+      if (timeSinceLastTrigger < threshold.hysteresis * 1000) {
+        appInstance?.debug(
+          `⏱️ Hysteresis active for ${commandName}, skipping trigger (${timeSinceLastTrigger}ms < ${threshold.hysteresis * 1000}ms)`
+        );
         state.lastConditionMet = true;
         state.lastValue = normalizedValue;
         return;
@@ -1106,16 +1252,25 @@ function processThresholdValue(command: CommandConfig, threshold: ThresholdConfi
     const desiredState = Boolean(threshold.activateOnMatch);
 
     // Determine current command state
-    const currentCommandValue = appInstance?.getSelfPath(`commands.${commandName}` as Path);
-    const actualValue = (currentCommandValue && typeof currentCommandValue === 'object' && 'value' in currentCommandValue)
-      ? currentCommandValue.value
-      : currentCommandValue;
+    const currentCommandValue = appInstance?.getSelfPath(
+      `commands.${commandName}` as Path
+    );
+    const actualValue =
+      currentCommandValue &&
+      typeof currentCommandValue === 'object' &&
+      'value' in currentCommandValue
+        ? currentCommandValue.value
+        : currentCommandValue;
     const currentlyActive = Boolean(actualValue);
 
-    appInstance?.debug(`🔍 Command state check for ${commandName}: current=${actualValue} (bool=${currentlyActive}), desired=${desiredState}`);
+    appInstance?.debug(
+      `🔍 Command state check for ${commandName}: current=${actualValue} (bool=${currentlyActive}), desired=${desiredState}`
+    );
 
     if (currentlyActive !== desiredState) {
-      appInstance?.debug(`🎯 Threshold condition met for ${commandName}: ${threshold.watchPath} = ${normalizedValue}, setting to ${desiredState ? 'ON' : 'OFF'}`);
+      appInstance?.debug(
+        `🎯 Threshold condition met for ${commandName}: ${threshold.watchPath} = ${normalizedValue}, setting to ${desiredState ? 'ON' : 'OFF'}`
+      );
 
       const result = executeCommand(commandName, desiredState);
       if (result.success) {
@@ -1123,19 +1278,26 @@ function processThresholdValue(command: CommandConfig, threshold: ThresholdConfi
         command.active = desiredState;
         commandState.registeredCommands.set(commandName, command);
         currentCommands = Array.from(commandState.registeredCommands.values());
-        appInstance?.debug(`✅ Command updated by threshold: ${commandName} = ${desiredState}`);
+        appInstance?.debug(
+          `✅ Command updated by threshold: ${commandName} = ${desiredState}`
+        );
       } else {
-        appInstance?.error(`❌ Threshold-triggered command failed: ${commandName} - ${result.message}`);
+        appInstance?.error(
+          `❌ Threshold-triggered command failed: ${commandName} - ${result.message}`
+        );
       }
     } else {
-      appInstance?.debug(`ℹ️ Command ${commandName} already ${desiredState ? 'ON' : 'OFF'}, no action taken`);
+      appInstance?.debug(
+        `ℹ️ Command ${commandName} already ${desiredState ? 'ON' : 'OFF'}, no action taken`
+      );
     }
 
     state.lastConditionMet = true;
     state.lastValue = normalizedValue;
-
   } catch (error) {
-    appInstance?.error(`❌ Error processing threshold for ${commandName}: ${(error as Error).message}`);
+    appInstance?.error(
+      `❌ Error processing threshold for ${commandName}: ${(error as Error).message}`
+    );
   } finally {
     // Always release lock and clear timeout
     clearTimeout(timeoutId);
@@ -1151,10 +1313,18 @@ function evaluateThreshold(
   switch (threshold.operator) {
     // Numeric operators
     case 'gt':
-      return typeof currentValue === 'number' && typeof threshold.value === 'number' && currentValue > threshold.value;
+      return (
+        typeof currentValue === 'number' &&
+        typeof threshold.value === 'number' &&
+        currentValue > threshold.value
+      );
 
     case 'lt':
-      return typeof currentValue === 'number' && typeof threshold.value === 'number' && currentValue < threshold.value;
+      return (
+        typeof currentValue === 'number' &&
+        typeof threshold.value === 'number' &&
+        currentValue < threshold.value
+      );
 
     case 'eq':
       return currentValue === threshold.value;
@@ -1163,49 +1333,91 @@ function evaluateThreshold(
       return currentValue !== threshold.value;
 
     case 'range':
-      if (typeof currentValue !== 'number' || typeof threshold.valueMin !== 'number' || typeof threshold.valueMax !== 'number') {
+      if (
+        typeof currentValue !== 'number' ||
+        typeof threshold.valueMin !== 'number' ||
+        typeof threshold.valueMax !== 'number'
+      ) {
         return false;
       }
-      return currentValue >= threshold.valueMin && currentValue <= threshold.valueMax;
+      return (
+        currentValue >= threshold.valueMin && currentValue <= threshold.valueMax
+      );
 
     // String operators
     case 'contains':
-      return typeof currentValue === 'string' && typeof threshold.value === 'string' && currentValue.includes(threshold.value);
+      return (
+        typeof currentValue === 'string' &&
+        typeof threshold.value === 'string' &&
+        currentValue.includes(threshold.value)
+      );
 
     case 'startsWith':
-      return typeof currentValue === 'string' && typeof threshold.value === 'string' && currentValue.startsWith(threshold.value);
+      return (
+        typeof currentValue === 'string' &&
+        typeof threshold.value === 'string' &&
+        currentValue.startsWith(threshold.value)
+      );
 
     case 'endsWith':
-      return typeof currentValue === 'string' && typeof threshold.value === 'string' && currentValue.endsWith(threshold.value);
+      return (
+        typeof currentValue === 'string' &&
+        typeof threshold.value === 'string' &&
+        currentValue.endsWith(threshold.value)
+      );
 
     case 'stringEquals':
-      return typeof currentValue === 'string' && typeof threshold.value === 'string' && currentValue === threshold.value;
+      return (
+        typeof currentValue === 'string' &&
+        typeof threshold.value === 'string' &&
+        currentValue === threshold.value
+      );
 
     // Boolean operators
     case 'true':
-      return currentValue === true || currentValue === 'true' || currentValue === 1;
+      return (
+        currentValue === true || currentValue === 'true' || currentValue === 1
+      );
 
     case 'false':
-      return currentValue === false || currentValue === 'false' || currentValue === 0;
+      return (
+        currentValue === false || currentValue === 'false' || currentValue === 0
+      );
 
     // Position operators
     case 'withinRadius':
     case 'outsideRadius':
-      if (!currentValue || typeof currentValue.latitude !== 'number' || typeof currentValue.longitude !== 'number') {
-        appInstance?.error(`❌ Threshold ${threshold.watchPath}: Current value is not a valid position`);
+      if (
+        !currentValue ||
+        typeof currentValue.latitude !== 'number' ||
+        typeof currentValue.longitude !== 'number'
+      ) {
+        appInstance?.error(
+          `❌ Threshold ${threshold.watchPath}: Current value is not a valid position`
+        );
         return false;
       }
 
-      const targetLat = threshold.useHomePort && homePort ? homePort.latitude : threshold.latitude;
-      const targetLon = threshold.useHomePort && homePort ? homePort.longitude : threshold.longitude;
+      const targetLat =
+        threshold.useHomePort && homePort
+          ? homePort.latitude
+          : threshold.latitude;
+      const targetLon =
+        threshold.useHomePort && homePort
+          ? homePort.longitude
+          : threshold.longitude;
 
       if (typeof targetLat !== 'number' || typeof targetLon !== 'number') {
-        appInstance?.error(`❌ Threshold ${threshold.watchPath}: Target position not configured`);
+        appInstance?.error(
+          `❌ Threshold ${threshold.watchPath}: Target position not configured`
+        );
         return false;
       }
 
       if (typeof threshold.radius !== 'number') {
-        appInstance?.error(`❌ Threshold ${threshold.watchPath}: Radius not configured`);
+        appInstance?.error(
+          `❌ Threshold ${threshold.watchPath}: Radius not configured`
+        );
         return false;
       }
 
@@ -1222,8 +1434,14 @@ function evaluateThreshold(
 
     case 'inBoundingBox':
     case 'outsideBoundingBox':
-      if (!currentValue || typeof currentValue.latitude !== 'number' || typeof currentValue.longitude !== 'number') {
-        appInstance?.error(`❌ Threshold ${threshold.watchPath}: Current value is not a valid position`);
+      if (
+        !currentValue ||
+        typeof currentValue.latitude !== 'number' ||
+        typeof currentValue.longitude !== 'number'
+      ) {
+        appInstance?.error(
+          `❌ Threshold ${threshold.watchPath}: Current value is not a valid position`
+        );
         return false;
       }
 
@@ -1232,13 +1450,16 @@ function evaluateThreshold(
       // Check if using home port-based bounding box
       if (threshold.useHomePort && threshold.boxSize && threshold.boxAnchor) {
         if (!homePort) {
-          appInstance?.error(`❌ Threshold ${threshold.watchPath}: Home port not configured`);
+          appInstance?.error(
+            `❌ Threshold ${threshold.watchPath}: Home port not configured`
+          );
           return false;
         }
 
         // Calculate bounding box from home port, box size, and anchor
         // Add buffer for GPS accuracy (default 5m)
-        const buffer = threshold.boxBuffer !== undefined ? threshold.boxBuffer : 5;
+        const buffer =
+          threshold.boxBuffer !== undefined ? threshold.boxBuffer : 5;
         const effectiveBoxSize = threshold.boxSize + buffer;
 
         boundingBox = calculateBoundingBoxFromHomePort(
@@ -1251,7 +1472,9 @@ function evaluateThreshold(
         // Use manual bounding box
         boundingBox = threshold.boundingBox;
       } else {
-        appInstance?.error(`❌ Threshold ${threshold.watchPath}: Bounding box not configured`);
+        appInstance?.error(
+          `❌ Threshold ${threshold.watchPath}: Bounding box not configured`
+        );
         return false;
       }
 
@@ -1264,7 +1487,9 @@ function evaluateThreshold(
       return threshold.operator === 'inBoundingBox' ? inBox : !inBox;
 
     default:
-      appInstance?.error(`❌ Unknown threshold operator: ${threshold.operator}`);
+      appInstance?.error(
+        `❌ Unknown threshold operator: ${threshold.operator}`
+      );
       return false;
   }
 }
@@ -1319,7 +1544,10 @@ function normalizeThresholdValue(value: any, threshold: ThresholdConfig): any {
   return value;
 }
 
-function buildThresholdMonitorKey(commandName: string, threshold: ThresholdConfig): string {
+function buildThresholdMonitorKey(
+  commandName: string,
+  threshold: ThresholdConfig
+): string {
   const parts: string[] = [
     commandName,
     threshold.watchPath,
@@ -1376,10 +1604,18 @@ function buildThresholdMonitorKey(commandName: string, threshold: ThresholdConfi
   return parts.join('|');
 }
 
-export function updateCommandThreshold(commandName: string, threshold: ThresholdConfig): CommandExecutionResult {
+export function updateCommandThreshold(
+  commandName: string,
+  threshold: ThresholdConfig
+): CommandExecutionResult {
   const command = commandState.registeredCommands.get(commandName);
   if (!command) {
-    return { success: false, state: 'FAILED', message: `Command ${commandName} not found`, timestamp: new Date().toISOString() };
+    return {
+      success: false,
+      state: 'FAILED',
+      message: `Command ${commandName} not found`,
+      timestamp: new Date().toISOString(),
+    };
   }
 
   // Update the thresholds configuration (replace single threshold with array)
@@ -1403,13 +1639,27 @@ export function updateCommandThreshold(commandName: string, threshold: Threshold
   saveWebAppConfig(config.paths, config.commands, appInstance);
 
   appInstance?.debug(`🎯 Updated threshold configuration for ${commandName}`);
-  return { success: true, state: 'COMPLETED', message: `Threshold updated for ${commandName}`, timestamp: new Date().toISOString() };
+  return {
+    success: true,
+    state: 'COMPLETED',
+    message: `Threshold updated for ${commandName}`,
+    timestamp: new Date().toISOString(),
+  };
 }
 
-export function setManualOverride(commandName: string, override: boolean, expiryMinutes?: number): CommandExecutionResult {
+export function setManualOverride(
+  commandName: string,
+  override: boolean,
+  expiryMinutes?: number
+): CommandExecutionResult {
   const command = commandState.registeredCommands.get(commandName);
   if (!command) {
-    return { success: false, state: 'FAILED', message: `Command ${commandName} not found`, timestamp: new Date().toISOString() };
+    return {
+      success: false,
+      state: 'FAILED',
+      message: `Command ${commandName} not found`,
+      timestamp: new Date().toISOString(),
+    };
   }
 
   command.manualOverride = override;
@@ -1417,27 +1667,37 @@ export function setManualOverride(commandName: string, override: boolean, expiry
   if (override && expiryMinutes) {
     const expiry = new Date(Date.now() + expiryMinutes * 60 * 1000);
     command.manualOverrideUntil = expiry.toISOString();
-    appInstance?.debug(`🔒 Manual override set for ${commandName} until ${expiry.toISOString()}`);
+    appInstance?.debug(
+      `🔒 Manual override set for ${commandName} until ${expiry.toISOString()}`
+    );
   } else if (override) {
     command.manualOverrideUntil = undefined;
     appInstance?.debug(`🔒 Permanent manual override set for ${commandName}`);
   } else {
     // Enabling automation mode: set to OFF then evaluate thresholds
     command.manualOverrideUntil = undefined;
-    appInstance?.debug(`🔓 Manual override cleared for ${commandName}, enabling automation`);
+    appInstance?.debug(
+      `🔓 Manual override cleared for ${commandName}, enabling automation`
+    );
 
     // Set command to OFF (defaultState = false)
     const offResult = executeCommand(commandName, false);
     if (offResult.success) {
-      appInstance?.debug(`🔧 Command ${commandName} set to OFF (default state) before threshold evaluation`);
+      appInstance?.debug(
+        `🔧 Command ${commandName} set to OFF (default state) before threshold evaluation`
+      );
     } else {
-      appInstance?.error(`❌ Failed to set ${commandName} to OFF: ${offResult.message}`);
+      appInstance?.error(
+        `❌ Failed to set ${commandName} to OFF: ${offResult.message}`
+      );
     }
 
     // Immediately evaluate all thresholds for this command
     if (command.thresholds && command.thresholds.length > 0) {
       command.thresholds.forEach(threshold => {
-        const currentValue = appInstance?.getSelfPath(threshold.watchPath as Path);
+        const currentValue = appInstance?.getSelfPath(
+          threshold.watchPath as Path
+        );
         if (currentValue !== undefined) {
           const monitorKey = buildThresholdMonitorKey(commandName, threshold);
           const state = thresholdState.get(monitorKey);
@@ -1445,9 +1705,13 @@ export function setManualOverride(commandName: string, override: boolean, expiry
           if (state) {
             // Threshold monitoring is active, evaluate immediately
             processThresholdValue(command, threshold, currentValue, monitorKey);
-            appInstance?.debug(`🎯 Immediately evaluated threshold for ${commandName}:${threshold.watchPath}`);
+            appInstance?.debug(
+              `🎯 Immediately evaluated threshold for ${commandName}:${threshold.watchPath}`
+            );
           } else {
-            appInstance?.debug(`⚠️ Threshold state not found for ${commandName}:${threshold.watchPath}, will evaluate on next update`);
+            appInstance?.debug(
+              `⚠️ Threshold state not found for ${commandName}:${threshold.watchPath}, will evaluate on next update`
+            );
           }
         }
       });
@@ -1458,5 +1722,10 @@ export function setManualOverride(commandName: string, override: boolean, expiry
   const config = loadWebAppConfig();
   saveWebAppConfig(config.paths, config.commands, appInstance);
 
-  return { success: true, state: 'COMPLETED', message: `Manual override ${override ? 'enabled' : 'disabled'} for ${commandName}`, timestamp: new Date().toISOString() };
+  return {
+    success: true,
+    state: 'COMPLETED',
+    message: `Manual override ${override ? 'enabled' : 'disabled'} for ${commandName}`,
+    timestamp: new Date().toISOString(),
+  };
 }

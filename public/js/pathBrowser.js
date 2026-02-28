@@ -1,6 +1,5 @@
 import { getPluginPath } from './utils.js';
 import { setDataPathsQuery } from './dataPaths.js';
-import { analyzeDataPath } from './analysis.js';
 
 let availablePaths = [];
 let dataDirectory = '';
@@ -53,8 +52,7 @@ export function displayAvailablePaths() {
                     <strong id="selectedPathName"></strong>
                     <span id="selectedPathFiles" style="color: #666; margin-left: 10px;"></span>
                 </div>
-                <button id="generateQueryBtn" onclick="generateQueryForSelectedPath()" style="background: #28a745; color: white; border: none; padding: 10px 15px; border-radius: 4px; cursor: pointer; margin-right: 10px;">📋 Generate Query</button>
-                <button id="analyzeBtn" onclick="analyzeSelectedPath()" style="background: #667eea; color: white; border: none; padding: 10px 15px; border-radius: 4px; cursor: pointer;">🧠 Analyze</button>
+                <button id="generateQueryBtn" onclick="generateQueryForSelectedPath()" style="background: #28a745; color: white; border: none; padding: 10px 15px; border-radius: 4px; cursor: pointer;">📋 Generate Query</button>
             </div>
         </div>`;
 
@@ -89,17 +87,12 @@ export function generateQueryForSelectedPath() {
   generateQueryForPath(pathInfo.path, pathInfo.directory);
 }
 
-export function analyzeSelectedPath() {
-  const dropdown = document.getElementById('pathDropdown');
-  if (dropdown.value === '') return;
-
-  const selectedIndex = parseInt(dropdown.value, 10);
-  const pathInfo = availablePaths[selectedIndex];
-  analyzeDataPath(pathInfo.path, pathInfo.directory);
-}
-
 export function generateQueryForPath(signalkPath, directory) {
-  const query = `SELECT * FROM read_parquet('${directory}/*.parquet', union_by_name=true) ORDER BY received_timestamp DESC LIMIT 10`;
+  // Use **/*.parquet for Hive paths (path= directories have year/day subdirs)
+  // Use *.parquet for flat paths
+  const isHivePath = directory.includes('path=');
+  const globPattern = isHivePath ? '**/*.parquet' : '*.parquet';
+  const query = `SELECT * FROM read_parquet('${directory}/${globPattern}', union_by_name=true) ORDER BY received_timestamp DESC LIMIT 10`;
   setDataPathsQuery(query);
 }
 
@@ -118,10 +111,14 @@ export function generateExampleQueries() {
   let html = '';
 
   availablePaths.slice(0, 4).forEach(pathInfo => {
+    // Use **/*.parquet for Hive paths (path= directories have year/day subdirs)
+    const isHivePath = pathInfo.directory.includes('path=');
+    const globPattern = isHivePath ? '**/*.parquet' : '*.parquet';
+
     const examples = [
-      `SELECT * FROM read_parquet('${pathInfo.directory}/*.parquet', union_by_name=true) ORDER BY received_timestamp DESC LIMIT 10`,
-      `SELECT COUNT(*) as total_records FROM read_parquet('${pathInfo.directory}/*.parquet', union_by_name=true)`,
-      `SELECT received_timestamp, value, source_label FROM read_parquet('${pathInfo.directory}/*.parquet', union_by_name=true) WHERE value IS NOT NULL ORDER BY received_timestamp DESC LIMIT 10`,
+      `SELECT * FROM read_parquet('${pathInfo.directory}/${globPattern}', union_by_name=true) ORDER BY received_timestamp DESC LIMIT 10`,
+      `SELECT COUNT(*) as total_records FROM read_parquet('${pathInfo.directory}/${globPattern}', union_by_name=true)`,
+      `SELECT received_timestamp, value, source_label FROM read_parquet('${pathInfo.directory}/${globPattern}', union_by_name=true) WHERE value IS NOT NULL ORDER BY received_timestamp DESC LIMIT 10`,
     ];
 
     examples.forEach(query => {

@@ -4,7 +4,11 @@
  */
 
 import { BoundingBox, DataRecord } from '../types';
-import { isPointInBoundingBox, calculateDistance, createBoundingBoxFromRadius } from './geo-calculator';
+import {
+  isPointInBoundingBox,
+  calculateDistance,
+  createBoundingBoxFromRadius,
+} from './geo-calculator';
 
 /**
  * Spatial filter configuration
@@ -99,7 +103,10 @@ export function parseRadiusParam(radiusStr: string): SpatialFilter | null {
  * @param radiusStr - Optional radius parameter
  * @returns SpatialFilter or null if no valid spatial params
  */
-export function parseSpatialParams(bboxStr?: string, radiusStr?: string): SpatialFilter | null {
+export function parseSpatialParams(
+  bboxStr?: string,
+  radiusStr?: string
+): SpatialFilter | null {
   // Radius takes precedence over bbox
   if (radiusStr) {
     return parseRadiusParam(radiusStr);
@@ -147,8 +154,12 @@ export function buildSpatialSqlClause(
   // For radius filters, we use the bbox as a coarse filter in SQL
   // The precise distance check happens in post-processing or JS filter
   // For now, just return bbox filter - DuckDB will do the heavy lifting
-  if (filter.type === 'radius' && filter.centerLat !== undefined &&
-      filter.centerLon !== undefined && filter.radiusMeters !== undefined) {
+  if (
+    filter.type === 'radius' &&
+    filter.centerLat !== undefined &&
+    filter.centerLon !== undefined &&
+    filter.radiusMeters !== undefined
+  ) {
     // Use ST_Distance_Spheroid for precise radius filtering in DuckDB
     // This requires the spatial extension which is already loaded
     const distanceCondition = `ST_Distance_Spheroid(
@@ -189,11 +200,18 @@ export function filterBufferRecordsSpatially(
     }
 
     // For radius filters, do precise distance check
-    if (filter.type === 'radius' &&
-        filter.centerLat !== undefined &&
-        filter.centerLon !== undefined &&
-        filter.radiusMeters !== undefined) {
-      const distance = calculateDistance(lat, lon, filter.centerLat, filter.centerLon);
+    if (
+      filter.type === 'radius' &&
+      filter.centerLat !== undefined &&
+      filter.centerLon !== undefined &&
+      filter.radiusMeters !== undefined
+    ) {
+      const distance = calculateDistance(
+        lat,
+        lon,
+        filter.centerLat,
+        filter.centerLon
+      );
       return distance <= filter.radiusMeters;
     }
 
@@ -220,7 +238,7 @@ function extractLatitude(record: DataRecord): number | null {
 
   // Check for value_json as object
   if (record.value_json && typeof record.value_json === 'object') {
-    const json = record.value_json as any;
+    const json = record.value_json as { latitude?: number };
     if (typeof json.latitude === 'number') {
       return json.latitude;
     }
@@ -260,7 +278,7 @@ function extractLongitude(record: DataRecord): number | null {
 
   // Check for value_json as object
   if (record.value_json && typeof record.value_json === 'object') {
-    const json = record.value_json as any;
+    const json = record.value_json as { longitude?: number };
     if (typeof json.longitude === 'number') {
       return json.longitude;
     }
@@ -307,7 +325,10 @@ export function isPositionPath(signalkPath: string): boolean {
       }
     } else {
       // Exact or prefix match
-      if (lowerPath === pattern.toLowerCase() || lowerPath.startsWith(pattern.toLowerCase() + '.')) {
+      if (
+        lowerPath === pattern.toLowerCase() ||
+        lowerPath.startsWith(pattern.toLowerCase() + '.')
+      ) {
         return true;
       }
     }

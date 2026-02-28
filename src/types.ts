@@ -14,7 +14,10 @@ import { LRUCache } from './utils/lru-cache';
 
 // Forward declaration to avoid circular dependency
 export interface SchemaService {
-  detectOptimalSchema(records: DataRecord[], currentPath?: string): Promise<any>;
+  detectOptimalSchema(
+    records: DataRecord[],
+    currentPath?: string
+  ): Promise<any>;
   validateFileSchema(filePath: string): Promise<any>;
   repairFileSchema(filePath: string, filenamePrefix?: string): Promise<any>;
 }
@@ -34,11 +37,11 @@ export interface SignalKPlugin {
 // Plugin Configuration
 // Auto-discovery configuration for automatic path recording
 export interface AutoDiscoveryConfig {
-  enabled: boolean;                    // Master switch (default: false)
-  excludePatterns?: string[];          // Paths to never auto-configure (glob patterns)
-  includePatterns?: string[];          // Restrict to matching paths only (glob patterns)
-  maxAutoConfiguredPaths?: number;     // Limit (default: 100)
-  requireLiveData: boolean;            // Only configure if path has live SignalK data
+  enabled: boolean; // Master switch (default: false)
+  excludePatterns?: string[]; // Paths to never auto-configure (glob patterns)
+  includePatterns?: string[]; // Restrict to matching paths only (glob patterns)
+  maxAutoConfiguredPaths?: number; // Limit (default: 100)
+  requireLiveData: boolean; // Only configure if path has live SignalK data
 }
 
 export interface PluginConfig {
@@ -96,33 +99,33 @@ export interface VesselInfo {
   name?: string;
   callsign?: string;
   mmsi?: string;
-  
+
   // Physical characteristics
-  length?: number;        // Length Overall (LOA) in meters
-  beam?: number;          // Beam in meters
-  draft?: number;         // Draft in meters
-  height?: number;        // Height/air draft in meters
-  displacement?: number;  // Weight/displacement in tons
-  
+  length?: number; // Length Overall (LOA) in meters
+  beam?: number; // Beam in meters
+  draft?: number; // Draft in meters
+  height?: number; // Height/air draft in meters
+  displacement?: number; // Weight/displacement in tons
+
   // Vessel classification
-  vesselType?: string;    // Type of vessel (sailboat, motorboat, cargo, etc.)
+  vesselType?: string; // Type of vessel (sailboat, motorboat, cargo, etc.)
   classification?: string; // Classification society info
-  flag?: string;          // Flag state
-  
+  flag?: string; // Flag state
+
   // Technical specifications
   grossTonnage?: number;
   netTonnage?: number;
   deadWeight?: number;
-  
+
   // Build information
   builder?: string;
   buildYear?: number;
   hullNumber?: string;
-  
+
   // Contact information
   ownerName?: string;
-  port?: string;          // Port of registry
-  
+  port?: string; // Port of registry
+
   // Additional context
   notes?: string;
 }
@@ -132,7 +135,13 @@ export interface VesselContextExtraction {
   signalkPath: string;
   displayName: string;
   unit?: string;
-  category: 'identification' | 'physical' | 'classification' | 'technical' | 'build' | 'contact';
+  category:
+    | 'identification'
+    | 'physical'
+    | 'classification'
+    | 'technical'
+    | 'build'
+    | 'contact';
 }
 
 export interface PathConfig {
@@ -152,33 +161,33 @@ export interface PathConfig {
  */
 export type ThresholdOperator =
   // Numeric/Angular operators
-  | 'gt'              // Greater than
-  | 'lt'              // Less than
-  | 'eq'              // Equal to
-  | 'ne'              // Not equal to
-  | 'range'           // Within range (min/max)
+  | 'gt' // Greater than
+  | 'lt' // Less than
+  | 'eq' // Equal to
+  | 'ne' // Not equal to
+  | 'range' // Within range (min/max)
   // String operators
-  | 'contains'        // String contains substring
-  | 'startsWith'      // String starts with
-  | 'endsWith'        // String ends with
-  | 'stringEquals'    // String equals (case-sensitive)
+  | 'contains' // String contains substring
+  | 'startsWith' // String starts with
+  | 'endsWith' // String ends with
+  | 'stringEquals' // String equals (case-sensitive)
   // Boolean operators
-  | 'true'            // Is true
-  | 'false'           // Is false
+  | 'true' // Is true
+  | 'false' // Is false
   // Position operators
-  | 'withinRadius'    // Within radius of point
-  | 'outsideRadius'   // Outside radius of point
-  | 'inBoundingBox'   // Inside bounding box
+  | 'withinRadius' // Within radius of point
+  | 'outsideRadius' // Outside radius of point
+  | 'inBoundingBox' // Inside bounding box
   | 'outsideBoundingBox'; // Outside bounding box
 
 /**
  * Bounding box for geographic area thresholds
  */
 export interface BoundingBox {
-  north: number;      // Northern latitude boundary
-  south: number;      // Southern latitude boundary
-  east: number;       // Eastern longitude boundary
-  west: number;       // Western longitude boundary
+  north: number; // Northern latitude boundary
+  south: number; // Southern latitude boundary
+  east: number; // Eastern longitude boundary
+  west: number; // Western longitude boundary
 }
 
 /**
@@ -186,28 +195,28 @@ export interface BoundingBox {
  */
 export interface ThresholdConfig {
   enabled: boolean;
-  watchPath: string;                    // SignalK path to monitor
-  operator: ThresholdOperator;          // Threshold operator
+  watchPath: string; // SignalK path to monitor
+  operator: ThresholdOperator; // Threshold operator
 
   // Simple value (for most operators)
   value?: number | boolean | string;
 
   // Range operator values
-  valueMin?: number;                    // Minimum value for range operator
-  valueMax?: number;                    // Maximum value for range operator
+  valueMin?: number; // Minimum value for range operator
+  valueMax?: number; // Maximum value for range operator
 
   // Position-based threshold values
-  latitude?: number;                    // Target latitude for position operators
-  longitude?: number;                   // Target longitude for position operators
-  radius?: number;                      // Radius in meters for position operators
-  boundingBox?: BoundingBox;            // Bounding box for area operators (manual mode)
-  useHomePort?: boolean;                // Use home port location instead of custom lat/lon
-  boxSize?: number;                     // Box size in meters (for home port-based bounding box)
-  boxAnchor?: string;                   // Anchor point for home port-based box (nw, n, ne, w, center, e, sw, s, se)
-  boxBuffer?: number;                   // Buffer in meters to add to bounding box (default: 5m for GPS accuracy)
+  latitude?: number; // Target latitude for position operators
+  longitude?: number; // Target longitude for position operators
+  radius?: number; // Radius in meters for position operators
+  boundingBox?: BoundingBox; // Bounding box for area operators (manual mode)
+  useHomePort?: boolean; // Use home port location instead of custom lat/lon
+  boxSize?: number; // Box size in meters (for home port-based bounding box)
+  boxAnchor?: string; // Anchor point for home port-based box (nw, n, ne, w, center, e, sw, s, se)
+  boxBuffer?: number; // Buffer in meters to add to bounding box (default: 5m for GPS accuracy)
 
-  activateOnMatch: boolean;             // true = activate command when condition met, false = deactivate
-  hysteresis?: number;                  // Optional: prevent rapid switching (seconds)
+  activateOnMatch: boolean; // true = activate command when condition met, false = deactivate
+  hysteresis?: number; // Optional: prevent rapid switching (seconds)
 }
 
 export interface CommandConfig {
@@ -215,12 +224,12 @@ export interface CommandConfig {
   path: string;
   registered: string;
   description?: string;
-  keywords?: string[];      // For Claude context matching
+  keywords?: string[]; // For Claude context matching
   active?: boolean;
   lastExecuted?: string;
-  defaultState?: boolean;   // Default on/off state when no threshold or manual override
-  thresholds?: ThresholdConfig[];  // Threshold-based activation (multiple thresholds supported)
-  manualOverride?: boolean;     // True when manually controlled via PUT
+  defaultState?: boolean; // Default on/off state when no threshold or manual override
+  thresholds?: ThresholdConfig[]; // Threshold-based activation (multiple thresholds supported)
+  manualOverride?: boolean; // True when manually controlled via PUT
   manualOverrideUntil?: string; // ISO timestamp when override expires (optional)
 }
 
@@ -514,7 +523,12 @@ export interface SQLiteBufferInterface {
     walSizeBytes: number;
   };
   getPendingCount(): number;
-  getRecordsForPath(context: string, signalkPath: string, from?: string, to?: string): DataRecord[];
+  getRecordsForPath(
+    context: string,
+    signalkPath: string,
+    from?: string,
+    to?: string
+  ): DataRecord[];
   getDbPath(): string;
   close(): void;
 }
@@ -724,9 +738,9 @@ export interface Statistics {
 
 export interface DataQualityMetrics {
   completeness: number; // Percentage of non-null values
-  consistency: number;  // Data format consistency
-  timeliness: number;   // Data freshness
-  accuracy: number;     // Estimated data accuracy
+  consistency: number; // Data format consistency
+  timeliness: number; // Data freshness
+  accuracy: number; // Estimated data accuracy
 }
 
 // File Processing Types

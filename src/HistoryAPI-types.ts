@@ -110,8 +110,8 @@ export interface PathSpec {
   queryResultName: string;
   aggregateMethod: AggregateMethod;
   aggregateFunction: string;
-  smoothing?: 'sma' | 'ema';      // Per-path smoothing method
-  smoothingParam?: number;         // SMA period or EMA alpha
+  smoothing?: 'sma' | 'ema'; // Per-path smoothing method
+  smoothingParam?: number; // SMA period or EMA alpha
 }
 
 // Unit conversion types

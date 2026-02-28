@@ -4,66 +4,102 @@ import { ServerAPI, Context, Path } from '@signalk/server-api';
 import { PathInfo } from '../types';
 import { DuckDBInstance } from '@duckdb/node-api';
 import { ZonedDateTime } from '@js-joda/core';
-import { toContextFilePath, shouldSkipDirectory } from './path-helpers';
+import { toContextFilePath } from './path-helpers';
+import { HivePathBuilder } from './hive-path-builder';
 
 /**
- * Get available SignalK paths from directory structure
- * Scans the parquet data directory and returns paths that contain data files
+ * Get available SignalK paths from Hive directory structure
+ * Scans tier=raw/context={ctx}/path={path}/ and returns paths that contain data files
  */
 export function getAvailablePaths(dataDir: string, app: ServerAPI): PathInfo[] {
   const paths: PathInfo[] = [];
+  const hiveBuilder = new HivePathBuilder();
 
-  // Clean the self context for filesystem usage (replace dots with slashes, colons with underscores)
-  const selfContextPath = app.selfContext
-    .replace(/\./g, '/')
-    .replace(/:/g, '_');
-  const vesselsDir = path.join(dataDir, selfContextPath);
+  // Scan Hive structure: tier=raw/context=*/path=*/
+  const hiveRawDir = path.join(dataDir, 'tier=raw');
 
-  if (!fs.existsSync(vesselsDir)) {
+  if (!fs.existsSync(hiveRawDir)) {
     return paths;
   }
 
-  function walkPaths(currentPath: string, relativePath: string = ''): void {
-    try {
-      const items = fs.readdirSync(currentPath);
-      items.forEach((item: string) => {
-        const fullPath = path.join(currentPath, item);
-        const stat = fs.statSync(fullPath);
+  try {
+    // Get self context sanitized for matching
+    const selfContext = app.selfContext;
+    const sanitizedSelfContext = hiveBuilder.sanitizeContext(selfContext);
 
-        if (stat.isDirectory() && !shouldSkipDirectory(item)) {
-          const newRelativePath = relativePath
-            ? `${relativePath}.${item}`
-            : item;
+    // Iterate context= directories
+    const contextDirs = fs.readdirSync(hiveRawDir);
 
-          // Check if this directory has parquet files
-          const hasParquetFiles = fs
-            .readdirSync(fullPath)
-            .some((file: string) => file.endsWith('.parquet'));
+    for (const contextDir of contextDirs) {
+      if (!contextDir.startsWith('context=')) continue;
 
-          if (hasParquetFiles) {
-            const fileCount = fs
-              .readdirSync(fullPath)
-              .filter((file: string) => file.endsWith('.parquet')).length;
-            paths.push({
-              path: newRelativePath,
-              directory: fullPath,
-              fileCount: fileCount,
-            });
-          }
+      const contextPath = path.join(hiveRawDir, contextDir);
+      const stat = fs.statSync(contextPath);
+      if (!stat.isDirectory()) continue;
 
-          walkPaths(fullPath, newRelativePath);
+      // Extract and unsanitize context name
+      const sanitizedContext = contextDir.replace('context=', '');
+
+      // Only include paths for self context
+      if (sanitizedContext !== sanitizedSelfContext) continue;
+
+      // Iterate path= directories within each context
+      const pathDirs = fs.readdirSync(contextPath);
+
+      for (const pathDir of pathDirs) {
+        if (!pathDir.startsWith('path=')) continue;
+
+        const pathPath = path.join(contextPath, pathDir);
+        const pathStat = fs.statSync(pathPath);
+        if (!pathStat.isDirectory()) continue;
+
+        // Extract and unsanitize path name
+        const sanitizedPath = pathDir.replace('path=', '');
+        const unsanitizedPath = hiveBuilder.unsanitizePath(sanitizedPath);
+
+        // Count parquet files across all year=/day=/ subdirs
+        const fileCount = countParquetFilesRecursive(pathPath);
+
+        if (fileCount > 0) {
+          paths.push({
+            path: unsanitizedPath,
+            directory: pathPath,
+            fileCount: fileCount,
+          });
         }
-      });
-    } catch (error) {
-      // Error reading directory - skip
+      }
     }
-  }
-
-  if (fs.existsSync(vesselsDir)) {
-    walkPaths(vesselsDir);
+  } catch (error) {
+    // Error reading directory - skip
   }
 
   return paths;
+}
+
+/**
+ * Count parquet files recursively in a directory
+ */
+function countParquetFilesRecursive(dir: string): number {
+  let count = 0;
+
+  try {
+    const items = fs.readdirSync(dir);
+
+    for (const item of items) {
+      const fullPath = path.join(dir, item);
+      const stat = fs.statSync(fullPath);
+
+      if (stat.isDirectory()) {
+        count += countParquetFilesRecursive(fullPath);
+      } else if (item.endsWith('.parquet')) {
+        count++;
+      }
+    }
+  } catch (error) {
+    // Error reading directory - skip
+  }
+
+  return count;
 }
 
 /**
