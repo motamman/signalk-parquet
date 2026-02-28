@@ -67,7 +67,13 @@ export class HivePathBuilder {
     timestamp: Date,
     filenamePrefix: string = 'data'
   ): string {
-    const dirPath = this.buildPath(basePath, tier, context, signalkPath, timestamp);
+    const dirPath = this.buildPath(
+      basePath,
+      tier,
+      context,
+      signalkPath,
+      timestamp
+    );
     const timestampStr = timestamp
       .toISOString()
       .replace(/[:.]/g, '')
@@ -81,7 +87,8 @@ export class HivePathBuilder {
    */
   detectPathStyle(filePath: string): PathParseResult {
     // Check for Hive-style partition markers
-    const hivePattern = /tier=([^/]+)\/context=([^/]+)\/path=([^/]+)\/year=(\d+)\/day=(\d+)/;
+    const hivePattern =
+      /tier=([^/]+)\/context=([^/]+)\/path=([^/]+)\/year=(\d+)\/day=(\d+)/;
     const hiveMatch = filePath.match(hivePattern);
 
     if (hiveMatch) {
@@ -131,9 +138,9 @@ export class HivePathBuilder {
     }
 
     // Extract timestamp from filename
-    const filenameMatch = path.basename(flatPath).match(
-      /(\d{4})-?(\d{2})-?(\d{2})T?(\d{2})(\d{2})(\d{2})/
-    );
+    const filenameMatch = path
+      .basename(flatPath)
+      .match(/(\d{4})-?(\d{2})-?(\d{2})T?(\d{2})(\d{2})(\d{2})/);
 
     let timestamp: Date;
     if (filenameMatch) {
@@ -160,18 +167,14 @@ export class HivePathBuilder {
    * vessels.urn:mrn:signalk:uuid:xxx -> vessels__urn-mrn-signalk-uuid-xxx
    */
   sanitizeContext(context: string): string {
-    return context
-      .replace(/\./g, '__')
-      .replace(/:/g, '-');
+    return context.replace(/\./g, '__').replace(/:/g, '-');
   }
 
   /**
    * Unsanitize a context string from a path
    */
   unsanitizeContext(sanitized: string): string {
-    return sanitized
-      .replace(/__/g, '.')
-      .replace(/-/g, ':');
+    return sanitized.replace(/__/g, '.').replace(/-/g, ':');
   }
 
   /**
@@ -253,7 +256,10 @@ export class HivePathBuilder {
   /**
    * Get all day directories in a time range
    */
-  getDaysInRange(from: Date, to: Date): Array<{ year: number; dayOfYear: number }> {
+  getDaysInRange(
+    from: Date,
+    to: Date
+  ): Array<{ year: number; dayOfYear: number }> {
     const days: Array<{ year: number; dayOfYear: number }> = [];
     const current = new Date(from);
 
@@ -285,9 +291,18 @@ export class HivePathBuilder {
       const days = this.getDaysInRange(fromDate, toDate);
       if (days.length <= 7) {
         // Build explicit patterns for each day
-        return days.map(d =>
-          this.getGlobPattern(basePath, tier, context, signalkPath, d.year, d.dayOfYear)
-        ).join(',');
+        return days
+          .map(d =>
+            this.getGlobPattern(
+              basePath,
+              tier,
+              context,
+              signalkPath,
+              d.year,
+              d.dayOfYear
+            )
+          )
+          .join(',');
       }
     }
 

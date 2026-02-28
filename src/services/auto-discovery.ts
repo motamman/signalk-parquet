@@ -1,11 +1,6 @@
 import { Context, Path, ServerAPI } from '@signalk/server-api';
 import { minimatch } from 'minimatch';
-import {
-  AutoDiscoveryConfig,
-  PathConfig,
-  PluginConfig,
-  PluginState,
-} from '../types';
+import { PathConfig, PluginConfig, PluginState } from '../types';
 import { loadWebAppConfig, saveWebAppConfig } from '../commands';
 import { updateDataSubscriptions } from '../data-handler';
 
@@ -41,7 +36,9 @@ export class AutoDiscoveryService {
    */
   setInitialCount(count: number): void {
     this.configuredCount = count;
-    this.app.debug(`[AutoDiscovery] Initialized with ${count} existing auto-discovered paths`);
+    this.app.debug(
+      `[AutoDiscovery] Initialized with ${count} existing auto-discovered paths`
+    );
   }
 
   /**
@@ -54,7 +51,10 @@ export class AutoDiscoveryService {
   /**
    * Update references when config/paths change
    */
-  updateReferences(pluginConfig: PluginConfig, currentPaths: PathConfig[]): void {
+  updateReferences(
+    pluginConfig: PluginConfig,
+    currentPaths: PathConfig[]
+  ): void {
     this.pluginConfig = pluginConfig;
     this.currentPaths = currentPaths;
   }
@@ -69,15 +69,17 @@ export class AutoDiscoveryService {
     context: Context
   ): Promise<AutoDiscoveryResult> {
     // Serialize all auto-discovery operations to prevent race conditions
-    return new Promise((resolve) => {
+    return new Promise(resolve => {
       this.configurationLock = this.configurationLock
         .then(async () => {
           const result = await this.doAutoConfigurePath(path, context);
           resolve(result);
         })
-        .catch((error) => {
+        .catch(error => {
           // Ensure errors don't break the chain, but still resolve with failure
-          this.app.error(`[AutoDiscovery] Lock chain error for ${path}: ${error}`);
+          this.app.error(
+            `[AutoDiscovery] Lock chain error for ${path}: ${error}`
+          );
           resolve({
             configured: false,
             path,
@@ -95,7 +97,9 @@ export class AutoDiscoveryService {
     path: Path,
     context: Context
   ): Promise<AutoDiscoveryResult> {
-    this.app.debug(`[AutoDiscovery] doAutoConfigurePath called for ${path} in context ${context}`);
+    this.app.debug(
+      `[AutoDiscovery] doAutoConfigurePath called for ${path} in context ${context}`
+    );
     const config = this.pluginConfig.autoDiscovery;
 
     // Check if auto-discovery is enabled
@@ -108,7 +112,9 @@ export class AutoDiscoveryService {
       };
     }
 
-    this.app.debug(`[AutoDiscovery] Config: enabled=${config.enabled}, requireLiveData=${config.requireLiveData}, maxPaths=${config.maxAutoConfiguredPaths}`);
+    this.app.debug(
+      `[AutoDiscovery] Config: enabled=${config.enabled}, requireLiveData=${config.requireLiveData}, maxPaths=${config.maxAutoConfiguredPaths}`
+    );
 
     // Check if path is already configured
     const existingPath = this.currentPaths.find(p => p.path === path);
@@ -123,7 +129,9 @@ export class AutoDiscoveryService {
     // Check max limit
     const maxPaths = config.maxAutoConfiguredPaths ?? 100;
     if (this.configuredCount >= maxPaths) {
-      this.app.debug(`[AutoDiscovery] Limit reached (${this.configuredCount}/${maxPaths}), skipping ${path}`);
+      this.app.debug(
+        `[AutoDiscovery] Limit reached (${this.configuredCount}/${maxPaths}), skipping ${path}`
+      );
       return {
         configured: false,
         path,
@@ -148,7 +156,9 @@ export class AutoDiscoveryService {
     if (config.includePatterns && config.includePatterns.length > 0) {
       const isIncluded = this.matchesPattern(path, config.includePatterns);
       if (!isIncluded) {
-        this.app.debug(`[AutoDiscovery] Path ${path} does not match any include pattern`);
+        this.app.debug(
+          `[AutoDiscovery] Path ${path} does not match any include pattern`
+        );
         return {
           configured: false,
           path,
@@ -161,7 +171,9 @@ export class AutoDiscoveryService {
     if (config.requireLiveData) {
       const hasLiveData = this.checkPathHasLiveData(path, context);
       if (!hasLiveData) {
-        this.app.debug(`[AutoDiscovery] Path ${path} has no live data in SignalK`);
+        this.app.debug(
+          `[AutoDiscovery] Path ${path} has no live data in SignalK`
+        );
         return {
           configured: false,
           path,
@@ -180,20 +192,30 @@ export class AutoDiscoveryService {
   private checkPathHasLiveData(path: Path, context: Context): boolean {
     try {
       // For vessels.self context, use getSelfPath
-      if (context === 'vessels.self' || context === `vessels.${this.app.selfId}`) {
+      if (
+        context === 'vessels.self' ||
+        context === `vessels.${this.app.selfId}`
+      ) {
         const value = this.app.getSelfPath(path);
-        this.app.debug(`[AutoDiscovery] getSelfPath(${path}) returned: ${JSON.stringify(value)}`);
+        this.app.debug(
+          `[AutoDiscovery] getSelfPath(${path}) returned: ${JSON.stringify(value)}`
+        );
         return value !== undefined && value !== null;
       }
 
       // For other contexts, try to get the value from the full model
       // Note: This may not be available depending on SignalK version
       const fullPath = `${context}.${path}`;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const model = (this.app as any).getPath?.(fullPath);
-      this.app.debug(`[AutoDiscovery] getPath(${fullPath}) returned: ${JSON.stringify(model)}`);
+      this.app.debug(
+        `[AutoDiscovery] getPath(${fullPath}) returned: ${JSON.stringify(model)}`
+      );
       return model !== undefined && model !== null;
     } catch (error) {
-      this.app.debug(`[AutoDiscovery] Error checking live data for ${path}: ${error}`);
+      this.app.debug(
+        `[AutoDiscovery] Error checking live data for ${path}: ${error}`
+      );
       return false;
     }
   }
@@ -213,7 +235,10 @@ export class AutoDiscoveryService {
   /**
    * Configure a path for recording and update subscriptions
    */
-  private async configurePath(path: Path, context: Context): Promise<AutoDiscoveryResult> {
+  private async configurePath(
+    path: Path,
+    context: Context
+  ): Promise<AutoDiscoveryResult> {
     try {
       // Create the new path configuration
       const newPathConfig: PathConfig = {
@@ -243,7 +268,9 @@ export class AutoDiscoveryService {
         this.app
       );
 
-      this.app.debug(`[AutoDiscovery] Successfully auto-configured path: ${path}`);
+      this.app.debug(
+        `[AutoDiscovery] Successfully auto-configured path: ${path}`
+      );
 
       return {
         configured: true,
@@ -251,7 +278,9 @@ export class AutoDiscoveryService {
         reason: 'Path auto-configured successfully',
       };
     } catch (error) {
-      this.app.error(`[AutoDiscovery] Failed to configure path ${path}: ${error}`);
+      this.app.error(
+        `[AutoDiscovery] Failed to configure path ${path}: ${error}`
+      );
       return {
         configured: false,
         path,

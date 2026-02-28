@@ -72,7 +72,9 @@ export class ParquetExportService {
       });
     }, intervalMs);
 
-    this.app.debug(`ParquetExportService started with ${this.config.exportIntervalMinutes} minute interval`);
+    this.app.debug(
+      `ParquetExportService started with ${this.config.exportIntervalMinutes} minute interval`
+    );
   }
 
   /**
@@ -149,7 +151,9 @@ export class ParquetExportService {
 
             // Mark records as exported
             // We need to get the record IDs from the buffer
-            const pendingRecords = this.sqliteBuffer.getPendingRecords(records.length);
+            const pendingRecords = this.sqliteBuffer.getPendingRecords(
+              records.length
+            );
             const recordIds = pendingRecords
               .filter(r => r.context === context && r.path === signalkPath)
               .map(r => r.id);
@@ -197,7 +201,7 @@ export class ParquetExportService {
     context: string,
     signalkPath: string,
     records: DataRecord[],
-    batchId: string
+    _batchId: string
   ): Promise<string | null> {
     if (records.length === 0) return null;
 
@@ -277,7 +281,10 @@ export class ParquetExportService {
       .replace(/[:.]/g, '')
       .slice(0, 15);
 
-    return path.join(dirPath, `${this.config.filenamePrefix}_${timestamp}.parquet`);
+    return path.join(
+      dirPath,
+      `${this.config.filenamePrefix}_${timestamp}.parquet`
+    );
   }
 
   /**
@@ -302,7 +309,10 @@ export class ParquetExportService {
    * Generate a unique batch ID
    */
   private generateBatchId(): string {
-    const timestamp = new Date().toISOString().replace(/[:.]/g, '').slice(0, 15);
+    const timestamp = new Date()
+      .toISOString()
+      .replace(/[:.]/g, '')
+      .slice(0, 15);
     const random = Math.random().toString(36).substring(2, 8);
     return `batch_${timestamp}_${random}`;
   }

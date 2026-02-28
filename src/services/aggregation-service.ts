@@ -52,7 +52,7 @@ export interface AggregationResult {
 }
 
 const TIER_INTERVALS: Record<AggregationTier, number> = {
-  'raw': 1,
+  raw: 1,
   '5s': 5,
   '60s': 60,
   '1h': 3600,
@@ -88,7 +88,9 @@ export class AggregationService {
         const result = await this.aggregateTier(sourceTier, targetTier, date);
         results.push(result);
       } catch (error) {
-        this.app.error(`Aggregation ${sourceTier} -> ${targetTier} failed: ${(error as Error).message}`);
+        this.app.error(
+          `Aggregation ${sourceTier} -> ${targetTier} failed: ${(error as Error).message}`
+        );
         results.push({
           sourceTier,
           targetTier,
@@ -135,7 +137,9 @@ export class AggregationService {
     const sourceFiles = await glob(sourcePattern);
 
     if (sourceFiles.length === 0) {
-      this.app.debug(`No source files found for ${sourceTier} on ${date.toISOString().slice(0, 10)}`);
+      this.app.debug(
+        `No source files found for ${sourceTier} on ${date.toISOString().slice(0, 10)}`
+      );
       return {
         sourceTier,
         targetTier,
@@ -208,12 +212,16 @@ export class AggregationService {
     try {
       const schemaQuery = `SELECT column_name FROM (DESCRIBE SELECT * FROM read_parquet([${fileListStr}], union_by_name=true))`;
       const schemaResult = await connection.runAndReadAll(schemaQuery);
-      const columns = schemaResult.getRowObjects().map((r: Record<string, unknown>) => r.column_name as string);
+      const columns = schemaResult
+        .getRowObjects()
+        .map((r: Record<string, unknown>) => r.column_name as string);
 
       // For raw tier, we need 'value' column; for aggregated tiers, we need 'bucket_time' and 'value_avg'
       const requiredColumn = isSourceRaw ? 'value' : 'bucket_time';
       if (!columns.includes(requiredColumn)) {
-        this.app.debug(`Skipping ${signalkPath}: no '${requiredColumn}' column (object-type data stays in raw tier)`);
+        this.app.debug(
+          `Skipping ${signalkPath}: no '${requiredColumn}' column (object-type data stays in raw tier)`
+        );
         connection.disconnectSync();
         return { recordsAggregated: 0, outputFile: null };
       }
@@ -335,7 +343,10 @@ export class AggregationService {
   /**
    * Clean up old data based on retention settings
    */
-  async cleanupOldData(): Promise<{ deletedFiles: number; freedBytes: number }> {
+  async cleanupOldData(): Promise<{
+    deletedFiles: number;
+    freedBytes: number;
+  }> {
     let deletedFiles = 0;
     let freedBytes = 0;
 
@@ -373,12 +384,16 @@ export class AggregationService {
             }
           }
         } catch (error) {
-          this.app.debug(`Failed to check/delete ${file}: ${(error as Error).message}`);
+          this.app.debug(
+            `Failed to check/delete ${file}: ${(error as Error).message}`
+          );
         }
       }
     }
 
-    this.app.debug(`Cleanup: deleted ${deletedFiles} files, freed ${(freedBytes / 1024 / 1024).toFixed(2)} MB`);
+    this.app.debug(
+      `Cleanup: deleted ${deletedFiles} files, freed ${(freedBytes / 1024 / 1024).toFixed(2)} MB`
+    );
 
     return { deletedFiles, freedBytes };
   }
@@ -404,7 +419,9 @@ export class AggregationService {
     const yesterday = new Date();
     yesterday.setUTCDate(yesterday.getUTCDate() - 1);
 
-    this.app.debug(`Running daily aggregation for ${yesterday.toISOString().slice(0, 10)}`);
+    this.app.debug(
+      `Running daily aggregation for ${yesterday.toISOString().slice(0, 10)}`
+    );
 
     const results = await this.aggregateDate(yesterday);
 

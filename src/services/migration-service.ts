@@ -164,7 +164,10 @@ export class MigrationService {
   /**
    * Run the migration process
    */
-  private async runMigration(jobId: string, config: MigrationConfig): Promise<void> {
+  private async runMigration(
+    jobId: string,
+    config: MigrationConfig
+  ): Promise<void> {
     const progress = migrationJobs.get(jobId);
     if (!progress) return;
 
@@ -242,7 +245,6 @@ export class MigrationService {
       progress.status = 'completed';
       progress.completedAt = new Date();
       scheduleMigrationJobCleanup(jobId);
-
     } catch (error) {
       progress.status = 'error';
       progress.error = (error as Error).message;
@@ -293,7 +295,9 @@ export class MigrationService {
   /**
    * Extract the earliest timestamp from a parquet file
    */
-  private async extractTimestampFromFile(filePath: string): Promise<Date | null> {
+  private async extractTimestampFromFile(
+    filePath: string
+  ): Promise<Date | null> {
     try {
       const connection = await DuckDBPool.getConnection();
       try {
@@ -313,7 +317,9 @@ export class MigrationService {
     } catch (error) {
       // Fall back to filename parsing
       const filename = path.basename(filePath);
-      const match = filename.match(/(\d{4})-?(\d{2})-?(\d{2})T?(\d{2})(\d{2})(\d{2})/);
+      const match = filename.match(
+        /(\d{4})-?(\d{2})-?(\d{2})T?(\d{2})(\d{2})(\d{2})/
+      );
       if (match) {
         return new Date(
           `${match[1]}-${match[2]}-${match[3]}T${match[4]}:${match[5]}:${match[6]}Z`

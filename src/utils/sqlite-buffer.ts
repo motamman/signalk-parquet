@@ -201,19 +201,24 @@ export class SQLiteBuffer {
 
     // Handle value_json if present
     if (record.value_json !== undefined && record.value_json !== null) {
-      valueJson = typeof record.value_json === 'string'
-        ? record.value_json
-        : JSON.stringify(record.value_json);
+      valueJson =
+        typeof record.value_json === 'string'
+          ? record.value_json
+          : JSON.stringify(record.value_json);
     }
 
     // Serialize source if object
     const sourceStr = record.source
-      ? (typeof record.source === 'object' ? JSON.stringify(record.source) : String(record.source))
+      ? typeof record.source === 'object'
+        ? JSON.stringify(record.source)
+        : String(record.source)
       : null;
 
     // Serialize meta if object
     const metaStr = record.meta
-      ? (typeof record.meta === 'object' ? JSON.stringify(record.meta) : String(record.meta))
+      ? typeof record.meta === 'object'
+        ? JSON.stringify(record.meta)
+        : String(record.meta)
       : null;
 
     return {
@@ -386,7 +391,11 @@ export class SQLiteBuffer {
     if (!this.db.open) {
       return 0;
     }
-    const row = this.db.prepare('SELECT COUNT(*) as count FROM buffer_records WHERE exported = 0').get() as { count: number };
+    const row = this.db
+      .prepare(
+        'SELECT COUNT(*) as count FROM buffer_records WHERE exported = 0'
+      )
+      .get() as { count: number };
     return row.count;
   }
 
