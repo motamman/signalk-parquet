@@ -130,14 +130,14 @@ export default function (app: ServerAPI): SignalKPlugin {
         setCurrentLocation: false,
       },
       // enableStreaming: options?.enableStreaming ?? false,
-      // SQLite buffer options (new)
-      useSqliteBuffer: options?.useSqliteBuffer ?? false,
+      // SQLite buffer options
+      useSqliteBuffer: true, // Always use SQLite buffer
       exportIntervalMinutes: options?.exportIntervalMinutes || 5,
       bufferRetentionHours: options?.bufferRetentionHours || 24,
-      useHivePartitioning: options?.useHivePartitioning ?? false,
+      useHivePartitioning: true, // Always use Hive partitioning
       // Auto-discovery configuration
       autoDiscovery: options?.autoDiscovery || {
-        enabled: false,
+        enabled: true,
         requireLiveData: true,
         maxAutoConfiguredPaths: 100,
         excludePatterns: ['design.*', 'communication.*', 'notifications.*'],
@@ -522,24 +522,10 @@ export default function (app: ServerAPI): SignalKPlugin {
         minimum: 1,
         maximum: 365,
       },
-      unitConversionCacheMinutes: {
-        type: 'number',
-        title: 'Unit Conversion Cache Duration (minutes)',
-        description: 'How long to cache unit conversions from signalk-units-preference plugin before reloading. Lower values reflect preference changes faster but use more resources.',
-        default: 5,
-        minimum: 1,
-        maximum: 60,
-      },
-      useSqliteBuffer: {
-        type: 'boolean',
-        title: 'Use SQLite Buffer (Experimental)',
-        description: 'Use SQLite WAL buffer for crash-safe data ingestion instead of in-memory buffer. Provides better durability and crash recovery.',
-        default: false,
-      },
       exportIntervalMinutes: {
         type: 'number',
         title: 'Export Interval (minutes)',
-        description: 'How often to export data from SQLite buffer to Parquet files. Only used when SQLite buffer is enabled.',
+        description: 'How often to export data from SQLite buffer to Parquet files.',
         default: 5,
         minimum: 1,
         maximum: 60,
@@ -547,16 +533,10 @@ export default function (app: ServerAPI): SignalKPlugin {
       bufferRetentionHours: {
         type: 'number',
         title: 'Buffer Retention (hours)',
-        description: 'How long to keep exported records in SQLite buffer before cleanup. Only used when SQLite buffer is enabled.',
+        description: 'How long to keep exported records in SQLite buffer before cleanup.',
         default: 24,
         minimum: 1,
         maximum: 168,
-      },
-      useHivePartitioning: {
-        type: 'boolean',
-        title: 'Use Hive Partitioning (Experimental)',
-        description: 'Use Hive-style partitioning for Parquet files (tier/context/path/year/day structure). Enables efficient time-range queries.',
-        default: false,
       },
       autoDiscovery: {
         type: 'object',
@@ -567,7 +547,7 @@ export default function (app: ServerAPI): SignalKPlugin {
             type: 'boolean',
             title: 'Enable auto-discovery',
             description: 'When enabled, paths requested via history API that are not being recorded will be automatically configured',
-            default: false,
+            default: true,
           },
           maxAutoConfiguredPaths: {
             type: 'number',
