@@ -1871,7 +1871,8 @@ Begin your analysis by querying relevant data within the specified time range.`;
     
     try {
       if (vesselContext === 'vessels.*') {
-        const allVessels = this.app?.getPath('vessels') || {};
+        // Cast to Record<string, any> for compatibility with different @signalk/server-api versions
+        const allVessels = (this.app?.getPath('vessels') || {}) as Record<string, any>;
         for (const vesselId in allVessels) {
           if (vesselId === 'self') continue;
           this.collectSources(allVessels[vesselId], sources, '', 0, 10);
@@ -1975,7 +1976,8 @@ Begin your analysis by querying relevant data within the specified time range.`;
     try {
       if (vesselContext === 'vessels.*') {
         // Get paths from all vessels
-        const allVessels = this.app?.getPath('vessels') || {};
+        // Cast to Record<string, any> for compatibility with different @signalk/server-api versions
+        const allVessels = (this.app?.getPath('vessels') || {}) as Record<string, any>;
         for (const vesselId in allVessels) {
           if (vesselId === 'self') continue; // Skip self since it's handled separately
           this.traverseSignalKPaths(
