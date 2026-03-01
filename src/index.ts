@@ -90,8 +90,9 @@ export default function (app: ServerAPI): SignalKPlugin {
       (app.getSelfPath('name') as any) ||
       'unknown_vessel';
 
-    // Use SignalK's application data directory
-    const defaultOutputDir = path.join(app.getDataDirPath(), 'signalk-parquet');
+    // Use SignalK's main data directory (go up from plugin-config-data/<plugin-name>)
+    const signalkDataDir = path.resolve(app.getDataDirPath(), '..', '..');
+    const defaultOutputDir = path.join(signalkDataDir, 'signalk-parquet');
 
     // Validate and migrate Claude model if needed
     let claudeConfig = options?.claudeIntegration || { enabled: false };
@@ -122,7 +123,11 @@ export default function (app: ServerAPI): SignalKPlugin {
     state.currentConfig = {
       bufferSize: options?.bufferSize || 1000,
       saveIntervalSeconds: options?.saveIntervalSeconds || 30,
-      outputDirectory: options?.outputDirectory || defaultOutputDir,
+      outputDirectory: options?.outputDirectory
+        ? (path.isAbsolute(options.outputDirectory)
+            ? options.outputDirectory
+            : path.join(signalkDataDir, options.outputDirectory))
+        : defaultOutputDir,
       filenamePrefix: options?.filenamePrefix || 'signalk_data',
       retentionDays: options?.retentionDays || 7,
       fileFormat: options?.fileFormat || 'parquet',

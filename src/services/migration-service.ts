@@ -73,12 +73,20 @@ export class MigrationService {
     const pattern = path.join(sourceDirectory, '**', '*.parquet');
     const files = await glob(pattern);
 
+    // Exclude processed/repaired directories
+    const excludedDirs = ['/processed/', '/repaired/', '/failed/', '/quarantine/'];
+
     let totalSize = 0;
     let flatCount = 0;
     let hiveCount = 0;
     const byPath = new Map<string, { count: number; size: number }>();
 
     for (const file of files) {
+      // Skip files in processed/repaired directories
+      if (excludedDirs.some(dir => file.includes(dir))) {
+        continue;
+      }
+
       try {
         const stats = await fs.stat(file);
         totalSize += stats.size;
@@ -179,9 +187,14 @@ export class MigrationService {
       const pattern = path.join(config.sourceDirectory, '**', '*.parquet');
       const files = await glob(pattern);
 
-      // Filter to only flat-style files
+      // Filter to only flat-style files, excluding processed/repaired directories
+      const excludedDirs = ['/processed/', '/repaired/', '/failed/', '/quarantine/'];
       const flatFiles: string[] = [];
       for (const file of files) {
+        // Skip files in processed/repaired directories
+        if (excludedDirs.some(dir => file.includes(dir))) {
+          continue;
+        }
         const parsed = this.hivePathBuilder.detectPathStyle(file);
         if (parsed.isFlat) {
           flatFiles.push(file);
