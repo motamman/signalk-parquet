@@ -594,8 +594,35 @@ export function registerApiRoutes(
     }
   );
 
-  // Compare local files with S3 bucket
-  router.get('/api/s3/compare', async (_req, res) => {
+  // S3 compare job storage
+  interface S3CompareJob {
+    id: string;
+    status: 'scanning_local' | 'scanning_s3' | 'comparing' | 'completed' | 'error';
+    phase: string;
+    localFilesScanned: number;
+    localFilesTotal: number;
+    s3ObjectsScanned: number;
+    progress: number;
+    result?: {
+      summary: {
+        localTotal: number;
+        s3Total: number;
+        synced: number;
+        localOnly: number;
+        s3Only: number;
+        localOnlySizeMB: string;
+      };
+      localOnly: Array<{ key: string; size: number }>;
+      s3Only: string[];
+      hasMore: boolean;
+    };
+    error?: string;
+  }
+
+  const s3CompareJobs = new Map<string, S3CompareJob>();
+
+  // Start S3 compare job
+  router.post('/api/s3/compare', async (_req, res) => {
     try {
       if (!state.currentConfig?.s3Upload?.enabled) {
         return res.status(400).json({
@@ -616,93 +643,161 @@ export function registerApiRoutes(
         }
       }
 
-      const config = state.currentConfig;
-      const dataDir = getDataDir();
+      const jobId = `s3-compare-${Date.now()}`;
+      const job: S3CompareJob = {
+        id: jobId,
+        status: 'scanning_local',
+        phase: 'Scanning local files...',
+        localFilesScanned: 0,
+        localFilesTotal: 0,
+        s3ObjectsScanned: 0,
+        progress: 0,
+      };
 
-      // Get local parquet files
-      const localFiles = await glob(path.join(dataDir, '**', '*.parquet'));
-      const localKeys = new Map<string, { path: string; size: number }>();
+      s3CompareJobs.set(jobId, job);
 
-      for (const filePath of localFiles) {
-        const relativePath = path.relative(dataDir, filePath);
-        let s3Key = relativePath;
-        if (config.s3Upload.keyPrefix) {
-          const prefix = config.s3Upload.keyPrefix.endsWith('/')
-            ? config.s3Upload.keyPrefix
-            : `${config.s3Upload.keyPrefix}/`;
-          s3Key = `${prefix}${relativePath}`;
-        }
-        const stats = await fs.stat(filePath);
-        localKeys.set(s3Key, { path: filePath, size: stats.size });
-      }
+      // Run comparison in background
+      (async () => {
+        try {
+          const config = state.currentConfig!;
+          const dataDir = getDataDir();
 
-      // List S3 objects
-      const s3Keys = new Set<string>();
-      let continuationToken: string | undefined;
+          // Phase 1: Scan local files
+          job.phase = 'Discovering local files...';
+          const allLocalFiles = await glob(path.join(dataDir, '**', '*.parquet'));
 
-      do {
-        const listCommand = new ListObjectsV2Command({
-          Bucket: config.s3Upload.bucket,
-          Prefix: config.s3Upload.keyPrefix || undefined,
-          ContinuationToken: continuationToken,
-        });
+          // Exclude processed/repaired/failed/quarantine directories
+          const excludedDirs = [
+            '/processed/',
+            '/repaired/',
+            '/failed/',
+            '/quarantine/',
+          ];
+          const localFiles = allLocalFiles.filter(
+            (f) => !excludedDirs.some((dir) => f.includes(dir))
+          );
+          job.localFilesTotal = localFiles.length;
 
-        const response = await state.s3Client.send(listCommand);
+          const localKeys = new Map<string, { path: string; size: number }>();
 
-        if (response.Contents) {
-          for (const obj of response.Contents) {
-            if (obj.Key?.endsWith('.parquet')) {
-              s3Keys.add(obj.Key);
+          for (let i = 0; i < localFiles.length; i++) {
+            const filePath = localFiles[i];
+            const relativePath = path.relative(dataDir, filePath);
+            let s3Key = relativePath;
+            if (config.s3Upload.keyPrefix) {
+              const prefix = config.s3Upload.keyPrefix.endsWith('/')
+                ? config.s3Upload.keyPrefix
+                : `${config.s3Upload.keyPrefix}/`;
+              s3Key = `${prefix}${relativePath}`;
+            }
+            const stats = await fs.stat(filePath);
+            localKeys.set(s3Key, { path: filePath, size: stats.size });
+
+            job.localFilesScanned = i + 1;
+            job.progress = Math.round(((i + 1) / localFiles.length) * 40); // 0-40%
+            job.phase = `Scanning local files: ${i + 1}/${localFiles.length}`;
+          }
+
+          // Phase 2: List S3 objects
+          job.status = 'scanning_s3';
+          job.phase = 'Listing S3 objects...';
+          const s3Keys = new Set<string>();
+          let continuationToken: string | undefined;
+          let s3Batches = 0;
+
+          do {
+            const listCommand = new ListObjectsV2Command({
+              Bucket: config.s3Upload.bucket,
+              Prefix: config.s3Upload.keyPrefix || undefined,
+              ContinuationToken: continuationToken,
+            });
+
+            const response = await state.s3Client.send(listCommand);
+            s3Batches++;
+
+            if (response.Contents) {
+              for (const obj of response.Contents) {
+                if (obj.Key?.endsWith('.parquet')) {
+                  s3Keys.add(obj.Key);
+                }
+              }
+            }
+
+            job.s3ObjectsScanned = s3Keys.size;
+            job.progress = 40 + Math.min(s3Batches * 5, 40); // 40-80%
+            job.phase = `Listing S3 objects: ${s3Keys.size} found...`;
+
+            continuationToken = response.IsTruncated
+              ? response.NextContinuationToken
+              : undefined;
+          } while (continuationToken);
+
+          // Phase 3: Compare
+          job.status = 'comparing';
+          job.phase = 'Comparing files...';
+          job.progress = 85;
+
+          const localOnly: Array<{ key: string; size: number }> = [];
+          const s3Only: string[] = [];
+          const synced: string[] = [];
+
+          for (const [key, info] of localKeys) {
+            if (s3Keys.has(key)) {
+              synced.push(key);
+            } else {
+              localOnly.push({ key, size: info.size });
             }
           }
+
+          for (const key of s3Keys) {
+            if (!localKeys.has(key)) {
+              s3Only.push(key);
+            }
+          }
+
+          const totalLocalSize = localOnly.reduce((sum, f) => sum + f.size, 0);
+
+          job.status = 'completed';
+          job.phase = 'Complete';
+          job.progress = 100;
+          job.result = {
+            summary: {
+              localTotal: localKeys.size,
+              s3Total: s3Keys.size,
+              synced: synced.length,
+              localOnly: localOnly.length,
+              s3Only: s3Only.length,
+              localOnlySizeMB: (totalLocalSize / 1024 / 1024).toFixed(2),
+            },
+            localOnly: localOnly.slice(0, 100),
+            s3Only: s3Only.slice(0, 100),
+            hasMore: localOnly.length > 100 || s3Only.length > 100,
+          };
+
+          // Cleanup job after 5 minutes
+          setTimeout(() => s3CompareJobs.delete(jobId), 5 * 60 * 1000);
+        } catch (error) {
+          job.status = 'error';
+          job.error = (error as Error).message;
         }
+      })();
 
-        continuationToken = response.IsTruncated
-          ? response.NextContinuationToken
-          : undefined;
-      } while (continuationToken);
-
-      // Compare
-      const localOnly: Array<{ key: string; size: number }> = [];
-      const s3Only: string[] = [];
-      const synced: string[] = [];
-
-      for (const [key, info] of localKeys) {
-        if (s3Keys.has(key)) {
-          synced.push(key);
-        } else {
-          localOnly.push({ key, size: info.size });
-        }
-      }
-
-      for (const key of s3Keys) {
-        if (!localKeys.has(key)) {
-          s3Only.push(key);
-        }
-      }
-
-      const totalLocalSize = localOnly.reduce((sum, f) => sum + f.size, 0);
-
-      return res.json({
-        success: true,
-        summary: {
-          localTotal: localKeys.size,
-          s3Total: s3Keys.size,
-          synced: synced.length,
-          localOnly: localOnly.length,
-          s3Only: s3Only.length,
-          localOnlySizeMB: (totalLocalSize / 1024 / 1024).toFixed(2),
-        },
-        localOnly: localOnly.slice(0, 100), // Limit response size
-        s3Only: s3Only.slice(0, 100),
-        hasMore: localOnly.length > 100 || s3Only.length > 100,
-      });
+      return res.json({ success: true, jobId });
     } catch (error) {
       return res.status(500).json({
         success: false,
         error: (error as Error).message,
       });
     }
+  });
+
+  // Get S3 compare job status
+  router.get('/api/s3/compare/:jobId', async (req, res) => {
+    const job = s3CompareJobs.get(req.params.jobId);
+    if (!job) {
+      return res.status(404).json({ success: false, error: 'Job not found' });
+    }
+    return res.json({ success: true, ...job });
   });
 
   // Sync local files to S3
@@ -759,8 +854,17 @@ export function registerApiRoutes(
           }
         }
       } else {
-        // Find all local-only files
-        const localFiles = await glob(path.join(dataDir, '**', '*.parquet'));
+        // Find all local-only files (excluding processed/repaired/failed/quarantine)
+        const allLocalFiles = await glob(path.join(dataDir, '**', '*.parquet'));
+        const excludedDirs = [
+          '/processed/',
+          '/repaired/',
+          '/failed/',
+          '/quarantine/',
+        ];
+        const localFiles = allLocalFiles.filter(
+          (f) => !excludedDirs.some((dir) => f.includes(dir))
+        );
 
         // Get S3 keys
         const s3Keys = new Set<string>();

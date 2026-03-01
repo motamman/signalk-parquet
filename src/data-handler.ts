@@ -793,6 +793,9 @@ export async function consolidateYesterday(
   }
 }
 
+// Directories to exclude from S3 uploads
+const excludedDirs = ['/processed/', '/repaired/', '/failed/', '/quarantine/'];
+
 // Upload all existing consolidated files to S3 (for catching up after BigInt fix)
 // Uses targeted date patterns to avoid scanning 100k+ files on large datasets
 export async function uploadAllConsolidatedFilesToS3(
@@ -815,11 +818,16 @@ export async function uploadAllConsolidatedFilesToS3(
 
       // Targeted glob: only match consolidated files from this specific date
       const consolidatedPattern = `**/${prefix}_${dateStr}_consolidated.parquet`;
-      const consolidatedFiles = await glob(consolidatedPattern, {
+      const allConsolidatedFiles = await glob(consolidatedPattern, {
         cwd: config.outputDirectory,
         absolute: true,
         nodir: true,
       });
+
+      // Exclude processed/repaired/failed/quarantine directories
+      const consolidatedFiles = allConsolidatedFiles.filter(
+        (f) => !excludedDirs.some((dir) => f.includes(dir))
+      );
 
       for (const filePath of consolidatedFiles) {
         const success = await uploadToS3(filePath, config, state, app);
@@ -849,11 +857,16 @@ async function uploadConsolidatedFilesToS3(
     const consolidatedPattern = `**/*_${dateStr}_consolidated.parquet`;
 
     // Find all consolidated files for the date
-    const consolidatedFiles = await glob(consolidatedPattern, {
+    const allConsolidatedFiles = await glob(consolidatedPattern, {
       cwd: config.outputDirectory,
       absolute: true,
       nodir: true,
     });
+
+    // Exclude processed/repaired/failed/quarantine directories
+    const consolidatedFiles = allConsolidatedFiles.filter(
+      (f) => !excludedDirs.some((dir) => f.includes(dir))
+    );
 
     // Upload each consolidated file
     for (const filePath of consolidatedFiles) {
