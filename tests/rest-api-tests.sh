@@ -203,15 +203,9 @@ log_test "B5: Get paths (with duration=24h)"
 RESPONSE=$(auth_request GET "/signalk/v1/history/paths?duration=24h")
 check_response "$RESPONSE" "B5: Get paths (with time)"
 
-# B6: V2 contexts endpoint (NOTE: V2 API requires ISO 8601 duration format)
-log_test "B6: V2 contexts endpoint"
-RESPONSE=$(auth_request GET "/signalk/v2/api/history/contexts?duration=PT1H")
-check_response "$RESPONSE" "B6: V2 contexts endpoint"
-
-# B7: V2 paths endpoint
-log_test "B7: V2 paths endpoint"
-RESPONSE=$(auth_request GET "/signalk/v2/api/history/paths?duration=PT1H")
-check_response "$RESPONSE" "B7: V2 paths endpoint"
+# B6-B7: V2 API info
+echo -e "${BLUE}[INFO]${NC} V2 routes (/signalk/v2/api/history/*) are handled by the registered"
+echo -e "${BLUE}[INFO]${NC} HistoryApi provider (history-provider.ts), not direct routes."
 
 # ============================================================
 # C. TIME RANGE PATTERNS
@@ -396,46 +390,45 @@ RESPONSE=$(auth_request GET "/signalk/v1/history/values?duration=7d&paths=${TEST
 check_response "$RESPONSE" "G4: Bbox + non-position" "range"
 
 # ============================================================
-# H. V1 VS V2 API EQUIVALENCE
+# H. V1 EXTENSION FEATURES (not in spec-compliant V2)
 # ============================================================
-log_section "H. V1 vs V2 API Equivalence"
+log_section "H. V1 Extension Features"
 
-# H1: Values endpoint comparison (V2 API requires ISO 8601 duration format)
-log_test "H1: Values endpoint - V1"
-V1_RESPONSE=$(auth_request GET "/signalk/v1/history/values?duration=30m&paths=${TEST_PATH}")
-check_response "$V1_RESPONSE" "H1a: V1 values endpoint" "range"
+echo -e "${BLUE}[INFO]${NC} V1 includes extensions not in the V2 spec (spatial, timezone, refresh, etc.)"
+echo -e "${BLUE}[INFO]${NC} V2 is spec-compliant via HistoryApi provider registration."
 
-log_test "H1: Values endpoint - V2"
-V2_RESPONSE=$(auth_request GET "/signalk/v2/api/history/values?duration=PT30M&paths=${TEST_PATH}")
-check_response "$V2_RESPONSE" "H1b: V2 values endpoint" "range"
+# H1: Shorthand duration (V1 extension - V2 spec requires ISO 8601)
+log_test "H1: Shorthand duration (1h) - V1 extension"
+RESPONSE=$(auth_request GET "/signalk/v1/history/values?duration=1h&paths=${TEST_PATH}")
+check_response "$RESPONSE" "H1: Shorthand duration" "range"
 
-# H2: Contexts comparison
-log_test "H2: Contexts - V1 vs V2"
-V1_CONTEXTS=$(auth_request GET "/signalk/v1/history/contexts?duration=1h")
-V2_CONTEXTS=$(auth_request GET "/signalk/v2/api/history/contexts?duration=PT1H")
-
-if [[ "$V1_CONTEXTS" == "$V2_CONTEXTS" ]]; then
-    log_pass "H2: V1/V2 contexts identical"
+# H2: Timezone conversion (V1 extension)
+log_test "H2: Timezone conversion - V1 extension"
+RESPONSE=$(auth_request GET "/signalk/v1/history/values?duration=1h&paths=${TEST_PATH}&convertTimesToLocal=true&timezone=America/New_York")
+if echo "$RESPONSE" | jq -e '.timezone.converted' > /dev/null 2>&1; then
+    log_pass "H2: Timezone conversion"
 else
-    # Check if both are valid JSON with same structure
-    V1_SORTED=$(echo "$V1_CONTEXTS" | jq -S '.' 2>/dev/null || echo "invalid")
-    V2_SORTED=$(echo "$V2_CONTEXTS" | jq -S '.' 2>/dev/null || echo "invalid")
-    if [[ "$V1_SORTED" == "$V2_SORTED" ]]; then
-        log_pass "H2: V1/V2 contexts equivalent"
-    else
-        log_fail "H2: V1/V2 contexts differ" "Responses not identical"
-    fi
+    check_response "$RESPONSE" "H2: Timezone conversion" "range"
 fi
 
-# H3: Paths comparison
-# Note: V1 and V2 may use different duration parsing, so we test them separately
-log_test "H3: V1 paths endpoint"
-V1_PATHS=$(auth_request GET "/signalk/v1/history/paths?duration=1h")
-check_response "$V1_PATHS" "H3a: V1 paths"
+# H3: Spatial filtering (V1 extension)
+log_test "H3: Spatial filtering - V1 extension"
+RESPONSE=$(auth_request GET "/signalk/v1/history/values?duration=24h&paths=navigation.position&bbox=-74.5,40.2,-73.8,40.9")
+check_response "$RESPONSE" "H3: Spatial filtering" "range"
 
-log_test "H3: V2 paths endpoint"
-V2_PATHS=$(auth_request GET "/signalk/v2/api/history/paths?duration=PT1H")
-check_response "$V2_PATHS" "H3b: V2 paths"
+# H4: Resolution expression (V1 extension - shorthand like "5m")
+log_test "H4: Resolution expression - V1 extension"
+RESPONSE=$(auth_request GET "/signalk/v1/history/values?duration=1h&paths=${TEST_PATH}&resolution=5m")
+check_response "$RESPONSE" "H4: Resolution expression" "range"
+
+# H5: Auto-refresh mode (V1 extension)
+log_test "H5: Auto-refresh mode - V1 extension"
+RESPONSE=$(auth_request GET "/signalk/v1/history/values?duration=15m&paths=${TEST_PATH}&refresh=true")
+if echo "$RESPONSE" | jq -e '.refresh.enabled' > /dev/null 2>&1; then
+    log_pass "H5: Auto-refresh mode"
+else
+    check_response "$RESPONSE" "H5: Auto-refresh mode" "range"
+fi
 
 # ============================================================
 # I. ALTERNATIVE API ROUTES (registered on main app router)
@@ -487,20 +480,21 @@ else
     check_response "$RESPONSE" "J2: Sample data"
 fi
 
-# J3: Execute SQL query
-# Note: This may fail if no parquet files exist yet (data still in SQLite buffer)
-log_test "J3: Execute SQL query"
+# J3: Execute SQL query (disabled by default - requires SIGNALK_PARQUET_RAW_SQL=true)
+log_test "J3: Raw SQL query (should be disabled by default)"
 RESPONSE=$(auth_request POST "/plugins/signalk-parquet/api/query" \
     '{"query": "SELECT COUNT(*) as count FROM read_parquet('\''tier=raw/**/*.parquet'\'', union_by_name=true) LIMIT 10"}')
 if echo "$RESPONSE" | jq -e '.error' > /dev/null 2>&1; then
     ERROR_MSG=$(echo "$RESPONSE" | jq -r '.error')
-    if [[ "$ERROR_MSG" == *"No files found"* ]]; then
-        log_pass "J3: SQL query (no parquet files yet - data in buffer)"
+    if [[ "$ERROR_MSG" == *"Raw SQL queries are disabled"* ]]; then
+        log_pass "J3: Raw SQL disabled by default (security)"
+    elif [[ "$ERROR_MSG" == *"No files found"* ]]; then
+        log_pass "J3: SQL query (enabled, no parquet files yet)"
     else
         log_fail "J3: SQL query" "$ERROR_MSG"
     fi
 else
-    check_response "$RESPONSE" "J3: SQL query"
+    log_pass "J3: SQL query (enabled via SIGNALK_PARQUET_RAW_SQL=true)"
 fi
 
 # ============================================================

@@ -149,10 +149,9 @@ export function registerHistoryApiRoute(
     );
   };
 
-  // v1 route (legacy)
+  // V1 route: Direct routes with all signalk-parquet extensions
+  // (spatial filtering, timezone conversion, moving averages, etc.)
   router.get('/signalk/v1/history/values', handleValues);
-  // v2 route (SignalK History API spec compliant)
-  router.get('/signalk/v2/api/history/values', handleValues);
   // Handler for contexts endpoint
   const handleContexts = async (req: Request, res: Response) => {
     try {
@@ -192,10 +191,10 @@ export function registerHistoryApiRoute(
     }
   };
 
-  // v1 route (legacy)
+  // V1 route: Direct routes with extensions (time-range-aware context discovery)
   router.get('/signalk/v1/history/contexts', handleContexts);
-  // v2 route (SignalK History API spec compliant)
-  router.get('/signalk/v2/api/history/contexts', handleContexts);
+  // Note: V2 routes (/signalk/v2/api/history/*) are handled by the registered
+  // HistoryApi provider in history-provider.ts via app.registerHistoryApiProvider()
   // Handler for paths endpoint
   const handlePaths = async (req: Request, res: Response) => {
     try {
@@ -237,10 +236,8 @@ export function registerHistoryApiRoute(
     }
   };
 
-  // v1 route (legacy)
+  // V1 route: Direct routes with extensions (time-range-aware path discovery)
   router.get('/signalk/v1/history/paths', handlePaths);
-  // v2 route (SignalK History API spec compliant)
-  router.get('/signalk/v2/api/history/paths', handlePaths);
 
   // Also register as plugin-style routes for testing
   router.get('/api/history/values', (req: Request, res: Response) => {

@@ -23,18 +23,34 @@
   - Example: `?paths=navigation.speedOverGround:sma:5`
   - Extension syntax `path:average:sma:5` still supported (returns raw AND smoothed values)
 
-### 🌐 SignalK v2 API Route Aliases
+### 🌐 SignalK History API - V1 Extensions vs V2 Spec-Compliant
 
-Added `/signalk/v2/api/history/*` route aliases for official SignalK History API spec compliance.
+Separated V1 (with extensions) from V2 (spec-compliant) to support SignalK server's multi-provider system.
 
-#### Added
+#### Changed
 
-- **v2 API Routes**: New route aliases alongside existing v1 routes
-  - `/signalk/v2/api/history/values` → same handler as `/signalk/v1/history/values`
-  - `/signalk/v2/api/history/contexts` → same handler as `/signalk/v1/history/contexts`
-  - `/signalk/v2/api/history/paths` → same handler as `/signalk/v1/history/paths`
-- **Full Backward Compatibility**: Both v1 and v2 routes work identically
-- **Spec Compliance**: Clients expecting official SignalK v2 API paths now work out of the box
+- **V2 Routes Now Provider-Handled**: `/signalk/v2/api/history/*` routes are now handled by the registered `HistoryApi` provider instead of direct routes
+  - Supports SignalK server PR #2381 multi-provider routing
+  - V2 implements the spec-compliant `HistoryApi` interface (see `history-provider.ts`)
+  - When server supports multi-provider, V2 works via `app.registerHistoryApiProvider()`
+
+- **V1 Routes Retain Extensions**: `/signalk/v1/history/*` routes keep all signalk-parquet extensions:
+  - Shorthand duration (`1h`, `30m`, `2d`) - V2 spec requires ISO 8601 (`PT1H`)
+  - Timezone conversion (`convertTimesToLocal`, `timezone`)
+  - Spatial filtering (`bbox`, `radius`)
+  - Resolution expressions (`resolution=5m`)
+  - Auto-refresh mode (`refresh=true`)
+  - Moving averages (SMA/EMA)
+
+### 🔒 Security: Raw SQL Disabled by Default
+
+Raw SQL query endpoint now requires explicit opt-in for security.
+
+#### Changed
+
+- **`/api/query` disabled by default**: Returns 403 unless `SIGNALK_PARQUET_RAW_SQL=true` environment variable is set
+  - Prevents potential SQL injection or destructive queries even with bearer auth
+  - Enable for debugging: `SIGNALK_PARQUET_RAW_SQL=true signalk-server`
 
 ---
 

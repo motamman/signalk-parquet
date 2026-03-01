@@ -586,7 +586,7 @@ This provides better compression, faster queries, and proper type safety for dat
 | `/api/paths` | GET | List available data paths |
 | `/api/files/:path` | GET | List files for a path |
 | `/api/sample/:path` | GET | Sample data from a path |
-| `/api/query` | POST | Execute SQL query |
+| `/api/query` | POST | Execute SQL query (⚠️ disabled by default, requires `SIGNALK_PARQUET_RAW_SQL=true`) |
 | `/api/config/paths` | GET/POST/PUT/DELETE | Manage path configurations |
 | `/api/test-s3` | POST | Test S3 connection |
 | `/api/health` | GET | Health check |
@@ -600,9 +600,7 @@ This provides better compression, faster queries, and proper type safety for dat
 | `/signalk/v1/history/values` | GET | SignalK History API - Get historical values |
 | `/signalk/v1/history/contexts` | GET | SignalK History API - Get available contexts |
 | `/signalk/v1/history/paths` | GET | SignalK History API - Get available paths |
-| `/signalk/v2/api/history/values` | GET | SignalK v2 API alias - Get historical values |
-| `/signalk/v2/api/history/contexts` | GET | SignalK v2 API alias - Get available contexts |
-| `/signalk/v2/api/history/paths` | GET | SignalK v2 API alias - Get available paths |
+| `/signalk/v2/api/history/*` | GET | SignalK v2 API - handled by registered HistoryApi provider (spec-compliant) |
 | **Migration API** | | |
 | `/api/migrate/scan` | POST | Scan directory for migratable files |
 | `/api/migrate` | POST | Start migration job |
@@ -759,11 +757,9 @@ The plugin provides full SignalK History API compliance, allowing you to query h
 | `/signalk/v1/history/values` | Get historical values for specified paths | **Standard patterns** (see below)<br>**Optional**: `resolution`, `refresh`, `includeMovingAverages`, `useUTC` |
 | `/signalk/v1/history/contexts` | Get available vessel contexts for time range | **Time Range**: Any standard pattern (see below) ⚠️<br>Returns only contexts with data in specified range |
 | `/signalk/v1/history/paths` | Get available SignalK paths for time range | **Time Range**: Any standard pattern (see below) ⚠️<br>Returns only paths with data in specified range |
-| `/signalk/v2/api/history/values` | **v2 alias** - identical to v1 values endpoint | Same as v1 |
-| `/signalk/v2/api/history/contexts` | **v2 alias** - identical to v1 contexts endpoint | Same as v1 |
-| `/signalk/v2/api/history/paths` | **v2 alias** - identical to v1 paths endpoint | Same as v1 |
+| `/signalk/v2/api/history/*` | **Spec-compliant** - handled by registered `HistoryApi` provider | Per SignalK spec (ISO 8601 durations, no extensions) |
 
-> **Note:** The `/signalk/v2/api/history/*` routes are aliases provided for SignalK History API spec compliance. Both v1 and v2 routes are fully supported and return identical responses.
+> **Note:** V2 routes (`/signalk/v2/api/history/*`) are handled by the registered `HistoryApi` provider (`history-provider.ts`) for SignalK server multi-provider support. V1 routes include signalk-parquet extensions (spatial filtering, timezone conversion, shorthand durations, etc.) not available in V2.
 
 > ⚠️ **Extension**: The `/contexts` and `/paths` endpoints accept time range parameters as **optional**. The official spec requires time parameters; without them, these endpoints return all available data (more permissive behavior).
 
@@ -828,11 +824,11 @@ The History API supports 5 standard SignalK time query patterns:
 
 **SMA/EMA as aggregation methods (official SignalK syntax):**
 ```bash
-# SMA with window of 5 - returns ONLY the smoothed value
-curl "http://localhost:3000/signalk/v2/api/history/values?duration=1h&paths=navigation.speedOverGround:sma:5"
+# SMA with window of 5 - returns ONLY the smoothed value (V1 with shorthand duration)
+curl "http://localhost:3000/signalk/v1/history/values?duration=1h&paths=navigation.speedOverGround:sma:5"
 
-# EMA with alpha of 0.3 - returns ONLY the smoothed value
-curl "http://localhost:3000/signalk/v2/api/history/values?duration=1h&paths=environment.wind.speedApparent:ema:0.3"
+# EMA with alpha of 0.3 - returns ONLY the smoothed value (V1 with shorthand duration)
+curl "http://localhost:3000/signalk/v1/history/values?duration=1h&paths=environment.wind.speedApparent:ema:0.3"
 ```
 
 #### Extension Parameters (non-standard)

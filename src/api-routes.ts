@@ -455,7 +455,8 @@ export function registerApiRoutes(
     }
   );
 
-  // Query parquet data
+  // Query parquet data (raw SQL - disabled by default for security)
+  // Enable with: SIGNALK_PARQUET_RAW_SQL=true
   router.post(
     '/api/query',
     async (
@@ -463,6 +464,16 @@ export function registerApiRoutes(
       res: TypedResponse<QueryApiResponse>
     ) => {
       try {
+        // Security: Raw SQL is disabled by default
+        const rawSqlEnabled = process.env.SIGNALK_PARQUET_RAW_SQL === 'true';
+        if (!rawSqlEnabled) {
+          return res.status(403).json({
+            success: false,
+            error:
+              'Raw SQL queries are disabled. Set SIGNALK_PARQUET_RAW_SQL=true to enable.',
+          });
+        }
+
         const { query } = req.body;
 
         if (!query) {
