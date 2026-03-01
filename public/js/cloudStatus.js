@@ -155,52 +155,96 @@ function showCompareResults(result) {
 export async function syncToS3() {
   const resultDiv = document.getElementById('s3CompareResult');
   const syncBtn = document.getElementById('syncToS3Btn');
-
-  if (pendingSync.length === 0) {
-    resultDiv.innerHTML += '<div class="error">No files to sync.</div>';
-    return;
-  }
+  const compareBtn = document.querySelector('button[onclick="compareS3Files()"]');
 
   syncBtn.disabled = true;
-  syncBtn.textContent = '⏳ Syncing...';
+  compareBtn.disabled = true;
 
   // Add progress indicator
   resultDiv.innerHTML += `
     <div id="syncProgress" style="margin-top: 15px; padding: 15px; background: #e3f2fd; border-radius: 5px;">
-      <strong>🔄 Uploading ${pendingSync.length} files to S3...</strong>
-      <p>This may take a while for large numbers of files.</p>
+      <div style="margin-bottom: 10px;">
+        <div style="background: #e0e0e0; height: 20px; border-radius: 10px; overflow: hidden;">
+          <div id="s3SyncProgressBar" style="background: #4CAF50; height: 100%; width: 0%; transition: width 0.3s;"></div>
+        </div>
+      </div>
+      <p id="s3SyncProgressText" style="margin: 5px 0; color: #666;">Starting sync...</p>
+      <p id="s3SyncStats" style="margin: 5px 0; font-size: 12px; color: #888;"></p>
     </div>
   `;
 
   try {
-    const response = await fetch(`${getPluginPath()}/api/s3/sync`, {
+    // Start the sync job
+    const startResponse = await fetch(`${getPluginPath()}/api/s3/sync`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({}), // Empty = sync all missing
+      body: JSON.stringify({}),
     });
 
-    const result = await response.json();
-    const progressDiv = document.getElementById('syncProgress');
+    const startResult = await startResponse.json();
 
-    if (result.success) {
-      progressDiv.innerHTML = `
-        <div class="success">
-          ✅ Sync complete!<br>
-          <strong>Uploaded:</strong> ${result.uploaded} files<br>
-          <strong>Failed:</strong> ${result.failed} files
-          ${result.errors?.length > 0 ? `<br><br><strong>Errors:</strong><br>${result.errors.join('<br>')}` : ''}
-        </div>
-      `;
-      pendingSync = [];
-    } else {
-      progressDiv.innerHTML = `<div class="error">❌ ${result.error}</div>`;
+    if (!startResult.success) {
+      document.getElementById('syncProgress').innerHTML = `<div class="error">❌ ${startResult.error}</div>`;
+      syncBtn.disabled = false;
+      compareBtn.disabled = false;
+      return;
     }
+
+    const syncJobId = startResult.jobId;
+
+    // Poll for progress
+    const pollInterval = setInterval(async () => {
+      try {
+        const statusResponse = await fetch(`${getPluginPath()}/api/s3/sync/${syncJobId}`);
+        const status = await statusResponse.json();
+
+        if (!status.success) {
+          clearInterval(pollInterval);
+          document.getElementById('syncProgress').innerHTML = `<div class="error">❌ ${status.error}</div>`;
+          syncBtn.disabled = false;
+          compareBtn.disabled = false;
+          return;
+        }
+
+        // Update progress
+        document.getElementById('s3SyncProgressBar').style.width = `${status.progress}%`;
+        document.getElementById('s3SyncProgressText').textContent = status.phase;
+        document.getElementById('s3SyncStats').textContent =
+          `Uploaded: ${status.filesUploaded} | Failed: ${status.filesFailed} | Total: ${status.filesTotal}`;
+
+        if (status.status === 'completed') {
+          clearInterval(pollInterval);
+          document.getElementById('syncProgress').innerHTML = `
+            <div class="success">
+              ✅ Sync complete!<br>
+              <strong>Uploaded:</strong> ${status.filesUploaded} files<br>
+              <strong>Failed:</strong> ${status.filesFailed} files
+              ${status.errors?.length > 0 ? `<br><br><strong>Errors:</strong><br>${status.errors.slice(0, 5).join('<br>')}${status.errors.length > 5 ? `<br>... and ${status.errors.length - 5} more` : ''}` : ''}
+            </div>
+          `;
+          pendingSync = [];
+          syncBtn.textContent = '📤 Sync Missing to S3';
+          syncBtn.disabled = true;
+          compareBtn.disabled = false;
+        } else if (status.status === 'error') {
+          clearInterval(pollInterval);
+          document.getElementById('syncProgress').innerHTML = `<div class="error">❌ ${status.phase}</div>`;
+          syncBtn.disabled = false;
+          compareBtn.disabled = false;
+        }
+      } catch (err) {
+        clearInterval(pollInterval);
+        document.getElementById('syncProgress').innerHTML = `<div class="error">❌ Polling error: ${err.message}</div>`;
+        syncBtn.disabled = false;
+        compareBtn.disabled = false;
+      }
+    }, 500);
+
   } catch (error) {
     document.getElementById('syncProgress').innerHTML = `<div class="error">❌ Network error: ${error.message}</div>`;
-  } finally {
-    syncBtn.textContent = '📤 Sync Missing to S3';
-    syncBtn.disabled = true; // Keep disabled until next compare
+    syncBtn.disabled = false;
+    compareBtn.disabled = false;
   }
 }
