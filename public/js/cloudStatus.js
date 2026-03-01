@@ -144,10 +144,6 @@ function showCompareResults(result) {
     html += `<p style="margin-top: 15px; color: #2E7D32;">✅ All local files are synced to S3!</p>`;
   }
 
-  if (result.hasMore) {
-    html += `<p style="color: #666; font-size: 12px;">Showing first 100 items. More files exist.</p>`;
-  }
-
   html += '</div>';
   resultDiv.innerHTML = html;
 }

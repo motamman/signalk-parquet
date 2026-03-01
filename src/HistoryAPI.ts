@@ -329,7 +329,9 @@ export function registerHistoryApiRoute(
   unitConversionCacheMinutes: number = 5,
   sqliteBuffer?: SQLiteBufferInterface,
   exportIntervalMinutes: number = 5,
-  autoDiscoveryService?: AutoDiscoveryService
+  autoDiscoveryService?: AutoDiscoveryService,
+  s3Config?: S3QueryConfig,
+  retentionDays: number = 7
 ) {
   // Set the cache TTL from configuration
   CONVERSIONS_CACHE_TTL_MS = unitConversionCacheMinutes * 60 * 1000;
@@ -341,7 +343,9 @@ export function registerHistoryApiRoute(
     dataDir,
     sqliteBuffer,
     exportIntervalMinutes,
-    autoDiscoveryService
+    autoDiscoveryService,
+    s3Config,
+    retentionDays
   );
   router.get('/signalk/v1/history/values', (req: Request, res: Response) => {
     const { from, to, context, spatialFilter, shouldRefresh } =
@@ -355,6 +359,7 @@ export function registerHistoryApiRoute(
       req.query.convertTimesToLocal === 'true' ||
       req.query.convertTimesToLocal === '1';
     const timezone = req.query.timezone as string | undefined;
+    const source = (req.query.source as QuerySource) || 'auto';
     historyApi.getValues(
       context,
       from,
@@ -368,7 +373,8 @@ export function registerHistoryApiRoute(
       app,
       debug,
       req,
-      res
+      res,
+      source
     );
   });
   router.get(
@@ -473,6 +479,7 @@ export function registerHistoryApiRoute(
       req.query.convertTimesToLocal === 'true' ||
       req.query.convertTimesToLocal === '1';
     const timezone = req.query.timezone as string | undefined;
+    const source = (req.query.source as QuerySource) || 'auto';
     historyApi.getValues(
       context,
       from,
@@ -486,7 +493,8 @@ export function registerHistoryApiRoute(
       app,
       debug,
       req,
-      res
+      res,
+      source
     );
   });
   router.get('/api/history/contexts', async (req: Request, res: Response) => {
@@ -758,25 +766,84 @@ function getContext(
   return contextFromQuery.replace(/ /gi, '') as Context;
 }
 
+export type QuerySource = 'local' | 's3' | 'hybrid' | 'auto';
+
+export interface S3QueryConfig {
+  enabled: boolean;
+  bucket: string;
+  keyPrefix: string;
+  region: string;
+}
+
 export class HistoryAPI {
   readonly selfContextPath: string;
   private sqliteBuffer?: SQLiteBufferInterface;
   private exportIntervalMinutes: number;
   private hivePathBuilder: HivePathBuilder;
   private autoDiscoveryService?: AutoDiscoveryService;
+  private s3Config?: S3QueryConfig;
+  private retentionDays: number;
 
   constructor(
     private selfId: string,
     private dataDir: string,
     sqliteBuffer?: SQLiteBufferInterface,
     exportIntervalMinutes: number = 5,
-    autoDiscoveryService?: AutoDiscoveryService
+    autoDiscoveryService?: AutoDiscoveryService,
+    s3Config?: S3QueryConfig,
+    retentionDays: number = 7
   ) {
     this.selfContextPath = toContextFilePath(`vessels.${selfId}` as Context);
     this.sqliteBuffer = sqliteBuffer;
     this.exportIntervalMinutes = exportIntervalMinutes;
     this.hivePathBuilder = new HivePathBuilder();
     this.autoDiscoveryService = autoDiscoveryService;
+    this.s3Config = s3Config;
+    this.retentionDays = retentionDays;
+  }
+
+  /**
+   * Set S3 configuration for federated queries
+   */
+  setS3Config(config: S3QueryConfig | undefined): void {
+    this.s3Config = config;
+  }
+
+  /**
+   * Determine the query source based on time range and retention settings
+   * - 'local': All data is within retention period (on local disk)
+   * - 's3': All data is older than retention period (in S3)
+   * - 'hybrid': Data spans retention boundary (need both local and S3)
+   */
+  private getQuerySource(
+    from: ZonedDateTime,
+    to: ZonedDateTime,
+    forceSource?: QuerySource
+  ): QuerySource {
+    // If source is explicitly specified, use it (unless it's 'auto')
+    if (forceSource && forceSource !== 'auto') {
+      return forceSource;
+    }
+
+    // If S3 is not configured/enabled, always use local
+    if (!this.s3Config?.enabled) {
+      return 'local';
+    }
+
+    const now = new Date();
+    const retentionCutoff = new Date(now);
+    retentionCutoff.setUTCDate(retentionCutoff.getUTCDate() - this.retentionDays);
+
+    const fromDate = new Date(from.toInstant().toString());
+    const toDate = new Date(to.toInstant().toString());
+
+    if (toDate < retentionCutoff) {
+      return 's3'; // All data is older than retention, query S3
+    }
+    if (fromDate >= retentionCutoff) {
+      return 'local'; // All data is within retention, query local
+    }
+    return 'hybrid'; // Data spans boundary, need both
   }
 
   /**
@@ -953,7 +1020,8 @@ export class HistoryAPI {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     req: Request<ParamsDictionary, any, any, ParsedQs, Record<string, any>>,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    res: Response<any, Record<string, any>>
+    res: Response<any, Record<string, any>>,
+    source: QuerySource = 'auto'
   ) {
     try {
       const timeResolutionMillis = req.query.resolution
@@ -988,6 +1056,10 @@ export class HistoryAPI {
         );
       }
 
+      // Determine query source based on time range and configuration
+      const querySource = this.getQuerySource(from, to, source);
+      debug(`Query source determined: ${querySource} (requested: ${source})`);
+
       // Handle position and numeric paths together
       let allResult = pathSpecs.length
         ? await this.getNumericValues(
@@ -999,7 +1071,8 @@ export class HistoryAPI {
             includeMovingAverages,
             debug,
             tier,
-            spatialFilter
+            spatialFilter,
+            querySource
           )
         : {
             context,
@@ -1113,10 +1186,19 @@ export class HistoryAPI {
     includeMovingAverages: boolean,
     debug: (k: string) => void,
     tier?: AggregationTier,
-    spatialFilter?: SpatialFilter | null
+    spatialFilter?: SpatialFilter | null,
+    querySource: QuerySource = 'local'
   ): Promise<DataResult> {
     const allData: { [path: string]: Array<[Timestamp, unknown]> } = {};
     const objectPaths = new Set<string>(); // Track which paths are object paths
+
+    // Convert ZonedDateTime to Date for S3 pattern building
+    const fromDate = new Date(from.toInstant().toString());
+    const toDate = new Date(to.toInstant().toString());
+
+    // Calculate retention cutoff for hybrid queries
+    const retentionCutoff = new Date();
+    retentionCutoff.setUTCDate(retentionCutoff.getUTCDate() - this.retentionDays);
 
     // Process each path and collect data with concurrency limiting
     // Limit concurrent queries to prevent resource exhaustion (configured in cache-defaults)
@@ -1128,33 +1210,68 @@ export class HistoryAPI {
           .replace(/[^a-zA-Z0-9._]/g, '') // Only allow alphanumeric, dots, underscores
           .replace(/\./g, '/');
 
-        let filePath: string;
+        // Build file patterns based on query source
+        let localFilePath: string | null = null;
+        let s3FilePath: string | null = null;
+        const effectiveTier = tier || 'raw';
 
-        if (tier) {
-          // Use Hive-style path for aggregated tiers
-          const sanitizedContext =
-            this.hivePathBuilder.sanitizeContext(context);
-          const sanitizedSkPath = this.hivePathBuilder.sanitizePath(
-            pathSpec.path
-          );
-          filePath = path.join(
-            this.dataDir,
-            `tier=${tier}`,
-            `context=${sanitizedContext}`,
-            `path=${sanitizedSkPath}`,
-            '**',
-            '*.parquet'
-          );
-          debug(`Querying Hive tier=${tier} at: ${filePath}`);
-        } else {
-          // Use legacy flat path
-          filePath = path.join(
-            this.dataDir,
-            this.selfContextPath,
-            sanitizedPath,
-            '*.parquet'
-          );
-          debug(`Querying parquet files at: ${filePath}`);
+        // Determine which sources to query based on querySource
+        if (querySource === 'local' || querySource === 'hybrid') {
+          if (tier) {
+            // Use Hive-style path for aggregated tiers
+            const sanitizedContext =
+              this.hivePathBuilder.sanitizeContext(context);
+            const sanitizedSkPath = this.hivePathBuilder.sanitizePath(
+              pathSpec.path
+            );
+            localFilePath = path.join(
+              this.dataDir,
+              `tier=${tier}`,
+              `context=${sanitizedContext}`,
+              `path=${sanitizedSkPath}`,
+              '**',
+              '*.parquet'
+            );
+            debug(`Querying local Hive tier=${tier} at: ${localFilePath}`);
+          } else {
+            // Use legacy flat path
+            localFilePath = path.join(
+              this.dataDir,
+              this.selfContextPath,
+              sanitizedPath,
+              '*.parquet'
+            );
+            debug(`Querying local parquet files at: ${localFilePath}`);
+          }
+        }
+
+        if (
+          (querySource === 's3' || querySource === 'hybrid') &&
+          this.s3Config?.enabled
+        ) {
+          // Build S3 pattern with partition pruning
+          const s3FromDate =
+            querySource === 'hybrid' ? fromDate : fromDate;
+          const s3ToDate =
+            querySource === 'hybrid'
+              ? new Date(
+                  Math.min(retentionCutoff.getTime() - 86400000, toDate.getTime())
+                )
+              : toDate;
+
+          // Only query S3 if there's a valid date range
+          if (s3FromDate <= s3ToDate) {
+            s3FilePath = this.hivePathBuilder.buildS3Glob(
+              this.s3Config.bucket,
+              this.s3Config.keyPrefix || '',
+              effectiveTier,
+              context,
+              pathSpec.path,
+              s3FromDate,
+              s3ToDate
+            );
+            debug(`Querying S3 parquet files at: ${s3FilePath}`);
+          }
         }
 
         // Convert ZonedDateTime to ISO string format matching parquet schema
@@ -1165,12 +1282,40 @@ export class HistoryAPI {
         const connection = await DuckDBPool.getConnection();
 
         try {
+          // Build FROM clause based on available sources
+          // For hybrid queries, we UNION local and S3 sources
+          const buildFromClause = (filePath: string): string => {
+            return `read_parquet('${filePath}', union_by_name=true)`;
+          };
+
+          let fromClause: string;
+          if (localFilePath && s3FilePath) {
+            // Hybrid: UNION both sources
+            fromClause = `(
+              SELECT * FROM ${buildFromClause(localFilePath)}
+              UNION ALL
+              SELECT * FROM ${buildFromClause(s3FilePath)}
+            )`;
+            debug(`Hybrid query: combining local and S3 sources`);
+          } else if (s3FilePath) {
+            // S3 only
+            fromClause = buildFromClause(s3FilePath);
+          } else if (localFilePath) {
+            // Local only
+            fromClause = buildFromClause(localFilePath);
+          } else {
+            // No source available (shouldn't happen)
+            debug(`No data source available for path ${pathSpec.path}`);
+            allData[pathSpec.path] = [];
+            return;
+          }
+
           // Check if this path has object components (value_latitude, value_longitude, etc.)
-          const componentSchema = await getPathComponentSchema(
-            this.dataDir,
-            context,
-            pathSpec.path
-          );
+          // Use local path for schema check (S3 schema should match)
+          const schemaCheckPath = localFilePath || s3FilePath;
+          const componentSchema = schemaCheckPath
+            ? await getPathComponentSchema(this.dataDir, context, pathSpec.path)
+            : null;
 
           if (componentSchema && componentSchema.components.size > 0) {
             // Object path with multiple components - aggregate each component separately
@@ -1221,7 +1366,7 @@ export class HistoryAPI {
                   EPOCH_MS(CAST(FLOOR(EPOCH_MS(signalk_timestamp::TIMESTAMP) / ${timeResolutionMillis}) * ${timeResolutionMillis} AS BIGINT))
                 ), '%Y-%m-%dT%H:%M:%SZ') as timestamp,
                 ${componentSelects}
-              FROM read_parquet('${filePath}', union_by_name=true)
+              FROM ${fromClause} AS source_data
               WHERE
                 signalk_timestamp >= '${fromIso}'
                 AND
@@ -1281,9 +1426,18 @@ export class HistoryAPI {
           } else {
             // Scalar path - use original logic
             // First, check if value_json column exists in the parquet files
-            const schemaQuery = `SELECT * FROM parquet_schema('${filePath}') WHERE name = 'value_json'`;
-            const schemaResult = await connection.runAndReadAll(schemaQuery);
-            const hasValueJson = schemaResult.getRowObjects().length > 0;
+            // Use local path for schema check, fall back to assuming no value_json for S3-only queries
+            let hasValueJson = false;
+            if (localFilePath) {
+              try {
+                const schemaQuery = `SELECT * FROM parquet_schema('${localFilePath}') WHERE name = 'value_json'`;
+                const schemaResult = await connection.runAndReadAll(schemaQuery);
+                hasValueJson = schemaResult.getRowObjects().length > 0;
+              } catch {
+                // Schema check failed, assume no value_json
+                hasValueJson = false;
+              }
+            }
 
             debug(
               `Path ${pathSpec.path}: value_json column ${hasValueJson ? 'exists' : 'does not exist'}`
@@ -1303,7 +1457,7 @@ export class HistoryAPI {
                   EPOCH_MS(CAST(FLOOR(EPOCH_MS(signalk_timestamp::TIMESTAMP) / ${timeResolutionMillis}) * ${timeResolutionMillis} AS BIGINT))
                 ), '%Y-%m-%dT%H:%M:%SZ') as timestamp,
                 ${getAggregateExpression(pathSpec.aggregateMethod, pathSpec.path, hasValueJson)} as value${valueJsonSelect}
-              FROM read_parquet('${filePath}', union_by_name=true)
+              FROM ${fromClause} AS source_data
               WHERE
                 signalk_timestamp >= '${fromIso}'
                 AND

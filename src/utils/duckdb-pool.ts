@@ -22,9 +22,16 @@ import { DuckDBInstance } from '@duckdb/node-api';
  * await DuckDBPool.shutdown();
  * ```
  */
+export interface S3Config {
+  accessKeyId: string;
+  secretAccessKey: string;
+  region: string;
+}
+
 export class DuckDBPool {
   private static instance: DuckDBInstance | null = null;
   private static initialized: boolean = false;
+  private static s3Initialized: boolean = false;
 
   /**
    * Initialize the DuckDB instance and load extensions
@@ -73,6 +80,7 @@ export class DuckDBPool {
       // DuckDB instances handle cleanup automatically
       this.instance = null;
       this.initialized = false;
+      this.s3Initialized = false;
     }
   }
 
@@ -82,5 +90,54 @@ export class DuckDBPool {
    */
   static isInitialized(): boolean {
     return this.initialized;
+  }
+
+  /**
+   * Initialize S3 credentials for DuckDB
+   * This allows DuckDB to query S3 parquet files directly
+   *
+   * @param config S3 configuration with credentials and region
+   * @throws Error if pool is not initialized or S3 setup fails
+   */
+  static async initializeS3(config: S3Config): Promise<void> {
+    if (!this.instance) {
+      throw new Error(
+        'DuckDBPool not initialized. Call DuckDBPool.initialize() first.'
+      );
+    }
+
+    if (this.s3Initialized) {
+      return; // Already initialized
+    }
+
+    const connection = await this.instance.connect();
+    try {
+      // Install and load httpfs extension for S3 support
+      await connection.runAndReadAll('INSTALL httpfs;');
+      await connection.runAndReadAll('LOAD httpfs;');
+
+      // Create S3 secret with credentials
+      // Use parameterized approach to avoid SQL injection
+      const secretSql = `
+        CREATE OR REPLACE SECRET s3_credentials (
+          TYPE S3,
+          KEY_ID '${config.accessKeyId.replace(/'/g, "''")}',
+          SECRET '${config.secretAccessKey.replace(/'/g, "''")}',
+          REGION '${config.region.replace(/'/g, "''")}'
+        )
+      `;
+      await connection.runAndReadAll(secretSql);
+      this.s3Initialized = true;
+    } finally {
+      connection.disconnectSync();
+    }
+  }
+
+  /**
+   * Check if S3 credentials have been initialized
+   * @returns true if S3 is ready for queries
+   */
+  static isS3Initialized(): boolean {
+    return this.s3Initialized;
   }
 }
