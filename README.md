@@ -8,8 +8,22 @@ A comprehensive SignalK plugin and webapp that saves SignalK data directly to Pa
 - **Smart Data Types**: Intelligent Parquet schema detection preserves native data types (DOUBLE, BOOLEAN) instead of forcing everything to strings
 - **Multiple File Formats**: Support for Parquet, JSON, and CSV output formats (querying in parquet only)
 - **Daily Consolidation**: Automatic daily file consolidation with S3 upload capabilities
-- **Near Real-time Buffering**: Efficient data
- buffering with configurable thresholds
+- **🆕 SQLite WAL Buffering**: Crash-safe data ingestion with Write-Ahead Logging
+  - Replaces in-memory buffers with persistent SQLite database
+  - Automatic recovery after power loss or crashes
+  - Configurable export intervals to Parquet files
+- **🆕 Hive-Partitioned Storage**: Efficient file organization for query performance
+  - Structure: `tier=raw/context={ctx}/path={path}/year={year}/day={day}/`
+  - Aggregation tiers: `raw`, `5s`, `60s`, `1h`
+  - Automatic partition pruning for time-range queries
+- **🆕 S3 Federated Querying**: Query historical data directly from S3 using DuckDB's native S3 support
+  - Automatic partition pruning reduces data transfer by 70-90%
+  - Hybrid local+S3 queries for data spanning retention boundary
+  - Predicate pushdown filters data at source before transfer
+- **🆕 Auto-Discovery**: Automatically configure paths when first queried
+  - On-demand path configuration when History API queries unconfigured paths
+  - Include/exclude glob patterns for fine-grained control
+  - Optional live data requirement before configuration
 
 ### Data Validation & Schema Repair
 - **NEW Schema Validation**: Comprehensive validation of Parquet file schemas against SignalK metadata standards
@@ -39,13 +53,7 @@ The validation system checks each Parquet file for:
   - **Standard Time Parameters**: All 5 standard query patterns supported
   - **Time-Filtered Discovery**: Paths and contexts filtered by time range
   - **Optional Analytics**: Moving averages (EMA/SMA) available on demand
-- **🔄 NEW: Automatic Unit Conversion**: Optional integration with `signalk-units-preference` plugin
-  - Server-side conversion to user's preferred units (knots, km/h, °F, °C, etc.)
-  - Add `?convertUnits=true` to any history query
-  - Respects all unit preferences configured in units-preference plugin
-  - Configurable cache (1-60 minutes) balances performance vs. responsiveness
-  - Conversion metadata included in response
-- **🌍 NEW: Timezone Conversion**: Convert UTC timestamps to local or specified timezone
+- **🌍 Timezone Conversion**: Convert UTC timestamps to local or specified timezone
   - Add `?convertTimesToLocal=true` to convert timestamps to local time
   - Optional `&timezone=America/New_York` for custom IANA timezone
   - Automatic daylight saving time handling
@@ -61,6 +69,10 @@ The validation system checks each Parquet file for:
   - **Proximity Detection**: Multi-vessel distance calculations and collision risk analysis
   - **Geographic Visualization**: Generate movement boundaries, centroids, and spatial statistics
   - **Route Planning**: Historical track analysis for route optimization and performance analysis
+  - **🆕 Spatial Correlation**: Filter any sensor data by vessel location
+    - Query "wind data when vessel was within this area"
+    - Bounding box (`bbox`) and radius filters work on all paths
+    - Automatically correlates timestamps with position data
 
 ### Management & Control
 - **Command Management**: Register, execute, and manage SignalK commands with automatic path configuration
@@ -105,12 +117,6 @@ The validation system checks each Parquet file for:
 ### Core Requirements
 - SignalK Server v1.x or v2.x
 - Node.js 18+ (included with SignalK)
-
-### Optional Plugin Integration
-- **signalk-units-preference** (v0.7.0+): Required for automatic unit conversion feature
-  - Install from: https://github.com/motamman/signalk-units-preference
-  - Provides server-side unit conversion based on user preferences
-  - The history API will work without this plugin, but `convertUnits=true` will have no effect
 
 ## Installation
 
@@ -202,9 +208,28 @@ Configure basic plugin settings (path configuration is managed separately in the
 | **Filename Prefix** | Prefix for generated filenames | `signalk_data` |
 | **File Format** | Output format (parquet, json, csv) | `parquet` |
 | **Retention Days** | Days to keep processed files | 7 |
-| **Unit Conversion Cache Duration** 🆕 | How long to cache unit conversions before reloading (minutes) | 5 |
+| **Export Interval** 🆕 | How often to export from SQLite buffer to Parquet (minutes) | 5 |
+| **Buffer Retention Hours** 🆕 | How long to keep exported records in SQLite (hours) | 24 |
 
-> **Note**: The Unit Conversion Cache Duration setting controls how quickly changes to unit preferences (in the signalk-units-preference plugin) are reflected in the history API. Lower values (1-2 minutes) reflect changes faster but use more resources. Higher values (30-60 minutes) reduce overhead but take longer to reflect changes. The default of 5 minutes provides a good balance for most users.
+### Auto-Discovery Configuration
+
+Configure automatic path discovery when querying unconfigured paths:
+
+| Setting | Description | Default |
+|---------|-------------|---------|
+| **Enable Auto-Discovery** | Master switch for auto-discovery | `false` |
+| **Require Live Data** | Only configure if path has live SignalK data | `true` |
+| **Max Auto-Configured Paths** | Maximum number of auto-configured paths | `100` |
+| **Include Patterns** | Glob patterns for paths to include (e.g., `navigation.*`) | `[]` |
+| **Exclude Patterns** | Glob patterns for paths to exclude (e.g., `propulsion.*`) | `[]` |
+
+When enabled, Auto-Discovery will automatically add path configurations when:
+1. A History API query requests data for an unconfigured path
+2. The path matches include patterns (if specified)
+3. The path doesn't match exclude patterns
+4. The path has live data in SignalK (if `requireLiveData` is enabled)
+
+Auto-discovered paths are marked with the `autoDiscovered: true` flag and have auto-generated human-readable names prefixed with `[Auto]`.
 
 ### S3 Upload Configuration
 
@@ -410,23 +435,106 @@ router.get('/api/paths',
 
 ## Data Output Structure
 
-### File Organization
+### File Organization (Hive-Partitioned)
 
+The plugin uses Hive-style partitioned paths for efficient querying:
+
+```
+output_directory/
+├── tier=raw/
+│   ├── context=vessels__self/
+│   │   ├── path=navigation__position/
+│   │   │   ├── year=2025/
+│   │   │   │   ├── day=197/
+│   │   │   │   │   ├── data_20250716T120000.parquet
+│   │   │   │   │   └── data_20250716T130000.parquet
+│   │   │   │   └── day=198/
+│   │   │   │       └── data_20250717T080000.parquet
+│   │   │   └── year=2024/
+│   │   │       └── day=365/
+│   │   └── path=navigation__speedOverGround/
+│   └── context=vessels__urn-mrn-imo-mmsi-368396230/
+│       └── path=navigation__position/
+├── tier=5s/
+│   └── [aggregated 5-second data]
+├── tier=60s/
+│   └── [aggregated 1-minute data]
+├── tier=1h/
+│   └── [aggregated hourly data]
+├── buffer.db              <- SQLite WAL buffer
+├── buffer.db-wal          <- Write-ahead log
+└── processed/
+    └── [moved files after consolidation]
+```
+
+**Partition Structure:**
+- `tier=` - Aggregation level: `raw`, `5s`, `60s`, `1h`
+- `context=` - Vessel context (sanitized: `.` → `__`, `:` → `-`)
+- `path=` - SignalK path (sanitized: `.` → `__`)
+- `year=` - Year (e.g., `2025`)
+- `day=` - Day of year, zero-padded (e.g., `197`)
+
+**Legacy Flat Structure (deprecated):**
 ```
 output_directory/
 ├── vessels/
 │   └── self/
 │       ├── navigation/
-│       │   ├── position/
-│       │   │   ├── signalk_data_20250716T120000.parquet
-│       │   │   └── signalk_data_20250716_consolidated.parquet
-│       │   └── speedOverGround/
-│       └── environment/
-│           └── wind/
-│               └── angleApparent/
+│       │   └── position/
+│       │       └── signalk_data_20250716T120000.parquet
 └── processed/
-    └── [moved files after consolidation]
 ```
+
+Use the Migration API to convert legacy files to Hive partitioning.
+
+## Data Migration
+
+### Migrating Legacy Files to Hive Partitioning
+
+If you have existing data in the legacy flat structure, use the Migration API to convert to Hive partitioning:
+
+**1. Scan for migratable files:**
+```bash
+curl -X POST http://localhost:3000/plugins/signalk-parquet/api/migrate/scan \
+  -H "Content-Type: application/json" \
+  -d '{"sourceDirectory": "/path/to/data"}'
+```
+
+Response includes:
+- Total files to migrate
+- Total size in bytes
+- Files grouped by SignalK path
+- Estimated migration time
+
+**2. Start migration:**
+```bash
+curl -X POST http://localhost:3000/plugins/signalk-parquet/api/migrate \
+  -H "Content-Type: application/json" \
+  -d '{
+    "sourceDirectory": "/path/to/data",
+    "targetDirectory": "/path/to/data",
+    "targetTier": "raw",
+    "deleteSourceAfterMigration": false
+  }'
+```
+
+**3. Check progress:**
+```bash
+curl http://localhost:3000/plugins/signalk-parquet/api/migrate/progress/{jobId}
+```
+
+**4. Cancel if needed:**
+```bash
+curl -X POST http://localhost:3000/plugins/signalk-parquet/api/migrate/cancel/{jobId}
+```
+
+**Migration Options:**
+| Option | Description | Default |
+|--------|-------------|---------|
+| `sourceDirectory` | Source directory to scan | Plugin data directory |
+| `targetDirectory` | Target directory for Hive files | Same as source |
+| `targetTier` | Target aggregation tier | `raw` |
+| `deleteSourceAfterMigration` | Delete source files after successful migration | `false` |
 
 ### Data Schema
 
@@ -478,7 +586,7 @@ This provides better compression, faster queries, and proper type safety for dat
 | `/api/paths` | GET | List available data paths |
 | `/api/files/:path` | GET | List files for a path |
 | `/api/sample/:path` | GET | Sample data from a path |
-| `/api/query` | POST | Execute SQL query |
+| `/api/query` | POST | Execute SQL query (⚠️ disabled by default, requires `SIGNALK_PARQUET_RAW_SQL=true`) |
 | `/api/config/paths` | GET/POST/PUT/DELETE | Manage path configurations |
 | `/api/test-s3` | POST | Test S3 connection |
 | `/api/health` | GET | Health check |
@@ -492,6 +600,17 @@ This provides better compression, faster queries, and proper type safety for dat
 | `/signalk/v1/history/values` | GET | SignalK History API - Get historical values |
 | `/signalk/v1/history/contexts` | GET | SignalK History API - Get available contexts |
 | `/signalk/v1/history/paths` | GET | SignalK History API - Get available paths |
+| `/signalk/v2/api/history/*` | GET | SignalK v2 API - handled by registered HistoryApi provider (spec-compliant) |
+| **Migration API** | | |
+| `/api/migrate/scan` | POST | Scan directory for migratable files |
+| `/api/migrate` | POST | Start migration job |
+| `/api/migrate/progress/:jobId` | GET | Get migration job progress |
+| `/api/migrate/cancel/:jobId` | POST | Cancel running migration job |
+| `/api/migrate/jobs` | GET | List all migration jobs |
+| **Buffer Status API** | | |
+| `/api/buffer/stats` | GET | Get SQLite buffer statistics |
+| `/api/buffer/export` | POST | Force immediate export of pending records |
+| `/api/buffer/health` | GET | Get buffer health status |
 
 ## DuckDB Integration
 
@@ -636,8 +755,13 @@ The plugin provides full SignalK History API compliance, allowing you to query h
 | Endpoint | Description | Parameters |
 |----------|-------------|------------|
 | `/signalk/v1/history/values` | Get historical values for specified paths | **Standard patterns** (see below)<br>**Optional**: `resolution`, `refresh`, `includeMovingAverages`, `useUTC` |
-| `/signalk/v1/history/contexts` | Get available vessel contexts for time range | **Time Range**: Any standard pattern (see below)<br>Returns only contexts with data in specified range |
-| `/signalk/v1/history/paths` | Get available SignalK paths for time range | **Time Range**: Any standard pattern (see below)<br>Returns only paths with data in specified range |
+| `/signalk/v1/history/contexts` | Get available vessel contexts for time range | **Time Range**: Any standard pattern (see below) ⚠️<br>Returns only contexts with data in specified range |
+| `/signalk/v1/history/paths` | Get available SignalK paths for time range | **Time Range**: Any standard pattern (see below) ⚠️<br>Returns only paths with data in specified range |
+| `/signalk/v2/api/history/*` | **Spec-compliant** - handled by registered `HistoryApi` provider | Per SignalK spec (ISO 8601 durations, no extensions) |
+
+> **Note:** V2 routes (`/signalk/v2/api/history/*`) are handled by the registered `HistoryApi` provider (`history-provider.ts`) for SignalK server multi-provider support. V1 routes include signalk-parquet extensions (spatial filtering, timezone conversion, shorthand durations, etc.) not available in V2.
+
+> ⚠️ **Extension**: The `/contexts` and `/paths` endpoints accept time range parameters as **optional**. The official spec requires time parameters; without them, these endpoints return all available data (more permissive behavior).
 
 ### Standard Time Range Patterns
 
@@ -651,29 +775,80 @@ The History API supports 5 standard SignalK time query patterns:
 | **4** | `from` | From start to now | `?from=2025-01-01T00:00:00Z` |
 | **5** | `from` + `to` | Specific range | `?from=2025-01-01T00:00:00Z&to=2025-01-02T00:00:00Z` |
 
-**Legacy Support**: The `start` parameter (used with `duration`) is deprecated but still supported for backward compatibility. A console warning will be shown. Use standard patterns instead.
-
 ### Query Parameters
 
 | Parameter | Description | Format | Examples |
 |-----------|-------------|---------|----------|
 | **Required for `/values`:** | | | |
-| `paths` | SignalK paths with optional aggregation and smoothing | `path:method:smoothing:param` | `navigation.speedOverGround:average:sma:5` |
+| `paths` | SignalK paths with optional aggregation | `path:method` | `navigation.speedOverGround:average` |
 | **Time Range:** | Use one of the 5 standard patterns above | | |
-| `duration` | Time period | `[number][unit]` | `1h`, `30m`, `15s`, `2d` |
+| `duration` | Time period (see Duration Formats below) | Multiple formats | `PT1H`, `3600`, `1h` |
 | `from` | Start time (ISO 8601) | ISO datetime | `2025-01-01T00:00:00Z` |
 | `to` | End time (ISO 8601) | ISO datetime | `2025-01-01T06:00:00Z` |
 | **Optional:** | | | |
 | `context` | Vessel context | `vessels.self` or `vessels.<id>` | `vessels.self` (default) |
-| `resolution` | Time bucket size in milliseconds | Number | `60000` (1 minute buckets) |
-| `refresh` | Enable auto-refresh (pattern 1 only) | `true` or `1` | `refresh=true` |
-| `includeMovingAverages` | Include EMA/SMA calculations | `true` or `1` | `includeMovingAverages=true` |
-| `useUTC` | Treat datetime inputs as UTC | `true` or `1` | `useUTC=true` |
-| `convertUnits` | 🆕 Convert to preferred units (requires signalk-units-preference plugin) | `true` or `1` | `convertUnits=true` |
-| `convertTimesToLocal` | 🆕 Convert timestamps to local/specified timezone | `true` or `1` | `convertTimesToLocal=true` |
-| `timezone` | 🆕 IANA timezone ID (used with convertTimesToLocal) | IANA timezone | `timezone=America/New_York` |
-| **Deprecated:** | | | |
-| `start` | ⚠️ Use standard patterns instead | `now` or ISO datetime | Deprecated, use `duration` or `from`/`to` |
+| `resolution` | Time bucket size in **seconds** | Seconds or time expression | `60`, `1m` (1 minute buckets) |
+
+#### Duration Formats
+
+| Format | Example | Description |
+|--------|---------|-------------|
+| ISO 8601 | `PT1H`, `PT30M`, `P1D`, `PT1H30M` | Standard ISO duration |
+| Integer seconds | `3600`, `60` | Plain number as seconds |
+| Shorthand ⚠️ | `1h`, `30m`, `5s`, `2d` | Human-friendly format (extension) |
+
+> ⚠️ Shorthand format is a non-standard extension for convenience. Use ISO 8601 or integer seconds for maximum compatibility.
+
+#### Resolution Parameter
+
+> **BREAKING CHANGE (v0.7.0+)**: Resolution is now in **seconds** (was milliseconds).
+
+| Old (v0.6.x) | New (v0.7.0+) |
+|--------------|---------------|
+| `?resolution=60000` | `?resolution=60` or `?resolution=1m` |
+| `?resolution=5000` | `?resolution=5` or `?resolution=5s` |
+| `?resolution=300000` | `?resolution=300` or `?resolution=5m` |
+
+#### Aggregation Methods
+
+| Method | Description | Example |
+|--------|-------------|---------|
+| `average` | Average of values in bucket | `path:average` |
+| `min` | Minimum value in bucket | `path:min` |
+| `max` | Maximum value in bucket | `path:max` |
+| `first` | First value in bucket | `path:first` |
+| `last` | Last value in bucket | `path:last` |
+| `mid` | Median value in bucket | `path:mid` |
+| `sma` | Simple Moving Average (returns only smoothed value) | `path:sma:5` |
+| `ema` | Exponential Moving Average (returns only smoothed value) | `path:ema:0.2` |
+
+**SMA/EMA as aggregation methods (official SignalK syntax):**
+```bash
+# SMA with window of 5 - returns ONLY the smoothed value (V1 with shorthand duration)
+curl "http://localhost:3000/signalk/v1/history/values?duration=1h&paths=navigation.speedOverGround:sma:5"
+
+# EMA with alpha of 0.3 - returns ONLY the smoothed value (V1 with shorthand duration)
+curl "http://localhost:3000/signalk/v1/history/values?duration=1h&paths=environment.wind.speedApparent:ema:0.3"
+```
+
+#### Extension Parameters (non-standard)
+
+| Parameter | Description | Format | Examples |
+|-----------|-------------|---------|----------|
+| `paths` ⚠️ | Extended smoothing syntax: `path:method:smoothing:param` (returns raw AND smoothed) | Extended format | `navigation.speedOverGround:average:sma:5` |
+| `refresh` ⚠️ | Enable auto-refresh (pattern 1 only) | `true` or `1` | `refresh=true` |
+| `includeMovingAverages` ⚠️ | Include EMA/SMA calculations | `true` or `1` | `includeMovingAverages=true` |
+| `useUTC` ⚠️ | Treat datetime inputs as UTC | `true` or `1` | `useUTC=true` |
+| `convertUnits` ⚠️ | Convert to preferred units (requires signalk-units-preference plugin) | `true` or `1` | `convertUnits=true` |
+| `convertTimesToLocal` ⚠️ | Convert timestamps to local/specified timezone | `true` or `1` | `convertTimesToLocal=true` |
+| `timezone` ⚠️ | IANA timezone ID (used with convertTimesToLocal) | IANA timezone | `timezone=America/New_York` |
+| `bbox` ⚠️ | Bounding box filter: `west,south,east,north` | Coordinates | `bbox=-74.5,40.2,-73.8,40.9` |
+| `radius` ⚠️ | Radius filter: `lat,lon,meters` | Coordinates + meters | `radius=40.646,-73.981,100` |
+| `positionPath` ⚠️ | Position path for spatial correlation | SignalK path | `positionPath=navigation.position` |
+| `source` ⚠️ | Query source: `auto`, `local`, `s3`, `hybrid` | Source type | `source=s3` |
+| `tier` ⚠️ | Aggregation tier: `raw`, `5s`, `60s`, `1h`, `auto` | Tier name | `tier=60s` |
+
+> ⚠️ **Extensions**: Parameters marked with ⚠️ are non-standard extensions to the SignalK History API specification. They provide additional functionality but may not be supported by other SignalK history providers.
 
 ### Query Examples
 
@@ -717,22 +892,32 @@ curl "http://localhost:3000/signalk/v1/history/values?from=2025-01-01T00:00:00Z&
 
 **Multiple paths with time alignment:**
 ```bash
-curl "http://localhost:3000/signalk/v1/history/values?duration=6h&paths=environment.wind.angleApparent,environment.wind.speedApparent,navigation.position&resolution=60000"
+curl "http://localhost:3000/signalk/v1/history/values?duration=6h&paths=environment.wind.angleApparent,environment.wind.speedApparent,navigation.position&resolution=1m"
 ```
 
 **Multiple aggregations of same path:**
 ```bash
-curl "http://localhost:3000/signalk/v1/history/values?from=2025-01-01T00:00:00Z&to=2025-01-01T06:00:00Z&paths=environment.wind.speedApparent:average,environment.wind.speedApparent:min,environment.wind.speedApparent:max&resolution=60000"
+curl "http://localhost:3000/signalk/v1/history/values?from=2025-01-01T00:00:00Z&to=2025-01-01T06:00:00Z&paths=environment.wind.speedApparent:average,environment.wind.speedApparent:min,environment.wind.speedApparent:max&resolution=60"
 ```
 
 **With moving averages for trend analysis:**
 ```bash
-curl "http://localhost:3000/signalk/v1/history/values?duration=24h&paths=electrical.batteries.512.voltage&includeMovingAverages=true&resolution=300000"
+curl "http://localhost:3000/signalk/v1/history/values?duration=24h&paths=electrical.batteries.512.voltage&includeMovingAverages=true&resolution=5m"
 ```
 
 **Different temporal samples:**
 ```bash
-curl "http://localhost:3000/signalk/v1/history/values?duration=1h&paths=navigation.position:first,navigation.position:middle_index,navigation.position:last&resolution=60000"
+curl "http://localhost:3000/signalk/v1/history/values?duration=1h&paths=navigation.position:first,navigation.position:middle_index,navigation.position:last&resolution=1m"
+```
+
+**Using ISO 8601 duration format:**
+```bash
+curl "http://localhost:3000/signalk/v1/history/values?duration=PT1H30M&paths=navigation.speedOverGround&resolution=30"
+```
+
+**Using integer seconds for duration:**
+```bash
+curl "http://localhost:3000/signalk/v1/history/values?duration=3600&paths=navigation.speedOverGround&resolution=10s"
 ```
 
 #### Context and Path Discovery
@@ -850,34 +1035,102 @@ curl "http://localhost:3000/signalk/v1/history/values?duration=2d&paths=navigati
 - `2h` - 2 hours
 - `1d` - 1 day
 
-### Timezone Handling (NEW)
+#### Spatial Filtering (NEW)
+
+Filter data by geographic location using bounding boxes or radius queries:
+
+**Bounding Box Filter:**
+```bash
+# Position data within a bounding box (west,south,east,north)
+curl "http://localhost:3000/signalk/v1/history/values?duration=1h&paths=navigation.position&bbox=-74.5,40.2,-73.8,40.9"
+```
+
+**Radius Filter:**
+```bash
+# Position data within 100m of a point (lat,lon,meters)
+curl "http://localhost:3000/signalk/v1/history/values?duration=1h&paths=navigation.position&radius=40.646,-73.981,100"
+```
+
+**Spatial Correlation (filter non-position paths by location):**
+```bash
+# Wind data when vessel was within 100m of point
+curl "http://localhost:3000/signalk/v1/history/values?duration=24h&paths=environment.wind.speedApparent&radius=40.646,-73.981,100"
+
+# Multiple paths filtered by bounding box
+curl "http://localhost:3000/signalk/v1/history/values?duration=7d&paths=environment.wind.speedApparent,environment.depth.belowKeel&bbox=-74.0,40.6,-73.9,40.7"
+
+# Use anchor position for correlation instead of vessel position
+curl "http://localhost:3000/signalk/v1/history/values?duration=7d&paths=environment.depth.belowKeel&radius=40.646,-73.981,50&positionPath=navigation.anchor.position"
+```
+
+**How Spatial Correlation Works:**
+- For **position paths** (e.g., `navigation.position`): Filters directly on lat/lon
+- For **non-position paths** (e.g., `environment.wind.speedApparent`): First queries position data to find timestamps when vessel was within the spatial filter, then returns only data from those times
+- The `positionPath` parameter specifies which position path to correlate with (default: `navigation.position`)
+
+#### S3 Federated Querying (NEW)
+
+Query historical data directly from S3 without downloading files first:
+
+**Query Source Parameter:**
+```bash
+# Auto-select source based on retention cutoff (default)
+curl "http://localhost:3000/signalk/v1/history/values?duration=7d&paths=navigation.speedOverGround&source=auto"
+
+# Force local-only query
+curl "http://localhost:3000/signalk/v1/history/values?duration=1d&paths=navigation.speedOverGround&source=local"
+
+# Force S3-only query (for archived data)
+curl "http://localhost:3000/signalk/v1/history/values?from=2024-01-01&to=2024-01-07&paths=navigation.speedOverGround&source=s3"
+```
+
+**How Source Selection Works:**
+- `auto` (default): Uses `retentionDays` config as boundary
+  - Data within retention period → queries local files
+  - Data older than retention → queries S3
+  - Query spanning boundary → queries both with UNION
+- `local`: Only query local Parquet files
+- `s3`: Only query S3 (requires S3 to be enabled with valid credentials)
+
+**Data Transfer Optimization:**
+DuckDB's native S3 support provides:
+- **Partition pruning**: Hive structure (`year=/day=`) allows skipping irrelevant files
+- **Predicate pushdown**: WHERE clauses filter at Parquet level before transfer
+- **Projection pushdown**: Only SELECT columns are transferred
+- **Combined effect**: 70-99% reduction vs downloading full files
+
+**Requirements:**
+- S3 must be enabled in plugin configuration
+- Valid AWS credentials configured
+- Data must be uploaded to S3 using Hive partition structure
+
+### Timezone Handling
 
 **Local time conversion (default behavior):**
 ```bash
 # 8:00 AM local time → automatically converted to UTC
-curl "http://localhost:3000/signalk/v1/history/values?context=vessels.self&start=2025-08-13T08:00:00&duration=1h&paths=navigation.position"
+curl "http://localhost:3000/signalk/v1/history/values?context=vessels.self&to=2025-08-13T09:00:00&duration=1h&paths=navigation.position"
 ```
 
 **UTC time mode:**
 ```bash
 # 8:00 AM UTC (not converted)
-curl "http://localhost:3000/signalk/v1/history/values?context=vessels.self&start=2025-08-13T08:00:00&duration=1h&paths=navigation.position&useUTC=true"
+curl "http://localhost:3000/signalk/v1/history/values?context=vessels.self&to=2025-08-13T09:00:00&duration=1h&paths=navigation.position&useUTC=true"
 ```
 
 **Explicit timezone (always respected):**
 ```bash
 # Explicit UTC timezone
-curl "http://localhost:3000/signalk/v1/history/values?context=vessels.self&start=2025-08-13T08:00:00Z&duration=1h&paths=navigation.position"
+curl "http://localhost:3000/signalk/v1/history/values?context=vessels.self&to=2025-08-13T09:00:00Z&duration=1h&paths=navigation.position"
 
 # Explicit timezone offset
-curl "http://localhost:3000/signalk/v1/history/values?context=vessels.self&start=2025-08-13T08:00:00-04:00&duration=1h&paths=navigation.position"
+curl "http://localhost:3000/signalk/v1/history/values?context=vessels.self&to=2025-08-13T09:00:00-04:00&duration=1h&paths=navigation.position"
 ```
 
 **Timezone behavior:**
 - **Default (`useUTC=false`)**: Datetime strings without timezone info are treated as local time and automatically converted to UTC
 - **UTC mode (`useUTC=true`)**: Datetime strings without timezone info are treated as UTC time
 - **Explicit timezone**: Strings with `Z`, `+HH:MM`, or `-HH:MM` are always parsed as-is regardless of `useUTC` setting
-- **`start=now`**: Always uses current UTC time regardless of `useUTC` setting
 
 **Get available contexts:**
 ```bash
@@ -905,11 +1158,11 @@ The History API automatically aligns data from different paths using time bucket
 **Aggregation Methods:**
 - **`average`** - Average value in time bucket (default for numeric data)
 - **`min`** - Minimum value in time bucket
-- **`max`** - Maximum value in time bucket  
+- **`max`** - Maximum value in time bucket
 - **`first`** - First value in time bucket (default for objects)
 - **`last`** - Last value in time bucket
-- **`mid`** - Median value (average of middle values for even counts)
-- **`middle_index`** - Middle value by index (first of two middle values for even counts)
+- **`mid`** ⚠️ - Median value (average of middle values for even counts) - *extension*
+- **`middle_index`** ⚠️ - Middle value by index (first of two middle values for even counts) - *extension*
 
 **When to Use Each Method:**
 - **Numeric data** (wind speed, voltage, etc.): Use `average`, `min`, `max` for statistics
@@ -988,6 +1241,19 @@ The History API returns time-aligned data in standard SignalK format.
 - Moving averages (EMA/SMA) are **opt-in** - add `includeMovingAverages=true` to include them
 - EMA/SMA are only calculated for numeric values; non-numeric values (objects, strings) show `null` for their EMA/SMA columns
 - Without `includeMovingAverages`, response size is ~66% smaller
+
+#### Response Extensions (non-standard) ⚠️
+
+When using extension parameters, the response may include additional non-standard fields:
+
+| Field | Added by | Description |
+|-------|----------|-------------|
+| `units` | `convertUnits=true` | Unit conversion metadata (baseUnit, targetUnit, symbol) |
+| `timezone` | `convertTimesToLocal=true` | Timezone conversion metadata (offset, description) |
+| `refresh` | `refresh=true` | Auto-refresh metadata (intervalSeconds, nextRefresh) |
+| `meta.autoConfigured` | Auto-discovery | Indicates paths were auto-configured for recording |
+
+These fields are extensions and may not be present in responses from other SignalK history providers.
 
 ## Claude AI Analysis
 
@@ -1535,6 +1801,12 @@ curl "http://localhost:3000/signalk/v1/history/contexts"
 
 - [x] Implement startup consolidation for missed previous days (exclude current day)
 - [x] Add history API integration
+- [x] S3 federated querying with DuckDB
+- [x] Spatial correlation for non-position paths
+- [x] SQLite WAL buffering for crash-safe data ingestion
+- [x] Hive-partitioned storage with aggregation tiers
+- [x] Migration service for flat-to-Hive conversion
+- [x] Auto-discovery for on-demand path configuration
 - [ ] Incorporate user preferences from units-preference in the regimen filter system
 - [ ] Expose recorded spatial event via api endpoint (geojson)
 - [ ] Add Grafana integration
@@ -1552,7 +1824,32 @@ curl "http://localhost:3000/signalk/v1/history/contexts"
 
 See [CHANGELOG.md](CHANGELOG.md) for complete version history.
 
-### Version 0.6.5-beta.3 (Latest)
+### Upcoming Release
+- **🗄️ SQLite WAL Buffering**: Crash-safe data ingestion with Write-Ahead Logging
+  - Replaces in-memory buffers with persistent SQLite database
+  - Automatic recovery after power loss or crashes
+  - Configurable export intervals and retention
+- **🏗️ Hive-Partitioned Storage**: Efficient file organization
+  - Structure: `tier=/context=/path=/year=/day=/`
+  - Aggregation tiers: `raw`, `5s`, `60s`, `1h`
+  - 70-90% data transfer reduction through partition pruning
+- **🔄 Migration Service**: Convert legacy flat structure to Hive partitioning
+  - Scan, migrate, and track progress via API
+  - Optional deletion of source files after migration
+- **🔍 Auto-Discovery**: Automatic path configuration on first query
+  - On-demand configuration when History API queries unconfigured paths
+  - Include/exclude glob patterns for control
+  - Optional live data requirement
+- **🌐 S3 Federated Querying**: Query historical data directly from S3 using DuckDB
+  - Automatic partition pruning reduces data transfer by 70-90%
+  - Hybrid local+S3 queries span retention boundary automatically
+  - New `?source=` parameter: `auto`, `local`, `s3`
+- **🎯 Spatial Correlation**: Filter any sensor data by vessel location
+  - Query "wind data when vessel was within this area"
+  - Works with bounding box (`bbox`) and radius filters on any path
+  - New `positionPath` parameter for custom position source
+
+### Version 0.6.5-beta.3
 - **🎯 Per-Path Smoothing Syntax**: New `path:method:smoothing:param` syntax for applying SMA/EMA smoothing
   - Apply smoothing per-path instead of globally (e.g., `navigation.speedOverGround:average:sma:5`)
   - SMA with configurable window size (default: 10)
@@ -1563,7 +1860,6 @@ See [CHANGELOG.md](CHANGELOG.md) for complete version history.
 
 ### Version 0.5.6-beta.1
 - **🎯 SignalK History API Compliance**: Full support for all 5 standard time range patterns
-- **⏪ Backward Compatibility**: Legacy `start` parameter supported with deprecation warnings
 - **🎛️ Optional Moving Averages**: EMA/SMA now opt-in via `includeMovingAverages` parameter
 - **🔍 Time-Filtered Discovery**: Paths and contexts endpoints accept time range parameters
 - **⚡ Performance**: 4.3x faster context discovery (13s → 3s) with SQL optimization and caching
@@ -1711,12 +2007,11 @@ See [CHANGELOG.md](CHANGELOG.md) for complete version history.
   - Added underscore support in path sanitization to allow `middle_index` parameter
   - All 7 aggregation methods now work correctly: `average`, `min`, `max`, `first`, `last`, `mid`, `middle_index`
   - Proper method names returned in API responses
-- **⏪ Backward Time Querying**: Added ability to query backwards from a start datetime
-  - Use `start` + `duration` parameters instead of `from` + `to`
-  - Support for `start=now` to query from current time backwards
+- **⏪ Backward Time Querying**: Added ability to query backwards from a datetime
+  - Use `to` + `duration` parameters to query backward from end time
+  - Use `duration` only to query back from current time
   - Duration formats: `30s`, `15m`, `2h`, `1d` (seconds, minutes, hours, days)
-  - Real-time auto-refresh when `start=now` and `refresh=true`
-  - Maintains compatibility with existing forward querying
+  - Real-time auto-refresh when using `duration` only with `refresh=true`
 - **🌍 Smart Timezone Handling**: Automatic local-to-UTC conversion for better user experience
   - Default: datetime strings treated as local time and converted to UTC
   - Optional `useUTC=true` parameter to treat datetime strings as UTC

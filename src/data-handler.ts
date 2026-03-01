@@ -793,6 +793,9 @@ export async function consolidateYesterday(
   }
 }
 
+// Directories to exclude from S3 uploads
+const excludedDirs = ['/processed/', '/repaired/', '/failed/', '/quarantine/'];
+
 // Upload all existing consolidated files to S3 (for catching up after BigInt fix)
 // Uses targeted date patterns to avoid scanning 100k+ files on large datasets
 export async function uploadAllConsolidatedFilesToS3(
@@ -815,11 +818,16 @@ export async function uploadAllConsolidatedFilesToS3(
 
       // Targeted glob: only match consolidated files from this specific date
       const consolidatedPattern = `**/${prefix}_${dateStr}_consolidated.parquet`;
-      const consolidatedFiles = await glob(consolidatedPattern, {
+      const allConsolidatedFiles = await glob(consolidatedPattern, {
         cwd: config.outputDirectory,
         absolute: true,
         nodir: true,
       });
+
+      // Exclude processed/repaired/failed/quarantine directories
+      const consolidatedFiles = allConsolidatedFiles.filter(
+        (f) => !excludedDirs.some((dir) => f.includes(dir))
+      );
 
       for (const filePath of consolidatedFiles) {
         const success = await uploadToS3(filePath, config, state, app);
@@ -837,8 +845,8 @@ export async function uploadAllConsolidatedFilesToS3(
   }
 }
 
-// Upload consolidated files to S3
-async function uploadConsolidatedFilesToS3(
+// Upload consolidated and aggregated files to S3
+export async function uploadConsolidatedFilesToS3(
   config: PluginConfig,
   date: Date,
   state: PluginState,
@@ -846,7 +854,10 @@ async function uploadConsolidatedFilesToS3(
 ): Promise<void> {
   try {
     const dateStr = date.toISOString().split('T')[0];
+
+    // Match both consolidated AND aggregated parquet files for this date
     const consolidatedPattern = `**/*_${dateStr}_consolidated.parquet`;
+    const aggregatedPattern = `**/*_${dateStr}_aggregated.parquet`;
 
     // Find all consolidated files for the date
     const consolidatedFiles = await glob(consolidatedPattern, {
@@ -855,11 +866,32 @@ async function uploadConsolidatedFilesToS3(
       nodir: true,
     });
 
-    // Upload each consolidated file
-    for (const filePath of consolidatedFiles) {
+    // Find all aggregated files for the date (from tier aggregation)
+    const aggregatedFiles = await glob(aggregatedPattern, {
+      cwd: config.outputDirectory,
+      absolute: true,
+      nodir: true,
+    });
+
+    // Combine both lists
+    const allFiles = [...consolidatedFiles, ...aggregatedFiles];
+
+    // Exclude processed/repaired/failed/quarantine directories
+    const filesToUpload = allFiles.filter(
+      (f) => !excludedDirs.some((dir) => f.includes(dir))
+    );
+
+    // Upload each file
+    for (const filePath of filesToUpload) {
       await uploadToS3(filePath, config, state, app);
     }
-  } catch (error) {}
+
+    if (filesToUpload.length > 0) {
+      app.debug(`S3: Uploaded ${filesToUpload.length} files for ${dateStr} (consolidated + aggregated)`);
+    }
+  } catch (error) {
+    app.error(`S3 upload failed for date ${date.toISOString().slice(0, 10)}: ${(error as Error).message}`);
+  }
 }
 
 // S3 upload function

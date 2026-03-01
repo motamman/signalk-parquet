@@ -309,4 +309,124 @@ export class HivePathBuilder {
     // Otherwise, use wildcards
     return this.getGlobPattern(basePath, tier, context, signalkPath);
   }
+
+  /**
+   * Build S3 URI glob pattern for querying parquet files directly from S3
+   * Uses DuckDB's native S3 support with partition pruning
+   *
+   * @param bucket S3 bucket name
+   * @param keyPrefix Optional key prefix (e.g., "marine-data/")
+   * @param tier Aggregation tier (raw, 5s, 60s, 1h)
+   * @param context SignalK context (e.g., "vessels.urn:mrn:signalk:uuid:xxx")
+   * @param signalkPath SignalK path (e.g., "navigation.speedOverGround")
+   * @param fromDate Start date for partition pruning
+   * @param toDate End date for partition pruning
+   * @returns S3 URI pattern for DuckDB read_parquet
+   */
+  buildS3Glob(
+    bucket: string,
+    keyPrefix: string,
+    tier: AggregationTier,
+    context: string,
+    signalkPath: string,
+    fromDate: Date,
+    toDate: Date
+  ): string {
+    const sanitizedContext = this.sanitizeContext(context);
+    const sanitizedPath = this.sanitizePath(signalkPath);
+
+    // Generate day patterns for partition pruning
+    const dayPatterns = this.getDayPatterns(fromDate, toDate);
+
+    // Build S3 URI with Hive partition structure
+    // Normalize keyPrefix (remove trailing slash if present)
+    const normalizedPrefix = keyPrefix.replace(/\/$/, '');
+    const prefixPart = normalizedPrefix ? `${normalizedPrefix}/` : '';
+
+    return `s3://${bucket}/${prefixPart}tier=${tier}/context=${sanitizedContext}/path=${sanitizedPath}/{${dayPatterns}}/*.parquet`;
+  }
+
+  /**
+   * Generate day patterns for S3 partition pruning
+   * For short ranges (<= 7 days), lists explicit directories
+   * For longer ranges, uses wildcards
+   */
+  private getDayPatterns(from: Date, to: Date): string {
+    const days: string[] = [];
+    const current = new Date(from);
+    const maxExplicitDays = 7;
+
+    let dayCount = 0;
+    while (current <= to && dayCount < maxExplicitDays) {
+      const year = current.getUTCFullYear();
+      const dayOfYear = this.getDayOfYear(current);
+      days.push(`year=${year}/day=${String(dayOfYear).padStart(3, '0')}`);
+      current.setUTCDate(current.getUTCDate() + 1);
+      dayCount++;
+    }
+
+    if (dayCount >= maxExplicitDays) {
+      // Fallback to wildcard for long ranges
+      return 'year=*/day=*';
+    }
+
+    return days.join(',');
+  }
+
+  /**
+   * Build multiple S3 glob patterns for hybrid queries (local + S3)
+   * Returns patterns for both before and after a cutoff date
+   */
+  buildS3GlobsForRange(
+    bucket: string,
+    keyPrefix: string,
+    tier: AggregationTier,
+    context: string,
+    signalkPath: string,
+    fromDate: Date,
+    toDate: Date,
+    cutoffDate: Date
+  ): { s3Pattern: string | null; localPattern: string | null } {
+    const result: { s3Pattern: string | null; localPattern: string | null } = {
+      s3Pattern: null,
+      localPattern: null,
+    };
+
+    // If entire range is before cutoff, all data is in S3
+    if (toDate < cutoffDate) {
+      result.s3Pattern = this.buildS3Glob(
+        bucket,
+        keyPrefix,
+        tier,
+        context,
+        signalkPath,
+        fromDate,
+        toDate
+      );
+      return result;
+    }
+
+    // If entire range is after cutoff, all data is local
+    if (fromDate >= cutoffDate) {
+      return result;
+    }
+
+    // Hybrid: split at cutoff
+    // S3 gets data from 'from' to 'cutoff - 1 day'
+    const s3EndDate = new Date(cutoffDate);
+    s3EndDate.setUTCDate(s3EndDate.getUTCDate() - 1);
+
+    result.s3Pattern = this.buildS3Glob(
+      bucket,
+      keyPrefix,
+      tier,
+      context,
+      signalkPath,
+      fromDate,
+      s3EndDate
+    );
+
+    // Local pattern would be handled by existing logic
+    return result;
+  }
 }

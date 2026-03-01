@@ -95,9 +95,9 @@ export type FromToContextRequest = Request<
     resolution?: string;
     bbox?: string;
     radius?: string; // "lat,lon,meters" format for circular area filter
+    positionPath?: string; // Position path for spatial correlation (default: navigation.position)
     refresh?: string;
     useUTC?: string;
-    includeMovingAverages?: string; // 'true' | '1' to enable EMA/SMA
     convertUnits?: string; // 'true' | '1' to convert to user's preferred units
     convertTimesToLocal?: string; // 'true' | '1' to convert timestamps to local time
     timezone?: string; // Optional timezone ID (e.g., 'America/New_York', 'Europe/London'). If not specified, uses server local time
@@ -112,24 +112,5 @@ export interface PathSpec {
   aggregateFunction: string;
   smoothing?: 'sma' | 'ema'; // Per-path smoothing method
   smoothingParam?: number; // SMA period or EMA alpha
-}
-
-// Unit conversion types
-export interface ConversionMetadata {
-  path: string;
-  baseUnit: string;
-  targetUnit: string;
-  formula: string;
-  inverseFormula: string;
-  displayFormat: string;
-  symbol: string;
-  category: string;
-  valueType: string;
-}
-
-export interface UnitConversionInfo {
-  path: Path;
-  targetUnit: string;
-  symbol: string;
-  displayFormat: string;
+  smoothingOnly?: boolean; // Official syntax: return only smoothed value (path:sma:5)
 }

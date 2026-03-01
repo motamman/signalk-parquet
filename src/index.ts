@@ -32,10 +32,10 @@ import {
   consolidateMissedDays,
   consolidateYesterday,
   uploadAllConsolidatedFilesToS3,
+  uploadConsolidatedFilesToS3,
 } from './data-handler';
 import { ServerAPI } from '@signalk/server-api';
 import { DuckDBPool } from './utils/duckdb-pool';
-import { FormulaCache } from './utils/formula-cache';
 import { LRUCache } from './utils/lru-cache';
 import {
   registerHistoryApiProvider,
@@ -75,7 +75,6 @@ export default function (app: ServerAPI): SignalKPlugin {
       registeredCommands: new Map(),
       putHandlers: new Map(),
     },
-    formulaCache: new FormulaCache(),
   };
 
   let currentPaths: PathConfig[] = [];
@@ -225,6 +224,25 @@ export default function (app: ServerAPI): SignalKPlugin {
     await DuckDBPool.initialize();
     app.debug('DuckDB connection pool initialized');
 
+    // Initialize S3 credentials in DuckDB if S3 upload is enabled
+    if (
+      state.currentConfig.s3Upload.enabled &&
+      state.currentConfig.s3Upload.accessKeyId &&
+      state.currentConfig.s3Upload.secretAccessKey
+    ) {
+      try {
+        await DuckDBPool.initializeS3({
+          accessKeyId: state.currentConfig.s3Upload.accessKeyId,
+          secretAccessKey: state.currentConfig.s3Upload.secretAccessKey,
+          region: state.currentConfig.s3Upload.region || 'us-east-1',
+        });
+        app.debug('DuckDB S3 credentials initialized for federated queries');
+      } catch (error) {
+        app.error(`Failed to initialize DuckDB S3 credentials: ${error}`);
+        // Don't fail startup, S3 queries will just not work
+      }
+    }
+
     // Subscribe to command paths first (these control regimens)
     subscribeToCommandPaths(currentPaths, state, state.currentConfig, app);
 
@@ -285,12 +303,19 @@ export default function (app: ServerAPI): SignalKPlugin {
 
       // Run aggregation after consolidation if Hive partitioning is enabled
       if (aggregationService) {
+        const yesterday = new Date();
+        yesterday.setUTCDate(yesterday.getUTCDate() - 1);
+
         aggregationService
           .runDailyAggregation()
-          .then(results => {
+          .then(async results => {
             app.debug(
               `Daily aggregation complete: ${JSON.stringify(results.map(r => ({ tier: r.targetTier, files: r.filesCreated })))}`
             );
+            // Upload aggregated files to S3 AFTER aggregation completes
+            if (state.currentConfig?.s3Upload.enabled && state.currentConfig?.s3Upload.timing === 'consolidation') {
+              await uploadConsolidatedFilesToS3(state.currentConfig, yesterday, state, app);
+            }
           })
           .catch(err => {
             app.error(`Daily aggregation failed: ${err.message}`);
@@ -304,12 +329,19 @@ export default function (app: ServerAPI): SignalKPlugin {
 
           // Run aggregation after consolidation
           if (aggregationService) {
+            const yesterday = new Date();
+            yesterday.setUTCDate(yesterday.getUTCDate() - 1);
+
             aggregationService
               .runDailyAggregation()
-              .then(results => {
+              .then(async results => {
                 app.debug(
                   `Daily aggregation complete: ${JSON.stringify(results.map(r => ({ tier: r.targetTier, files: r.filesCreated })))}`
                 );
+                // Upload aggregated files to S3 AFTER aggregation completes
+                if (state.currentConfig?.s3Upload.enabled && state.currentConfig?.s3Upload.timing === 'consolidation') {
+                  await uploadConsolidatedFilesToS3(state.currentConfig, yesterday, state, app);
+                }
               })
               .catch(err => {
                 app.error(`Daily aggregation failed: ${err.message}`);
@@ -354,20 +386,36 @@ export default function (app: ServerAPI): SignalKPlugin {
 
     // Register History API routes directly with the main app
     try {
+      // Build S3 query config if S3 is enabled
+      const s3QueryConfig = state.currentConfig.s3Upload.enabled
+        ? {
+            enabled: true,
+            bucket: state.currentConfig.s3Upload.bucket || '',
+            keyPrefix: state.currentConfig.s3Upload.keyPrefix || '',
+            region: state.currentConfig.s3Upload.region || 'us-east-1',
+          }
+        : undefined;
+
       registerHistoryApiRoute(
         app as unknown as Router,
         app.selfId,
         state.currentConfig.outputDirectory,
         app.debug,
         app,
-        state.currentConfig.unitConversionCacheMinutes || 5, // Default to 5 minutes
         state.sqliteBuffer, // Pass SQLite buffer for federated queries
         state.currentConfig.exportIntervalMinutes || 5, // Export interval for buffer cutoff
-        state.autoDiscoveryService // Pass auto-discovery service
+        state.autoDiscoveryService, // Pass auto-discovery service
+        s3QueryConfig, // S3 config for federated queries
+        state.currentConfig.retentionDays // Retention days for local/S3 cutoff
       );
       app.debug(
         `[AutoDiscovery] History API registered with autoDiscoveryService: ${!!state.autoDiscoveryService}`
       );
+      if (s3QueryConfig) {
+        app.debug(
+          `[S3Query] S3 federated queries enabled for bucket: ${s3QueryConfig.bucket}`
+        );
+      }
     } catch (error) {
       app.error(
         `Failed to register History API routes with main server: ${error}`

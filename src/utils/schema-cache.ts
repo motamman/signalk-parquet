@@ -2,10 +2,10 @@ import { Context, Path } from '@signalk/server-api';
 import { DuckDBPool } from './duckdb-pool';
 import * as path from 'path';
 import * as fs from 'fs-extra';
-import { toContextFilePath } from './path-helpers';
 import { debugLogger } from './debug-logger';
 import { CACHE_TTL } from '../config/cache-defaults';
 import { DirectoryScanner } from './directory-scanner';
+import { HivePathBuilder } from './hive-path-builder';
 
 /**
  * Schema information for an object-valued path
@@ -34,8 +34,14 @@ const schemaCache = new Map<string, PathComponentSchema>();
 const directoryScanner = new DirectoryScanner();
 
 /**
+ * Hive path builder for constructing Hive-style paths
+ */
+const hivePathBuilder = new HivePathBuilder();
+
+/**
  * Get the component schema for an object-valued path across all parquet files
  * Returns the union of all value_* columns found in any file for this path
+ * Uses Hive-partitioned directory structure: tier=raw/context=.../path=.../
  */
 export async function getPathComponentSchema(
   dataDir: string,
@@ -52,10 +58,16 @@ export async function getPathComponentSchema(
   }
 
   try {
-    // Find all parquet files for this path
-    const contextPath = toContextFilePath(context);
-    const pathDirParts = pathStr.split('.');
-    const pathDir = path.join(dataDir, contextPath, ...pathDirParts);
+    // Build Hive-style path for this context and path
+    // Default to 'raw' tier for schema discovery
+    const sanitizedContext = hivePathBuilder.sanitizeContext(context);
+    const sanitizedPath = hivePathBuilder.sanitizePath(pathStr);
+    const pathDir = path.join(
+      dataDir,
+      'tier=raw',
+      `context=${sanitizedContext}`,
+      `path=${sanitizedPath}`
+    );
 
     if (!(await fs.pathExists(pathDir))) {
       return null;

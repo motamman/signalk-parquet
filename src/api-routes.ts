@@ -1,5 +1,6 @@
 import * as fs from 'fs-extra';
 import * as path from 'path';
+import { glob } from 'glob';
 import express, { Router } from 'express';
 import { getAvailablePaths } from './utils/path-discovery';
 import { DuckDBInstance } from '@duckdb/node-api';
@@ -454,7 +455,8 @@ export function registerApiRoutes(
     }
   );
 
-  // Query parquet data
+  // Query parquet data (raw SQL - disabled by default for security)
+  // Enable with: SIGNALK_PARQUET_RAW_SQL=true
   router.post(
     '/api/query',
     async (
@@ -462,6 +464,16 @@ export function registerApiRoutes(
       res: TypedResponse<QueryApiResponse>
     ) => {
       try {
+        // Security: Raw SQL is disabled by default
+        const rawSqlEnabled = process.env.SIGNALK_PARQUET_RAW_SQL === 'true';
+        if (!rawSqlEnabled) {
+          return res.status(403).json({
+            success: false,
+            error:
+              'Raw SQL queries are disabled. Set SIGNALK_PARQUET_RAW_SQL=true to enable.',
+          });
+        }
+
         const { query } = req.body;
 
         if (!query) {
@@ -592,6 +604,422 @@ export function registerApiRoutes(
       }
     }
   );
+
+  // S3 compare job storage
+  interface S3CompareJob {
+    id: string;
+    status: 'scanning_local' | 'scanning_s3' | 'comparing' | 'completed' | 'error';
+    phase: string;
+    localFilesScanned: number;
+    localFilesTotal: number;
+    s3ObjectsScanned: number;
+    progress: number;
+    result?: {
+      summary: {
+        localTotal: number;
+        s3Total: number;
+        synced: number;
+        localOnly: number;
+        s3Only: number;
+        localOnlySizeMB: string;
+      };
+      localOnly: Array<{ key: string; size: number }>;
+      s3Only: string[];
+      hasMore: boolean;
+    };
+    error?: string;
+  }
+
+  const s3CompareJobs = new Map<string, S3CompareJob>();
+
+  // Start S3 compare job
+  router.post('/api/s3/compare', async (_req, res) => {
+    try {
+      if (!state.currentConfig?.s3Upload?.enabled) {
+        return res.status(400).json({
+          success: false,
+          error: 'S3 upload is not enabled',
+        });
+      }
+
+      if (!state.s3Client || !ListObjectsV2Command) {
+        try {
+          const awsS3 = await import('@aws-sdk/client-s3');
+          ListObjectsV2Command = awsS3.ListObjectsV2Command;
+        } catch {
+          return res.status(503).json({
+            success: false,
+            error: 'S3 client not available',
+          });
+        }
+      }
+
+      const jobId = `s3-compare-${Date.now()}`;
+      const job: S3CompareJob = {
+        id: jobId,
+        status: 'scanning_local',
+        phase: 'Scanning local files...',
+        localFilesScanned: 0,
+        localFilesTotal: 0,
+        s3ObjectsScanned: 0,
+        progress: 0,
+      };
+
+      s3CompareJobs.set(jobId, job);
+
+      // Run comparison in background
+      (async () => {
+        try {
+          const config = state.currentConfig!;
+          const dataDir = getDataDir();
+
+          // Phase 1: Scan local files
+          job.phase = 'Discovering local files...';
+          const allLocalFiles = await glob(path.join(dataDir, '**', '*.parquet'));
+
+          // Exclude processed/repaired/failed/quarantine directories
+          const excludedDirs = [
+            '/processed/',
+            '/repaired/',
+            '/failed/',
+            '/quarantine/',
+          ];
+          const localFiles = allLocalFiles.filter(
+            (f) => !excludedDirs.some((dir) => f.includes(dir))
+          );
+          job.localFilesTotal = localFiles.length;
+
+          const localKeys = new Map<string, { path: string; size: number }>();
+
+          for (let i = 0; i < localFiles.length; i++) {
+            const filePath = localFiles[i];
+            const relativePath = path.relative(dataDir, filePath);
+            let s3Key = relativePath;
+            if (config.s3Upload.keyPrefix) {
+              const prefix = config.s3Upload.keyPrefix.endsWith('/')
+                ? config.s3Upload.keyPrefix
+                : `${config.s3Upload.keyPrefix}/`;
+              s3Key = `${prefix}${relativePath}`;
+            }
+            const stats = await fs.stat(filePath);
+            localKeys.set(s3Key, { path: filePath, size: stats.size });
+
+            job.localFilesScanned = i + 1;
+            job.progress = Math.round(((i + 1) / localFiles.length) * 40); // 0-40%
+            job.phase = `Scanning local files: ${i + 1}/${localFiles.length}`;
+          }
+
+          // Phase 2: List S3 objects
+          job.status = 'scanning_s3';
+          job.phase = 'Listing S3 objects...';
+          const s3Keys = new Set<string>();
+          let continuationToken: string | undefined;
+          let s3Batches = 0;
+
+          do {
+            const listCommand = new ListObjectsV2Command({
+              Bucket: config.s3Upload.bucket,
+              Prefix: config.s3Upload.keyPrefix || undefined,
+              ContinuationToken: continuationToken,
+            });
+
+            const response = await state.s3Client.send(listCommand);
+            s3Batches++;
+
+            if (response.Contents) {
+              for (const obj of response.Contents) {
+                if (obj.Key?.endsWith('.parquet')) {
+                  s3Keys.add(obj.Key);
+                }
+              }
+            }
+
+            job.s3ObjectsScanned = s3Keys.size;
+            job.progress = 40 + Math.min(s3Batches * 5, 40); // 40-80%
+            job.phase = `Listing S3 objects: ${s3Keys.size} found...`;
+
+            continuationToken = response.IsTruncated
+              ? response.NextContinuationToken
+              : undefined;
+          } while (continuationToken);
+
+          // Phase 3: Compare
+          job.status = 'comparing';
+          job.phase = 'Comparing files...';
+          job.progress = 85;
+
+          const localOnly: Array<{ key: string; size: number }> = [];
+          const s3Only: string[] = [];
+          const synced: string[] = [];
+
+          for (const [key, info] of localKeys) {
+            if (s3Keys.has(key)) {
+              synced.push(key);
+            } else {
+              localOnly.push({ key, size: info.size });
+            }
+          }
+
+          for (const key of s3Keys) {
+            if (!localKeys.has(key)) {
+              s3Only.push(key);
+            }
+          }
+
+          const totalLocalSize = localOnly.reduce((sum, f) => sum + f.size, 0);
+
+          job.status = 'completed';
+          job.phase = 'Complete';
+          job.progress = 100;
+          job.result = {
+            summary: {
+              localTotal: localKeys.size,
+              s3Total: s3Keys.size,
+              synced: synced.length,
+              localOnly: localOnly.length,
+              s3Only: s3Only.length,
+              localOnlySizeMB: (totalLocalSize / 1024 / 1024).toFixed(2),
+            },
+            localOnly: localOnly.slice(0, 100),
+            s3Only: s3Only.slice(0, 100),
+            hasMore: localOnly.length > 100 || s3Only.length > 100,
+          };
+
+          // Cleanup job after 5 minutes
+          setTimeout(() => s3CompareJobs.delete(jobId), 5 * 60 * 1000);
+        } catch (error) {
+          job.status = 'error';
+          job.error = (error as Error).message;
+        }
+      })();
+
+      return res.json({ success: true, jobId });
+    } catch (error) {
+      return res.status(500).json({
+        success: false,
+        error: (error as Error).message,
+      });
+    }
+  });
+
+  // Get S3 compare job status
+  router.get('/api/s3/compare/:jobId', async (req, res) => {
+    const job = s3CompareJobs.get(req.params.jobId);
+    if (!job) {
+      return res.status(404).json({ success: false, error: 'Job not found' });
+    }
+    return res.json({ success: true, ...job });
+  });
+
+  // S3 sync job storage
+  interface S3SyncJob {
+    id: string;
+    status: 'preparing' | 'uploading' | 'completed' | 'error';
+    phase: string;
+    filesTotal: number;
+    filesUploaded: number;
+    filesFailed: number;
+    currentFile: string;
+    progress: number;
+    errors: string[];
+  }
+
+  const s3SyncJobs = new Map<string, S3SyncJob>();
+
+  // Start S3 sync job
+  router.post('/api/s3/sync', async (req, res) => {
+    try {
+      if (!state.currentConfig?.s3Upload?.enabled) {
+        return res.status(400).json({
+          success: false,
+          error: 'S3 upload is not enabled',
+        });
+      }
+
+      if (!state.s3Client) {
+        return res.status(503).json({
+          success: false,
+          error: 'S3 client not initialized',
+        });
+      }
+
+      // Import S3 commands
+      let PutObjectCommand: any;
+      try {
+        const awsS3 = await import('@aws-sdk/client-s3');
+        PutObjectCommand = awsS3.PutObjectCommand;
+        if (!ListObjectsV2Command) {
+          ListObjectsV2Command = awsS3.ListObjectsV2Command;
+        }
+      } catch {
+        return res.status(503).json({
+          success: false,
+          error: 'S3 SDK not available',
+        });
+      }
+
+      const jobId = `s3-sync-${Date.now()}`;
+      const job: S3SyncJob = {
+        id: jobId,
+        status: 'preparing',
+        phase: 'Finding files to sync...',
+        filesTotal: 0,
+        filesUploaded: 0,
+        filesFailed: 0,
+        currentFile: '',
+        progress: 0,
+        errors: [],
+      };
+
+      s3SyncJobs.set(jobId, job);
+
+      const config = state.currentConfig;
+      const dataDir = getDataDir();
+      const { keys } = req.body as { keys?: string[] };
+
+      // Run sync in background
+      (async () => {
+        try {
+          let filesToSync: Array<{ key: string; localPath: string }> = [];
+
+          if (keys && keys.length > 0) {
+            // Sync specific keys
+            for (const key of keys) {
+              const relativePath = config.s3Upload.keyPrefix
+                ? key.replace(new RegExp(`^${config.s3Upload.keyPrefix}/?`), '')
+                : key;
+              const localPath = path.join(dataDir, relativePath);
+              if (await fs.pathExists(localPath)) {
+                filesToSync.push({ key, localPath });
+              }
+            }
+          } else {
+            // Find all local-only files
+            job.phase = 'Scanning local files...';
+            const allLocalFiles = await glob(
+              path.join(dataDir, '**', '*.parquet')
+            );
+            const excludedDirs = [
+              '/processed/',
+              '/repaired/',
+              '/failed/',
+              '/quarantine/',
+            ];
+            const localFiles = allLocalFiles.filter(
+              (f) => !excludedDirs.some((dir) => f.includes(dir))
+            );
+
+            job.phase = 'Listing S3 objects...';
+            job.progress = 10;
+            const s3Keys = new Set<string>();
+            let continuationToken: string | undefined;
+
+            do {
+              const listCommand = new ListObjectsV2Command({
+                Bucket: config.s3Upload.bucket,
+                Prefix: config.s3Upload.keyPrefix || undefined,
+                ContinuationToken: continuationToken,
+              });
+
+              const response = await state.s3Client.send(listCommand);
+
+              if (response.Contents) {
+                for (const obj of response.Contents) {
+                  if (obj.Key) s3Keys.add(obj.Key);
+                }
+              }
+
+              continuationToken = response.IsTruncated
+                ? response.NextContinuationToken
+                : undefined;
+            } while (continuationToken);
+
+            job.phase = 'Comparing files...';
+            job.progress = 20;
+
+            for (const localPath of localFiles) {
+              const relativePath = path.relative(dataDir, localPath);
+              let s3Key = relativePath;
+              if (config.s3Upload.keyPrefix) {
+                const prefix = config.s3Upload.keyPrefix.endsWith('/')
+                  ? config.s3Upload.keyPrefix
+                  : `${config.s3Upload.keyPrefix}/`;
+                s3Key = `${prefix}${relativePath}`;
+              }
+
+              if (!s3Keys.has(s3Key)) {
+                filesToSync.push({ key: s3Key, localPath });
+              }
+            }
+          }
+
+          job.filesTotal = filesToSync.length;
+          job.status = 'uploading';
+          job.progress = 25;
+
+          if (filesToSync.length === 0) {
+            job.status = 'completed';
+            job.phase = 'No files to sync';
+            job.progress = 100;
+            setTimeout(() => s3SyncJobs.delete(jobId), 5 * 60 * 1000);
+            return;
+          }
+
+          // Upload files
+          for (let i = 0; i < filesToSync.length; i++) {
+            const { key, localPath } = filesToSync[i];
+            job.currentFile = path.basename(localPath);
+            job.phase = `Uploading ${i + 1}/${filesToSync.length}: ${job.currentFile}`;
+            job.progress = 25 + Math.round(((i + 1) / filesToSync.length) * 75);
+
+            try {
+              const fileContent = await fs.readFile(localPath);
+              const command = new PutObjectCommand({
+                Bucket: config.s3Upload.bucket,
+                Key: key,
+                Body: fileContent,
+                ContentType: 'application/octet-stream',
+              });
+
+              await state.s3Client.send(command);
+              job.filesUploaded++;
+              app.debug(`Synced to S3: ${key}`);
+            } catch (err) {
+              job.filesFailed++;
+              job.errors.push(`${key}: ${(err as Error).message}`);
+            }
+          }
+
+          job.status = 'completed';
+          job.phase = 'Complete';
+          job.progress = 100;
+          job.currentFile = '';
+
+          // Cleanup job after 5 minutes
+          setTimeout(() => s3SyncJobs.delete(jobId), 5 * 60 * 1000);
+        } catch (error) {
+          job.status = 'error';
+          job.phase = (error as Error).message;
+        }
+      })();
+
+      return res.json({ success: true, jobId });
+    } catch (error) {
+      return res.status(500).json({
+        success: false,
+        error: (error as Error).message,
+      });
+    }
+  });
+
+  // Get S3 sync job status
+  router.get('/api/s3/sync/:jobId', async (req, res) => {
+    const job = s3SyncJobs.get(req.params.jobId);
+    if (!job) {
+      return res.status(404).json({ success: false, error: 'Job not found' });
+    }
+    return res.json({ success: true, ...job });
+  });
 
   // Web App Path Configuration API Routes (manages separate config file)
 

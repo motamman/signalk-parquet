@@ -4,8 +4,6 @@ import {
   DataResult,
   FromToContextRequest,
   PathSpec,
-  ConversionMetadata,
-  UnitConversionInfo,
 } from './HistoryAPI-types';
 import { ZonedDateTime, ZoneOffset, ZoneId } from '@js-joda/core';
 import { Context, Path, Timestamp } from '@signalk/server-api';
@@ -13,7 +11,6 @@ import { ParamsDictionary } from 'express-serve-static-core';
 import { ParsedQs } from 'qs';
 import { DuckDBInstance } from '@duckdb/node-api';
 import { DuckDBPool } from './utils/duckdb-pool';
-import { toContextFilePath } from '.';
 import path from 'path';
 import {
   getAvailablePathsArray,
@@ -31,7 +28,6 @@ import {
   PathComponentSchema,
   ComponentInfo,
 } from './utils/schema-cache';
-import { FormulaCache } from './utils/formula-cache';
 import { ConcurrencyLimiter } from './utils/concurrency-limiter';
 import { CONCURRENCY } from './config/cache-defaults';
 import { SQLiteBufferInterface, DataRecord } from './types';
@@ -47,224 +43,10 @@ import {
   filterBufferRecordsSpatially,
   isPositionPath,
 } from './utils/spatial-queries';
-
-// ============================================================================
-// Unit Conversion Helper Functions
-// ============================================================================
-
-// Formula cache for unit conversions - much faster than eval()
-const formulaCache = new FormulaCache();
-
-// Cache for all paths conversion metadata - loaded once when available
-let allPathsConversions: Map<string, ConversionMetadata> | null = null;
-let conversionsLoadedAt: number = 0;
-let hasLoggedUnavailable = false; // Track if we've already logged the unavailable message
-
-// Cache TTL in milliseconds - configurable, defaults to 5 minutes
-let CONVERSIONS_CACHE_TTL_MS = 5 * 60 * 1000;
-
-/**
- * Load all paths conversion metadata from units-preference plugin
- * This is called lazily and will retry until successful or permanently unavailable
- * Cache expires after 5 minutes to allow unit preference changes to take effect
- */
-async function loadAllPathsConversions(app: any): Promise<void> {
-  const now = Date.now();
-
-  // Reload if cache is older than TTL
-  if (
-    allPathsConversions !== null &&
-    now - conversionsLoadedAt > CONVERSIONS_CACHE_TTL_MS
-  ) {
-    console.log('[Unit Conversion] Cache expired, reloading conversions...');
-    allPathsConversions = null;
-    hasLoggedUnavailable = false; // Reset logging flag
-  }
-
-  // If already successfully loaded and fresh, don't reload
-  if (allPathsConversions !== null && allPathsConversions.size > 0) {
-    return;
-  }
-
-  try {
-    // Debug: Log what we see on the app object
-    console.log('[Unit Conversion] DEBUG: Checking app object...');
-    console.log(
-      '[Unit Conversion] DEBUG: typeof app.getAllUnitsConversions =',
-      typeof app.getAllUnitsConversions
-    );
-    console.log(
-      '[Unit Conversion] DEBUG: typeof app.getUnitsConversion =',
-      typeof app.getUnitsConversion
-    );
-
-    // Try to find the functions in multiple locations (different plugins may receive different app instances)
-    let getAllUnitsConversions = app.getAllUnitsConversions;
-
-    // Check server instance
-    if (!getAllUnitsConversions) {
-      const serverInstance = (app as any).server || (app as any)._server;
-      if (serverInstance) {
-        console.log('[Unit Conversion] DEBUG: Checking server instance...');
-        getAllUnitsConversions = serverInstance.getAllUnitsConversions;
-        console.log(
-          '[Unit Conversion] DEBUG: server.getAllUnitsConversions =',
-          typeof getAllUnitsConversions
-        );
-      }
-    }
-
-    // Check global
-    if (!getAllUnitsConversions && (global as any).signalkApp) {
-      console.log('[Unit Conversion] DEBUG: Checking global.signalkApp...');
-      getAllUnitsConversions = (global as any).signalkApp
-        .getAllUnitsConversions;
-      console.log(
-        '[Unit Conversion] DEBUG: global.signalkApp.getAllUnitsConversions =',
-        typeof getAllUnitsConversions
-      );
-    }
-
-    // Check if the units-preference plugin has exposed its conversion functions
-    if (typeof getAllUnitsConversions === 'function') {
-      console.log(
-        '[Unit Conversion] ✅ Found units-preference plugin, loading conversions...'
-      );
-
-      const pathsData = (await getAllUnitsConversions()) as Record<string, any>;
-      console.log(
-        `[Unit Conversion] Successfully loaded ${Object.keys(pathsData).length} paths via direct call`
-      );
-
-      // Convert to our ConversionMetadata format
-      allPathsConversions = new Map();
-
-      for (const [pathName, pathInfo] of Object.entries(pathsData)) {
-        const info = pathInfo;
-
-        // Find the user's preferred target unit from the categories endpoint
-        // For now, we'll just use the first available conversion
-        const conversions = info.conversions || {};
-        const firstConversionKey = Object.keys(conversions)[0];
-
-        if (firstConversionKey) {
-          const conversion = conversions[firstConversionKey];
-          allPathsConversions.set(pathName, {
-            path: pathName,
-            baseUnit: info.baseUnit,
-            targetUnit: firstConversionKey,
-            formula: conversion.formula,
-            inverseFormula: conversion.inverseFormula,
-            symbol: conversion.symbol,
-            displayFormat: '0.0', // Default format
-            category: info.category,
-            valueType: 'number',
-          });
-        }
-      }
-
-      console.log(
-        `[Unit Conversion] ✅ Successfully initialized ${allPathsConversions.size} conversions`
-      );
-
-      // If we got 0 conversions, the units-preference plugin may not be fully initialized yet
-      // Reset to null so we retry on the next request
-      if (allPathsConversions.size === 0) {
-        console.log(
-          '[Unit Conversion] No conversions loaded - units-preference may still be initializing. Will retry on next request.'
-        );
-        allPathsConversions = null;
-      } else {
-        // Update the cache timestamp
-        conversionsLoadedAt = Date.now();
-      }
-    } else {
-      // Only log once to avoid spamming the logs
-      if (!hasLoggedUnavailable) {
-        console.log(
-          '[Unit Conversion] Units preference plugin not yet available (getAllUnitsConversions function not found)'
-        );
-        console.log(
-          '[Unit Conversion] Will retry on next request. Make sure signalk-units-preference plugin is installed.'
-        );
-        hasLoggedUnavailable = true;
-      }
-    }
-  } catch (error) {
-    console.error('[Unit Conversion] Error loading paths conversions:', error);
-  }
-}
-
-/**
- * Check if the signalk-units-preference plugin is available
- */
-async function isUnitsPreferencePluginAvailable(app: any): Promise<boolean> {
-  await loadAllPathsConversions(app);
-  return allPathsConversions !== null && allPathsConversions.size > 0;
-}
-
-/**
- * Fetch conversion metadata for a specific path from the cached conversions
- */
-async function getConversionMetadata(
-  signalkPath: string,
-  app: any
-): Promise<ConversionMetadata | null> {
-  // Ensure conversions are loaded
-  await loadAllPathsConversions(app);
-
-  if (!allPathsConversions) {
-    return null;
-  }
-
-  // Look up the path in our cached conversions
-  const conversion = allPathsConversions.get(signalkPath);
-
-  if (conversion) {
-    console.log(
-      `[Unit Conversion] Found cached conversion for ${signalkPath}: ${conversion.baseUnit} → ${conversion.targetUnit}`
-    );
-  }
-
-  return conversion || null;
-}
-
-/**
- * Apply conversion formula to a numeric value
- * Uses FormulaCache for better performance and safety (10-100x faster than eval)
- */
-function applyConversionFormula(value: number, formula: string): number {
-  // Use formula cache instead of eval - much faster and safer
-  return formulaCache.evaluate(formula, value);
-}
-
-/**
- * Format a number according to the display format (e.g., "0.0", "0.00", "0")
- */
-function formatNumber(value: number, displayFormat: string): string {
-  if (displayFormat === '0') {
-    return Math.round(value).toString();
-  }
-
-  const decimals = displayFormat.includes('.')
-    ? displayFormat.split('.')[1].length
-    : 0;
-
-  return value.toFixed(decimals);
-}
-
-/**
- * Convert a single numeric value using conversion metadata
- */
-function convertNumericValue(
-  value: number,
-  metadata: ConversionMetadata
-): { converted: number; formatted: string } {
-  const converted = applyConversionFormula(value, metadata.formula);
-  const formatted = formatNumber(converted, metadata.displayFormat);
-
-  return { converted, formatted };
-}
+import {
+  parseDurationToMillis,
+  parseResolutionToMillis,
+} from './utils/duration-parser';
 
 // ============================================================================
 // Timestamp Conversion Helper Functions
@@ -326,174 +108,167 @@ export function registerHistoryApiRoute(
   dataDir: string,
   debug: (k: string) => void,
   app: any,
-  unitConversionCacheMinutes: number = 5,
   sqliteBuffer?: SQLiteBufferInterface,
   exportIntervalMinutes: number = 5,
-  autoDiscoveryService?: AutoDiscoveryService
+  autoDiscoveryService?: AutoDiscoveryService,
+  s3Config?: S3QueryConfig,
+  retentionDays: number = 7
 ) {
-  // Set the cache TTL from configuration
-  CONVERSIONS_CACHE_TTL_MS = unitConversionCacheMinutes * 60 * 1000;
-  console.log(
-    `[Unit Conversion] Cache TTL set to ${unitConversionCacheMinutes} minutes`
-  );
   const historyApi = new HistoryAPI(
     selfId,
     dataDir,
     sqliteBuffer,
     exportIntervalMinutes,
-    autoDiscoveryService
+    autoDiscoveryService,
+    s3Config,
+    retentionDays
   );
-  router.get('/signalk/v1/history/values', (req: Request, res: Response) => {
-    const { from, to, context, spatialFilter, shouldRefresh } =
+  // Handler for values endpoint
+  const handleValues = (req: Request, res: Response) => {
+    const { from, to, context, spatialFilter, shouldRefresh, positionPath } =
       getRequestParams(req as FromToContextRequest, selfId);
-    const includeMovingAverages =
-      req.query.includeMovingAverages === 'true' ||
-      req.query.includeMovingAverages === '1';
-    const convertUnits =
-      req.query.convertUnits === 'true' || req.query.convertUnits === '1';
     const convertTimesToLocal =
       req.query.convertTimesToLocal === 'true' ||
       req.query.convertTimesToLocal === '1';
     const timezone = req.query.timezone as string | undefined;
+    const source = (req.query.source as QuerySource) || 'auto';
     historyApi.getValues(
       context,
       from,
       to,
       shouldRefresh,
-      includeMovingAverages,
-      convertUnits,
       convertTimesToLocal,
       timezone,
       spatialFilter,
       app,
       debug,
       req,
-      res
+      res,
+      source,
+      positionPath
     );
-  });
-  router.get(
-    '/signalk/v1/history/contexts',
-    async (req: Request, res: Response) => {
-      try {
-        // Check if time range parameters are provided
-        const hasTimeParams =
-          req.query.duration ||
-          req.query.from ||
-          req.query.to ||
-          req.query.start;
+  };
 
-        if (hasTimeParams) {
-          // Time-range-aware: return only contexts with data in the specified time range
-          const { from, to } = getRequestParams(
-            req as FromToContextRequest,
-            selfId
+  // V1 route: Direct routes with all signalk-parquet extensions
+  // (spatial filtering, timezone conversion, moving averages, etc.)
+  router.get('/signalk/v1/history/values', handleValues);
+  // Handler for contexts endpoint
+  const handleContexts = async (req: Request, res: Response) => {
+    try {
+      // Check if time range parameters are provided
+      const hasTimeParams =
+        req.query.duration || req.query.from || req.query.to;
+
+      if (hasTimeParams) {
+        // Time-range-aware: return only contexts with data in the specified time range
+        const { from, to } = getRequestParams(
+          req as FromToContextRequest,
+          selfId
+        );
+
+        // Check cache first
+        let contexts = getCachedContexts(from, to);
+
+        if (!contexts) {
+          // Cache miss - query the parquet files
+          contexts = await getAvailableContextsForTimeRange(
+            dataDir,
+            from,
+            to
           );
-
-          // Check cache first
-          let contexts = getCachedContexts(from, to);
-
-          if (!contexts) {
-            // Cache miss - query the parquet files
-            contexts = await getAvailableContextsForTimeRange(
-              dataDir,
-              from,
-              to
-            );
-            // Cache the result
-            setCachedContexts(from, to, contexts);
-          }
-
-          res.json(contexts);
-        } else {
-          // No time range specified: return only self context (legacy behavior)
-          res.json([`vessels.${selfId}`] as Context[]);
+          // Cache the result
+          setCachedContexts(from, to, contexts);
         }
-      } catch (error) {
-        debug(`Error in /contexts: ${error}`);
-        res.status(500).json({ error: (error as Error).message });
-      }
-    }
-  );
-  router.get(
-    '/signalk/v1/history/paths',
-    async (req: Request, res: Response) => {
-      try {
-        // Check if time range parameters are provided
-        const hasTimeParams =
-          req.query.duration ||
-          req.query.from ||
-          req.query.to ||
-          req.query.start;
 
-        if (hasTimeParams) {
-          // Time-range-aware: return only paths with data in the specified time range
-          const { from, to, context } = getRequestParams(
-            req as FromToContextRequest,
-            selfId
+        res.json(contexts);
+      } else {
+        // No time range specified: return only self context (legacy behavior)
+        res.json([`vessels.${selfId}`] as Context[]);
+      }
+    } catch (error) {
+      debug(`Error in /contexts: ${error}`);
+      res.status(500).json({ error: (error as Error).message });
+    }
+  };
+
+  // V1 route: Direct routes with extensions (time-range-aware context discovery)
+  router.get('/signalk/v1/history/contexts', handleContexts);
+  // Note: V2 routes (/signalk/v2/api/history/*) are handled by the registered
+  // HistoryApi provider in history-provider.ts via app.registerHistoryApiProvider()
+  // Handler for paths endpoint
+  const handlePaths = async (req: Request, res: Response) => {
+    try {
+      // Check if time range parameters are provided
+      const hasTimeParams =
+        req.query.duration || req.query.from || req.query.to;
+
+      if (hasTimeParams) {
+        // Time-range-aware: return only paths with data in the specified time range
+        const { from, to, context } = getRequestParams(
+          req as FromToContextRequest,
+          selfId
+        );
+
+        // Check cache first
+        let paths = getCachedPaths(context, from, to);
+
+        if (!paths) {
+          // Cache miss - query the parquet files
+          paths = await getAvailablePathsForTimeRange(
+            dataDir,
+            context,
+            from,
+            to
           );
-
-          // Check cache first
-          let paths = getCachedPaths(context, from, to);
-
-          if (!paths) {
-            // Cache miss - query the parquet files
-            paths = await getAvailablePathsForTimeRange(
-              dataDir,
-              context,
-              from,
-              to
-            );
-            // Cache the result
-            setCachedPaths(context, from, to, paths);
-          }
-
-          res.json(paths);
-        } else {
-          // No time range specified: return all available paths (legacy behavior)
-          const paths = getAvailablePathsArray(dataDir, app);
-          res.json(paths);
+          // Cache the result
+          setCachedPaths(context, from, to, paths);
         }
-      } catch (error) {
-        debug(`Error in /paths: ${error}`);
-        res.status(500).json({ error: (error as Error).message });
+
+        res.json(paths);
+      } else {
+        // No time range specified: return all available paths (legacy behavior)
+        const paths = getAvailablePathsArray(dataDir, app);
+        res.json(paths);
       }
+    } catch (error) {
+      debug(`Error in /paths: ${error}`);
+      res.status(500).json({ error: (error as Error).message });
     }
-  );
+  };
+
+  // V1 route: Direct routes with extensions (time-range-aware path discovery)
+  router.get('/signalk/v1/history/paths', handlePaths);
 
   // Also register as plugin-style routes for testing
   router.get('/api/history/values', (req: Request, res: Response) => {
-    const { from, to, context, spatialFilter, shouldRefresh } =
+    const { from, to, context, spatialFilter, shouldRefresh, positionPath } =
       getRequestParams(req as FromToContextRequest, selfId);
-    const includeMovingAverages =
-      req.query.includeMovingAverages === 'true' ||
-      req.query.includeMovingAverages === '1';
-    const convertUnits =
-      req.query.convertUnits === 'true' || req.query.convertUnits === '1';
     const convertTimesToLocal =
       req.query.convertTimesToLocal === 'true' ||
       req.query.convertTimesToLocal === '1';
     const timezone = req.query.timezone as string | undefined;
+    const source = (req.query.source as QuerySource) || 'auto';
     historyApi.getValues(
       context,
       from,
       to,
       shouldRefresh,
-      includeMovingAverages,
-      convertUnits,
       convertTimesToLocal,
       timezone,
       spatialFilter,
       app,
       debug,
       req,
-      res
+      res,
+      source,
+      positionPath
     );
   });
   router.get('/api/history/contexts', async (req: Request, res: Response) => {
     try {
       // Check if time range parameters are provided
       const hasTimeParams =
-        req.query.duration || req.query.from || req.query.to || req.query.start;
+        req.query.duration || req.query.from || req.query.to;
 
       if (hasTimeParams) {
         // Time-range-aware: return only contexts with data in the specified time range
@@ -526,7 +301,7 @@ export function registerHistoryApiRoute(
     try {
       // Check if time range parameters are provided
       const hasTimeParams =
-        req.query.duration || req.query.from || req.query.to || req.query.start;
+        req.query.duration || req.query.from || req.query.to;
 
       if (hasTimeParams) {
         // Time-range-aware: return only paths with data in the specified time range
@@ -573,43 +348,10 @@ const getRequestParams = ({ query }: FromToContextRequest, selfId: string) => {
     const useUTC = query.useUTC === 'true' || query.useUTC === '1';
 
     // ============================================================================
-    // BACKWARD COMPATIBILITY: Support legacy 'start' parameter
-    // ============================================================================
-    if (query.start) {
-      console.warn(
-        '[DEPRECATED] Query parameter "start" is deprecated and will be removed in v2.0. ' +
-          'Use standard SignalK time range parameters instead:\n' +
-          '  - duration only: ?duration=1h (query back from now)\n' +
-          '  - from + duration: ?from=2025-08-01T00:00:00Z&duration=1h (query forward)\n' +
-          '  - to + duration: ?to=2025-08-01T12:00:00Z&duration=1h (query backward)\n' +
-          '  - from only: ?from=2025-08-01T00:00:00Z (from start to now)\n' +
-          '  - from + to: ?from=...&to=... (specific range)'
-      );
-
-      if (query.duration) {
-        const durationMs = parseDuration(query.duration);
-
-        if (query.start === 'now') {
-          // Map 'start=now&duration=X' to standard pattern 1: duration only
-          to = ZonedDateTime.now(ZoneOffset.UTC);
-          from = to.minusNanos(durationMs * 1000000);
-          shouldRefresh = query.refresh === 'true' || query.refresh === '1';
-        } else {
-          // Map 'start=TIME&duration=X' to standard pattern 3: to + duration
-          to = parseDateTime(query.start, useUTC);
-          from = to.minusNanos(durationMs * 1000000);
-        }
-      } else {
-        throw new Error(
-          'Legacy "start" parameter requires "duration" parameter'
-        );
-      }
-    }
-    // ============================================================================
     // STANDARD SIGNALK TIME RANGE PATTERNS
     // ============================================================================
     // Pattern 1: duration only → query back from now
-    else if (query.duration && !query.from && !query.to) {
+    if (query.duration && !query.from && !query.to) {
       const durationMs = parseDuration(query.duration);
       to = ZonedDateTime.now(ZoneOffset.UTC);
       from = to.minusNanos(durationMs * 1000000);
@@ -649,7 +391,8 @@ const getRequestParams = ({ query }: FromToContextRequest, selfId: string) => {
 
     const context: Context = getContext(query.context, selfId);
     const spatialFilter = parseSpatialParams(query.bbox, query.radius);
-    return { from, to, context, spatialFilter, shouldRefresh };
+    const positionPath = (query.positionPath as string) || 'navigation.position';
+    return { from, to, context, spatialFilter, shouldRefresh, positionPath };
   } catch (e: unknown) {
     console.error('Full error details:', e);
     throw new Error(
@@ -658,34 +401,12 @@ const getRequestParams = ({ query }: FromToContextRequest, selfId: string) => {
   }
 };
 
-// Parse duration string (e.g., "1h", "30m", "5s", "2d")
+// Parse duration string (supports ISO 8601, integer seconds, shorthand)
 function parseDuration(duration: string | undefined): number {
   if (!duration) {
     throw new Error('Duration parameter is required');
   }
-
-  const match = duration.match(/^(\d+)([smhd])$/);
-  if (!match) {
-    throw new Error(
-      `Invalid duration format: ${duration}. Use format like "1h", "30m", "5s", "2d"`
-    );
-  }
-
-  const value = parseInt(match[1]);
-  const unit = match[2];
-
-  switch (unit) {
-    case 's':
-      return value * 1000; // seconds to milliseconds
-    case 'm':
-      return value * 60 * 1000; // minutes to milliseconds
-    case 'h':
-      return value * 60 * 60 * 1000; // hours to milliseconds
-    case 'd':
-      return value * 24 * 60 * 60 * 1000; // days to milliseconds
-    default:
-      throw new Error(`Unknown duration unit: ${unit}`);
-  }
+  return parseDurationToMillis(duration);
 }
 
 // Check if datetime string has timezone information
@@ -758,25 +479,82 @@ function getContext(
   return contextFromQuery.replace(/ /gi, '') as Context;
 }
 
+export type QuerySource = 'local' | 's3' | 'hybrid' | 'auto';
+
+export interface S3QueryConfig {
+  enabled: boolean;
+  bucket: string;
+  keyPrefix: string;
+  region: string;
+}
+
 export class HistoryAPI {
-  readonly selfContextPath: string;
   private sqliteBuffer?: SQLiteBufferInterface;
   private exportIntervalMinutes: number;
   private hivePathBuilder: HivePathBuilder;
   private autoDiscoveryService?: AutoDiscoveryService;
+  private s3Config?: S3QueryConfig;
+  private retentionDays: number;
 
   constructor(
     private selfId: string,
     private dataDir: string,
     sqliteBuffer?: SQLiteBufferInterface,
     exportIntervalMinutes: number = 5,
-    autoDiscoveryService?: AutoDiscoveryService
+    autoDiscoveryService?: AutoDiscoveryService,
+    s3Config?: S3QueryConfig,
+    retentionDays: number = 7
   ) {
-    this.selfContextPath = toContextFilePath(`vessels.${selfId}` as Context);
     this.sqliteBuffer = sqliteBuffer;
     this.exportIntervalMinutes = exportIntervalMinutes;
     this.hivePathBuilder = new HivePathBuilder();
     this.autoDiscoveryService = autoDiscoveryService;
+    this.s3Config = s3Config;
+    this.retentionDays = retentionDays;
+  }
+
+  /**
+   * Set S3 configuration for federated queries
+   */
+  setS3Config(config: S3QueryConfig | undefined): void {
+    this.s3Config = config;
+  }
+
+  /**
+   * Determine the query source based on time range and retention settings
+   * - 'local': All data is within retention period (on local disk)
+   * - 's3': All data is older than retention period (in S3)
+   * - 'hybrid': Data spans retention boundary (need both local and S3)
+   */
+  private getQuerySource(
+    from: ZonedDateTime,
+    to: ZonedDateTime,
+    forceSource?: QuerySource
+  ): QuerySource {
+    // If source is explicitly specified, use it (unless it's 'auto')
+    if (forceSource && forceSource !== 'auto') {
+      return forceSource;
+    }
+
+    // If S3 is not configured/enabled, always use local
+    if (!this.s3Config?.enabled) {
+      return 'local';
+    }
+
+    const now = new Date();
+    const retentionCutoff = new Date(now);
+    retentionCutoff.setUTCDate(retentionCutoff.getUTCDate() - this.retentionDays);
+
+    const fromDate = new Date(from.toInstant().toString());
+    const toDate = new Date(to.toInstant().toString());
+
+    if (toDate < retentionCutoff) {
+      return 's3'; // All data is older than retention, query S3
+    }
+    if (fromDate >= retentionCutoff) {
+      return 'local'; // All data is within retention, query local
+    }
+    return 'hybrid'; // Data spans boundary, need both
   }
 
   /**
@@ -938,13 +716,84 @@ export class HistoryAPI {
     );
     return merged;
   }
+
+  /**
+   * Get timestamps where vessel position was within the spatial filter
+   * Used to correlate non-position paths with spatial filtering
+   */
+  private async getSpatialTimestamps(
+    context: Context,
+    from: ZonedDateTime,
+    to: ZonedDateTime,
+    timeResolutionMillis: number,
+    spatialFilter: SpatialFilter,
+    positionPath: string,
+    tier: AggregationTier | undefined,
+    querySource: QuerySource,
+    debug: (k: string) => void
+  ): Promise<Set<string>> {
+    const timestamps = new Set<string>();
+    const effectiveTier = tier || 'raw';
+
+    // Build file path for position data
+    const sanitizedContext = this.hivePathBuilder.sanitizeContext(context);
+    const sanitizedPath = this.hivePathBuilder.sanitizePath(positionPath);
+    const localFilePath = path.join(
+      this.dataDir,
+      `tier=${effectiveTier}`,
+      `context=${sanitizedContext}`,
+      `path=${sanitizedPath}`,
+      '**',
+      '*.parquet'
+    );
+
+    const fromIso = from.toInstant().toString();
+    const toIso = to.toInstant().toString();
+
+    try {
+      const connection = await DuckDBPool.getConnection();
+      try {
+        // Build spatial WHERE clause
+        const spatialWhereClause = buildSpatialSqlClause(spatialFilter);
+
+        // Query position data with spatial filter to get valid timestamps
+        const query = `
+          SELECT DISTINCT
+            strftime(DATE_TRUNC('seconds',
+              EPOCH_MS(CAST(FLOOR(EPOCH_MS(signalk_timestamp::TIMESTAMP) / ${timeResolutionMillis}) * ${timeResolutionMillis} AS BIGINT))
+            ), '%Y-%m-%dT%H:%M:%SZ') as timestamp
+          FROM read_parquet('${localFilePath}', union_by_name=true)
+          WHERE
+            signalk_timestamp >= '${fromIso}'
+            AND signalk_timestamp < '${toIso}'
+            AND value_latitude IS NOT NULL
+            AND value_longitude IS NOT NULL
+            AND ${spatialWhereClause}
+          ORDER BY timestamp
+        `;
+
+        const result = await connection.runAndReadAll(query);
+        const rows = result.getRowObjects();
+
+        for (const row of rows) {
+          timestamps.add((row as { timestamp: string }).timestamp);
+        }
+      } finally {
+        connection.disconnectSync();
+      }
+    } catch (error) {
+      debug(`[Spatial Correlation] Error querying position data: ${error}`);
+      // On error, return empty set (no filtering will occur)
+    }
+
+    return timestamps;
+  }
+
   async getValues(
     context: Context,
     from: ZonedDateTime,
     to: ZonedDateTime,
     shouldRefresh: boolean,
-    includeMovingAverages: boolean,
-    convertUnits: boolean,
     convertTimesToLocal: boolean,
     timezone: string | undefined,
     spatialFilter: SpatialFilter | null,
@@ -953,11 +802,14 @@ export class HistoryAPI {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     req: Request<ParamsDictionary, any, any, ParsedQs, Record<string, any>>,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    res: Response<any, Record<string, any>>
+    res: Response<any, Record<string, any>>,
+    source: QuerySource = 'auto',
+    positionPath: string = 'navigation.position'
   ) {
     try {
+      // Resolution now in SECONDS (breaking change from v0.7.0)
       const timeResolutionMillis = req.query.resolution
-        ? Number.parseFloat(req.query.resolution as string)
+        ? parseResolutionToMillis(req.query.resolution as string)
         : ((to.toEpochSecond() - from.toEpochSecond()) / 500) * 1000;
       const pathExpressions = ((req.query.paths as string) || '')
         .replace(/[^0-9a-z.,:_]/gi, '')
@@ -988,6 +840,10 @@ export class HistoryAPI {
         );
       }
 
+      // Determine query source based on time range and configuration
+      const querySource = this.getQuerySource(from, to, source);
+      debug(`Query source determined: ${querySource} (requested: ${source})`);
+
       // Handle position and numeric paths together
       let allResult = pathSpecs.length
         ? await this.getNumericValues(
@@ -996,10 +852,11 @@ export class HistoryAPI {
             to,
             timeResolutionMillis,
             pathSpecs,
-            includeMovingAverages,
             debug,
             tier,
-            spatialFilter
+            spatialFilter,
+            querySource,
+            positionPath
           )
         : {
             context,
@@ -1058,16 +915,6 @@ export class HistoryAPI {
         }
       }
 
-      // Apply unit conversions if requested
-      if (convertUnits) {
-        allResult = await this.applyUnitConversions(
-          allResult,
-          pathSpecs,
-          app,
-          debug
-        );
-      }
-
       // Apply timestamp conversions if requested
       if (convertTimesToLocal) {
         allResult = this.convertTimestamps(allResult, timezone, debug);
@@ -1110,51 +957,107 @@ export class HistoryAPI {
     to: ZonedDateTime,
     timeResolutionMillis: number,
     pathSpecs: PathSpec[],
-    includeMovingAverages: boolean,
     debug: (k: string) => void,
     tier?: AggregationTier,
-    spatialFilter?: SpatialFilter | null
+    spatialFilter?: SpatialFilter | null,
+    querySource: QuerySource = 'local',
+    positionPath: string = 'navigation.position'
   ): Promise<DataResult> {
     const allData: { [path: string]: Array<[Timestamp, unknown]> } = {};
     const objectPaths = new Set<string>(); // Track which paths are object paths
+
+    // Convert ZonedDateTime to Date for S3 pattern building
+    const fromDate = new Date(from.toInstant().toString());
+    const toDate = new Date(to.toInstant().toString());
+
+    // Calculate retention cutoff for hybrid queries
+    const retentionCutoff = new Date();
+    retentionCutoff.setUTCDate(retentionCutoff.getUTCDate() - this.retentionDays);
+
+    // If spatial filter is set, get valid timestamps from position data
+    // This allows filtering non-position paths by "when vessel was in this area"
+    let spatialTimestamps: Set<string> | null = null;
+    if (spatialFilter) {
+      const hasNonPositionPaths = pathSpecs.some(
+        ps => !isPositionPath(ps.path)
+      );
+      if (hasNonPositionPaths) {
+        debug(
+          `[Spatial Correlation] Querying ${positionPath} for valid timestamps within spatial filter`
+        );
+        spatialTimestamps = await this.getSpatialTimestamps(
+          context,
+          from,
+          to,
+          timeResolutionMillis,
+          spatialFilter,
+          positionPath,
+          tier,
+          querySource,
+          debug
+        );
+        debug(
+          `[Spatial Correlation] Found ${spatialTimestamps.size} valid timestamps`
+        );
+      }
+    }
 
     // Process each path and collect data with concurrency limiting
     // Limit concurrent queries to prevent resource exhaustion (configured in cache-defaults)
     const limiter = new ConcurrencyLimiter(CONCURRENCY.MAX_QUERIES);
     await limiter.map(pathSpecs, async pathSpec => {
       try {
-        // Sanitize the path to prevent directory traversal and SQL injection
-        const sanitizedPath = pathSpec.path
-          .replace(/[^a-zA-Z0-9._]/g, '') // Only allow alphanumeric, dots, underscores
-          .replace(/\./g, '/');
+        // Build file patterns based on query source
+        let localFilePath: string | null = null;
+        let s3FilePath: string | null = null;
+        const effectiveTier = tier || 'raw';
 
-        let filePath: string;
-
-        if (tier) {
-          // Use Hive-style path for aggregated tiers
+        // Determine which sources to query based on querySource
+        if (querySource === 'local' || querySource === 'hybrid') {
+          // Always use Hive-style path structure
           const sanitizedContext =
             this.hivePathBuilder.sanitizeContext(context);
           const sanitizedSkPath = this.hivePathBuilder.sanitizePath(
             pathSpec.path
           );
-          filePath = path.join(
+          localFilePath = path.join(
             this.dataDir,
-            `tier=${tier}`,
+            `tier=${effectiveTier}`,
             `context=${sanitizedContext}`,
             `path=${sanitizedSkPath}`,
             '**',
             '*.parquet'
           );
-          debug(`Querying Hive tier=${tier} at: ${filePath}`);
-        } else {
-          // Use legacy flat path
-          filePath = path.join(
-            this.dataDir,
-            this.selfContextPath,
-            sanitizedPath,
-            '*.parquet'
-          );
-          debug(`Querying parquet files at: ${filePath}`);
+          debug(`Querying local Hive tier=${effectiveTier} at: ${localFilePath}`);
+        }
+
+        if (
+          (querySource === 's3' || querySource === 'hybrid') &&
+          this.s3Config?.enabled
+        ) {
+          // Build S3 pattern with partition pruning
+          const s3FromDate =
+            querySource === 'hybrid' ? fromDate : fromDate;
+          const s3ToDate =
+            querySource === 'hybrid'
+              ? new Date(
+                  Math.min(retentionCutoff.getTime() - 86400000, toDate.getTime())
+                )
+              : toDate;
+
+          // Only query S3 if there's a valid date range
+          if (s3FromDate <= s3ToDate) {
+            s3FilePath = this.hivePathBuilder.buildS3Glob(
+              this.s3Config.bucket,
+              this.s3Config.keyPrefix || '',
+              effectiveTier,
+              context,
+              pathSpec.path,
+              s3FromDate,
+              s3ToDate
+            );
+            debug(`Querying S3 parquet files at: ${s3FilePath}`);
+          }
         }
 
         // Convert ZonedDateTime to ISO string format matching parquet schema
@@ -1165,12 +1068,40 @@ export class HistoryAPI {
         const connection = await DuckDBPool.getConnection();
 
         try {
+          // Build FROM clause based on available sources
+          // For hybrid queries, we UNION local and S3 sources
+          const buildFromClause = (filePath: string): string => {
+            return `read_parquet('${filePath}', union_by_name=true)`;
+          };
+
+          let fromClause: string;
+          if (localFilePath && s3FilePath) {
+            // Hybrid: UNION both sources
+            fromClause = `(
+              SELECT * FROM ${buildFromClause(localFilePath)}
+              UNION ALL
+              SELECT * FROM ${buildFromClause(s3FilePath)}
+            )`;
+            debug(`Hybrid query: combining local and S3 sources`);
+          } else if (s3FilePath) {
+            // S3 only
+            fromClause = buildFromClause(s3FilePath);
+          } else if (localFilePath) {
+            // Local only
+            fromClause = buildFromClause(localFilePath);
+          } else {
+            // No source available (shouldn't happen)
+            debug(`No data source available for path ${pathSpec.path}`);
+            allData[pathSpec.path] = [];
+            return;
+          }
+
           // Check if this path has object components (value_latitude, value_longitude, etc.)
-          const componentSchema = await getPathComponentSchema(
-            this.dataDir,
-            context,
-            pathSpec.path
-          );
+          // Use local path for schema check (S3 schema should match)
+          const schemaCheckPath = localFilePath || s3FilePath;
+          const componentSchema = schemaCheckPath
+            ? await getPathComponentSchema(this.dataDir, context, pathSpec.path)
+            : null;
 
           if (componentSchema && componentSchema.components.size > 0) {
             // Object path with multiple components - aggregate each component separately
@@ -1221,7 +1152,7 @@ export class HistoryAPI {
                   EPOCH_MS(CAST(FLOOR(EPOCH_MS(signalk_timestamp::TIMESTAMP) / ${timeResolutionMillis}) * ${timeResolutionMillis} AS BIGINT))
                 ), '%Y-%m-%dT%H:%M:%SZ') as timestamp,
                 ${componentSelects}
-              FROM read_parquet('${filePath}', union_by_name=true)
+              FROM ${fromClause} AS source_data
               WHERE
                 signalk_timestamp >= '${fromIso}'
                 AND
@@ -1281,9 +1212,18 @@ export class HistoryAPI {
           } else {
             // Scalar path - use original logic
             // First, check if value_json column exists in the parquet files
-            const schemaQuery = `SELECT * FROM parquet_schema('${filePath}') WHERE name = 'value_json'`;
-            const schemaResult = await connection.runAndReadAll(schemaQuery);
-            const hasValueJson = schemaResult.getRowObjects().length > 0;
+            // Use local path for schema check, fall back to assuming no value_json for S3-only queries
+            let hasValueJson = false;
+            if (localFilePath) {
+              try {
+                const schemaQuery = `SELECT * FROM parquet_schema('${localFilePath}') WHERE name = 'value_json'`;
+                const schemaResult = await connection.runAndReadAll(schemaQuery);
+                hasValueJson = schemaResult.getRowObjects().length > 0;
+              } catch {
+                // Schema check failed, assume no value_json
+                hasValueJson = false;
+              }
+            }
 
             debug(
               `Path ${pathSpec.path}: value_json column ${hasValueJson ? 'exists' : 'does not exist'}`
@@ -1303,7 +1243,7 @@ export class HistoryAPI {
                   EPOCH_MS(CAST(FLOOR(EPOCH_MS(signalk_timestamp::TIMESTAMP) / ${timeResolutionMillis}) * ${timeResolutionMillis} AS BIGINT))
                 ), '%Y-%m-%dT%H:%M:%SZ') as timestamp,
                 ${getAggregateExpression(pathSpec.aggregateMethod, pathSpec.path, hasValueJson)} as value${valueJsonSelect}
-              FROM read_parquet('${filePath}', union_by_name=true)
+              FROM ${fromClause} AS source_data
               WHERE
                 signalk_timestamp >= '${fromIso}'
                 AND
@@ -1413,6 +1353,22 @@ export class HistoryAPI {
       }
     });
 
+    // Apply spatial timestamp filtering to non-position paths
+    // This filters data to only include times when vessel was within spatial filter
+    if (spatialTimestamps && spatialTimestamps.size > 0) {
+      for (const pathSpec of pathSpecs) {
+        if (!isPositionPath(pathSpec.path) && allData[pathSpec.path]) {
+          const originalCount = allData[pathSpec.path].length;
+          allData[pathSpec.path] = allData[pathSpec.path].filter(
+            ([timestamp]) => spatialTimestamps!.has(timestamp)
+          );
+          debug(
+            `[Spatial Correlation] Filtered ${pathSpec.path}: ${originalCount} -> ${allData[pathSpec.path].length} records`
+          );
+        }
+      }
+    }
+
     // Merge all path data into time-ordered rows
     const mergedData = this.mergePathData(allData, pathSpecs);
 
@@ -1432,19 +1388,12 @@ export class HistoryAPI {
 
     if (hasPerPathSmoothing) {
       // Per-path smoothing mode: apply smoothing only to paths that have it defined
+      // Use explicit syntax: path:sma:5 or path:ema:0.3
       finalData = this.addMovingAverages(mergedData, pathSpecs, true);
       finalValues = this.buildValuesWithMovingAverages(
         pathSpecs,
         objectPaths,
         true
-      );
-    } else if (includeMovingAverages) {
-      // Global moving averages mode (legacy ?includeMovingAverages=true)
-      finalData = this.addMovingAverages(mergedData, pathSpecs, false);
-      finalValues = this.buildValuesWithMovingAverages(
-        pathSpecs,
-        objectPaths,
-        false
       );
     } else {
       // No smoothing
@@ -1617,8 +1566,15 @@ export class HistoryAPI {
           const componentState = colState.get(scalarKey)!;
 
           if (usePerPathSmoothing) {
-            // Per-path mode: include raw value AND smoothed value
-            enhancedValues.push(value); // Raw value first
+            // Check if using official SignalK syntax (smoothingOnly=true)
+            // Official: path:sma:5 returns ONLY the smoothed value
+            // Extension: path:average:sma:5 returns raw AND smoothed values
+            const smoothingOnly = pathSpec.smoothingOnly === true;
+
+            if (!smoothingOnly) {
+              // Extension syntax: include raw value first
+              enhancedValues.push(value);
+            }
 
             if (smoothingType === 'ema') {
               if (componentState.ema === null) {
@@ -1665,12 +1621,20 @@ export class HistoryAPI {
           }
         } else {
           // Non-numeric, non-object values (null, string, etc.)
-          enhancedValues.push(value);
-          if (usePerPathSmoothing && hasSmoothing) {
+          const smoothingOnly = pathSpec.smoothingOnly === true;
+          if (usePerPathSmoothing && smoothingOnly) {
+            // Official syntax: only the smoothed value column
+            enhancedValues.push(null);
+          } else if (usePerPathSmoothing && hasSmoothing) {
+            // Extension syntax: raw + smoothed columns
+            enhancedValues.push(value);
             enhancedValues.push(null); // Smoothed value placeholder
           } else if (!usePerPathSmoothing) {
+            enhancedValues.push(value);
             enhancedValues.push(null); // EMA
             enhancedValues.push(null); // SMA
+          } else {
+            enhancedValues.push(value);
           }
         }
       });
@@ -1697,13 +1661,19 @@ export class HistoryAPI {
     }> = [];
 
     pathSpecs.forEach(
-      ({ path, aggregateMethod, smoothing, smoothingParam }) => {
+      ({ path, aggregateMethod, smoothing, smoothingParam, smoothingOnly }) => {
         if (usePerPathSmoothing) {
           // Per-path smoothing mode
-          // First add the raw value entry
-          result.push({ path, method: aggregateMethod });
+          // Check if using official SignalK syntax (smoothingOnly=true)
+          // Official: path:sma:5 returns ONLY the smoothed value
+          // Extension: path:average:sma:5 returns raw AND smoothed values
 
-          // Then add smoothed entry if smoothing is defined
+          if (!smoothingOnly) {
+            // Extension syntax: add raw value entry first
+            result.push({ path, method: aggregateMethod });
+          }
+
+          // Add smoothed entry if smoothing is defined
           if (smoothing) {
             const smoothedEntry: {
               path: Path;
@@ -1712,7 +1682,10 @@ export class HistoryAPI {
               window: number;
             } = {
               path,
-              method: aggregateMethod,
+              // For official syntax, use sma/ema as the method in response
+              method: smoothingOnly
+                ? (smoothing as AggregateMethod)
+                : aggregateMethod,
               smoothing,
               window:
                 smoothingParam !== undefined
@@ -1743,164 +1716,6 @@ export class HistoryAPI {
     );
 
     return result;
-  }
-
-  /**
-   * Apply unit conversions to the data result
-   */
-  private async applyUnitConversions(
-    result: DataResult,
-    pathSpecs: PathSpec[],
-    app: any,
-    debug: (k: string) => void
-  ): Promise<DataResult> {
-    try {
-      debug('[Unit Conversion] Starting unit conversion process');
-
-      // Check if the units-preference plugin is available
-      const pluginAvailable = await isUnitsPreferencePluginAvailable(app);
-      debug(`[Unit Conversion] Plugin available: ${pluginAvailable}`);
-
-      if (!pluginAvailable) {
-        console.log(
-          '[Unit Conversion] Units preference plugin not available, skipping conversions'
-        );
-        debug('Units preference plugin not available, skipping conversions');
-        return result;
-      }
-
-      debug('[Unit Conversion] Applying unit conversions to history data');
-      console.log(
-        `[Unit Conversion] Processing ${pathSpecs.length} paths for conversion`
-      );
-
-      // Fetch conversion metadata for all paths
-      const conversions: Map<string, ConversionMetadata> = new Map();
-      await Promise.all(
-        pathSpecs.map(async pathSpec => {
-          debug(`[Unit Conversion] Fetching metadata for ${pathSpec.path}`);
-          const metadata = await getConversionMetadata(pathSpec.path, app);
-
-          if (metadata) {
-            debug(
-              `[Unit Conversion] Metadata received for ${pathSpec.path}: type=${metadata.valueType}`
-            );
-            console.log(
-              `[Unit Conversion] Metadata for ${pathSpec.path}:`,
-              JSON.stringify(metadata, null, 2)
-            );
-
-            if (metadata.valueType === 'number') {
-              conversions.set(pathSpec.path, metadata);
-              debug(
-                `[Unit Conversion] Conversion available for ${pathSpec.path}: ${metadata.baseUnit} → ${metadata.targetUnit}`
-              );
-            } else {
-              debug(
-                `[Unit Conversion] Skipping ${pathSpec.path}: not a numeric type (${metadata.valueType})`
-              );
-            }
-          } else {
-            debug(
-              `[Unit Conversion] No metadata available for ${pathSpec.path}`
-            );
-            console.log(
-              `[Unit Conversion] No metadata returned for ${pathSpec.path}`
-            );
-          }
-        })
-      );
-
-      // If no conversions available, return original result
-      if (conversions.size === 0) {
-        console.log(
-          '[Unit Conversion] No unit conversions available for any requested paths'
-        );
-        debug('No unit conversions available for any requested paths');
-        return result;
-      }
-
-      console.log(
-        `[Unit Conversion] Successfully loaded ${conversions.size} conversions`
-      );
-
-      // Apply conversions to data array
-      const convertedData = result.data.map(row => {
-        const [timestamp, ...values] = row;
-        const convertedValues = values.map((value, index) => {
-          // Get the path for this column index
-          const pathSpec =
-            pathSpecs[
-              Math.floor(index / (result.values.length / pathSpecs.length))
-            ];
-          const metadata = conversions.get(pathSpec.path);
-
-          // Only convert numeric values
-          if (metadata && typeof value === 'number' && !isNaN(value)) {
-            const { converted } = convertNumericValue(value, metadata);
-            return converted;
-          }
-
-          // Return non-numeric values unchanged
-          return value;
-        });
-
-        return [timestamp, ...convertedValues] as [Timestamp, ...unknown[]];
-      });
-
-      // Update values metadata to include unit information
-      const updatedValues = result.values.map(valueSpec => {
-        const pathWithoutSuffix = valueSpec.path.replace(
-          /\.(ema|sma)$/,
-          ''
-        ) as Path;
-        const metadata = conversions.get(pathWithoutSuffix);
-
-        if (metadata) {
-          return {
-            ...valueSpec,
-            unit: metadata.symbol,
-            displayFormat: metadata.displayFormat,
-          };
-        }
-
-        return valueSpec;
-      });
-
-      const convertedResult = {
-        ...result,
-        data: convertedData,
-        values: updatedValues,
-        units: {
-          converted: true,
-          conversions: Array.from(conversions.entries()).map(
-            ([path, metadata]) => ({
-              path: path as Path,
-              baseUnit: metadata.baseUnit,
-              targetUnit: metadata.targetUnit,
-              symbol: metadata.symbol,
-            })
-          ),
-        },
-      };
-
-      console.log(
-        `[Unit Conversion] Successfully converted ${convertedData.length} data rows`
-      );
-      debug(
-        `[Unit Conversion] Conversion complete with ${conversions.size} conversions applied`
-      );
-
-      return convertedResult;
-    } catch (error) {
-      console.error(
-        '[Unit Conversion] Error applying unit conversions:',
-        error
-      );
-      debug(`Error applying unit conversions: ${error}`);
-      // Return original result if conversion fails
-      return result;
-    }
   }
 
   /**
@@ -2000,21 +1815,36 @@ function splitPathExpression(pathExpression: string): PathSpec {
     'mid',
     'middle_index',
   ];
-  if (parts[1] && !validMethods.includes(parts[1])) {
-    aggregateMethod = 'average' as AggregateMethod;
-  }
 
-  // Parse smoothing method (parts[2]) and parameter (parts[3])
-  // Syntax: path:aggregateMethod:smoothing:param
-  // Example: navigation.speedOverGround:average:sma:5
   let smoothing: 'sma' | 'ema' | undefined;
   let smoothingParam: number | undefined;
+  let smoothingOnly = false;
 
-  if (parts[2] === 'sma' || parts[2] === 'ema') {
-    smoothing = parts[2];
-    if (parts[3]) {
-      smoothingParam = parseFloat(parts[3]);
+  // Check for official SignalK spec syntax: path:sma:5 or path:ema:0.2
+  // In official spec, sma/ema ARE aggregation methods (returns only smoothed value)
+  if (parts[1] === 'sma' || parts[1] === 'ema') {
+    smoothing = parts[1];
+    smoothingOnly = true; // Official syntax: return only smoothed value
+    aggregateMethod = 'average' as AggregateMethod; // SMA/EMA is based on average
+    if (parts[2]) {
+      smoothingParam = parseFloat(parts[2]);
       if (isNaN(smoothingParam)) smoothingParam = undefined;
+    }
+  } else {
+    // Standard aggregation method validation
+    if (parts[1] && !validMethods.includes(parts[1])) {
+      aggregateMethod = 'average' as AggregateMethod;
+    }
+
+    // Parse extended smoothing syntax (parts[2]) and parameter (parts[3])
+    // Extension syntax: path:aggregateMethod:smoothing:param
+    // Example: navigation.speedOverGround:average:sma:5
+    if (parts[2] === 'sma' || parts[2] === 'ema') {
+      smoothing = parts[2];
+      if (parts[3]) {
+        smoothingParam = parseFloat(parts[3]);
+        if (isNaN(smoothingParam)) smoothingParam = undefined;
+      }
     }
   }
 
@@ -2026,6 +1856,7 @@ function splitPathExpression(pathExpression: string): PathSpec {
       (functionForAggregate[aggregateMethod] as string) || 'avg',
     smoothing,
     smoothingParam,
+    smoothingOnly,
   };
 }
 
