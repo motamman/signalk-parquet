@@ -158,7 +158,6 @@ export class HistoricalStreamingService {
         from,
         to,
         false, // shouldRefresh
-        false, // includeMovingAverages
         false, // convertTimesToLocal
         undefined, // timezone
         null, // spatialFilter
@@ -834,7 +833,6 @@ export class HistoricalStreamingService {
           from,
           to,
           false, // shouldRefresh
-          false, // includeMovingAverages
           false, // convertTimesToLocal
           undefined, // timezone
           null, // spatialFilter

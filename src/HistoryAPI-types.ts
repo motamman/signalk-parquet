@@ -98,7 +98,6 @@ export type FromToContextRequest = Request<
     positionPath?: string; // Position path for spatial correlation (default: navigation.position)
     refresh?: string;
     useUTC?: string;
-    includeMovingAverages?: string; // 'true' | '1' to enable EMA/SMA
     convertUnits?: string; // 'true' | '1' to convert to user's preferred units
     convertTimesToLocal?: string; // 'true' | '1' to convert timestamps to local time
     timezone?: string; // Optional timezone ID (e.g., 'America/New_York', 'Europe/London'). If not specified, uses server local time

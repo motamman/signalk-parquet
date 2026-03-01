@@ -348,10 +348,7 @@ log_test "F3: Unit conversion"
 RESPONSE=$(auth_request GET "/signalk/v1/history/values?duration=1h&paths=${TEST_PATH}&convertUnits=true")
 check_response "$RESPONSE" "F3: Unit conversion" "range"
 
-# F4: Include moving averages
-log_test "F4: Include moving averages"
-RESPONSE=$(auth_request GET "/signalk/v1/history/values?duration=1h&paths=${TEST_PATH}&includeMovingAverages=true")
-check_response "$RESPONSE" "F4: Include moving averages" "range"
+# F4: (Removed - moving averages now use explicit path syntax: path:sma:5 or path:ema:0.3)
 
 # F5: Auto-refresh
 log_test "F5: Auto-refresh (pattern 1 only)"

@@ -127,9 +127,6 @@ export function registerHistoryApiRoute(
   const handleValues = (req: Request, res: Response) => {
     const { from, to, context, spatialFilter, shouldRefresh, positionPath } =
       getRequestParams(req as FromToContextRequest, selfId);
-    const includeMovingAverages =
-      req.query.includeMovingAverages === 'true' ||
-      req.query.includeMovingAverages === '1';
     const convertTimesToLocal =
       req.query.convertTimesToLocal === 'true' ||
       req.query.convertTimesToLocal === '1';
@@ -140,7 +137,6 @@ export function registerHistoryApiRoute(
       from,
       to,
       shouldRefresh,
-      includeMovingAverages,
       convertTimesToLocal,
       timezone,
       spatialFilter,
@@ -250,9 +246,6 @@ export function registerHistoryApiRoute(
   router.get('/api/history/values', (req: Request, res: Response) => {
     const { from, to, context, spatialFilter, shouldRefresh, positionPath } =
       getRequestParams(req as FromToContextRequest, selfId);
-    const includeMovingAverages =
-      req.query.includeMovingAverages === 'true' ||
-      req.query.includeMovingAverages === '1';
     const convertTimesToLocal =
       req.query.convertTimesToLocal === 'true' ||
       req.query.convertTimesToLocal === '1';
@@ -263,7 +256,6 @@ export function registerHistoryApiRoute(
       from,
       to,
       shouldRefresh,
-      includeMovingAverages,
       convertTimesToLocal,
       timezone,
       spatialFilter,
@@ -805,7 +797,6 @@ export class HistoryAPI {
     from: ZonedDateTime,
     to: ZonedDateTime,
     shouldRefresh: boolean,
-    includeMovingAverages: boolean,
     convertTimesToLocal: boolean,
     timezone: string | undefined,
     spatialFilter: SpatialFilter | null,
@@ -864,7 +855,6 @@ export class HistoryAPI {
             to,
             timeResolutionMillis,
             pathSpecs,
-            includeMovingAverages,
             debug,
             tier,
             spatialFilter,
@@ -970,7 +960,6 @@ export class HistoryAPI {
     to: ZonedDateTime,
     timeResolutionMillis: number,
     pathSpecs: PathSpec[],
-    includeMovingAverages: boolean,
     debug: (k: string) => void,
     tier?: AggregationTier,
     spatialFilter?: SpatialFilter | null,
@@ -1402,19 +1391,12 @@ export class HistoryAPI {
 
     if (hasPerPathSmoothing) {
       // Per-path smoothing mode: apply smoothing only to paths that have it defined
+      // Use explicit syntax: path:sma:5 or path:ema:0.3
       finalData = this.addMovingAverages(mergedData, pathSpecs, true);
       finalValues = this.buildValuesWithMovingAverages(
         pathSpecs,
         objectPaths,
         true
-      );
-    } else if (includeMovingAverages) {
-      // Global moving averages mode (legacy ?includeMovingAverages=true)
-      finalData = this.addMovingAverages(mergedData, pathSpecs, false);
-      finalValues = this.buildValuesWithMovingAverages(
-        pathSpecs,
-        objectPaths,
-        false
       );
     } else {
       // No smoothing
