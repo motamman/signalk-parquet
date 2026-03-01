@@ -2,6 +2,42 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- **Resolution parameter now uses seconds**: The `resolution` query parameter expects seconds instead of milliseconds.
+  - Migration: Divide existing values by 1000, or use time expressions (`1m`, `5s`)
+  - Old: `?resolution=60000` (1 minute)
+  - New: `?resolution=60` or `?resolution=1m`
+
+- **Removed `start` parameter**: The deprecated `start` query parameter has been removed from the History API. Use standard SignalK time patterns instead:
+  - `?start=now&duration=1h` → `?duration=1h`
+  - `?start=TIME&duration=1h` → `?to=TIME&duration=1h`
+
+### Added
+
+- **ISO 8601 duration support**: Duration parameters now accept ISO 8601 format (`PT1H`, `PT30M`, `P1D`, `PT1H30M`)
+- **Integer seconds for duration**: Duration can be specified as plain seconds (`?duration=3600` for 1 hour)
+- **Time expressions for resolution**: Resolution accepts time expressions (`?resolution=1m`, `?resolution=5s`, `?resolution=1h`)
+- **Official SMA/EMA aggregation methods**: SMA and EMA are now supported as aggregation methods per SignalK spec
+  - Syntax: `path:sma:5` or `path:ema:0.2` (returns only the smoothed value)
+  - Example: `?paths=navigation.speedOverGround:sma:5`
+  - Extension syntax `path:average:sma:5` still supported (returns raw AND smoothed values)
+
+### 🌐 SignalK v2 API Route Aliases
+
+Added `/signalk/v2/api/history/*` route aliases for official SignalK History API spec compliance.
+
+#### Added
+
+- **v2 API Routes**: New route aliases alongside existing v1 routes
+  - `/signalk/v2/api/history/values` → same handler as `/signalk/v1/history/values`
+  - `/signalk/v2/api/history/contexts` → same handler as `/signalk/v1/history/contexts`
+  - `/signalk/v2/api/history/paths` → same handler as `/signalk/v1/history/paths`
+- **Full Backward Compatibility**: Both v1 and v2 routes work identically
+- **Spec Compliance**: Clients expecting official SignalK v2 API paths now work out of the box
+
+---
+
 ### 🗄️ SQLite WAL Buffering (Crash-Safe Data Ingestion)
 
 Replace in-memory data buffers with a crash-safe SQLite database using Write-Ahead Logging (WAL) mode.

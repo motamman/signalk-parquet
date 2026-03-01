@@ -11,6 +11,7 @@ import { ZonedDateTime, ZoneOffset } from '@js-joda/core';
 import * as WebSocket from 'ws';
 import * as fs from 'fs';
 import * as path from 'path';
+import { parseDurationToMillis } from './utils/duration-parser';
 
 export class HistoricalStreamingService {
   private app: ServerAPI;
@@ -158,7 +159,6 @@ export class HistoricalStreamingService {
         to,
         false, // shouldRefresh
         false, // includeMovingAverages
-        false, // convertUnits
         false, // convertTimesToLocal
         undefined, // timezone
         null, // spatialFilter
@@ -320,26 +320,10 @@ export class HistoricalStreamingService {
   private streamIntervals = new Map<string, NodeJS.Timeout>();
 
   private parseTimeRange(timeRange: string): number {
-    // Parse time range strings like '1h', '30m', '2d' into milliseconds
-    const match = timeRange.match(/^(\d+)([smhd])$/);
-    if (!match) {
-      return 60 * 60 * 1000; // 1 hour default
-    }
-
-    const value = parseInt(match[1]);
-    const unit = match[2];
-
-    switch (unit) {
-      case 's':
-        return value * 1000; // seconds
-      case 'm':
-        return value * 60 * 1000; // minutes
-      case 'h':
-        return value * 60 * 60 * 1000; // hours
-      case 'd':
-        return value * 24 * 60 * 60 * 1000; // days
-      default:
-        return 60 * 60 * 1000; // 1 hour default
+    try {
+      return parseDurationToMillis(timeRange);
+    } catch {
+      return 60 * 60 * 1000; // Default 1 hour
     }
   }
 
@@ -851,7 +835,6 @@ export class HistoricalStreamingService {
           to,
           false, // shouldRefresh
           false, // includeMovingAverages
-          false, // convertUnits
           false, // convertTimesToLocal
           undefined, // timezone
           null, // spatialFilter

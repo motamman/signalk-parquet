@@ -9,7 +9,6 @@ import {
 // Re-export SignalK types for convenience
 export { NormalizedDelta, SourceRef };
 import { Request, Response, Router } from 'express';
-import { FormulaCache } from './utils/formula-cache';
 import { LRUCache } from './utils/lru-cache';
 
 // Forward declaration to avoid circular dependency
@@ -60,7 +59,6 @@ export interface PluginConfig {
   setCurrentLocationAction?: {
     setCurrentLocation: boolean;
   };
-  unitConversionCacheMinutes?: number; // Cache duration for unit conversions from signalk-units-preference
   // SQLite buffer and Hive partitioning options
   useSqliteBuffer?: boolean; // Use SQLite WAL buffer instead of in-memory LRU
   exportIntervalMinutes?: number; // How often to export from SQLite to Parquet (default 5)
@@ -580,7 +578,6 @@ export interface PluginState {
   commandState: CommandRegistrationState;
   // Process management
   currentProcess?: ProcessState;
-  formulaCache?: FormulaCache;
   // SQLite buffer and export service (new)
   sqliteBuffer?: SQLiteBufferInterface;
   exportService?: ParquetExportServiceInterface;

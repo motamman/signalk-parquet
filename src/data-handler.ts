@@ -845,8 +845,8 @@ export async function uploadAllConsolidatedFilesToS3(
   }
 }
 
-// Upload consolidated files to S3
-async function uploadConsolidatedFilesToS3(
+// Upload consolidated and aggregated files to S3
+export async function uploadConsolidatedFilesToS3(
   config: PluginConfig,
   date: Date,
   state: PluginState,
@@ -854,25 +854,44 @@ async function uploadConsolidatedFilesToS3(
 ): Promise<void> {
   try {
     const dateStr = date.toISOString().split('T')[0];
+
+    // Match both consolidated AND aggregated parquet files for this date
     const consolidatedPattern = `**/*_${dateStr}_consolidated.parquet`;
+    const aggregatedPattern = `**/*_${dateStr}_aggregated.parquet`;
 
     // Find all consolidated files for the date
-    const allConsolidatedFiles = await glob(consolidatedPattern, {
+    const consolidatedFiles = await glob(consolidatedPattern, {
       cwd: config.outputDirectory,
       absolute: true,
       nodir: true,
     });
 
+    // Find all aggregated files for the date (from tier aggregation)
+    const aggregatedFiles = await glob(aggregatedPattern, {
+      cwd: config.outputDirectory,
+      absolute: true,
+      nodir: true,
+    });
+
+    // Combine both lists
+    const allFiles = [...consolidatedFiles, ...aggregatedFiles];
+
     // Exclude processed/repaired/failed/quarantine directories
-    const consolidatedFiles = allConsolidatedFiles.filter(
+    const filesToUpload = allFiles.filter(
       (f) => !excludedDirs.some((dir) => f.includes(dir))
     );
 
-    // Upload each consolidated file
-    for (const filePath of consolidatedFiles) {
+    // Upload each file
+    for (const filePath of filesToUpload) {
       await uploadToS3(filePath, config, state, app);
     }
-  } catch (error) {}
+
+    if (filesToUpload.length > 0) {
+      app.debug(`S3: Uploaded ${filesToUpload.length} files for ${dateStr} (consolidated + aggregated)`);
+    }
+  } catch (error) {
+    app.error(`S3 upload failed for date ${date.toISOString().slice(0, 10)}: ${(error as Error).message}`);
+  }
 }
 
 // S3 upload function

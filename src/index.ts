@@ -32,10 +32,10 @@ import {
   consolidateMissedDays,
   consolidateYesterday,
   uploadAllConsolidatedFilesToS3,
+  uploadConsolidatedFilesToS3,
 } from './data-handler';
 import { ServerAPI } from '@signalk/server-api';
 import { DuckDBPool } from './utils/duckdb-pool';
-import { FormulaCache } from './utils/formula-cache';
 import { LRUCache } from './utils/lru-cache';
 import {
   registerHistoryApiProvider,
@@ -75,7 +75,6 @@ export default function (app: ServerAPI): SignalKPlugin {
       registeredCommands: new Map(),
       putHandlers: new Map(),
     },
-    formulaCache: new FormulaCache(),
   };
 
   let currentPaths: PathConfig[] = [];
@@ -304,12 +303,19 @@ export default function (app: ServerAPI): SignalKPlugin {
 
       // Run aggregation after consolidation if Hive partitioning is enabled
       if (aggregationService) {
+        const yesterday = new Date();
+        yesterday.setUTCDate(yesterday.getUTCDate() - 1);
+
         aggregationService
           .runDailyAggregation()
-          .then(results => {
+          .then(async results => {
             app.debug(
               `Daily aggregation complete: ${JSON.stringify(results.map(r => ({ tier: r.targetTier, files: r.filesCreated })))}`
             );
+            // Upload aggregated files to S3 AFTER aggregation completes
+            if (state.currentConfig?.s3Upload.enabled && state.currentConfig?.s3Upload.timing === 'consolidation') {
+              await uploadConsolidatedFilesToS3(state.currentConfig, yesterday, state, app);
+            }
           })
           .catch(err => {
             app.error(`Daily aggregation failed: ${err.message}`);
@@ -323,12 +329,19 @@ export default function (app: ServerAPI): SignalKPlugin {
 
           // Run aggregation after consolidation
           if (aggregationService) {
+            const yesterday = new Date();
+            yesterday.setUTCDate(yesterday.getUTCDate() - 1);
+
             aggregationService
               .runDailyAggregation()
-              .then(results => {
+              .then(async results => {
                 app.debug(
                   `Daily aggregation complete: ${JSON.stringify(results.map(r => ({ tier: r.targetTier, files: r.filesCreated })))}`
                 );
+                // Upload aggregated files to S3 AFTER aggregation completes
+                if (state.currentConfig?.s3Upload.enabled && state.currentConfig?.s3Upload.timing === 'consolidation') {
+                  await uploadConsolidatedFilesToS3(state.currentConfig, yesterday, state, app);
+                }
               })
               .catch(err => {
                 app.error(`Daily aggregation failed: ${err.message}`);
@@ -389,7 +402,6 @@ export default function (app: ServerAPI): SignalKPlugin {
         state.currentConfig.outputDirectory,
         app.debug,
         app,
-        state.currentConfig.unitConversionCacheMinutes || 5, // Default to 5 minutes
         state.sqliteBuffer, // Pass SQLite buffer for federated queries
         state.currentConfig.exportIntervalMinutes || 5, // Export interval for buffer cutoff
         state.autoDiscoveryService, // Pass auto-discovery service
