@@ -95,6 +95,7 @@ export type FromToContextRequest = Request<
     resolution?: string;
     bbox?: string;
     radius?: string; // "lat,lon,meters" format for circular area filter
+    positionPath?: string; // Position path for spatial correlation (default: navigation.position)
     refresh?: string;
     useUTC?: string;
     includeMovingAverages?: string; // 'true' | '1' to enable EMA/SMA

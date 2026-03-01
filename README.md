@@ -8,8 +8,22 @@ A comprehensive SignalK plugin and webapp that saves SignalK data directly to Pa
 - **Smart Data Types**: Intelligent Parquet schema detection preserves native data types (DOUBLE, BOOLEAN) instead of forcing everything to strings
 - **Multiple File Formats**: Support for Parquet, JSON, and CSV output formats (querying in parquet only)
 - **Daily Consolidation**: Automatic daily file consolidation with S3 upload capabilities
-- **Near Real-time Buffering**: Efficient data
- buffering with configurable thresholds
+- **🆕 SQLite WAL Buffering**: Crash-safe data ingestion with Write-Ahead Logging
+  - Replaces in-memory buffers with persistent SQLite database
+  - Automatic recovery after power loss or crashes
+  - Configurable export intervals to Parquet files
+- **🆕 Hive-Partitioned Storage**: Efficient file organization for query performance
+  - Structure: `tier=raw/context={ctx}/path={path}/year={year}/day={day}/`
+  - Aggregation tiers: `raw`, `5s`, `60s`, `1h`
+  - Automatic partition pruning for time-range queries
+- **🆕 S3 Federated Querying**: Query historical data directly from S3 using DuckDB's native S3 support
+  - Automatic partition pruning reduces data transfer by 70-90%
+  - Hybrid local+S3 queries for data spanning retention boundary
+  - Predicate pushdown filters data at source before transfer
+- **🆕 Auto-Discovery**: Automatically configure paths when first queried
+  - On-demand path configuration when History API queries unconfigured paths
+  - Include/exclude glob patterns for fine-grained control
+  - Optional live data requirement before configuration
 
 ### Data Validation & Schema Repair
 - **NEW Schema Validation**: Comprehensive validation of Parquet file schemas against SignalK metadata standards
@@ -61,6 +75,10 @@ The validation system checks each Parquet file for:
   - **Proximity Detection**: Multi-vessel distance calculations and collision risk analysis
   - **Geographic Visualization**: Generate movement boundaries, centroids, and spatial statistics
   - **Route Planning**: Historical track analysis for route optimization and performance analysis
+  - **🆕 Spatial Correlation**: Filter any sensor data by vessel location
+    - Query "wind data when vessel was within this area"
+    - Bounding box (`bbox`) and radius filters work on all paths
+    - Automatically correlates timestamps with position data
 
 ### Management & Control
 - **Command Management**: Register, execute, and manage SignalK commands with automatic path configuration
@@ -203,8 +221,30 @@ Configure basic plugin settings (path configuration is managed separately in the
 | **File Format** | Output format (parquet, json, csv) | `parquet` |
 | **Retention Days** | Days to keep processed files | 7 |
 | **Unit Conversion Cache Duration** 🆕 | How long to cache unit conversions before reloading (minutes) | 5 |
+| **Export Interval** 🆕 | How often to export from SQLite buffer to Parquet (minutes) | 5 |
+| **Buffer Retention Hours** 🆕 | How long to keep exported records in SQLite (hours) | 24 |
 
 > **Note**: The Unit Conversion Cache Duration setting controls how quickly changes to unit preferences (in the signalk-units-preference plugin) are reflected in the history API. Lower values (1-2 minutes) reflect changes faster but use more resources. Higher values (30-60 minutes) reduce overhead but take longer to reflect changes. The default of 5 minutes provides a good balance for most users.
+
+### Auto-Discovery Configuration
+
+Configure automatic path discovery when querying unconfigured paths:
+
+| Setting | Description | Default |
+|---------|-------------|---------|
+| **Enable Auto-Discovery** | Master switch for auto-discovery | `false` |
+| **Require Live Data** | Only configure if path has live SignalK data | `true` |
+| **Max Auto-Configured Paths** | Maximum number of auto-configured paths | `100` |
+| **Include Patterns** | Glob patterns for paths to include (e.g., `navigation.*`) | `[]` |
+| **Exclude Patterns** | Glob patterns for paths to exclude (e.g., `propulsion.*`) | `[]` |
+
+When enabled, Auto-Discovery will automatically add path configurations when:
+1. A History API query requests data for an unconfigured path
+2. The path matches include patterns (if specified)
+3. The path doesn't match exclude patterns
+4. The path has live data in SignalK (if `requireLiveData` is enabled)
+
+Auto-discovered paths are marked with the `autoDiscovered: true` flag and have auto-generated human-readable names prefixed with `[Auto]`.
 
 ### S3 Upload Configuration
 
@@ -410,23 +450,106 @@ router.get('/api/paths',
 
 ## Data Output Structure
 
-### File Organization
+### File Organization (Hive-Partitioned)
 
+The plugin uses Hive-style partitioned paths for efficient querying:
+
+```
+output_directory/
+├── tier=raw/
+│   ├── context=vessels__self/
+│   │   ├── path=navigation__position/
+│   │   │   ├── year=2025/
+│   │   │   │   ├── day=197/
+│   │   │   │   │   ├── data_20250716T120000.parquet
+│   │   │   │   │   └── data_20250716T130000.parquet
+│   │   │   │   └── day=198/
+│   │   │   │       └── data_20250717T080000.parquet
+│   │   │   └── year=2024/
+│   │   │       └── day=365/
+│   │   └── path=navigation__speedOverGround/
+│   └── context=vessels__urn-mrn-imo-mmsi-368396230/
+│       └── path=navigation__position/
+├── tier=5s/
+│   └── [aggregated 5-second data]
+├── tier=60s/
+│   └── [aggregated 1-minute data]
+├── tier=1h/
+│   └── [aggregated hourly data]
+├── buffer.db              <- SQLite WAL buffer
+├── buffer.db-wal          <- Write-ahead log
+└── processed/
+    └── [moved files after consolidation]
+```
+
+**Partition Structure:**
+- `tier=` - Aggregation level: `raw`, `5s`, `60s`, `1h`
+- `context=` - Vessel context (sanitized: `.` → `__`, `:` → `-`)
+- `path=` - SignalK path (sanitized: `.` → `__`)
+- `year=` - Year (e.g., `2025`)
+- `day=` - Day of year, zero-padded (e.g., `197`)
+
+**Legacy Flat Structure (deprecated):**
 ```
 output_directory/
 ├── vessels/
 │   └── self/
 │       ├── navigation/
-│       │   ├── position/
-│       │   │   ├── signalk_data_20250716T120000.parquet
-│       │   │   └── signalk_data_20250716_consolidated.parquet
-│       │   └── speedOverGround/
-│       └── environment/
-│           └── wind/
-│               └── angleApparent/
+│       │   └── position/
+│       │       └── signalk_data_20250716T120000.parquet
 └── processed/
-    └── [moved files after consolidation]
 ```
+
+Use the Migration API to convert legacy files to Hive partitioning.
+
+## Data Migration
+
+### Migrating Legacy Files to Hive Partitioning
+
+If you have existing data in the legacy flat structure, use the Migration API to convert to Hive partitioning:
+
+**1. Scan for migratable files:**
+```bash
+curl -X POST http://localhost:3000/plugins/signalk-parquet/api/migrate/scan \
+  -H "Content-Type: application/json" \
+  -d '{"sourceDirectory": "/path/to/data"}'
+```
+
+Response includes:
+- Total files to migrate
+- Total size in bytes
+- Files grouped by SignalK path
+- Estimated migration time
+
+**2. Start migration:**
+```bash
+curl -X POST http://localhost:3000/plugins/signalk-parquet/api/migrate \
+  -H "Content-Type: application/json" \
+  -d '{
+    "sourceDirectory": "/path/to/data",
+    "targetDirectory": "/path/to/data",
+    "targetTier": "raw",
+    "deleteSourceAfterMigration": false
+  }'
+```
+
+**3. Check progress:**
+```bash
+curl http://localhost:3000/plugins/signalk-parquet/api/migrate/progress/{jobId}
+```
+
+**4. Cancel if needed:**
+```bash
+curl -X POST http://localhost:3000/plugins/signalk-parquet/api/migrate/cancel/{jobId}
+```
+
+**Migration Options:**
+| Option | Description | Default |
+|--------|-------------|---------|
+| `sourceDirectory` | Source directory to scan | Plugin data directory |
+| `targetDirectory` | Target directory for Hive files | Same as source |
+| `targetTier` | Target aggregation tier | `raw` |
+| `deleteSourceAfterMigration` | Delete source files after successful migration | `false` |
 
 ### Data Schema
 
@@ -492,6 +615,16 @@ This provides better compression, faster queries, and proper type safety for dat
 | `/signalk/v1/history/values` | GET | SignalK History API - Get historical values |
 | `/signalk/v1/history/contexts` | GET | SignalK History API - Get available contexts |
 | `/signalk/v1/history/paths` | GET | SignalK History API - Get available paths |
+| **Migration API** | | |
+| `/api/migrate/scan` | POST | Scan directory for migratable files |
+| `/api/migrate` | POST | Start migration job |
+| `/api/migrate/progress/:jobId` | GET | Get migration job progress |
+| `/api/migrate/cancel/:jobId` | POST | Cancel running migration job |
+| `/api/migrate/jobs` | GET | List all migration jobs |
+| **Buffer Status API** | | |
+| `/api/buffer/stats` | GET | Get SQLite buffer statistics |
+| `/api/buffer/export` | POST | Force immediate export of pending records |
+| `/api/buffer/health` | GET | Get buffer health status |
 
 ## DuckDB Integration
 
@@ -669,9 +802,13 @@ The History API supports 5 standard SignalK time query patterns:
 | `refresh` | Enable auto-refresh (pattern 1 only) | `true` or `1` | `refresh=true` |
 | `includeMovingAverages` | Include EMA/SMA calculations | `true` or `1` | `includeMovingAverages=true` |
 | `useUTC` | Treat datetime inputs as UTC | `true` or `1` | `useUTC=true` |
-| `convertUnits` | 🆕 Convert to preferred units (requires signalk-units-preference plugin) | `true` or `1` | `convertUnits=true` |
-| `convertTimesToLocal` | 🆕 Convert timestamps to local/specified timezone | `true` or `1` | `convertTimesToLocal=true` |
-| `timezone` | 🆕 IANA timezone ID (used with convertTimesToLocal) | IANA timezone | `timezone=America/New_York` |
+| `convertUnits` | Convert to preferred units (requires signalk-units-preference plugin) | `true` or `1` | `convertUnits=true` |
+| `convertTimesToLocal` | Convert timestamps to local/specified timezone | `true` or `1` | `convertTimesToLocal=true` |
+| `timezone` | IANA timezone ID (used with convertTimesToLocal) | IANA timezone | `timezone=America/New_York` |
+| `bbox` | Bounding box filter: `west,south,east,north` | Coordinates | `bbox=-74.5,40.2,-73.8,40.9` |
+| `radius` | Radius filter: `lat,lon,meters` | Coordinates + meters | `radius=40.646,-73.981,100` |
+| `positionPath` | 🆕 Position path for spatial correlation | SignalK path | `positionPath=navigation.position` |
+| `source` | 🆕 Query source: `auto`, `local`, `s3` | Source type | `source=s3` |
 | **Deprecated:** | | | |
 | `start` | ⚠️ Use standard patterns instead | `now` or ISO datetime | Deprecated, use `duration` or `from`/`to` |
 
@@ -850,7 +987,76 @@ curl "http://localhost:3000/signalk/v1/history/values?duration=2d&paths=navigati
 - `2h` - 2 hours
 - `1d` - 1 day
 
-### Timezone Handling (NEW)
+#### Spatial Filtering (NEW)
+
+Filter data by geographic location using bounding boxes or radius queries:
+
+**Bounding Box Filter:**
+```bash
+# Position data within a bounding box (west,south,east,north)
+curl "http://localhost:3000/signalk/v1/history/values?duration=1h&paths=navigation.position&bbox=-74.5,40.2,-73.8,40.9"
+```
+
+**Radius Filter:**
+```bash
+# Position data within 100m of a point (lat,lon,meters)
+curl "http://localhost:3000/signalk/v1/history/values?duration=1h&paths=navigation.position&radius=40.646,-73.981,100"
+```
+
+**Spatial Correlation (filter non-position paths by location):**
+```bash
+# Wind data when vessel was within 100m of point
+curl "http://localhost:3000/signalk/v1/history/values?duration=24h&paths=environment.wind.speedApparent&radius=40.646,-73.981,100"
+
+# Multiple paths filtered by bounding box
+curl "http://localhost:3000/signalk/v1/history/values?duration=7d&paths=environment.wind.speedApparent,environment.depth.belowKeel&bbox=-74.0,40.6,-73.9,40.7"
+
+# Use anchor position for correlation instead of vessel position
+curl "http://localhost:3000/signalk/v1/history/values?duration=7d&paths=environment.depth.belowKeel&radius=40.646,-73.981,50&positionPath=navigation.anchor.position"
+```
+
+**How Spatial Correlation Works:**
+- For **position paths** (e.g., `navigation.position`): Filters directly on lat/lon
+- For **non-position paths** (e.g., `environment.wind.speedApparent`): First queries position data to find timestamps when vessel was within the spatial filter, then returns only data from those times
+- The `positionPath` parameter specifies which position path to correlate with (default: `navigation.position`)
+
+#### S3 Federated Querying (NEW)
+
+Query historical data directly from S3 without downloading files first:
+
+**Query Source Parameter:**
+```bash
+# Auto-select source based on retention cutoff (default)
+curl "http://localhost:3000/signalk/v1/history/values?duration=7d&paths=navigation.speedOverGround&source=auto"
+
+# Force local-only query
+curl "http://localhost:3000/signalk/v1/history/values?duration=1d&paths=navigation.speedOverGround&source=local"
+
+# Force S3-only query (for archived data)
+curl "http://localhost:3000/signalk/v1/history/values?from=2024-01-01&to=2024-01-07&paths=navigation.speedOverGround&source=s3"
+```
+
+**How Source Selection Works:**
+- `auto` (default): Uses `retentionDays` config as boundary
+  - Data within retention period → queries local files
+  - Data older than retention → queries S3
+  - Query spanning boundary → queries both with UNION
+- `local`: Only query local Parquet files
+- `s3`: Only query S3 (requires S3 to be enabled with valid credentials)
+
+**Data Transfer Optimization:**
+DuckDB's native S3 support provides:
+- **Partition pruning**: Hive structure (`year=/day=`) allows skipping irrelevant files
+- **Predicate pushdown**: WHERE clauses filter at Parquet level before transfer
+- **Projection pushdown**: Only SELECT columns are transferred
+- **Combined effect**: 70-99% reduction vs downloading full files
+
+**Requirements:**
+- S3 must be enabled in plugin configuration
+- Valid AWS credentials configured
+- Data must be uploaded to S3 using Hive partition structure
+
+### Timezone Handling
 
 **Local time conversion (default behavior):**
 ```bash
@@ -1535,6 +1741,12 @@ curl "http://localhost:3000/signalk/v1/history/contexts"
 
 - [x] Implement startup consolidation for missed previous days (exclude current day)
 - [x] Add history API integration
+- [x] S3 federated querying with DuckDB
+- [x] Spatial correlation for non-position paths
+- [x] SQLite WAL buffering for crash-safe data ingestion
+- [x] Hive-partitioned storage with aggregation tiers
+- [x] Migration service for flat-to-Hive conversion
+- [x] Auto-discovery for on-demand path configuration
 - [ ] Incorporate user preferences from units-preference in the regimen filter system
 - [ ] Expose recorded spatial event via api endpoint (geojson)
 - [ ] Add Grafana integration
@@ -1552,7 +1764,32 @@ curl "http://localhost:3000/signalk/v1/history/contexts"
 
 See [CHANGELOG.md](CHANGELOG.md) for complete version history.
 
-### Version 0.6.5-beta.3 (Latest)
+### Upcoming Release
+- **🗄️ SQLite WAL Buffering**: Crash-safe data ingestion with Write-Ahead Logging
+  - Replaces in-memory buffers with persistent SQLite database
+  - Automatic recovery after power loss or crashes
+  - Configurable export intervals and retention
+- **🏗️ Hive-Partitioned Storage**: Efficient file organization
+  - Structure: `tier=/context=/path=/year=/day=/`
+  - Aggregation tiers: `raw`, `5s`, `60s`, `1h`
+  - 70-90% data transfer reduction through partition pruning
+- **🔄 Migration Service**: Convert legacy flat structure to Hive partitioning
+  - Scan, migrate, and track progress via API
+  - Optional deletion of source files after migration
+- **🔍 Auto-Discovery**: Automatic path configuration on first query
+  - On-demand configuration when History API queries unconfigured paths
+  - Include/exclude glob patterns for control
+  - Optional live data requirement
+- **🌐 S3 Federated Querying**: Query historical data directly from S3 using DuckDB
+  - Automatic partition pruning reduces data transfer by 70-90%
+  - Hybrid local+S3 queries span retention boundary automatically
+  - New `?source=` parameter: `auto`, `local`, `s3`
+- **🎯 Spatial Correlation**: Filter any sensor data by vessel location
+  - Query "wind data when vessel was within this area"
+  - Works with bounding box (`bbox`) and radius filters on any path
+  - New `positionPath` parameter for custom position source
+
+### Version 0.6.5-beta.3
 - **🎯 Per-Path Smoothing Syntax**: New `path:method:smoothing:param` syntax for applying SMA/EMA smoothing
   - Apply smoothing per-path instead of globally (e.g., `navigation.speedOverGround:average:sma:5`)
   - SMA with configurable window size (default: 10)

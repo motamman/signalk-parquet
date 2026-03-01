@@ -13,7 +13,6 @@ import { ParamsDictionary } from 'express-serve-static-core';
 import { ParsedQs } from 'qs';
 import { DuckDBInstance } from '@duckdb/node-api';
 import { DuckDBPool } from './utils/duckdb-pool';
-import { toContextFilePath } from '.';
 import path from 'path';
 import {
   getAvailablePathsArray,
@@ -348,7 +347,7 @@ export function registerHistoryApiRoute(
     retentionDays
   );
   router.get('/signalk/v1/history/values', (req: Request, res: Response) => {
-    const { from, to, context, spatialFilter, shouldRefresh } =
+    const { from, to, context, spatialFilter, shouldRefresh, positionPath } =
       getRequestParams(req as FromToContextRequest, selfId);
     const includeMovingAverages =
       req.query.includeMovingAverages === 'true' ||
@@ -374,7 +373,8 @@ export function registerHistoryApiRoute(
       debug,
       req,
       res,
-      source
+      source,
+      positionPath
     );
   });
   router.get(
@@ -468,7 +468,7 @@ export function registerHistoryApiRoute(
 
   // Also register as plugin-style routes for testing
   router.get('/api/history/values', (req: Request, res: Response) => {
-    const { from, to, context, spatialFilter, shouldRefresh } =
+    const { from, to, context, spatialFilter, shouldRefresh, positionPath } =
       getRequestParams(req as FromToContextRequest, selfId);
     const includeMovingAverages =
       req.query.includeMovingAverages === 'true' ||
@@ -494,7 +494,8 @@ export function registerHistoryApiRoute(
       debug,
       req,
       res,
-      source
+      source,
+      positionPath
     );
   });
   router.get('/api/history/contexts', async (req: Request, res: Response) => {
@@ -657,7 +658,8 @@ const getRequestParams = ({ query }: FromToContextRequest, selfId: string) => {
 
     const context: Context = getContext(query.context, selfId);
     const spatialFilter = parseSpatialParams(query.bbox, query.radius);
-    return { from, to, context, spatialFilter, shouldRefresh };
+    const positionPath = (query.positionPath as string) || 'navigation.position';
+    return { from, to, context, spatialFilter, shouldRefresh, positionPath };
   } catch (e: unknown) {
     console.error('Full error details:', e);
     throw new Error(
@@ -776,7 +778,6 @@ export interface S3QueryConfig {
 }
 
 export class HistoryAPI {
-  readonly selfContextPath: string;
   private sqliteBuffer?: SQLiteBufferInterface;
   private exportIntervalMinutes: number;
   private hivePathBuilder: HivePathBuilder;
@@ -793,7 +794,6 @@ export class HistoryAPI {
     s3Config?: S3QueryConfig,
     retentionDays: number = 7
   ) {
-    this.selfContextPath = toContextFilePath(`vessels.${selfId}` as Context);
     this.sqliteBuffer = sqliteBuffer;
     this.exportIntervalMinutes = exportIntervalMinutes;
     this.hivePathBuilder = new HivePathBuilder();
@@ -1005,6 +1005,79 @@ export class HistoryAPI {
     );
     return merged;
   }
+
+  /**
+   * Get timestamps where vessel position was within the spatial filter
+   * Used to correlate non-position paths with spatial filtering
+   */
+  private async getSpatialTimestamps(
+    context: Context,
+    from: ZonedDateTime,
+    to: ZonedDateTime,
+    timeResolutionMillis: number,
+    spatialFilter: SpatialFilter,
+    positionPath: string,
+    tier: AggregationTier | undefined,
+    querySource: QuerySource,
+    debug: (k: string) => void
+  ): Promise<Set<string>> {
+    const timestamps = new Set<string>();
+    const effectiveTier = tier || 'raw';
+
+    // Build file path for position data
+    const sanitizedContext = this.hivePathBuilder.sanitizeContext(context);
+    const sanitizedPath = this.hivePathBuilder.sanitizePath(positionPath);
+    const localFilePath = path.join(
+      this.dataDir,
+      `tier=${effectiveTier}`,
+      `context=${sanitizedContext}`,
+      `path=${sanitizedPath}`,
+      '**',
+      '*.parquet'
+    );
+
+    const fromIso = from.toInstant().toString();
+    const toIso = to.toInstant().toString();
+
+    try {
+      const connection = await DuckDBPool.getConnection();
+      try {
+        // Build spatial WHERE clause
+        const spatialWhereClause = buildSpatialSqlClause(spatialFilter);
+
+        // Query position data with spatial filter to get valid timestamps
+        const query = `
+          SELECT DISTINCT
+            strftime(DATE_TRUNC('seconds',
+              EPOCH_MS(CAST(FLOOR(EPOCH_MS(signalk_timestamp::TIMESTAMP) / ${timeResolutionMillis}) * ${timeResolutionMillis} AS BIGINT))
+            ), '%Y-%m-%dT%H:%M:%SZ') as timestamp
+          FROM read_parquet('${localFilePath}', union_by_name=true)
+          WHERE
+            signalk_timestamp >= '${fromIso}'
+            AND signalk_timestamp < '${toIso}'
+            AND value_latitude IS NOT NULL
+            AND value_longitude IS NOT NULL
+            AND ${spatialWhereClause}
+          ORDER BY timestamp
+        `;
+
+        const result = await connection.runAndReadAll(query);
+        const rows = result.getRowObjects();
+
+        for (const row of rows) {
+          timestamps.add((row as { timestamp: string }).timestamp);
+        }
+      } finally {
+        connection.disconnectSync();
+      }
+    } catch (error) {
+      debug(`[Spatial Correlation] Error querying position data: ${error}`);
+      // On error, return empty set (no filtering will occur)
+    }
+
+    return timestamps;
+  }
+
   async getValues(
     context: Context,
     from: ZonedDateTime,
@@ -1021,7 +1094,8 @@ export class HistoryAPI {
     req: Request<ParamsDictionary, any, any, ParsedQs, Record<string, any>>,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     res: Response<any, Record<string, any>>,
-    source: QuerySource = 'auto'
+    source: QuerySource = 'auto',
+    positionPath: string = 'navigation.position'
   ) {
     try {
       const timeResolutionMillis = req.query.resolution
@@ -1072,7 +1146,8 @@ export class HistoryAPI {
             debug,
             tier,
             spatialFilter,
-            querySource
+            querySource,
+            positionPath
           )
         : {
             context,
@@ -1187,7 +1262,8 @@ export class HistoryAPI {
     debug: (k: string) => void,
     tier?: AggregationTier,
     spatialFilter?: SpatialFilter | null,
-    querySource: QuerySource = 'local'
+    querySource: QuerySource = 'local',
+    positionPath: string = 'navigation.position'
   ): Promise<DataResult> {
     const allData: { [path: string]: Array<[Timestamp, unknown]> } = {};
     const objectPaths = new Set<string>(); // Track which paths are object paths
@@ -1200,16 +1276,39 @@ export class HistoryAPI {
     const retentionCutoff = new Date();
     retentionCutoff.setUTCDate(retentionCutoff.getUTCDate() - this.retentionDays);
 
+    // If spatial filter is set, get valid timestamps from position data
+    // This allows filtering non-position paths by "when vessel was in this area"
+    let spatialTimestamps: Set<string> | null = null;
+    if (spatialFilter) {
+      const hasNonPositionPaths = pathSpecs.some(
+        ps => !isPositionPath(ps.path)
+      );
+      if (hasNonPositionPaths) {
+        debug(
+          `[Spatial Correlation] Querying ${positionPath} for valid timestamps within spatial filter`
+        );
+        spatialTimestamps = await this.getSpatialTimestamps(
+          context,
+          from,
+          to,
+          timeResolutionMillis,
+          spatialFilter,
+          positionPath,
+          tier,
+          querySource,
+          debug
+        );
+        debug(
+          `[Spatial Correlation] Found ${spatialTimestamps.size} valid timestamps`
+        );
+      }
+    }
+
     // Process each path and collect data with concurrency limiting
     // Limit concurrent queries to prevent resource exhaustion (configured in cache-defaults)
     const limiter = new ConcurrencyLimiter(CONCURRENCY.MAX_QUERIES);
     await limiter.map(pathSpecs, async pathSpec => {
       try {
-        // Sanitize the path to prevent directory traversal and SQL injection
-        const sanitizedPath = pathSpec.path
-          .replace(/[^a-zA-Z0-9._]/g, '') // Only allow alphanumeric, dots, underscores
-          .replace(/\./g, '/');
-
         // Build file patterns based on query source
         let localFilePath: string | null = null;
         let s3FilePath: string | null = null;
@@ -1217,32 +1316,21 @@ export class HistoryAPI {
 
         // Determine which sources to query based on querySource
         if (querySource === 'local' || querySource === 'hybrid') {
-          if (tier) {
-            // Use Hive-style path for aggregated tiers
-            const sanitizedContext =
-              this.hivePathBuilder.sanitizeContext(context);
-            const sanitizedSkPath = this.hivePathBuilder.sanitizePath(
-              pathSpec.path
-            );
-            localFilePath = path.join(
-              this.dataDir,
-              `tier=${tier}`,
-              `context=${sanitizedContext}`,
-              `path=${sanitizedSkPath}`,
-              '**',
-              '*.parquet'
-            );
-            debug(`Querying local Hive tier=${tier} at: ${localFilePath}`);
-          } else {
-            // Use legacy flat path
-            localFilePath = path.join(
-              this.dataDir,
-              this.selfContextPath,
-              sanitizedPath,
-              '*.parquet'
-            );
-            debug(`Querying local parquet files at: ${localFilePath}`);
-          }
+          // Always use Hive-style path structure
+          const sanitizedContext =
+            this.hivePathBuilder.sanitizeContext(context);
+          const sanitizedSkPath = this.hivePathBuilder.sanitizePath(
+            pathSpec.path
+          );
+          localFilePath = path.join(
+            this.dataDir,
+            `tier=${effectiveTier}`,
+            `context=${sanitizedContext}`,
+            `path=${sanitizedSkPath}`,
+            '**',
+            '*.parquet'
+          );
+          debug(`Querying local Hive tier=${effectiveTier} at: ${localFilePath}`);
         }
 
         if (
@@ -1566,6 +1654,22 @@ export class HistoryAPI {
         }
       }
     });
+
+    // Apply spatial timestamp filtering to non-position paths
+    // This filters data to only include times when vessel was within spatial filter
+    if (spatialTimestamps && spatialTimestamps.size > 0) {
+      for (const pathSpec of pathSpecs) {
+        if (!isPositionPath(pathSpec.path) && allData[pathSpec.path]) {
+          const originalCount = allData[pathSpec.path].length;
+          allData[pathSpec.path] = allData[pathSpec.path].filter(
+            ([timestamp]) => spatialTimestamps!.has(timestamp)
+          );
+          debug(
+            `[Spatial Correlation] Filtered ${pathSpec.path}: ${originalCount} -> ${allData[pathSpec.path].length} records`
+          );
+        }
+      }
+    }
 
     // Merge all path data into time-ordered rows
     const mergedData = this.mergePathData(allData, pathSpecs);
