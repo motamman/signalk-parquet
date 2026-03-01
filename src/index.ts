@@ -17,12 +17,6 @@ import {
   stopThresholdMonitoring,
 } from './commands';
 import {
-  SUPPORTED_CLAUDE_MODELS,
-  DEFAULT_CLAUDE_MODEL,
-  CLAUDE_MODEL_DESCRIPTIONS,
-  getValidClaudeModel,
-} from './claude-models';
-import {
   initializeS3,
   createS3Client,
   subscribeToCommandPaths,
@@ -93,32 +87,6 @@ export default function (app: ServerAPI): SignalKPlugin {
     const signalkDataDir = path.resolve(app.getDataDirPath(), '..', '..');
     const defaultOutputDir = path.join(signalkDataDir, 'signalk-parquet');
 
-    // Validate and migrate Claude model if needed
-    let claudeConfig = options?.claudeIntegration || { enabled: false };
-    if (claudeConfig.model) {
-      const validatedModel = getValidClaudeModel(claudeConfig.model);
-      if (validatedModel !== claudeConfig.model) {
-        app.debug(
-          `⚠️ Saved Claude model "${claudeConfig.model}" is no longer supported. Migrating to ${validatedModel}`
-        );
-        claudeConfig = { ...claudeConfig, model: validatedModel };
-
-        // Save migrated config
-        app.savePluginOptions(
-          { ...options, claudeIntegration: claudeConfig },
-          (err?: unknown) => {
-            if (err) {
-              app.error(`Failed to save migrated Claude model: ${err}`);
-            } else {
-              app.debug(
-                `✅ Successfully migrated Claude model to ${validatedModel}`
-              );
-            }
-          }
-        );
-      }
-    }
-
     state.currentConfig = {
       bufferSize: options?.bufferSize || 1000,
       saveIntervalSeconds: options?.saveIntervalSeconds || 30,
@@ -132,7 +100,6 @@ export default function (app: ServerAPI): SignalKPlugin {
       fileFormat: options?.fileFormat || 'parquet',
       vesselMMSI: vesselMMSI,
       s3Upload: options?.s3Upload || { enabled: false },
-      claudeIntegration: claudeConfig,
       homePortLatitude: options?.homePortLatitude || 0,
       homePortLongitude: options?.homePortLongitude || 0,
       setCurrentLocationAction: options?.setCurrentLocationAction || {
@@ -734,90 +701,6 @@ export default function (app: ServerAPI): SignalKPlugin {
             title: 'Delete Local Files After Upload',
             description: 'Delete local files after successful upload to S3',
             default: false,
-          },
-        },
-      },
-      claudeIntegration: {
-        type: 'object',
-        title: 'Claude AI Analysis',
-        description:
-          'Configure Claude AI for intelligent data analysis and insights',
-        properties: {
-          enabled: {
-            type: 'boolean',
-            title: 'Enable Claude AI Analysis',
-            description: 'Enable AI-powered analysis of your maritime data',
-            default: false,
-          },
-          apiKey: {
-            type: 'string',
-            title: 'Claude API Key',
-            description:
-              'Your Anthropic Claude API key (get one at console.anthropic.com)',
-            default: '',
-          },
-          model: {
-            type: 'string',
-            title: 'Default Claude Model (Optional)',
-            description:
-              'Default Claude model for analysis. Can be overridden in the web interface.',
-            enum: [...SUPPORTED_CLAUDE_MODELS],
-            enumNames: SUPPORTED_CLAUDE_MODELS.map(
-              m => CLAUDE_MODEL_DESCRIPTIONS[m]
-            ),
-            default: DEFAULT_CLAUDE_MODEL,
-          },
-          maxTokens: {
-            type: 'number',
-            title: 'Max Tokens',
-            description:
-              'Maximum tokens for Claude responses (higher = more detailed analysis)',
-            default: 4000,
-            minimum: 1000,
-            maximum: 8192,
-          },
-          temperature: {
-            type: 'number',
-            title: 'Temperature',
-            description: 'Analysis creativity (0.0 = focused, 1.0 = creative)',
-            default: 0.3,
-            minimum: 0.0,
-            maximum: 1.0,
-          },
-          autoAnalysis: {
-            type: 'object',
-            title: 'Automated Analysis',
-            description: 'Configure automated analysis features',
-            properties: {
-              daily: {
-                type: 'boolean',
-                title: 'Daily Summary Reports',
-                description: 'Generate daily analysis reports automatically',
-                default: false,
-              },
-              anomaly: {
-                type: 'boolean',
-                title: 'Anomaly Detection',
-                description:
-                  'Automatically detect unusual patterns in real-time',
-                default: false,
-              },
-              threshold: {
-                type: 'number',
-                title: 'Anomaly Threshold',
-                description:
-                  'Statistical threshold for anomaly detection (higher = fewer alerts)',
-                default: 2.5,
-                minimum: 1.0,
-                maximum: 5.0,
-              },
-            },
-          },
-          cacheEnabled: {
-            type: 'boolean',
-            title: 'Enable Result Caching',
-            description: 'Cache analysis results to reduce API calls and costs',
-            default: true,
           },
         },
       },
