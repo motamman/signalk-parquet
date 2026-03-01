@@ -74,7 +74,12 @@ export class MigrationService {
     const files = await glob(pattern);
 
     // Exclude processed/repaired directories
-    const excludedDirs = ['/processed/', '/repaired/', '/failed/', '/quarantine/'];
+    const excludedDirs = [
+      '/processed/',
+      '/repaired/',
+      '/failed/',
+      '/quarantine/',
+    ];
 
     let totalSize = 0;
     let flatCount = 0;
@@ -188,7 +193,12 @@ export class MigrationService {
       const files = await glob(pattern);
 
       // Filter to only flat-style files, excluding processed/repaired directories
-      const excludedDirs = ['/processed/', '/repaired/', '/failed/', '/quarantine/'];
+      const excludedDirs = [
+        '/processed/',
+        '/repaired/',
+        '/failed/',
+        '/quarantine/',
+      ];
       const flatFiles: string[] = [];
       for (const file of files) {
         // Skip files in processed/repaired directories
@@ -279,6 +289,10 @@ export class MigrationService {
       return null;
     }
 
+    // Resolve vessels.self to actual vessel context
+    const resolvedContext =
+      parsed.context === 'vessels.self' ? this.app.selfContext : parsed.context;
+
     // Extract timestamp from source file
     const timestamp = await this.extractTimestampFromFile(sourcePath);
     if (!timestamp) {
@@ -289,7 +303,7 @@ export class MigrationService {
     const targetPath = this.hivePathBuilder.buildFilePath(
       config.targetDirectory,
       config.targetTier,
-      parsed.context,
+      resolvedContext,
       parsed.signalkPath,
       timestamp,
       path.basename(sourcePath, '.parquet')

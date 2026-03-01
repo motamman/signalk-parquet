@@ -1,5 +1,6 @@
 import * as fs from 'fs-extra';
 import * as path from 'path';
+import { glob } from 'glob';
 import express, { Router } from 'express';
 import { getAvailablePaths } from './utils/path-discovery';
 import { DuckDBInstance } from '@duckdb/node-api';
@@ -592,6 +593,253 @@ export function registerApiRoutes(
       }
     }
   );
+
+  // Compare local files with S3 bucket
+  router.get('/api/s3/compare', async (_req, res) => {
+    try {
+      if (!state.currentConfig?.s3Upload?.enabled) {
+        return res.status(400).json({
+          success: false,
+          error: 'S3 upload is not enabled',
+        });
+      }
+
+      if (!state.s3Client || !ListObjectsV2Command) {
+        try {
+          const awsS3 = await import('@aws-sdk/client-s3');
+          ListObjectsV2Command = awsS3.ListObjectsV2Command;
+        } catch {
+          return res.status(503).json({
+            success: false,
+            error: 'S3 client not available',
+          });
+        }
+      }
+
+      const config = state.currentConfig;
+      const dataDir = getDataDir();
+
+      // Get local parquet files
+      const localFiles = await glob(path.join(dataDir, '**', '*.parquet'));
+      const localKeys = new Map<string, { path: string; size: number }>();
+
+      for (const filePath of localFiles) {
+        const relativePath = path.relative(dataDir, filePath);
+        let s3Key = relativePath;
+        if (config.s3Upload.keyPrefix) {
+          const prefix = config.s3Upload.keyPrefix.endsWith('/')
+            ? config.s3Upload.keyPrefix
+            : `${config.s3Upload.keyPrefix}/`;
+          s3Key = `${prefix}${relativePath}`;
+        }
+        const stats = await fs.stat(filePath);
+        localKeys.set(s3Key, { path: filePath, size: stats.size });
+      }
+
+      // List S3 objects
+      const s3Keys = new Set<string>();
+      let continuationToken: string | undefined;
+
+      do {
+        const listCommand = new ListObjectsV2Command({
+          Bucket: config.s3Upload.bucket,
+          Prefix: config.s3Upload.keyPrefix || undefined,
+          ContinuationToken: continuationToken,
+        });
+
+        const response = await state.s3Client.send(listCommand);
+
+        if (response.Contents) {
+          for (const obj of response.Contents) {
+            if (obj.Key?.endsWith('.parquet')) {
+              s3Keys.add(obj.Key);
+            }
+          }
+        }
+
+        continuationToken = response.IsTruncated
+          ? response.NextContinuationToken
+          : undefined;
+      } while (continuationToken);
+
+      // Compare
+      const localOnly: Array<{ key: string; size: number }> = [];
+      const s3Only: string[] = [];
+      const synced: string[] = [];
+
+      for (const [key, info] of localKeys) {
+        if (s3Keys.has(key)) {
+          synced.push(key);
+        } else {
+          localOnly.push({ key, size: info.size });
+        }
+      }
+
+      for (const key of s3Keys) {
+        if (!localKeys.has(key)) {
+          s3Only.push(key);
+        }
+      }
+
+      const totalLocalSize = localOnly.reduce((sum, f) => sum + f.size, 0);
+
+      return res.json({
+        success: true,
+        summary: {
+          localTotal: localKeys.size,
+          s3Total: s3Keys.size,
+          synced: synced.length,
+          localOnly: localOnly.length,
+          s3Only: s3Only.length,
+          localOnlySizeMB: (totalLocalSize / 1024 / 1024).toFixed(2),
+        },
+        localOnly: localOnly.slice(0, 100), // Limit response size
+        s3Only: s3Only.slice(0, 100),
+        hasMore: localOnly.length > 100 || s3Only.length > 100,
+      });
+    } catch (error) {
+      return res.status(500).json({
+        success: false,
+        error: (error as Error).message,
+      });
+    }
+  });
+
+  // Sync local files to S3
+  router.post('/api/s3/sync', async (req, res) => {
+    try {
+      if (!state.currentConfig?.s3Upload?.enabled) {
+        return res.status(400).json({
+          success: false,
+          error: 'S3 upload is not enabled',
+        });
+      }
+
+      if (!state.s3Client) {
+        return res.status(503).json({
+          success: false,
+          error: 'S3 client not initialized',
+        });
+      }
+
+      const config = state.currentConfig;
+      const dataDir = getDataDir();
+      const { keys } = req.body as { keys?: string[] };
+
+      // Import PutObjectCommand
+      let PutObjectCommand: any;
+      try {
+        const awsS3 = await import('@aws-sdk/client-s3');
+        PutObjectCommand = awsS3.PutObjectCommand;
+        if (!ListObjectsV2Command) {
+          ListObjectsV2Command = awsS3.ListObjectsV2Command;
+        }
+      } catch {
+        return res.status(503).json({
+          success: false,
+          error: 'S3 SDK not available',
+        });
+      }
+
+      // If no specific keys provided, find all local-only files
+      let filesToSync: Array<{ key: string; localPath: string }> = [];
+
+      if (keys && keys.length > 0) {
+        // Sync specific keys
+        for (const key of keys) {
+          const relativePath = config.s3Upload.keyPrefix
+            ? key.replace(
+                new RegExp(`^${config.s3Upload.keyPrefix}/?`),
+                ''
+              )
+            : key;
+          const localPath = path.join(dataDir, relativePath);
+          if (await fs.pathExists(localPath)) {
+            filesToSync.push({ key, localPath });
+          }
+        }
+      } else {
+        // Find all local-only files
+        const localFiles = await glob(path.join(dataDir, '**', '*.parquet'));
+
+        // Get S3 keys
+        const s3Keys = new Set<string>();
+        let continuationToken: string | undefined;
+
+        do {
+          const listCommand = new ListObjectsV2Command({
+            Bucket: config.s3Upload.bucket,
+            Prefix: config.s3Upload.keyPrefix || undefined,
+            ContinuationToken: continuationToken,
+          });
+
+          const response = await state.s3Client.send(listCommand);
+
+          if (response.Contents) {
+            for (const obj of response.Contents) {
+              if (obj.Key) s3Keys.add(obj.Key);
+            }
+          }
+
+          continuationToken = response.IsTruncated
+            ? response.NextContinuationToken
+            : undefined;
+        } while (continuationToken);
+
+        for (const localPath of localFiles) {
+          const relativePath = path.relative(dataDir, localPath);
+          let s3Key = relativePath;
+          if (config.s3Upload.keyPrefix) {
+            const prefix = config.s3Upload.keyPrefix.endsWith('/')
+              ? config.s3Upload.keyPrefix
+              : `${config.s3Upload.keyPrefix}/`;
+            s3Key = `${prefix}${relativePath}`;
+          }
+
+          if (!s3Keys.has(s3Key)) {
+            filesToSync.push({ key: s3Key, localPath });
+          }
+        }
+      }
+
+      // Upload files
+      let uploaded = 0;
+      let failed = 0;
+      const errors: string[] = [];
+
+      for (const { key, localPath } of filesToSync) {
+        try {
+          const fileContent = await fs.readFile(localPath);
+          const command = new PutObjectCommand({
+            Bucket: config.s3Upload.bucket,
+            Key: key,
+            Body: fileContent,
+            ContentType: 'application/octet-stream',
+          });
+
+          await state.s3Client.send(command);
+          uploaded++;
+          app.debug(`Synced to S3: ${key}`);
+        } catch (err) {
+          failed++;
+          errors.push(`${key}: ${(err as Error).message}`);
+        }
+      }
+
+      return res.json({
+        success: true,
+        uploaded,
+        failed,
+        total: filesToSync.length,
+        errors: errors.slice(0, 10),
+      });
+    } catch (error) {
+      return res.status(500).json({
+        success: false,
+        error: (error as Error).message,
+      });
+    }
+  });
 
   // Web App Path Configuration API Routes (manages separate config file)
 

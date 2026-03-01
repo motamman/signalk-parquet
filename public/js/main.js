@@ -73,6 +73,8 @@ registerGlobals({
   cancelRepair: DataValidation.cancelRepair,
   // Cloud status
   testS3Connection: CloudStatus.testS3Connection,
+  compareS3Files: CloudStatus.compareS3Files,
+  syncToS3: CloudStatus.syncToS3,
   // Path configuration
   loadPathConfigurations: PathConfig.loadPathConfigurations,
   toggleCommandPaths: PathConfig.toggleCommandPaths,

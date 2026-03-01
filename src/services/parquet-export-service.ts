@@ -210,7 +210,8 @@ export class ParquetExportService {
 
     if (this.config.useHivePartitioning) {
       // Resolve vessels.self to actual vessel context
-      const resolvedContext = context === 'vessels.self' ? this.app.selfContext : context;
+      const resolvedContext =
+        context === 'vessels.self' ? this.app.selfContext : context;
       // Use Hive-style partitioning
       const timestamp = new Date(records[0].received_timestamp);
       filePath = this.hivePathBuilder.buildFilePath(
