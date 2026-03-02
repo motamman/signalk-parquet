@@ -199,8 +199,10 @@ Configure basic plugin settings (path configuration is managed separately in the
 | **Filename Prefix** | Prefix for generated filenames | `signalk_data` |
 | **File Format** | Output format (parquet, json, csv) | `parquet` |
 | **Retention Days** | Days to keep processed files | 7 |
-| **Export Interval** 🆕 | How often to export from SQLite buffer to Parquet (minutes) | 5 |
-| **Buffer Retention Hours** 🆕 | How long to keep exported records in SQLite (hours) | 24 |
+| **Export Interval** | How often to export from SQLite buffer to Parquet (minutes) | 5 |
+| **Export Batch Size** | Max records to export per cycle (1,000-200,000) | 50000 |
+| **Buffer Retention Hours** | How long to keep exported records in SQLite (hours) | 24 |
+| **Enable Raw SQL** | Enable /api/query endpoint for raw SQL queries | `false` |
 
 ### Auto-Discovery Configuration
 

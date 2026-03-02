@@ -14,6 +14,11 @@
   - Query Database tab hidden in webapp when raw SQL is disabled
   - Improves security UX by not showing disabled features
 
+- **Export Batch Size Config**: New `exportBatchSize` setting (default: 50000)
+  - Controls max records exported per cycle, independent of `bufferSize`
+  - Prevents pending records from backing up during high data inflow
+  - Range: 1,000 - 200,000 records per cycle
+
 ### Fixed
 
 - **History API Provider Registration**: Fixed v2 History API returning "No history api provider configured"

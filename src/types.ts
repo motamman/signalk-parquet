@@ -62,6 +62,7 @@ export interface PluginConfig {
   // SQLite buffer and Hive partitioning options
   useSqliteBuffer?: boolean; // Use SQLite WAL buffer instead of in-memory LRU
   exportIntervalMinutes?: number; // How often to export from SQLite to Parquet (default 5)
+  exportBatchSize?: number; // Max records to export per cycle (default 10000)
   bufferRetentionHours?: number; // How long to keep exported records in SQLite (default 24)
   useHivePartitioning?: boolean; // Use Hive-style partitioning for Parquet files
   autoDiscovery?: AutoDiscoveryConfig; // Auto-discovery configuration

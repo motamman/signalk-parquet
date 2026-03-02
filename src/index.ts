@@ -143,7 +143,7 @@ export default function (app: ServerAPI): SignalKPlugin {
       try {
         state.sqliteBuffer = new SQLiteBuffer({
           dbPath,
-          maxBatchSize: state.currentConfig.bufferSize,
+          maxBatchSize: state.currentConfig.exportBatchSize || 50000,
           retentionHours: state.currentConfig.bufferRetentionHours,
         });
 
@@ -590,6 +590,15 @@ export default function (app: ServerAPI): SignalKPlugin {
         default: 5,
         minimum: 1,
         maximum: 60,
+      },
+      exportBatchSize: {
+        type: 'number',
+        title: 'Export Batch Size',
+        description:
+          'Maximum number of records to export per cycle. Increase if pending records are backing up.',
+        default: 50000,
+        minimum: 1000,
+        maximum: 200000,
       },
       bufferRetentionHours: {
         type: 'number',
