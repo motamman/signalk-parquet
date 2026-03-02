@@ -7,6 +7,7 @@ import * as CommandManager from './commandManager.js';
 import * as LiveConnections from './liveConnections.js';
 import * as Analysis from './analysis.js';
 import * as HomePort from './homePort.js';
+import { getPluginPath } from './utils.js';
 
 function registerGlobals(mapping) {
   Object.entries(mapping).forEach(([name, fn]) => {
@@ -171,7 +172,28 @@ registerGlobals({
   askFollowUpQuestion: Analysis.askFollowUpQuestion,
 });
 
+// Check if raw SQL queries are enabled and show/hide Query Database tab
+async function checkRawSqlEnabled() {
+  try {
+    const response = await fetch(`${getPluginPath()}/api/query/enabled`);
+    if (response.ok) {
+      const data = await response.json();
+      const queryTab = document.getElementById('queryDatabaseTab');
+      const queryPanel = document.getElementById('dataPaths');
+      if (queryTab) {
+        queryTab.style.display = data.enabled ? '' : 'none';
+      }
+      if (queryPanel && !data.enabled) {
+        queryPanel.style.display = 'none';
+      }
+    }
+  } catch (error) {
+    console.error('Failed to check raw SQL status:', error);
+  }
+}
+
 document.addEventListener('DOMContentLoaded', async () => {
+  await checkRawSqlEnabled();
   await PathBrowser.loadAvailablePaths();
   await PathConfig.loadPathConfigurations();
   await HomePort.loadHomePort();

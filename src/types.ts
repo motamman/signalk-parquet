@@ -65,6 +65,7 @@ export interface PluginConfig {
   bufferRetentionHours?: number; // How long to keep exported records in SQLite (default 24)
   useHivePartitioning?: boolean; // Use Hive-style partitioning for Parquet files
   autoDiscovery?: AutoDiscoveryConfig; // Auto-discovery configuration
+  enableRawSql?: boolean; // Enable raw SQL queries via /api/query endpoint
 }
 
 import type { ClaudeModel } from './claude-models';

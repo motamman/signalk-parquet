@@ -465,12 +465,14 @@ export function registerApiRoutes(
     ) => {
       try {
         // Security: Raw SQL is disabled by default
-        const rawSqlEnabled = process.env.SIGNALK_PARQUET_RAW_SQL === 'true';
+        const rawSqlEnabled =
+          process.env.SIGNALK_PARQUET_RAW_SQL === 'true' ||
+          state.currentConfig?.enableRawSql === true;
         if (!rawSqlEnabled) {
           return res.status(403).json({
             success: false,
             error:
-              'Raw SQL queries are disabled. Set SIGNALK_PARQUET_RAW_SQL=true to enable.',
+              'Raw SQL queries are disabled. Enable in plugin settings or set SIGNALK_PARQUET_RAW_SQL=true.',
           });
         }
 
@@ -548,6 +550,17 @@ export function registerApiRoutes(
       }
     }
   );
+
+  // Check if raw SQL queries are enabled (for UI visibility)
+  router.get('/api/query/enabled', (_req, res) => {
+    const rawSqlEnabled =
+      process.env.SIGNALK_PARQUET_RAW_SQL === 'true' ||
+      state.currentConfig?.enableRawSql === true;
+    return res.json({
+      success: true,
+      enabled: rawSqlEnabled,
+    });
+  });
 
   // Test S3 connection
   router.post(

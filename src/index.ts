@@ -704,6 +704,13 @@ export default function (app: ServerAPI): SignalKPlugin {
           },
         },
       },
+      enableRawSql: {
+        type: 'boolean',
+        title: 'Enable Raw SQL Queries',
+        description:
+          'Enable the /api/query endpoint for raw SQL queries. Use with caution.',
+        default: false,
+      },
       homePortLatitude: {
         type: 'number',
         title: 'Home Port Latitude (Optional)',
