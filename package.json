@@ -1,6 +1,6 @@
 {
   "name": "signalk-parquet",
-  "version": "0.7.2-beta.1",
+  "version": "0.7.3-beta.2",
   "description": "SignalK plugin and webapp that archives SK data to Parquet files with a regimen control system, advanced querying, Claude integrated AI analysis, spatial capabilities, and REST API.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -61,7 +61,7 @@
     "@dsnp/parquetjs": "^1.8.7",
     "@duckdb/node-api": "^1.4.0-r.1",
     "@js-joda/core": "^5.6.5",
-    "@signalk/server-api": "^2.10.2",
+    "@signalk/server-api": "^2.22.0",
     "better-sqlite3": "^11.8.1",
     "express": "^4.18.0",
     "fs-extra": "^11.2.0",

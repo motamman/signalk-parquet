@@ -1,5 +1,36 @@
 # Changelog
 
+## [0.7.3-beta.2] - 2026-03-01
+
+### Added
+
+- **Plugin Config for Raw SQL**: New `enableRawSql` boolean option in plugin settings
+  - Allows enabling raw SQL queries via UI instead of only environment variable
+  - Either `SIGNALK_PARQUET_RAW_SQL=true` OR plugin setting enables the feature
+  - Updated error message to mention both options
+
+- **Dynamic Query Database Tab**: Tab visibility based on raw SQL setting
+  - New `/api/query/enabled` endpoint to check if raw SQL is enabled
+  - Query Database tab hidden in webapp when raw SQL is disabled
+  - Improves security UX by not showing disabled features
+
+### Fixed
+
+- **History API Provider Registration**: Fixed v2 History API returning "No history api provider configured"
+  - Updated `@signalk/server-api` dependency from 2.10.2 to 2.22.0
+  - Version mismatch caused `registerHistoryApiProvider()` to fail silently
+
+- **History API Hive Path Support**: Fixed queries returning 0 results
+  - `history-provider.ts` was using legacy flat paths (`/vessels/urn.../navigation/position/`)
+  - Updated to use `HivePathBuilder.getGlobPattern()` for correct Hive-partitioned paths
+  - Now correctly queries `tier=raw/context=.../path=.../year=.../day=.../*.parquet`
+
+### Changed
+
+- Improved debug logging for history provider registration (shows if `registerHistoryApiProvider` exists on app object)
+
+---
+
 ## [0.7.0-beta.1] - 2025-03-01
 
 ### Breaking Changes

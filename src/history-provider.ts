@@ -25,9 +25,8 @@ import {
 } from './utils/path-discovery';
 import { getAvailableContextsForTimeRange } from './utils/context-discovery';
 import { DuckDBPool } from './utils/duckdb-pool';
-import { toContextFilePath } from './index';
-import path from 'path';
 import { getPathComponentSchema } from './utils/schema-cache';
+import { HivePathBuilder } from './utils/hive-path-builder';
 
 /**
  * Convert Temporal.Instant or ISO string to ZonedDateTime (UTC)
@@ -232,14 +231,17 @@ export class HistoryProvider implements HistoryApi {
     toIso: string,
     resolutionMs: number
   ): Promise<Array<[Timestamp, unknown]>> {
-    const contextPath = toContextFilePath(context);
-    const pathDir = path.join(
+    // Use HivePathBuilder for correct Hive-partitioned paths
+    const hiveBuilder = new HivePathBuilder();
+
+    // Build glob pattern for Hive partitions
+    const filePath = hiveBuilder.getGlobPattern(
       this.dataDir,
-      contextPath,
-      pathSpec.path.replace(/\./g, '/')
+      'raw',
+      context,
+      pathSpec.path
     );
-    const filePath = path.join(pathDir, '*.parquet');
-    console.log(`[HistoryProvider] Querying: ${filePath}`);
+    console.log(`[HistoryProvider] Querying Hive path: ${filePath}`);
 
     const connection = await DuckDBPool.getConnection();
 
@@ -405,6 +407,15 @@ export function registerHistoryApiProvider(
   debug: (msg: string) => void
 ): void {
   const provider = new HistoryProvider(selfId, dataDir, app, debug);
+
+  // Debug: Check if registerHistoryApiProvider exists on app
+  console.log('[signalk-parquet] app.registerHistoryApiProvider exists:', typeof (app as any).registerHistoryApiProvider);
+
+  if (typeof (app as any).registerHistoryApiProvider !== 'function') {
+    console.error('[signalk-parquet] ERROR: app.registerHistoryApiProvider is not a function!');
+    console.error('[signalk-parquet] Available app methods:', Object.keys(app).filter(k => typeof (app as any)[k] === 'function').join(', '));
+    return;
+  }
 
   try {
     app.registerHistoryApiProvider(provider);
