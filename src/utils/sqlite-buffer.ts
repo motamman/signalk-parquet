@@ -264,6 +264,28 @@ export class SQLiteBuffer {
   }
 
   /**
+   * Get pending records grouped by context and path, WITH record IDs for marking as exported
+   */
+  getPendingRecordsGroupedWithIds(
+    limit?: number
+  ): Map<string, { records: DataRecord[]; ids: number[] }> {
+    const bufferRecords = this.getPendingRecords(limit);
+    const grouped = new Map<string, { records: DataRecord[]; ids: number[] }>();
+
+    for (const record of bufferRecords) {
+      const key = `${record.context}:${record.path}`;
+      if (!grouped.has(key)) {
+        grouped.set(key, { records: [], ids: [] });
+      }
+      const group = grouped.get(key)!;
+      group.records.push(this.bufferRecordToDataRecord(record));
+      group.ids.push(record.id);
+    }
+
+    return grouped;
+  }
+
+  /**
    * Convert a BufferRecord back to a DataRecord
    */
   private bufferRecordToDataRecord(record: BufferRecord): DataRecord {

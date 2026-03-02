@@ -118,6 +118,10 @@ export default function (app: ServerAPI): SignalKPlugin {
         maxAutoConfiguredPaths: 100,
         excludePatterns: ['design.*', 'communication.*', 'notifications.*'],
       },
+      // Export batch size (how many records to export per cycle)
+      exportBatchSize: options?.exportBatchSize || 50000,
+      // Enable raw SQL queries via /api/query endpoint
+      enableRawSql: options?.enableRawSql || false,
     };
 
     // Load webapp configuration including commands

@@ -134,7 +134,15 @@ export class AggregationService {
       '*.parquet'
     );
 
-    const sourceFiles = await glob(sourcePattern);
+    const allSourceFiles = await glob(sourcePattern);
+    // Exclude files in processed, quarantine, failed, repaired directories
+    const sourceFiles = allSourceFiles.filter(
+      f =>
+        !f.includes('/processed/') &&
+        !f.includes('/quarantine/') &&
+        !f.includes('/failed/') &&
+        !f.includes('/repaired/')
+    );
 
     if (sourceFiles.length === 0) {
       this.app.debug(

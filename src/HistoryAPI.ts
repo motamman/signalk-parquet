@@ -762,13 +762,17 @@ export class HistoryAPI {
             strftime(DATE_TRUNC('seconds',
               EPOCH_MS(CAST(FLOOR(EPOCH_MS(signalk_timestamp::TIMESTAMP) / ${timeResolutionMillis}) * ${timeResolutionMillis} AS BIGINT))
             ), '%Y-%m-%dT%H:%M:%SZ') as timestamp
-          FROM read_parquet('${localFilePath}', union_by_name=true)
+          FROM read_parquet('${localFilePath}', union_by_name=true, filename=true)
           WHERE
             signalk_timestamp >= '${fromIso}'
             AND signalk_timestamp < '${toIso}'
             AND value_latitude IS NOT NULL
             AND value_longitude IS NOT NULL
             AND ${spatialWhereClause}
+            AND filename NOT LIKE '%/processed/%'
+            AND filename NOT LIKE '%/quarantine/%'
+            AND filename NOT LIKE '%/failed/%'
+            AND filename NOT LIKE '%/repaired/%'
           ORDER BY timestamp
         `;
 
@@ -1070,8 +1074,14 @@ export class HistoryAPI {
         try {
           // Build FROM clause based on available sources
           // For hybrid queries, we UNION local and S3 sources
+          // Local files need filename filter to exclude processed/quarantine/etc directories
           const buildFromClause = (filePath: string): string => {
-            return `read_parquet('${filePath}', union_by_name=true)`;
+            const isS3 = filePath.startsWith('s3://');
+            if (isS3) {
+              return `read_parquet('${filePath}', union_by_name=true)`;
+            }
+            // Local files: exclude processed, quarantine, failed, repaired directories
+            return `(SELECT * FROM read_parquet('${filePath}', union_by_name=true, filename=true) WHERE filename NOT LIKE '%/processed/%' AND filename NOT LIKE '%/quarantine/%' AND filename NOT LIKE '%/failed/%' AND filename NOT LIKE '%/repaired/%')`;
           };
 
           let fromClause: string;

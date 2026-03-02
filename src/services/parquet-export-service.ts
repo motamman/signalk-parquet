@@ -41,6 +41,7 @@ export class ParquetExportService {
   private isExporting: boolean = false;
   private lastExportTime: Date | null = null;
   private totalExported: number = 0;
+  private lastBatchExported: number = 0;
 
   constructor(
     sqliteBuffer: SQLiteBuffer,
@@ -118,8 +119,8 @@ export class ParquetExportService {
     let recordsExported = 0;
 
     try {
-      // Get pending records grouped by context:path
-      const grouped = this.sqliteBuffer.getPendingRecordsGrouped();
+      // Get pending records grouped by context:path, WITH their IDs
+      const grouped = this.sqliteBuffer.getPendingRecordsGroupedWithIds();
 
       if (grouped.size === 0) {
         this.app.debug('No pending records to export');
@@ -135,7 +136,7 @@ export class ParquetExportService {
       this.app.debug(`Exporting ${grouped.size} path groups to Parquet`);
 
       // Export each group to a separate file
-      for (const [key, records] of grouped) {
+      for (const [key, { records, ids }] of grouped) {
         try {
           const [context, signalkPath] = this.parseBufferKey(key);
           const filePath = await this.exportGroup(
@@ -149,17 +150,9 @@ export class ParquetExportService {
             filesCreated.push(filePath);
             recordsExported += records.length;
 
-            // Mark records as exported
-            // We need to get the record IDs from the buffer
-            const pendingRecords = this.sqliteBuffer.getPendingRecords(
-              records.length
-            );
-            const recordIds = pendingRecords
-              .filter(r => r.context === context && r.path === signalkPath)
-              .map(r => r.id);
-
-            if (recordIds.length > 0) {
-              this.sqliteBuffer.markAsExported(recordIds, batchId);
+            // Mark records as exported using the IDs we already have
+            if (ids.length > 0) {
+              this.sqliteBuffer.markAsExported(ids, batchId);
             }
           }
         } catch (error) {
@@ -176,6 +169,7 @@ export class ParquetExportService {
       }
 
       this.lastExportTime = new Date();
+      this.lastBatchExported = recordsExported;
       this.totalExported += recordsExported;
 
       this.app.debug(
@@ -327,6 +321,7 @@ export class ParquetExportService {
     isRunning: boolean;
     isExporting: boolean;
     lastExportTime: Date | null;
+    lastBatchExported: number;
     totalExported: number;
     pendingRecords: number;
     exportIntervalMinutes: number;
@@ -335,6 +330,7 @@ export class ParquetExportService {
       isRunning: this.exportInterval !== null,
       isExporting: this.isExporting,
       lastExportTime: this.lastExportTime,
+      lastBatchExported: this.lastBatchExported,
       totalExported: this.totalExported,
       pendingRecords: this.sqliteBuffer.getPendingCount(),
       exportIntervalMinutes: this.config.exportIntervalMinutes,

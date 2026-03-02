@@ -278,11 +278,15 @@ export class HistoryProvider implements HistoryApi {
               EPOCH_MS(CAST(FLOOR(EPOCH_MS(signalk_timestamp::TIMESTAMP) / ${resolutionMs}) * ${resolutionMs} AS BIGINT))
             ), '%Y-%m-%dT%H:%M:%SZ') as timestamp,
             ${componentSelects}
-          FROM read_parquet('${filePath}', union_by_name=true)
+          FROM read_parquet('${filePath}', union_by_name=true, filename=true)
           WHERE
             signalk_timestamp >= '${fromIso}'
             AND signalk_timestamp < '${toIso}'
             AND (${componentWhereConditions})
+            AND filename NOT LIKE '%/processed/%'
+            AND filename NOT LIKE '%/quarantine/%'
+            AND filename NOT LIKE '%/failed/%'
+            AND filename NOT LIKE '%/repaired/%'
           GROUP BY timestamp
           ORDER BY timestamp
         `;
@@ -318,11 +322,15 @@ export class HistoryProvider implements HistoryApi {
               EPOCH_MS(CAST(FLOOR(EPOCH_MS(signalk_timestamp::TIMESTAMP) / ${resolutionMs}) * ${resolutionMs} AS BIGINT))
             ), '%Y-%m-%dT%H:%M:%SZ') as timestamp,
             ${aggFunc}(TRY_CAST(value AS DOUBLE)) as value
-          FROM read_parquet('${filePath}', union_by_name=true)
+          FROM read_parquet('${filePath}', union_by_name=true, filename=true)
           WHERE
             signalk_timestamp >= '${fromIso}'
             AND signalk_timestamp < '${toIso}'
             AND value IS NOT NULL
+            AND filename NOT LIKE '%/processed/%'
+            AND filename NOT LIKE '%/quarantine/%'
+            AND filename NOT LIKE '%/failed/%'
+            AND filename NOT LIKE '%/repaired/%'
           GROUP BY timestamp
           ORDER BY timestamp
         `;

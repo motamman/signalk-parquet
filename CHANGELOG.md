@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.7.4-beta.3] - 2026-03-02
+
+### Fixed
+
+- **CRITICAL: Duplicate Data in Queries**: Fixed queries returning duplicate records after consolidation
+  - After consolidation, source files are moved to `processed/` subdirectory
+  - All query endpoints were including these processed files, causing ~36% data inflation
+  - Fixed `history-provider.ts`, `HistoryAPI.ts`, and `aggregation-service.ts` to exclude:
+    - `/processed/` - consolidated source files
+    - `/quarantine/` - corrupt files
+    - `/failed/` - failed processing
+    - `/repaired/` - repaired files
+  - Uses DuckDB `filename` pseudo-column to filter: `WHERE filename NOT LIKE '%/processed/%'`
+
+- **Config Options Not Loading**: Fixed `enableRawSql` and `exportBatchSize` not being read from config
+  - Options were defined in plugin schema but not copied to `state.currentConfig`
+  - Added missing property assignments in `index.ts`
+
+---
+
 ## [0.7.3-beta.2] - 2026-03-01
 
 ### Added
@@ -29,6 +49,12 @@
   - `history-provider.ts` was using legacy flat paths (`/vessels/urn.../navigation/position/`)
   - Updated to use `HivePathBuilder.getGlobPattern()` for correct Hive-partitioned paths
   - Now correctly queries `tier=raw/context=.../path=.../year=.../day=.../*.parquet`
+
+- **Export Service Record Marking Bug**: Fixed records not being marked as exported
+  - Bug: After exporting, service fetched DIFFERENT records to get IDs (race condition)
+  - Records for other paths would get marked instead of the exported ones
+  - Fix: Track record IDs BEFORE exporting via new `getPendingRecordsGroupedWithIds()` method
+  - This caused pending records to accumulate indefinitely
 
 ### Changed
 

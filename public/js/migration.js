@@ -74,7 +74,7 @@ async function refreshBufferStatus() {
         ${exportStatus.isRunning ? '<span style="color: #4CAF50;">Running</span>' : '<span style="color: #f44336;">Stopped</span>'}
         ${exportStatus.isExporting ? ' (exporting...)' : ''}
         | <strong>Last Export:</strong> ${formatTime(exportStatus.lastExportTime)}
-        | <strong>Total Exported:</strong> ${exportStatus.totalExported.toLocaleString()} records
+        | <strong>Last Batch:</strong> ${(exportStatus.lastBatchExported || 0).toLocaleString()} records
         | <strong>Interval:</strong> ${exportStatus.exportIntervalMinutes} min
       </div>
       ` : ''}
