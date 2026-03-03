@@ -171,11 +171,7 @@ export function registerHistoryApiRoute(
 
         if (!contexts) {
           // Cache miss - query the parquet files
-          contexts = await getAvailableContextsForTimeRange(
-            dataDir,
-            from,
-            to
-          );
+          contexts = await getAvailableContextsForTimeRange(dataDir, from, to);
           // Cache the result
           setCachedContexts(from, to, contexts);
         }
@@ -391,7 +387,8 @@ const getRequestParams = ({ query }: FromToContextRequest, selfId: string) => {
 
     const context: Context = getContext(query.context, selfId);
     const spatialFilter = parseSpatialParams(query.bbox, query.radius);
-    const positionPath = (query.positionPath as string) || 'navigation.position';
+    const positionPath =
+      (query.positionPath as string) || 'navigation.position';
     return { from, to, context, spatialFilter, shouldRefresh, positionPath };
   } catch (e: unknown) {
     console.error('Full error details:', e);
@@ -543,7 +540,9 @@ export class HistoryAPI {
 
     const now = new Date();
     const retentionCutoff = new Date(now);
-    retentionCutoff.setUTCDate(retentionCutoff.getUTCDate() - this.retentionDays);
+    retentionCutoff.setUTCDate(
+      retentionCutoff.getUTCDate() - this.retentionDays
+    );
 
     const fromDate = new Date(from.toInstant().toString());
     const toDate = new Date(to.toInstant().toString());
@@ -976,7 +975,9 @@ export class HistoryAPI {
 
     // Calculate retention cutoff for hybrid queries
     const retentionCutoff = new Date();
-    retentionCutoff.setUTCDate(retentionCutoff.getUTCDate() - this.retentionDays);
+    retentionCutoff.setUTCDate(
+      retentionCutoff.getUTCDate() - this.retentionDays
+    );
 
     // If spatial filter is set, get valid timestamps from position data
     // This allows filtering non-position paths by "when vessel was in this area"
@@ -1032,7 +1033,9 @@ export class HistoryAPI {
             '**',
             '*.parquet'
           );
-          debug(`Querying local Hive tier=${effectiveTier} at: ${localFilePath}`);
+          debug(
+            `Querying local Hive tier=${effectiveTier} at: ${localFilePath}`
+          );
         }
 
         if (
@@ -1040,12 +1043,14 @@ export class HistoryAPI {
           this.s3Config?.enabled
         ) {
           // Build S3 pattern with partition pruning
-          const s3FromDate =
-            querySource === 'hybrid' ? fromDate : fromDate;
+          const s3FromDate = querySource === 'hybrid' ? fromDate : fromDate;
           const s3ToDate =
             querySource === 'hybrid'
               ? new Date(
-                  Math.min(retentionCutoff.getTime() - 86400000, toDate.getTime())
+                  Math.min(
+                    retentionCutoff.getTime() - 86400000,
+                    toDate.getTime()
+                  )
                 )
               : toDate;
 
@@ -1227,7 +1232,8 @@ export class HistoryAPI {
             if (localFilePath) {
               try {
                 const schemaQuery = `SELECT * FROM parquet_schema('${localFilePath}') WHERE name = 'value_json'`;
-                const schemaResult = await connection.runAndReadAll(schemaQuery);
+                const schemaResult =
+                  await connection.runAndReadAll(schemaQuery);
                 hasValueJson = schemaResult.getRowObjects().length > 0;
               } catch {
                 // Schema check failed, assume no value_json

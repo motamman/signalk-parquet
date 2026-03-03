@@ -85,15 +85,15 @@ export default function (app: ServerAPI): SignalKPlugin {
 
     // Use SignalK's main data directory (go up from plugin-config-data/<plugin-name>)
     const signalkDataDir = path.resolve(app.getDataDirPath(), '..', '..');
-    const defaultOutputDir = path.join(signalkDataDir, 'signalk-parquet');
+    const defaultOutputDir = path.join(signalkDataDir, 'signalk-parquet-data');
 
     state.currentConfig = {
       bufferSize: options?.bufferSize || 1000,
       saveIntervalSeconds: options?.saveIntervalSeconds || 30,
       outputDirectory: options?.outputDirectory
-        ? (path.isAbsolute(options.outputDirectory)
-            ? options.outputDirectory
-            : path.join(signalkDataDir, options.outputDirectory))
+        ? path.isAbsolute(options.outputDirectory)
+          ? options.outputDirectory
+          : path.join(signalkDataDir, options.outputDirectory)
         : defaultOutputDir,
       filenamePrefix: options?.filenamePrefix || 'signalk_data',
       retentionDays: options?.retentionDays || 7,
@@ -284,8 +284,16 @@ export default function (app: ServerAPI): SignalKPlugin {
               `Daily aggregation complete: ${JSON.stringify(results.map(r => ({ tier: r.targetTier, files: r.filesCreated })))}`
             );
             // Upload aggregated files to S3 AFTER aggregation completes
-            if (state.currentConfig?.s3Upload.enabled && state.currentConfig?.s3Upload.timing === 'consolidation') {
-              await uploadConsolidatedFilesToS3(state.currentConfig, yesterday, state, app);
+            if (
+              state.currentConfig?.s3Upload.enabled &&
+              state.currentConfig?.s3Upload.timing === 'consolidation'
+            ) {
+              await uploadConsolidatedFilesToS3(
+                state.currentConfig,
+                yesterday,
+                state,
+                app
+              );
             }
           })
           .catch(err => {
@@ -310,8 +318,16 @@ export default function (app: ServerAPI): SignalKPlugin {
                   `Daily aggregation complete: ${JSON.stringify(results.map(r => ({ tier: r.targetTier, files: r.filesCreated })))}`
                 );
                 // Upload aggregated files to S3 AFTER aggregation completes
-                if (state.currentConfig?.s3Upload.enabled && state.currentConfig?.s3Upload.timing === 'consolidation') {
-                  await uploadConsolidatedFilesToS3(state.currentConfig, yesterday, state, app);
+                if (
+                  state.currentConfig?.s3Upload.enabled &&
+                  state.currentConfig?.s3Upload.timing === 'consolidation'
+                ) {
+                  await uploadConsolidatedFilesToS3(
+                    state.currentConfig,
+                    yesterday,
+                    state,
+                    app
+                  );
                 }
               })
               .catch(err => {
@@ -544,53 +560,57 @@ export default function (app: ServerAPI): SignalKPlugin {
     properties: {
       bufferSize: {
         type: 'number',
-        title: 'Buffer Size',
-        description: 'Number of records to buffer before writing to file',
+        title: 'Memory Buffer Size',
+        description:
+          'Number of SignalK data records to hold in memory before writing to the SQLite buffer. Higher values use more RAM but reduce disk writes. Recommended: 1000-5000 for most systems.',
         default: 1000,
         minimum: 10,
         maximum: 10000,
       },
       saveIntervalSeconds: {
         type: 'number',
-        title: 'Save Interval (seconds)',
-        description: 'How often to save buffered data to files',
+        title: 'Buffer Flush Interval (seconds)',
+        description:
+          'Maximum time between flushing the memory buffer to SQLite. Data is written when either this interval passes OR the buffer size is reached, whichever comes first.',
         default: 30,
         minimum: 5,
         maximum: 300,
       },
       outputDirectory: {
         type: 'string',
-        title: 'Output Directory',
+        title: 'Data Storage Directory',
         description:
-          'Directory to save data files (defaults to application_data/{vessel}/signalk-parquet)',
+          'Relative path from ~/.signalk (e.g., "data" becomes ~/.signalk/data). Leave empty for default (~/.signalk/signalk-parquet-data). Absolute paths also supported.',
         default: '',
       },
       filenamePrefix: {
         type: 'string',
         title: 'Filename Prefix',
-        description: 'Prefix for generated filenames',
+        description:
+          'Prefix added to all generated Parquet files. Useful if running multiple instances or for organizing data. Example: "boat_name" produces "boat_name_2024-01-15T1200.parquet"',
         default: 'signalk_data',
       },
-      fileFormat: {
-        type: 'string',
-        title: 'File Format',
-        description: 'Format for saved data files',
-        enum: ['json', 'csv', 'parquet'],
-        default: 'parquet',
+      enableRetention: {
+        type: 'boolean',
+        title: 'Enable Automatic Cleanup',
+        description:
+          'When enabled, files in the "processed" folder older than the retention period will be automatically deleted. Disable to keep all processed files indefinitely.',
+        default: false,
       },
       retentionDays: {
         type: 'number',
-        title: 'Retention Days',
-        description: 'Days to keep processed files',
+        title: 'Retention Period (days)',
+        description:
+          'Number of days to keep files in the "processed" folder before automatic deletion. Only applies when "Enable Automatic Cleanup" is checked. Does not affect consolidated or active Parquet files.',
         default: 7,
         minimum: 1,
         maximum: 365,
       },
       exportIntervalMinutes: {
         type: 'number',
-        title: 'Export Interval (minutes)',
+        title: 'Parquet Export Interval (minutes)',
         description:
-          'How often to export data from SQLite buffer to Parquet files.',
+          'How often to convert SQLite buffer data into Parquet files. Shorter intervals create more files but provide more granular data. Longer intervals are more efficient but data is only queryable after export.',
         default: 5,
         minimum: 1,
         maximum: 60,
@@ -599,19 +619,28 @@ export default function (app: ServerAPI): SignalKPlugin {
         type: 'number',
         title: 'Export Batch Size',
         description:
-          'Maximum number of records to export per cycle. Increase if pending records are backing up.',
+          'Maximum records to export per cycle. If you see "pending records" warnings in the logs, increase this value. Higher values use more memory during export but prevent backlogs.',
         default: 50000,
         minimum: 1000,
         maximum: 200000,
       },
       bufferRetentionHours: {
         type: 'number',
-        title: 'Buffer Retention (hours)',
+        title: 'SQLite Buffer Retention (hours)',
         description:
-          'How long to keep exported records in SQLite buffer before cleanup.',
+          'How long to keep data in the SQLite buffer after exporting to Parquet. Longer retention allows re-export if needed but uses more disk space. The buffer is separate from Parquet files.',
         default: 24,
         minimum: 1,
         maximum: 168,
+      },
+      consolidationLookbackDays: {
+        type: 'number',
+        title: 'Consolidation Lookback (days)',
+        description:
+          'At startup, scan this many days back for unconsolidated files. Daily files are merged into single consolidated files per path. Increase if you have a large backlog of unconsolidated data.',
+        default: 30,
+        minimum: 1,
+        maximum: 365,
       },
       autoDiscovery: {
         type: 'object',

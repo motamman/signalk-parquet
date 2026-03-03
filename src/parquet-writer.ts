@@ -193,7 +193,7 @@ export class ParquetWriter {
           quarantineDir,
           path.basename(filepath)
         );
-        await fs.move(filepath, quarantineFile);
+        await fs.move(filepath, quarantineFile, { overwrite: true });
 
         await this.logQuarantine(
           quarantineFile,
@@ -680,7 +680,8 @@ export class ParquetWriter {
       const fieldType = schemaFields[fieldName].type;
 
       if (value === null || value === undefined) {
-        cleanRecord[fieldName] = null;
+        // Use undefined instead of null - parquet handles undefined (omit field) better than null
+        cleanRecord[fieldName] = undefined;
       } else if (typeof value === 'bigint') {
         // Handle BigInt values by converting to appropriate type
         switch (fieldType) {
@@ -949,7 +950,7 @@ export class ParquetWriter {
             quarantineDir,
             path.basename(entry.target)
           );
-          await fs.move(entry.target, quarantineFile);
+          await fs.move(entry.target, quarantineFile, { overwrite: true });
 
           // Log to quarantine log
           await this.logQuarantine(
@@ -971,7 +972,8 @@ export class ParquetWriter {
         for (const sourceFile of entry.sources) {
           const basename = path.basename(sourceFile);
           const processedFile = path.join(processedDir, basename);
-          await fs.move(sourceFile, processedFile);
+          // Use overwrite to handle re-runs where file already exists in processed
+          await fs.move(sourceFile, processedFile, { overwrite: true });
         }
       }
 

@@ -49,6 +49,7 @@ export interface PluginConfig {
   outputDirectory: string;
   filenamePrefix: string;
   retentionDays: number;
+  enableRetention?: boolean; // Enable automatic cleanup of old files
   fileFormat: 'json' | 'csv' | 'parquet';
   vesselMMSI: string;
   s3Upload: S3UploadConfig;
@@ -64,6 +65,7 @@ export interface PluginConfig {
   exportIntervalMinutes?: number; // How often to export from SQLite to Parquet (default 5)
   exportBatchSize?: number; // Max records to export per cycle (default 10000)
   bufferRetentionHours?: number; // How long to keep exported records in SQLite (default 24)
+  consolidationLookbackDays?: number; // Days to scan back for unconsolidated files (default 30)
   useHivePartitioning?: boolean; // Use Hive-style partitioning for Parquet files
   autoDiscovery?: AutoDiscoveryConfig; // Auto-discovery configuration
   enableRawSql?: boolean; // Enable raw SQL queries via /api/query endpoint

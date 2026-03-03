@@ -1,6 +1,25 @@
 import * as fs from 'fs-extra';
 import * as path from 'path';
-import { glob } from 'glob';
+import { glob as globOriginal } from 'glob';
+import { promisify } from 'util';
+
+// Wrap glob for compatibility with both glob@7.x (callbacks) and glob@11.x (promises)
+const glob = async (pattern: string, options?: object): Promise<string[]> => {
+  // If glob returns a Promise (glob@11.x), use it directly
+  const result = globOriginal(pattern, options || {}) as unknown;
+  if (result && typeof (result as Promise<string[]>).then === 'function') {
+    return result as Promise<string[]>;
+  }
+  // Otherwise use promisify for glob@7.x callback style
+  const globPromise = promisify(
+    globOriginal as (
+      pattern: string,
+      options: object,
+      cb: (err: Error | null, matches: string[]) => void
+    ) => void
+  );
+  return globPromise(pattern, options || {}) as Promise<string[]>;
+};
 import {
   PluginConfig,
   PathConfig,
@@ -694,11 +713,10 @@ export async function consolidateMissedDays(
     const today = new Date();
     today.setUTCHours(0, 0, 0, 0);
 
-    // Use targeted glob patterns for each date instead of scanning all files
-    // This avoids loading 100k+ files into memory on systems with large histories
-    const datesNeedingConsolidation = new Set<string>();
+    // Scan and consolidate each day immediately (no separate phases)
     const prefix = config.filenamePrefix || 'signalk_data';
-    const daysToCheck = 7; // Check last 7 days for missed consolidations
+    const daysToCheck = config.consolidationLookbackDays || 30;
+    let datesConsolidated = 0;
 
     for (let daysAgo = 1; daysAgo <= daysToCheck; daysAgo++) {
       const targetDate = new Date(today);
@@ -718,41 +736,48 @@ export async function consolidateMissedDays(
       );
 
       if (hasUnconsolidatedFiles) {
-        datesNeedingConsolidation.add(dateStr);
-        app.debug(`Found unconsolidated files for ${dateStr}`);
-      }
-    }
+        app.debug(
+          `Found unconsolidated files for ${dateStr}, consolidating...`
+        );
 
-    // Consolidate each missed day
-    for (const dateStr of datesNeedingConsolidation) {
-      // Parse date string format: 2025-07-14
-      const [yearStr, monthStr, dayStr] = dateStr.split('-');
-      const date = new Date(
-        parseInt(yearStr),
-        parseInt(monthStr) - 1,
-        parseInt(dayStr)
-      );
+        try {
+          const date = new Date(
+            parseInt(dateStr.slice(0, 4)),
+            parseInt(dateStr.slice(5, 7)) - 1,
+            parseInt(dateStr.slice(8, 10))
+          );
 
-      const consolidatedCount = await state.parquetWriter!.consolidateDaily(
-        config.outputDirectory,
-        date,
-        config.filenamePrefix
-      );
+          const consolidatedCount = await state.parquetWriter!.consolidateDaily(
+            config.outputDirectory,
+            date,
+            config.filenamePrefix
+          );
 
-      if (consolidatedCount > 0) {
-        // Upload consolidated files to S3 if enabled and timing is consolidation
-        if (
-          config.s3Upload.enabled &&
-          config.s3Upload.timing === 'consolidation'
-        ) {
-          await uploadConsolidatedFilesToS3(config, date, state, app);
-        } else {
+          if (consolidatedCount > 0) {
+            datesConsolidated++;
+            app.debug(
+              `Consolidated ${dateStr}: ${consolidatedCount} directories`
+            );
+
+            // Upload consolidated files to S3 if enabled and timing is consolidation
+            if (
+              config.s3Upload.enabled &&
+              config.s3Upload.timing === 'consolidation'
+            ) {
+              await uploadConsolidatedFilesToS3(config, date, state, app);
+            }
+          }
+        } catch (dateError) {
+          app.error(
+            `Failed to consolidate ${dateStr}: ${(dateError as Error).message}`
+          );
+          // Continue with next date instead of aborting
         }
       }
     }
 
-    if (datesNeedingConsolidation.size > 0) {
-    } else {
+    if (datesConsolidated > 0) {
+      app.debug(`Consolidation complete: ${datesConsolidated} dates processed`);
     }
   } catch (error) {
     app.error(`Failed to consolidate missed days: ${(error as Error).message}`);
@@ -826,7 +851,7 @@ export async function uploadAllConsolidatedFilesToS3(
 
       // Exclude processed/repaired/failed/quarantine directories
       const consolidatedFiles = allConsolidatedFiles.filter(
-        (f) => !excludedDirs.some((dir) => f.includes(dir))
+        f => !excludedDirs.some(dir => f.includes(dir))
       );
 
       for (const filePath of consolidatedFiles) {
@@ -878,7 +903,7 @@ export async function uploadConsolidatedFilesToS3(
 
     // Exclude processed/repaired/failed/quarantine directories
     const filesToUpload = allFiles.filter(
-      (f) => !excludedDirs.some((dir) => f.includes(dir))
+      f => !excludedDirs.some(dir => f.includes(dir))
     );
 
     // Upload each file
@@ -887,10 +912,14 @@ export async function uploadConsolidatedFilesToS3(
     }
 
     if (filesToUpload.length > 0) {
-      app.debug(`S3: Uploaded ${filesToUpload.length} files for ${dateStr} (consolidated + aggregated)`);
+      app.debug(
+        `S3: Uploaded ${filesToUpload.length} files for ${dateStr} (consolidated + aggregated)`
+      );
     }
   } catch (error) {
-    app.error(`S3 upload failed for date ${date.toISOString().slice(0, 10)}: ${(error as Error).message}`);
+    app.error(
+      `S3 upload failed for date ${date.toISOString().slice(0, 10)}: ${(error as Error).message}`
+    );
   }
 }
 

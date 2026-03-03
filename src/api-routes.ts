@@ -621,7 +621,12 @@ export function registerApiRoutes(
   // S3 compare job storage
   interface S3CompareJob {
     id: string;
-    status: 'scanning_local' | 'scanning_s3' | 'comparing' | 'completed' | 'error';
+    status:
+      | 'scanning_local'
+      | 'scanning_s3'
+      | 'comparing'
+      | 'completed'
+      | 'error';
     phase: string;
     localFilesScanned: number;
     localFilesTotal: number;
@@ -688,7 +693,9 @@ export function registerApiRoutes(
 
           // Phase 1: Scan local files
           job.phase = 'Discovering local files...';
-          const allLocalFiles = await glob(path.join(dataDir, '**', '*.parquet'));
+          const allLocalFiles = await glob(
+            path.join(dataDir, '**', '*.parquet')
+          );
 
           // Exclude processed/repaired/failed/quarantine directories
           const excludedDirs = [
@@ -698,7 +705,7 @@ export function registerApiRoutes(
             '/quarantine/',
           ];
           const localFiles = allLocalFiles.filter(
-            (f) => !excludedDirs.some((dir) => f.includes(dir))
+            f => !excludedDirs.some(dir => f.includes(dir))
           );
           job.localFilesTotal = localFiles.length;
 
@@ -919,7 +926,7 @@ export function registerApiRoutes(
               '/quarantine/',
             ];
             const localFiles = allLocalFiles.filter(
-              (f) => !excludedDirs.some((dir) => f.includes(dir))
+              f => !excludedDirs.some(dir => f.includes(dir))
             );
 
             job.phase = 'Listing S3 objects...';

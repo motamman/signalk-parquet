@@ -417,11 +417,21 @@ export function registerHistoryApiProvider(
   const provider = new HistoryProvider(selfId, dataDir, app, debug);
 
   // Debug: Check if registerHistoryApiProvider exists on app
-  console.log('[signalk-parquet] app.registerHistoryApiProvider exists:', typeof (app as any).registerHistoryApiProvider);
+  console.log(
+    '[signalk-parquet] app.registerHistoryApiProvider exists:',
+    typeof (app as any).registerHistoryApiProvider
+  );
 
   if (typeof (app as any).registerHistoryApiProvider !== 'function') {
-    console.error('[signalk-parquet] ERROR: app.registerHistoryApiProvider is not a function!');
-    console.error('[signalk-parquet] Available app methods:', Object.keys(app).filter(k => typeof (app as any)[k] === 'function').join(', '));
+    console.error(
+      '[signalk-parquet] ERROR: app.registerHistoryApiProvider is not a function!'
+    );
+    console.error(
+      '[signalk-parquet] Available app methods:',
+      Object.keys(app)
+        .filter(k => typeof (app as any)[k] === 'function')
+        .join(', ')
+    );
     return;
   }
 
