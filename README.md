@@ -7,11 +7,14 @@ A comprehensive SignalK plugin and webapp that saves SignalK data directly to Pa
 ### Core Data Management
 - **Smart Data Types**: Intelligent Parquet schema detection preserves native data types (DOUBLE, BOOLEAN) instead of forcing everything to strings
 - **Multiple File Formats**: Support for Parquet, JSON, and CSV output formats (querying in parquet only)
-- **Daily Consolidation**: Automatic daily file consolidation with S3 upload capabilities
-- **🆕 SQLite WAL Buffering**: Crash-safe data ingestion with Write-Ahead Logging
+- **Daily Export Pipeline**: Simplified daily export creates consolidated Parquet files directly
+  - Data accumulates in SQLite buffer throughout the day
+  - Single export at configurable hour (default: 4 AM UTC)
+  - No separate consolidation step needed
+- **SQLite WAL Buffering**: Crash-safe data ingestion with Write-Ahead Logging
   - Replaces in-memory buffers with persistent SQLite database
   - Automatic recovery after power loss or crashes
-  - Configurable export intervals to Parquet files
+  - 48-hour retention for federated queries
 - **🆕 Hive-Partitioned Storage**: Efficient file organization for query performance
   - Structure: `tier=raw/context={ctx}/path={path}/year={year}/day={day}/`
   - Aggregation tiers: `raw`, `5s`, `60s`, `1h`
@@ -153,7 +156,7 @@ find data -name "processed" -type d -exec rm -rf {} +
 find data -path "*/processed/processed/*" -type f | wc -l  # Should show 0
 ```
 
-**Note**: The processed directories only contain files that were moved during consolidation - removing them does not delete your original data.
+**Note**: The processed directories contain legacy files from the old consolidation system. The new daily export pipeline no longer uses this directory.
 
 ### Development Setup
 
@@ -199,9 +202,9 @@ Configure basic plugin settings (path configuration is managed separately in the
 | **Filename Prefix** | Prefix for generated filenames | `signalk_data` |
 | **File Format** | Output format (parquet, json, csv) | `parquet` |
 | **Retention Days** | Days to keep processed files | 7 |
-| **Export Interval** | How often to export from SQLite buffer to Parquet (minutes) | 5 |
+| **Daily Export Hour** | Hour (0-23 UTC) to run daily Parquet export | 4 |
 | **Export Batch Size** | Max records to export per cycle (1,000-200,000) | 50000 |
-| **Buffer Retention Hours** | How long to keep exported records in SQLite (hours) | 24 |
+| **Buffer Retention Hours** | How long to keep exported records in SQLite (hours) | 48 |
 | **Enable Raw SQL** | Enable /api/query endpoint for raw SQL queries | `false` |
 
 ### Auto-Discovery Configuration
@@ -231,7 +234,7 @@ Configure S3 upload settings in the plugin configuration:
 | Setting | Description | Default |
 |---------|-------------|---------|
 | **Enable S3 Upload** | Enable uploading to Amazon S3 | `false` |
-| **Upload Timing** | When to upload (realtime/consolidation) | `consolidation` |
+| **Upload Timing** | When to upload (realtime/daily) | `consolidation` |
 | **S3 Bucket** | Name of S3 bucket | - |
 | **AWS Region** | AWS region for S3 bucket | `us-east-1` |
 | **Key Prefix** | S3 object key prefix | - |
@@ -424,10 +427,8 @@ output_directory/
 │   └── [aggregated 1-minute data]
 ├── tier=1h/
 │   └── [aggregated hourly data]
-├── buffer.db              <- SQLite WAL buffer
-├── buffer.db-wal          <- Write-ahead log
-└── processed/
-    └── [moved files after consolidation]
+├── buffer.db              <- SQLite WAL buffer (48h retention)
+└── buffer.db-wal          <- Write-ahead log
 ```
 
 **Partition Structure:**
@@ -1347,7 +1348,7 @@ Point 5: Value=5.5, EMA=5.42,  SMA=5.5  // Rolling 10-point SMA window
 }
 ```
 
-**Consolidation Upload**: Files are uploaded after daily consolidation
+**Daily Upload**: Files are uploaded after the daily export
 ```json
 {
   "s3Upload": {
@@ -1359,21 +1360,22 @@ Point 5: Value=5.5, EMA=5.42,  SMA=5.5  // Rolling 10-point SMA window
 
 ### S3 Key Structure
 
-With prefix `marine-data/`:
+With prefix `marine-data/` and Hive partitioning:
 ```
-marine-data/vessels/self/navigation/position/signalk_data_20250716_consolidated.parquet
-marine-data/vessels/self/environment/wind/angleApparent/signalk_data_20250716_120000.parquet
+marine-data/tier=raw/context=vessels__self/path=navigation__position/year=2026/day=062/signalk_data_2026-03-03T0400.parquet
 ```
 
-## File Consolidation
+## Daily Export
 
-The plugin automatically consolidates files daily at midnight UTC:
+The plugin uses a simplified daily export pipeline:
 
-1. **File Discovery**: Finds all files for the previous day
-2. **Merging**: Combines files by SignalK path
-3. **Sorting**: Sorts records by timestamp
-4. **Cleanup**: Moves source files to `processed/` directory
-5. **S3 Upload**: Uploads consolidated files if configured
+1. **Data Collection**: SignalK data is buffered in crash-safe SQLite WAL database
+2. **Daily Export**: At configurable hour (default: 4 AM UTC), exports previous day's data
+3. **Direct Consolidation**: Creates one Parquet file per context/path/day (no separate merge step)
+4. **Timestamped Files**: Each export uses current timestamp for unique filenames
+5. **S3 Upload**: Uploads daily files if configured
+
+**Note**: The previous 5-minute interval export and separate consolidation step have been removed. This simplifies the pipeline and creates cleaner daily files directly.
 
 ## Performance Characteristics
 
@@ -1414,7 +1416,7 @@ The plugin uses a modular TypeScript architecture for maintainability:
 
 - **`index.ts`**: Plugin lifecycle, configuration, and initialization
 - **`commands.ts`**: SignalK command registration, execution, and management
-- **`data-handler.ts`**: Data subscriptions, buffering, consolidation, and S3 operations
+- **`data-handler.ts`**: Data subscriptions, buffering, and S3 operations
 - **`api-routes.ts`**: REST API endpoints for web interface
 - **`types.ts`**: Comprehensive TypeScript type definitions
 - **`utils/`**: Utility functions and helpers
@@ -1534,7 +1536,7 @@ curl "http://localhost:3000/signalk/v1/history/contexts"
 
 ## TODO
 
-- [x] Implement startup consolidation for missed previous days (exclude current day)
+- [x] Implement daily export pipeline (replaced consolidation)
 - [x] Add history API integration
 - [x] S3 federated querying with DuckDB
 - [x] Spatial correlation for non-position paths
@@ -1559,27 +1561,16 @@ curl "http://localhost:3000/signalk/v1/history/contexts"
 
 See [CHANGELOG.md](CHANGELOG.md) for complete version history.
 
-### Upcoming Release
+### Recent Major Changes (v0.7.4)
+- **📦 Simplified Export Pipeline**: Replaced 5-minute interval exports with daily export mode
+  - Data accumulates in SQLite buffer throughout the day
+  - Single export at configurable hour (default: 4 AM UTC)
+  - Creates consolidated files directly (no separate consolidation step)
 - **🗄️ SQLite WAL Buffering**: Crash-safe data ingestion with Write-Ahead Logging
-  - Replaces in-memory buffers with persistent SQLite database
+  - 48-hour retention for federated queries
   - Automatic recovery after power loss or crashes
-  - Configurable export intervals and retention
-- **🏗️ Hive-Partitioned Storage**: Efficient file organization
-  - Structure: `tier=/context=/path=/year=/day=/`
-  - Aggregation tiers: `raw`, `5s`, `60s`, `1h`
-  - 70-90% data transfer reduction through partition pruning
+- **🏗️ Hive-Partitioned Storage**: Efficient file organization with partition pruning
 - **🔄 Migration Service**: Convert legacy flat structure to Hive partitioning
-  - Scan, migrate, and track progress via API
-  - Optional deletion of source files after migration
 - **🔍 Auto-Discovery**: Automatic path configuration on first query
-  - On-demand configuration when History API queries unconfigured paths
-  - Include/exclude glob patterns for control
-  - Optional live data requirement
 - **🌐 S3 Federated Querying**: Query historical data directly from S3 using DuckDB
-  - Automatic partition pruning reduces data transfer by 70-90%
-  - Hybrid local+S3 queries span retention boundary automatically
-  - New `?source=` parameter: `auto`, `local`, `s3`
 - **🎯 Spatial Correlation**: Filter any sensor data by vessel location
-  - Query "wind data when vessel was within this area"
-  - Works with bounding box (`bbox`) and radius filters on any path
-  - New `positionPath` parameter for custom position source
