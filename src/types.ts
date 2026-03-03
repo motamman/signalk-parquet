@@ -62,11 +62,12 @@ export interface PluginConfig {
   };
   // SQLite buffer and Hive partitioning options
   useSqliteBuffer?: boolean; // Use SQLite WAL buffer instead of in-memory LRU
-  exportIntervalMinutes?: number; // How often to export from SQLite to Parquet (default 5)
+  exportIntervalMinutes?: number; // DEPRECATED: How often to export from SQLite to Parquet (default 5)
   exportBatchSize?: number; // Max records to export per cycle (default 10000)
-  bufferRetentionHours?: number; // How long to keep exported records in SQLite (default 24)
-  consolidationLookbackDays?: number; // Days to scan back for unconsolidated files (default 30)
+  bufferRetentionHours?: number; // How long to keep exported records in SQLite (default 48)
+  consolidationLookbackDays?: number; // DEPRECATED: Days to scan back for unconsolidated files (default 30)
   useHivePartitioning?: boolean; // Use Hive-style partitioning for Parquet files
+  dailyExportHour?: number; // Hour (0-23 UTC) to run daily export (default 4 = 4 AM UTC)
   autoDiscovery?: AutoDiscoveryConfig; // Auto-discovery configuration
   enableRawSql?: boolean; // Enable raw SQL queries via /api/query endpoint
 }
@@ -533,6 +534,20 @@ export interface SQLiteBufferInterface {
   ): DataRecord[];
   getDbPath(): string;
   close(): void;
+  // Daily export methods
+  getDatesWithUnexportedRecords(excludeToday?: boolean): string[];
+  getPathsForDate(date: Date): Array<{ context: string; path: string }>;
+  getRecordsForPathAndDate(
+    context: string,
+    signalkPath: string,
+    date: Date
+  ): { records: DataRecord[]; ids: number[] };
+  markDateExported(
+    context: string,
+    signalkPath: string,
+    date: Date,
+    batchId: string
+  ): void;
 }
 
 // Forward declaration for ParquetExportService to avoid circular dependency
@@ -546,13 +561,30 @@ export interface ParquetExportServiceInterface {
     duration: number;
     errors: string[];
   }>;
+  // Daily export methods
+  exportDayToParquet(targetDate: Date): Promise<{
+    batchId: string;
+    recordsExported: number;
+    filesCreated: string[];
+    duration: number;
+    errors: string[];
+  }>;
+  exportAllUnexported(): Promise<{
+    batchId: string;
+    recordsExported: number;
+    filesCreated: string[];
+    duration: number;
+    errors: string[];
+  }>;
   getStatus(): {
     isRunning: boolean;
     isExporting: boolean;
     lastExportTime: Date | null;
+    lastBatchExported: number;
     totalExported: number;
     pendingRecords: number;
     exportIntervalMinutes: number;
+    mode: 'daily' | 'interval';
   };
   getHealth(): {
     healthy: boolean;
@@ -596,11 +628,6 @@ export interface ParquetWriter {
   writeJSON(filepath: string, records: DataRecord[]): Promise<string>;
   writeCSV(filepath: string, records: DataRecord[]): Promise<string>;
   writeParquet(filepath: string, records: DataRecord[]): Promise<string>;
-  consolidateDaily(
-    outputDirectory: string,
-    date: Date,
-    filenamePrefix: string
-  ): Promise<number>;
   getSchemaService(): SchemaService | undefined;
 }
 

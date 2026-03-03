@@ -618,7 +618,8 @@ export class HistoryAPI {
   }
 
   /**
-   * Query recent data from SQLite buffer (within export interval)
+   * Query recent data from SQLite buffer
+   * With daily exports, data can sit in SQLite for up to 48 hours before export
    * Returns records for a specific context and path
    */
   private getRecentBufferData(
@@ -632,10 +633,13 @@ export class HistoryAPI {
       return [];
     }
 
+    // With daily exports, SQLite buffer holds up to 48 hours of data
+    // Query buffer for any data within retention period (not just export interval)
+    const bufferRetentionHours = 48;
     const cutoffTime = new Date();
-    cutoffTime.setMinutes(cutoffTime.getMinutes() - this.exportIntervalMinutes);
+    cutoffTime.setHours(cutoffTime.getHours() - bufferRetentionHours);
 
-    // Only query buffer if 'to' time is recent (within export interval)
+    // Only query buffer if 'to' time is within buffer retention period
     const toDate = new Date(to.toInstant().toString());
     if (toDate < cutoffTime) {
       debug(
@@ -644,19 +648,18 @@ export class HistoryAPI {
       return [];
     }
 
-    // Adjust 'from' to be at least the cutoff time for buffer query
+    // Query from the requested time, buffer will return what it has
     const fromDate = new Date(from.toInstant().toString());
-    const bufferFrom = fromDate > cutoffTime ? fromDate : cutoffTime;
 
     debug(
-      `Querying SQLite buffer for recent data: ${context}:${signalkPath} from ${bufferFrom.toISOString()}`
+      `Querying SQLite buffer for recent data: ${context}:${signalkPath} from ${fromDate.toISOString()}`
     );
 
     try {
       const records = this.sqliteBuffer.getRecordsForPath(
         context,
         signalkPath,
-        bufferFrom.toISOString(),
+        fromDate.toISOString(),
         toDate.toISOString()
       );
       debug(`Found ${records.length} records in SQLite buffer`);

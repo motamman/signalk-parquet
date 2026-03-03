@@ -698,130 +698,14 @@ export function initializeRegimenStates(
   });
 }
 
-// Startup consolidation for missed previous days (last 7 days, excludes current day)
-export async function consolidateMissedDays(
-  config: PluginConfig,
-  state: PluginState,
-  app: ServerAPI
-): Promise<void> {
-  try {
-    const outputDir = config.outputDirectory;
-    if (!(await fs.pathExists(outputDir))) {
-      return;
-    }
-
-    const today = new Date();
-    today.setUTCHours(0, 0, 0, 0);
-
-    // Scan and consolidate each day immediately (no separate phases)
-    const prefix = config.filenamePrefix || 'signalk_data';
-    const daysToCheck = config.consolidationLookbackDays || 30;
-    let datesConsolidated = 0;
-
-    for (let daysAgo = 1; daysAgo <= daysToCheck; daysAgo++) {
-      const targetDate = new Date(today);
-      targetDate.setUTCDate(today.getUTCDate() - daysAgo);
-      const dateStr = targetDate.toISOString().slice(0, 10); // "2025-07-14"
-
-      // Targeted glob: only match files from this specific date
-      const datePattern = path.join(
-        outputDir,
-        `**/${prefix}_${dateStr}T*.parquet`
-      );
-      const filesForDate = await glob(datePattern);
-
-      // Check if there are unconsolidated files for this date
-      const hasUnconsolidatedFiles = filesForDate.some(
-        f => !f.includes('_consolidated.parquet')
-      );
-
-      if (hasUnconsolidatedFiles) {
-        app.debug(
-          `Found unconsolidated files for ${dateStr}, consolidating...`
-        );
-
-        try {
-          const date = new Date(
-            parseInt(dateStr.slice(0, 4)),
-            parseInt(dateStr.slice(5, 7)) - 1,
-            parseInt(dateStr.slice(8, 10))
-          );
-
-          const consolidatedCount = await state.parquetWriter!.consolidateDaily(
-            config.outputDirectory,
-            date,
-            config.filenamePrefix
-          );
-
-          if (consolidatedCount > 0) {
-            datesConsolidated++;
-            app.debug(
-              `Consolidated ${dateStr}: ${consolidatedCount} directories`
-            );
-
-            // Upload consolidated files to S3 if enabled and timing is consolidation
-            if (
-              config.s3Upload.enabled &&
-              config.s3Upload.timing === 'consolidation'
-            ) {
-              await uploadConsolidatedFilesToS3(config, date, state, app);
-            }
-          }
-        } catch (dateError) {
-          app.error(
-            `Failed to consolidate ${dateStr}: ${(dateError as Error).message}`
-          );
-          // Continue with next date instead of aborting
-        }
-      }
-    }
-
-    if (datesConsolidated > 0) {
-      app.debug(`Consolidation complete: ${datesConsolidated} dates processed`);
-    }
-  } catch (error) {
-    app.error(`Failed to consolidate missed days: ${(error as Error).message}`);
-    app.debug(`Consolidation error stack: ${(error as Error).stack}`);
-  }
-}
-
-// Daily consolidation function
-export async function consolidateYesterday(
-  config: PluginConfig,
-  state: PluginState,
-  app: ServerAPI
-): Promise<void> {
-  try {
-    const yesterday = new Date();
-    yesterday.setUTCDate(yesterday.getUTCDate() - 1);
-
-    const consolidatedCount = await state.parquetWriter!.consolidateDaily(
-      config.outputDirectory,
-      yesterday,
-      config.filenamePrefix
-    );
-
-    if (consolidatedCount > 0) {
-      // Upload consolidated files to S3 if enabled and timing is consolidation
-      if (
-        config.s3Upload.enabled &&
-        config.s3Upload.timing === 'consolidation'
-      ) {
-        await uploadConsolidatedFilesToS3(config, yesterday, state, app);
-      }
-    }
-  } catch (error) {
-    app.error(
-      `Failed to consolidate yesterday's files: ${(error as Error).message}`
-    );
-    app.debug(`Consolidation error stack: ${(error as Error).stack}`);
-  }
-}
+// REMOVED: consolidateMissedDays() and consolidateYesterday()
+// These functions have been replaced by the daily export system in parquet-export-service.ts
+// The new exportDayToParquet() creates consolidated daily files directly
 
 // Directories to exclude from S3 uploads
 const excludedDirs = ['/processed/', '/repaired/', '/failed/', '/quarantine/'];
 
-// Upload all existing consolidated files to S3 (for catching up after BigInt fix)
+// Upload all existing consolidated and aggregated files to S3 (for catching up)
 // Uses targeted date patterns to avoid scanning 100k+ files on large datasets
 export async function uploadAllConsolidatedFilesToS3(
   config: PluginConfig,
@@ -841,20 +725,41 @@ export async function uploadAllConsolidatedFilesToS3(
       targetDate.setUTCDate(today.getUTCDate() - daysAgo);
       const dateStr = targetDate.toISOString().slice(0, 10); // "2025-07-14"
 
-      // Targeted glob: only match consolidated files from this specific date
+      // Match both consolidated AND aggregated parquet files for this date
       const consolidatedPattern = `**/${prefix}_${dateStr}_consolidated.parquet`;
+      const aggregatedPattern = `**/${prefix}_${dateStr}_aggregated.parquet`;
+      // Also match daily export files (includes timestamped files)
+      const dailyPattern = `**/${prefix}_${dateStr}*.parquet`;
+
       const allConsolidatedFiles = await glob(consolidatedPattern, {
         cwd: config.outputDirectory,
         absolute: true,
         nodir: true,
       });
 
-      // Exclude processed/repaired/failed/quarantine directories
-      const consolidatedFiles = allConsolidatedFiles.filter(
+      const allAggregatedFiles = await glob(aggregatedPattern, {
+        cwd: config.outputDirectory,
+        absolute: true,
+        nodir: true,
+      });
+
+      const allDailyFiles = await glob(dailyPattern, {
+        cwd: config.outputDirectory,
+        absolute: true,
+        nodir: true,
+      });
+
+      // Combine all files and exclude processed/repaired/failed/quarantine directories
+      const allFiles = [
+        ...allConsolidatedFiles,
+        ...allAggregatedFiles,
+        ...allDailyFiles,
+      ];
+      const filesToUpload = allFiles.filter(
         f => !excludedDirs.some(dir => f.includes(dir))
       );
 
-      for (const filePath of consolidatedFiles) {
+      for (const filePath of filesToUpload) {
         const success = await uploadToS3(filePath, config, state, app);
         if (success) uploadedCount++;
       }
@@ -862,7 +767,7 @@ export async function uploadAllConsolidatedFilesToS3(
 
     if (uploadedCount > 0) {
       app.debug(
-        `S3 catchup: uploaded ${uploadedCount} consolidated files from last ${daysToCheck} days`
+        `S3 catchup: uploaded ${uploadedCount} files from last ${daysToCheck} days (consolidated + aggregated + daily)`
       );
     }
   } catch (error) {
@@ -870,7 +775,7 @@ export async function uploadAllConsolidatedFilesToS3(
   }
 }
 
-// Upload consolidated and aggregated files to S3
+// Upload daily export, consolidated, and aggregated files to S3
 export async function uploadConsolidatedFilesToS3(
   config: PluginConfig,
   date: Date,
@@ -879,12 +784,23 @@ export async function uploadConsolidatedFilesToS3(
 ): Promise<void> {
   try {
     const dateStr = date.toISOString().split('T')[0];
+    const prefix = config.filenamePrefix || 'signalk_data';
 
-    // Match both consolidated AND aggregated parquet files for this date
+    // Match daily export files (new simplified pipeline) - includes timestamped files
+    const dailyPattern = `**/${prefix}_${dateStr}*.parquet`;
+    // Match legacy consolidated files (for backwards compatibility)
     const consolidatedPattern = `**/*_${dateStr}_consolidated.parquet`;
+    // Match aggregated files (from tier aggregation)
     const aggregatedPattern = `**/*_${dateStr}_aggregated.parquet`;
 
-    // Find all consolidated files for the date
+    // Find all daily export files for the date (new pipeline)
+    const dailyFiles = await glob(dailyPattern, {
+      cwd: config.outputDirectory,
+      absolute: true,
+      nodir: true,
+    });
+
+    // Find all consolidated files for the date (legacy)
     const consolidatedFiles = await glob(consolidatedPattern, {
       cwd: config.outputDirectory,
       absolute: true,
@@ -898,8 +814,8 @@ export async function uploadConsolidatedFilesToS3(
       nodir: true,
     });
 
-    // Combine both lists
-    const allFiles = [...consolidatedFiles, ...aggregatedFiles];
+    // Combine all lists
+    const allFiles = [...dailyFiles, ...consolidatedFiles, ...aggregatedFiles];
 
     // Exclude processed/repaired/failed/quarantine directories
     const filesToUpload = allFiles.filter(
@@ -913,7 +829,7 @@ export async function uploadConsolidatedFilesToS3(
 
     if (filesToUpload.length > 0) {
       app.debug(
-        `S3: Uploaded ${filesToUpload.length} files for ${dateStr} (consolidated + aggregated)`
+        `S3: Uploaded ${filesToUpload.length} files for ${dateStr} (daily + consolidated + aggregated)`
       );
     }
   } catch (error) {

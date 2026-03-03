@@ -464,6 +464,133 @@ export class SQLiteBuffer {
   }
 
   /**
+   * Get distinct dates that have unexported records, excluding today
+   * Used at startup to catch up on missed exports without creating partial day files
+   *
+   * @param excludeToday If true (default), excludes today's date to avoid partial exports
+   */
+  getDatesWithUnexportedRecords(excludeToday: boolean = true): string[] {
+    if (!this.db.open) {
+      return [];
+    }
+
+    let query = `
+      SELECT DISTINCT date(received_timestamp) as record_date
+      FROM buffer_records
+      WHERE exported = 0
+    `;
+
+    if (excludeToday) {
+      query += ` AND date(received_timestamp) < date('now')`;
+    }
+
+    query += ` ORDER BY record_date ASC`;
+
+    const stmt = this.db.prepare(query);
+    const rows = stmt.all() as Array<{ record_date: string }>;
+    return rows.map(r => r.record_date);
+  }
+
+  /**
+   * Get distinct context/path combinations for a specific date (UTC)
+   * Used for daily export to determine which paths have data for a given day
+   */
+  getPathsForDate(date: Date): Array<{ context: string; path: string }> {
+    if (!this.db.open) {
+      return [];
+    }
+
+    const dateStr = date.toISOString().slice(0, 10); // YYYY-MM-DD
+    const startOfDay = `${dateStr}T00:00:00.000Z`;
+    const endOfDay = `${dateStr}T23:59:59.999Z`;
+
+    const stmt = this.db.prepare(`
+      SELECT DISTINCT context, path
+      FROM buffer_records
+      WHERE received_timestamp >= ? AND received_timestamp <= ?
+        AND exported = 0
+      ORDER BY context, path
+    `);
+
+    return stmt.all(startOfDay, endOfDay) as Array<{
+      context: string;
+      path: string;
+    }>;
+  }
+
+  /**
+   * Get all records for a specific context, path, and date (UTC)
+   * Returns records with their IDs for marking as exported
+   */
+  getRecordsForPathAndDate(
+    context: string,
+    signalkPath: string,
+    date: Date
+  ): { records: DataRecord[]; ids: number[] } {
+    if (!this.db.open) {
+      return { records: [], ids: [] };
+    }
+
+    const dateStr = date.toISOString().slice(0, 10); // YYYY-MM-DD
+    const startOfDay = `${dateStr}T00:00:00.000Z`;
+    const endOfDay = `${dateStr}T23:59:59.999Z`;
+
+    const stmt = this.db.prepare(`
+      SELECT * FROM buffer_records
+      WHERE context = ? AND path = ?
+        AND received_timestamp >= ? AND received_timestamp <= ?
+        AND exported = 0
+      ORDER BY received_timestamp ASC
+    `);
+
+    const bufferRecords = stmt.all(
+      context,
+      signalkPath,
+      startOfDay,
+      endOfDay
+    ) as BufferRecord[];
+
+    const records: DataRecord[] = [];
+    const ids: number[] = [];
+
+    for (const record of bufferRecords) {
+      records.push(this.bufferRecordToDataRecord(record));
+      ids.push(record.id);
+    }
+
+    return { records, ids };
+  }
+
+  /**
+   * Mark records for a specific date as exported
+   * Used after successful daily export
+   */
+  markDateExported(
+    context: string,
+    signalkPath: string,
+    date: Date,
+    batchId: string
+  ): void {
+    if (!this.db.open) {
+      return;
+    }
+
+    const dateStr = date.toISOString().slice(0, 10); // YYYY-MM-DD
+    const startOfDay = `${dateStr}T00:00:00.000Z`;
+    const endOfDay = `${dateStr}T23:59:59.999Z`;
+
+    const stmt = this.db.prepare(`
+      UPDATE buffer_records
+      SET exported = 1, export_batch_id = ?
+      WHERE context = ? AND path = ?
+        AND received_timestamp >= ? AND received_timestamp <= ?
+        AND exported = 0
+    `);
+
+    stmt.run(batchId, context, signalkPath, startOfDay, endOfDay);
+  }
+
+  /**
    * Get the database path
    */
   getDbPath(): string {
