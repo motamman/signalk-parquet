@@ -334,24 +334,37 @@ async function checkDataIntegrity(sqliteStats, parquetStats) {
 
 async function queryWithDuckDB() {
   log('\n═══════════════════════════════════════════════════════════════', colors.cyan);
-  log('  DUCKDB PARQUET QUERY TEST', colors.cyan);
+  log('  DUCKDB NODE-API QUERY TEST', colors.cyan);
   log('═══════════════════════════════════════════════════════════════', colors.cyan);
 
-  let duckdb;
+  let DuckDBInstance;
   try {
-    duckdb = require('duckdb');
+    DuckDBInstance = require('@duckdb/node-api').DuckDBInstance;
   } catch (e) {
-    log('  ℹ DuckDB not available for direct queries', colors.dim);
+    log(`  ✗ @duckdb/node-api not available: ${e.message}`, colors.red);
     return null;
   }
 
-  const db = new duckdb.Database(':memory:');
-  const conn = db.connect();
+  try {
+    log('\n  Testing @duckdb/node-api...', colors.blue);
 
-  return new Promise((resolve) => {
+    // Test 1: Create instance
+    const instance = await DuckDBInstance.create();
+    log('    ✓ DuckDBInstance.create() succeeded', colors.green);
+
+    // Test 2: Connect
+    const connection = await instance.connect();
+    log('    ✓ instance.connect() succeeded', colors.green);
+
+    // Test 3: Load spatial extension (like DuckDBPool does)
+    await connection.runAndReadAll('INSTALL spatial;');
+    await connection.runAndReadAll('LOAD spatial;');
+    log('    ✓ Spatial extension loaded', colors.green);
+
+    // Test 4: Query parquet files
     const parquetPattern = path.join(PARQUET_DIR, '**/*.parquet');
 
-    conn.all(`
+    const result = await connection.runAndReadAll(`
       SELECT
         DATE(received_timestamp) as date,
         COUNT(*) as records
@@ -359,31 +372,119 @@ async function queryWithDuckDB() {
       WHERE filename NOT LIKE '%/processed/%'
         AND filename NOT LIKE '%/quarantine/%'
         AND filename NOT LIKE '%/failed/%'
+        AND filename NOT LIKE '%/repaired/%'
       GROUP BY date
       ORDER BY date DESC
       LIMIT 7
-    `, (err, result) => {
-      if (err) {
-        log(`  ✗ Query failed: ${err.message}`, colors.red);
-        resolve(null);
-        return;
+    `);
+
+    const rows = result.getRowObjects();
+    log('    ✓ Parquet query succeeded', colors.green);
+
+    log('\n  Recent Data in Parquet (by date):', colors.blue);
+    log('    ┌────────────┬────────────┐');
+    log('    │    Date    │  Records   │');
+    log('    ├────────────┼────────────┤');
+
+    for (const row of rows) {
+      const dateStr = row.date ? String(row.date).slice(0, 10) : 'unknown';
+      const count = typeof row.records === 'bigint' ? Number(row.records) : row.records;
+      log(`    │ ${dateStr.padEnd(10)} │ ${formatNumber(count).padStart(10)} │`);
+    }
+    log('    └────────────┴────────────┘');
+
+    // Cleanup
+    connection.disconnectSync();
+    log('    ✓ Connection cleanup succeeded', colors.green);
+
+    return rows;
+  } catch (err) {
+    log(`  ✗ DuckDB test failed: ${err.message}`, colors.red);
+    if (VERBOSE) {
+      log(`    Stack: ${err.stack}`, colors.dim);
+    }
+    return null;
+  }
+}
+
+async function testHivePathDiscovery() {
+  log('\n═══════════════════════════════════════════════════════════════', colors.cyan);
+  log('  HIVE PATH DISCOVERY TEST', colors.cyan);
+  log('═══════════════════════════════════════════════════════════════', colors.cyan);
+
+  try {
+    // Check Hive structure exists
+    if (!fs.existsSync(PARQUET_DIR)) {
+      log('  ✗ Hive directory not found: ' + PARQUET_DIR, colors.red);
+      return null;
+    }
+    log('  ✓ Hive directory exists: tier=raw/', colors.green);
+
+    // Find all context directories
+    const contextDirs = fs.readdirSync(PARQUET_DIR)
+      .filter(d => d.startsWith('context=') && fs.statSync(path.join(PARQUET_DIR, d)).isDirectory());
+
+    log(`\n  Found ${contextDirs.length} context(s):`, colors.blue);
+
+    const results = { contexts: [], totalPaths: 0, totalFiles: 0 };
+
+    for (const contextDir of contextDirs) {
+      const contextName = contextDir.replace('context=', '').replace(/__/g, '.');
+      const contextPath = path.join(PARQUET_DIR, contextDir);
+
+      // Find all path directories
+      const pathDirs = fs.readdirSync(contextPath)
+        .filter(d => d.startsWith('path=') && fs.statSync(path.join(contextPath, d)).isDirectory());
+
+      log(`    ${contextName}: ${pathDirs.length} paths`, colors.dim);
+
+      results.contexts.push({
+        name: contextName,
+        pathCount: pathDirs.length
+      });
+      results.totalPaths += pathDirs.length;
+
+      // Count files in first few paths (for verification)
+      if (VERBOSE && pathDirs.length > 0) {
+        for (const pathDir of pathDirs.slice(0, 3)) {
+          const pathName = pathDir.replace('path=', '').replace(/__/g, '.');
+          const fullPath = path.join(contextPath, pathDir);
+          const files = await glob('**/*.parquet', { cwd: fullPath });
+          log(`      ${pathName}: ${files.length} files`, colors.dim);
+          results.totalFiles += files.length;
+        }
+        if (pathDirs.length > 3) {
+          log(`      ... and ${pathDirs.length - 3} more paths`, colors.dim);
+        }
       }
+    }
 
-      log('\n  Recent Data in Parquet (by date):', colors.blue);
-      log('    ┌────────────┬────────────┐');
-      log('    │    Date    │  Records   │');
-      log('    ├────────────┼────────────┤');
+    // Verify year/day structure in a sample path
+    if (contextDirs.length > 0) {
+      const sampleContext = path.join(PARQUET_DIR, contextDirs[0]);
+      const samplePathDirs = fs.readdirSync(sampleContext).filter(d => d.startsWith('path='));
 
-      for (const row of result) {
-        log(`    │ ${row.date} │ ${formatNumber(row.records).padStart(10)} │`);
+      if (samplePathDirs.length > 0) {
+        const samplePath = path.join(sampleContext, samplePathDirs[0]);
+        const yearDirs = fs.readdirSync(samplePath).filter(d => d.startsWith('year='));
+
+        if (yearDirs.length > 0) {
+          log('\n  Hive partition structure verified:', colors.green);
+          log(`    tier=raw/context=.../path=.../year=.../day=.../`, colors.dim);
+
+          const sampleYear = path.join(samplePath, yearDirs[0]);
+          const dayDirs = fs.readdirSync(sampleYear).filter(d => d.startsWith('day='));
+          log(`    Sample: ${yearDirs[0]}/ has ${dayDirs.length} day partitions`, colors.dim);
+        }
       }
-      log('    └────────────┴────────────┘');
+    }
 
-      conn.close();
-      db.close();
-      resolve(result);
-    });
-  });
+    log('\n  ✓ Hive path discovery working correctly', colors.green);
+    return results;
+  } catch (err) {
+    log(`  ✗ Hive path discovery failed: ${err.message}`, colors.red);
+    return null;
+  }
 }
 
 async function main() {
@@ -398,6 +499,7 @@ async function main() {
   const sqliteStats = await checkSQLiteBuffer();
   const parquetStats = await checkParquetFiles();
   await checkDataIntegrity(sqliteStats, parquetStats);
+  await testHivePathDiscovery();
   await queryWithDuckDB();
 
   log('\n═══════════════════════════════════════════════════════════════', colors.cyan);

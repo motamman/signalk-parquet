@@ -1,10 +1,10 @@
 import * as fs from 'fs-extra';
 import * as path from 'path';
 import { Context } from '@signalk/server-api';
-import { DuckDBInstance } from '@duckdb/node-api';
 import { ZonedDateTime } from '@js-joda/core';
 import { debugLogger } from './debug-logger';
 import { CACHE_TTL } from '../config/cache-defaults';
+import { DuckDBPool } from './duckdb-pool';
 
 // Cache for parquet file list
 interface FileListCache {
@@ -71,8 +71,7 @@ export async function getAvailableContextsForTimeRange(
       `[Context Discovery] Querying ${allParquetFiles.length} parquet files for time range ${fromIso} to ${toIso}`
     );
 
-    const duckDB = await DuckDBInstance.create();
-    const connection = await duckDB.connect();
+    const connection = await DuckDBPool.getConnection();
 
     try {
       // Create file list for DuckDB

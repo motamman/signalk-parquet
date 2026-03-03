@@ -631,21 +631,6 @@ export interface ParquetWriter {
   getSchemaService(): SchemaService | undefined;
 }
 
-// DuckDB Related Types
-export interface DuckDBConnection {
-  runAndReadAll(query: string): Promise<DuckDBResult>;
-  disconnectSync(): void;
-}
-
-export interface DuckDBResult {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  getRowObjects(): any[];
-}
-
-export interface DuckDBInstance {
-  connect(): Promise<DuckDBConnection>;
-}
-
 // S3 Related Types
 export interface S3Config {
   region: string;
