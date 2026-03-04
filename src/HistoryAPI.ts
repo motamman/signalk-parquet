@@ -825,15 +825,16 @@ export class HistoryAPI {
         const spatialWhereClause = buildSpatialSqlClause(spatialFilter);
 
         // Query position data with spatial filter to get valid timestamps
+        const spatialTsCol = getTierTimestampColumn(effectiveTier);
         const query = `
           SELECT DISTINCT
             strftime(DATE_TRUNC('seconds',
-              EPOCH_MS(CAST(FLOOR(EPOCH_MS(signalk_timestamp::TIMESTAMP) / ${timeResolutionMillis}) * ${timeResolutionMillis} AS BIGINT))
+              EPOCH_MS(CAST(FLOOR(EPOCH_MS(${spatialTsCol}::TIMESTAMP) / ${timeResolutionMillis}) * ${timeResolutionMillis} AS BIGINT))
             ), '%Y-%m-%dT%H:%M:%SZ') as timestamp
           FROM read_parquet('${localFilePath}', union_by_name=true, filename=true)
           WHERE
-            signalk_timestamp >= '${fromIso}'
-            AND signalk_timestamp < '${toIso}'
+            ${spatialTsCol} >= '${fromIso}'
+            AND ${spatialTsCol} < '${toIso}'
             AND value_latitude IS NOT NULL
             AND value_longitude IS NOT NULL
             AND ${spatialWhereClause}
@@ -1232,17 +1233,18 @@ export class HistoryAPI {
               );
             }
 
+            const objTsCol = getTierTimestampColumn(effectiveTier);
             const dynamicQuery = `
               SELECT
                 strftime(DATE_TRUNC('seconds',
-                  EPOCH_MS(CAST(FLOOR(EPOCH_MS(signalk_timestamp::TIMESTAMP) / ${timeResolutionMillis}) * ${timeResolutionMillis} AS BIGINT))
+                  EPOCH_MS(CAST(FLOOR(EPOCH_MS(${objTsCol}::TIMESTAMP) / ${timeResolutionMillis}) * ${timeResolutionMillis} AS BIGINT))
                 ), '%Y-%m-%dT%H:%M:%SZ') as timestamp,
                 ${componentSelects}
               FROM ${fromClause} AS source_data
               WHERE
-                signalk_timestamp >= '${fromIso}'
+                ${objTsCol} >= '${fromIso}'
                 AND
-                signalk_timestamp < '${toIso}'
+                ${objTsCol} < '${toIso}'
                 AND (${componentWhereConditions})${spatialWhereClause}
               GROUP BY timestamp
               ORDER BY timestamp
@@ -1320,25 +1322,24 @@ export class HistoryAPI {
               `Path ${pathSpec.path}: value_json column ${hasValueJson ? 'exists' : 'does not exist'}`
             );
 
-            // Rebuild the query based on actual column availability
-            const valueJsonSelect = hasValueJson
+            // Rebuild the query based on actual column availability and tier
+            const tsCol = getTierTimestampColumn(effectiveTier);
+            const valueJsonSelect = hasValueJson && effectiveTier === 'raw'
               ? ', FIRST(value_json) as value_json'
               : '';
-            const whereClause = hasValueJson
-              ? '(value IS NOT NULL OR value_json IS NOT NULL)'
-              : 'value IS NOT NULL';
+            const whereClause = getTierWhereClause(effectiveTier, hasValueJson);
 
             const dynamicQuery = `
               SELECT
                 strftime(DATE_TRUNC('seconds',
-                  EPOCH_MS(CAST(FLOOR(EPOCH_MS(signalk_timestamp::TIMESTAMP) / ${timeResolutionMillis}) * ${timeResolutionMillis} AS BIGINT))
+                  EPOCH_MS(CAST(FLOOR(EPOCH_MS(${tsCol}::TIMESTAMP) / ${timeResolutionMillis}) * ${timeResolutionMillis} AS BIGINT))
                 ), '%Y-%m-%dT%H:%M:%SZ') as timestamp,
-                ${getAggregateExpression(pathSpec.aggregateMethod, pathSpec.path, hasValueJson, app, context as string)} as value${valueJsonSelect}
+                ${getTierAggregateExpression(pathSpec.aggregateMethod, pathSpec.path, effectiveTier, hasValueJson, app, context as string)} as value${valueJsonSelect}
               FROM ${fromClause} AS source_data
               WHERE
-                signalk_timestamp >= '${fromIso}'
+                ${tsCol} >= '${fromIso}'
                 AND
-                signalk_timestamp < '${toIso}'
+                ${tsCol} < '${toIso}'
                 AND ${whereClause}
               GROUP BY timestamp
               ORDER BY timestamp
@@ -1998,6 +1999,73 @@ function getValueExpression(pathName: string, hasValueJson: boolean): string {
 
   // For numeric data, try to cast to DOUBLE, fallback to the original value
   return 'TRY_CAST(value AS DOUBLE)';
+}
+
+/**
+ * Get the timestamp column name based on the tier.
+ * Raw tier uses signalk_timestamp, aggregated tiers use bucket_time.
+ */
+function getTierTimestampColumn(tier: string): string {
+  return tier === 'raw' ? 'signalk_timestamp' : 'bucket_time';
+}
+
+/**
+ * Get the aggregate expression for a tier-aware query.
+ * For raw tier, aggregates from raw value column.
+ * For aggregated tiers, uses pre-computed value_avg (or re-aggregates from sin/cos for angular).
+ */
+function getTierAggregateExpression(
+  method: AggregateMethod,
+  pathName: string,
+  tier: string,
+  hasValueJson: boolean,
+  app?: any,
+  context?: string
+): string {
+  // Raw tier: use original aggregate expression
+  if (tier === 'raw') {
+    return getAggregateExpression(method, pathName, hasValueJson, app, context);
+  }
+
+  // Aggregated tier: use pre-computed columns
+  const isAngular = app && context && isAngularPath(pathName, app, context);
+
+  if (isAngular) {
+    // Re-aggregate angular paths using pre-computed sin/cos averages
+    // Weight by sample_count for correct weighted averaging
+    return `ATAN2(
+      SUM(COALESCE(value_sin_avg, SIN(value_avg)) * sample_count) / SUM(sample_count),
+      SUM(COALESCE(value_cos_avg, COS(value_avg)) * sample_count) / SUM(sample_count)
+    )`;
+  }
+
+  // For standard numeric aggregation methods on pre-aggregated data
+  switch (method) {
+    case 'min':
+      return 'MIN(value_min)';
+    case 'max':
+      return 'MAX(value_max)';
+    case 'average':
+    case undefined:
+      // Weighted average using sample_count
+      return 'SUM(value_avg * sample_count) / SUM(sample_count)';
+    default:
+      // For other methods (first, last, median), fall back to value_avg
+      return `${getAggregateFunction(method)}(value_avg)`;
+  }
+}
+
+/**
+ * Get the WHERE clause for null filtering based on tier.
+ * Raw tier checks value column, aggregated tiers check value_avg.
+ */
+function getTierWhereClause(tier: string, hasValueJson: boolean): string {
+  if (tier === 'raw') {
+    return hasValueJson
+      ? '(value IS NOT NULL OR value_json IS NOT NULL)'
+      : 'value IS NOT NULL';
+  }
+  return 'value_avg IS NOT NULL';
 }
 
 /**
