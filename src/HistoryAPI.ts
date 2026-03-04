@@ -1148,27 +1148,40 @@ export class HistoryAPI {
             return `(SELECT * FROM read_parquet('${filePath}', union_by_name=true, filename=true) WHERE filename NOT LIKE '%/processed/%' AND filename NOT LIKE '%/quarantine/%' AND filename NOT LIKE '%/failed/%' AND filename NOT LIKE '%/repaired/%')`;
           };
 
+          // Build FROM clause: local-only by default, hybrid only if S3 has data
           let fromClause: string;
-          if (localFilePath && s3FilePath) {
-            // Hybrid: UNION both sources
+          const localFromClause = localFilePath ? buildFromClause(localFilePath) : null;
+
+          if (s3FilePath && localFromClause) {
+            // Try hybrid: UNION local + S3, fall back to local if S3 glob has no files
             fromClause = `(
-              SELECT * FROM ${buildFromClause(localFilePath)}
+              SELECT * FROM ${localFromClause}
               UNION ALL
               SELECT * FROM ${buildFromClause(s3FilePath)}
             )`;
             debug(`Hybrid query: combining local and S3 sources`);
           } else if (s3FilePath) {
-            // S3 only
             fromClause = buildFromClause(s3FilePath);
-          } else if (localFilePath) {
-            // Local only
-            fromClause = buildFromClause(localFilePath);
+          } else if (localFromClause) {
+            fromClause = localFromClause;
           } else {
-            // No source available (shouldn't happen)
             debug(`No data source available for path ${pathSpec.path}`);
             allData[pathSpec.path] = [];
             return;
           }
+
+          // Run query with S3 fallback — if hybrid/S3 query fails, retry local-only
+          const runQueryWithFallback = async (buildQuery: (fc: string) => string): Promise<any> => {
+            try {
+              return await connection.runAndReadAll(buildQuery(fromClause));
+            } catch (err) {
+              if (s3FilePath && localFromClause) {
+                debug(`Hybrid query failed, falling back to local-only: ${err}`);
+                return await connection.runAndReadAll(buildQuery(localFromClause));
+              }
+              throw err;
+            }
+          };
 
           // Check if this path has object components (value_latitude, value_longitude, etc.)
           // Use local path for schema check (S3 schema should match)
@@ -1221,13 +1234,13 @@ export class HistoryAPI {
             }
 
             const objTsCol = getTierTimestampColumn(effectiveTier);
-            const dynamicQuery = `
+            const buildObjQuery = (fc: string) => `
               SELECT
                 strftime(DATE_TRUNC('seconds',
                   EPOCH_MS(CAST(FLOOR(EPOCH_MS(${objTsCol}::TIMESTAMP) / ${timeResolutionMillis}) * ${timeResolutionMillis} AS BIGINT))
                 ), '%Y-%m-%dT%H:%M:%SZ') as timestamp,
                 ${componentSelects}
-              FROM ${fromClause} AS source_data
+              FROM ${fc} AS source_data
               WHERE
                 ${objTsCol} >= '${fromIso}'
                 AND
@@ -1237,7 +1250,7 @@ export class HistoryAPI {
               ORDER BY timestamp
               `;
 
-            const result = await connection.runAndReadAll(dynamicQuery);
+            const result = await runQueryWithFallback(buildObjQuery);
             const rows = result.getRowObjects();
 
             // Reconstruct objects from aggregated components
@@ -1316,13 +1329,13 @@ export class HistoryAPI {
               : '';
             const whereClause = getTierWhereClause(effectiveTier, hasValueJson);
 
-            const dynamicQuery = `
+            const buildScalarQuery = (fc: string) => `
               SELECT
                 strftime(DATE_TRUNC('seconds',
                   EPOCH_MS(CAST(FLOOR(EPOCH_MS(${tsCol}::TIMESTAMP) / ${timeResolutionMillis}) * ${timeResolutionMillis} AS BIGINT))
                 ), '%Y-%m-%dT%H:%M:%SZ') as timestamp,
                 ${getTierAggregateExpression(pathSpec.aggregateMethod, pathSpec.path, effectiveTier, hasValueJson, app, context as string)} as value${valueJsonSelect}
-              FROM ${fromClause} AS source_data
+              FROM ${fc} AS source_data
               WHERE
                 ${tsCol} >= '${fromIso}'
                 AND
@@ -1332,7 +1345,7 @@ export class HistoryAPI {
               ORDER BY timestamp
               `;
 
-            const result = await connection.runAndReadAll(dynamicQuery);
+            const result = await runQueryWithFallback(buildScalarQuery);
             const rows = result.getRowObjects();
 
             // Convert rows to the expected format using bucketed timestamps
