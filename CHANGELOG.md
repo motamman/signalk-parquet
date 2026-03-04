@@ -1,5 +1,32 @@
 # Changelog
 
+## [0.7.6-beta.5] - 2026-03-04
+
+### Fixed
+
+- **Query Source Routing Bypassing Local Data** - Fixed `getQuerySource` returning `'s3'` for data older than retention period, completely skipping local Parquet files
+  - Queries now always include local data (SQLite buffer + Parquet)
+  - S3 only supplements for date ranges before the earliest local Parquet data
+
+- **S3 Hybrid Query Failure** - Fixed S3 UNION queries breaking local results when S3 glob matches no files
+  - DuckDB `read_parquet` on empty S3 glob caused the entire UNION (including local) to fail
+  - Now gracefully falls back to local-only when S3 portion errors
+
+### Added
+
+- **S3 Supplement Logic** - S3 queries only for dates before earliest local data
+  - `findEarliestDate()` scans Hive partition directories to determine local data boundary
+  - No S3 calls unless the requested date range extends before local coverage
+  - Follows priority: SQLite buffer → local Parquet → S3 (for older data only)
+
+- **Aggregation Test Script** - New `tests/aggregate-all-dates.py`
+  - Scans Hive directories for all dates with raw tier data
+  - Triggers aggregation API for each date
+  - Supports `--year` filter and custom data directory
+  - Run: `python3 tests/aggregate-all-dates.py --token TOKEN`
+
+---
+
 ## [0.7.5-beta.4] - 2026-03-04
 
 ### Changed
