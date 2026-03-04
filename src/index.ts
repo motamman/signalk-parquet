@@ -285,12 +285,15 @@ export default function (app: ServerAPI): SignalKPlugin {
       yesterday.setUTCDate(yesterday.getUTCDate() - 1);
       yesterday.setUTCHours(0, 0, 0, 0);
 
-      app.debug(`[DailyExport] Running daily export for ${yesterday.toISOString().slice(0, 10)}`);
+      app.debug(
+        `[DailyExport] Running daily export for ${yesterday.toISOString().slice(0, 10)}`
+      );
 
       try {
         // Export yesterday's data to daily Parquet files
         if (state.exportService) {
-          const result = await state.exportService.exportDayToParquet(yesterday);
+          const result =
+            await state.exportService.exportDayToParquet(yesterday);
           app.debug(
             `[DailyExport] Exported ${result.recordsExported} records to ${result.filesCreated.length} files`
           );
@@ -316,7 +319,9 @@ export default function (app: ServerAPI): SignalKPlugin {
                 );
               }
             } catch (aggErr) {
-              app.error(`[DailyExport] Aggregation failed: ${(aggErr as Error).message}`);
+              app.error(
+                `[DailyExport] Aggregation failed: ${(aggErr as Error).message}`
+              );
             }
           }
         }
@@ -330,7 +335,10 @@ export default function (app: ServerAPI): SignalKPlugin {
       runDailyExport();
 
       // Then run daily export every 24 hours
-      state.consolidationInterval = setInterval(runDailyExport, 24 * 60 * 60 * 1000);
+      state.consolidationInterval = setInterval(
+        runDailyExport,
+        24 * 60 * 60 * 1000
+      );
     }, msUntilDailyExport);
 
     // Run startup export for ALL unexported records (catches up after downtime)
@@ -346,22 +354,31 @@ export default function (app: ServerAPI): SignalKPlugin {
             // Run aggregation after startup export if enabled
             if (aggregationService) {
               try {
-                const aggResults = await aggregationService.runDailyAggregation();
+                const aggResults =
+                  await aggregationService.runDailyAggregation();
                 app.debug(
                   `[StartupExport] Aggregation complete: ${JSON.stringify(aggResults.map(r => ({ tier: r.targetTier, files: r.filesCreated })))}`
                 );
               } catch (aggErr) {
-                app.error(`[StartupExport] Aggregation failed: ${(aggErr as Error).message}`);
+                app.error(
+                  `[StartupExport] Aggregation failed: ${(aggErr as Error).message}`
+                );
               }
             }
 
             // Upload to S3 after export and aggregation complete
             if (state.currentConfig?.s3Upload.enabled) {
               try {
-                await uploadAllConsolidatedFilesToS3(state.currentConfig, state, app);
+                await uploadAllConsolidatedFilesToS3(
+                  state.currentConfig,
+                  state,
+                  app
+                );
                 app.debug('[StartupExport] S3 upload complete');
               } catch (s3Err) {
-                app.error(`[StartupExport] S3 upload failed: ${(s3Err as Error).message}`);
+                app.error(
+                  `[StartupExport] S3 upload failed: ${(s3Err as Error).message}`
+                );
               }
             }
           }
@@ -640,7 +657,7 @@ export default function (app: ServerAPI): SignalKPlugin {
         type: 'number',
         title: 'Daily Export Hour (UTC)',
         description:
-          'Hour of day (0-23 UTC) when daily Parquet export runs. Yesterday\'s data is exported at this hour. Default is 4 AM UTC.',
+          "Hour of day (0-23 UTC) when daily Parquet export runs. Yesterday's data is exported at this hour. Default is 4 AM UTC.",
         default: 4,
         minimum: 0,
         maximum: 23,

@@ -5,6 +5,7 @@
  * Target structure: tier=raw/context={ctx}/path={path}/year={year}/day={day}/
  */
 
+import * as fs from 'fs';
 import * as path from 'path';
 
 export type AggregationTier = 'raw' | '5s' | '60s' | '1h';
@@ -440,7 +441,6 @@ export class HivePathBuilder {
     sanitizedContext: string,
     sanitizedPath: string
   ): Date | null {
-    const fs = require('fs');
     const basePath = path.join(
       dataDir,
       `tier=${tier}`,
@@ -456,13 +456,17 @@ export class HivePathBuilder {
     let earliestDay = Infinity;
 
     try {
-      const yearDirs = fs.readdirSync(basePath).filter((d: string) => d.startsWith('year='));
+      const yearDirs = fs
+        .readdirSync(basePath)
+        .filter((d: string) => d.startsWith('year='));
       for (const yearDir of yearDirs) {
         const year = parseInt(yearDir.split('=')[1], 10);
         if (isNaN(year)) continue;
 
         const yearPath = path.join(basePath, yearDir);
-        const dayDirs = fs.readdirSync(yearPath).filter((d: string) => d.startsWith('day='));
+        const dayDirs = fs
+          .readdirSync(yearPath)
+          .filter((d: string) => d.startsWith('day='));
 
         for (const dayDir of dayDirs) {
           const day = parseInt(dayDir.split('=')[1], 10);
@@ -470,10 +474,15 @@ export class HivePathBuilder {
 
           // Check if directory has any parquet files
           const dayPath = path.join(yearPath, dayDir);
-          const files = fs.readdirSync(dayPath).filter((f: string) => f.endsWith('.parquet'));
+          const files = fs
+            .readdirSync(dayPath)
+            .filter((f: string) => f.endsWith('.parquet'));
           if (files.length === 0) continue;
 
-          if (year < earliestYear || (year === earliestYear && day < earliestDay)) {
+          if (
+            year < earliestYear ||
+            (year === earliestYear && day < earliestDay)
+          ) {
             earliestYear = year;
             earliestDay = day;
           }

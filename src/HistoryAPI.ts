@@ -743,7 +743,9 @@ export class HistoryAPI {
 
     for (const bucketKey of sortedKeys) {
       const bucket = buckets.get(bucketKey)!;
-      const timestamp = new Date(bucketKey).toISOString().replace('.000Z', 'Z') as Timestamp;
+      const timestamp = new Date(bucketKey)
+        .toISOString()
+        .replace('.000Z', 'Z') as Timestamp;
 
       // Check if first record has object values (e.g., position)
       const firstRecord = bucket[0];
@@ -1071,8 +1073,7 @@ export class HistoryAPI {
         const effectiveTier = tier || 'raw';
 
         // Always query local first
-        const sanitizedContext =
-          this.hivePathBuilder.sanitizeContext(context);
+        const sanitizedContext = this.hivePathBuilder.sanitizeContext(context);
         const sanitizedSkPath = this.hivePathBuilder.sanitizePath(
           pathSpec.path
         );
@@ -1084,9 +1085,7 @@ export class HistoryAPI {
           '**',
           '*.parquet'
         );
-        debug(
-          `Querying local Hive tier=${effectiveTier} at: ${localFilePath}`
-        );
+        debug(`Querying local Hive tier=${effectiveTier} at: ${localFilePath}`);
 
         // S3 supplements local for dates before the earliest local data
         if (this.s3Config?.enabled) {
@@ -1111,7 +1110,9 @@ export class HistoryAPI {
                 fromDate,
                 s3ToDate
               );
-              debug(`S3 supplement for ${fromDate.toISOString()} to ${s3ToDate.toISOString()}`);
+              debug(
+                `S3 supplement for ${fromDate.toISOString()} to ${s3ToDate.toISOString()}`
+              );
             }
           } else if (!localEarliestDate) {
             // No local data at all — query S3 for full range
@@ -1150,7 +1151,9 @@ export class HistoryAPI {
 
           // Build FROM clause: local-only by default, hybrid only if S3 has data
           let fromClause: string;
-          const localFromClause = localFilePath ? buildFromClause(localFilePath) : null;
+          const localFromClause = localFilePath
+            ? buildFromClause(localFilePath)
+            : null;
 
           if (s3FilePath && localFromClause) {
             // Try hybrid: UNION local + S3, fall back to local if S3 glob has no files
@@ -1171,13 +1174,19 @@ export class HistoryAPI {
           }
 
           // Run query with S3 fallback — if hybrid/S3 query fails, retry local-only
-          const runQueryWithFallback = async (buildQuery: (fc: string) => string): Promise<any> => {
+          const runQueryWithFallback = async (
+            buildQuery: (fc: string) => string
+          ): Promise<any> => {
             try {
               return await connection.runAndReadAll(buildQuery(fromClause));
             } catch (err) {
               if (s3FilePath && localFromClause) {
-                debug(`Hybrid query failed, falling back to local-only: ${err}`);
-                return await connection.runAndReadAll(buildQuery(localFromClause));
+                debug(
+                  `Hybrid query failed, falling back to local-only: ${err}`
+                );
+                return await connection.runAndReadAll(
+                  buildQuery(localFromClause)
+                );
               }
               throw err;
             }
@@ -1324,9 +1333,10 @@ export class HistoryAPI {
 
             // Rebuild the query based on actual column availability and tier
             const tsCol = getTierTimestampColumn(effectiveTier);
-            const valueJsonSelect = hasValueJson && effectiveTier === 'raw'
-              ? ', FIRST(value_json) as value_json'
-              : '';
+            const valueJsonSelect =
+              hasValueJson && effectiveTier === 'raw'
+                ? ', FIRST(value_json) as value_json'
+                : '';
             const whereClause = getTierWhereClause(effectiveTier, hasValueJson);
 
             const buildScalarQuery = (fc: string) => `
