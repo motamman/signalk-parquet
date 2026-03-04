@@ -27,6 +27,13 @@ A comprehensive SignalK plugin and webapp that saves SignalK data directly to Pa
   - On-demand path configuration when History API queries unconfigured paths
   - Include/exclude glob patterns for fine-grained control
   - Optional live data requirement before configuration
+- **🆕 Vector Averaging**: Correct aggregation of angular data (headings, bearings, wind angles)
+  - Automatic detection of angular paths via SignalK metadata (`units === 'rad'`)
+  - Uses `atan2(mean(sin), mean(cos))` instead of arithmetic mean
+  - Lossless re-aggregation across tiers via stored sin/cos averages
+- **🆕 Buffer Bucketing**: SQLite buffer data bucketed to match Parquet query resolution
+  - Prevents raw per-second records from flooding bucketed query results
+  - Supports all aggregate methods including vector averaging for angular paths
 
 ### Data Validation & Schema Repair
 - **NEW Schema Validation**: Comprehensive validation of Parquet file schemas against SignalK metadata standards

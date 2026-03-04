@@ -1,6 +1,6 @@
 # Changelog
 
-## [0.7.4-beta.4] - 2026-03-03
+## [0.7.5-beta.4] - 2026-03-04
 
 ### Changed
 
@@ -22,6 +22,13 @@
 
 ### Fixed
 
+- **Buffer Bucketing in History API** - SQLite buffer data now bucketed before merging with Parquet results
+  - Previously: raw per-second buffer records merged directly, flooding results (e.g., 10,000 raw records mixed with 288 bucketed Parquet points for a 24h/5min query)
+  - Now: buffer records are bucketed and aggregated using the same resolution as the Parquet query
+  - Supports all aggregate methods: average, min, max, first, last
+  - Angular paths use vector averaging (`atan2(mean(sin), mean(cos))`)
+  - Object paths (e.g., position) average each numeric component
+
 - **CRITICAL: Parquet File Overwrite Bug** - Fixed exports overwriting existing files on restart
   - Previous: Filename used first record's timestamp (could match existing file)
   - Now: Filename uses current time, guaranteeing unique filenames
@@ -37,6 +44,13 @@
   - Matches both date-only (legacy) and timestamped (new) naming
 
 ### Added
+
+- **Vector Averaging for Angular Paths** - Correct aggregation of circular data (headings, bearings, wind angles)
+  - Detects angular paths dynamically via `app.getMetadata(path).units === 'rad'`
+  - Uses `ATAN2(AVG(SIN(value)), AVG(COS(value)))` instead of arithmetic mean
+  - Stores `value_sin_avg`/`value_cos_avg` columns for lossless re-aggregation across tiers
+  - `value_min`/`value_max` set to NULL for angular paths (min/max undefined for circular data)
+  - Migration endpoint: `POST /api/migrate/vector-averaging` to rebuild existing aggregated files
 
 - **Daily Export Scheduling** - New `dailyExportHour` config option (0-23, default: 4)
   - Configurable hour for daily Parquet export (UTC)
