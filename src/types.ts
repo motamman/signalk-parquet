@@ -49,7 +49,6 @@ export interface PluginConfig {
   outputDirectory: string;
   filenamePrefix: string;
   retentionDays: number;
-  enableRetention?: boolean; // Enable automatic cleanup of old files
   fileFormat: 'json' | 'csv' | 'parquet';
   vesselMMSI: string;
   s3Upload: S3UploadConfig;
@@ -62,10 +61,8 @@ export interface PluginConfig {
   };
   // SQLite buffer and Hive partitioning options
   useSqliteBuffer?: boolean; // Use SQLite WAL buffer instead of in-memory LRU
-  exportIntervalMinutes?: number; // DEPRECATED: How often to export from SQLite to Parquet (default 5)
   exportBatchSize?: number; // Max records to export per cycle (default 10000)
   bufferRetentionHours?: number; // How long to keep exported records in SQLite (default 48)
-  consolidationLookbackDays?: number; // DEPRECATED: Days to scan back for unconsolidated files (default 30)
   useHivePartitioning?: boolean; // Use Hive-style partitioning for Parquet files
   dailyExportHour?: number; // Hour (0-23 UTC) to run daily export (default 4 = 4 AM UTC)
   autoDiscovery?: AutoDiscoveryConfig; // Auto-discovery configuration
@@ -583,8 +580,8 @@ export interface ParquetExportServiceInterface {
     lastBatchExported: number;
     totalExported: number;
     pendingRecords: number;
-    exportIntervalMinutes: number;
-    mode: 'daily' | 'interval';
+    dailyExportHour: number;
+    mode: 'daily';
   };
   getHealth(): {
     healthy: boolean;

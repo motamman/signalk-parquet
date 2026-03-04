@@ -110,7 +110,6 @@ export function registerHistoryApiRoute(
   debug: (k: string) => void,
   app: any,
   sqliteBuffer?: SQLiteBufferInterface,
-  exportIntervalMinutes: number = 5,
   autoDiscoveryService?: AutoDiscoveryService,
   s3Config?: S3QueryConfig,
   retentionDays: number = 7
@@ -119,7 +118,6 @@ export function registerHistoryApiRoute(
     selfId,
     dataDir,
     sqliteBuffer,
-    exportIntervalMinutes,
     autoDiscoveryService,
     s3Config,
     retentionDays
@@ -488,7 +486,6 @@ export interface S3QueryConfig {
 
 export class HistoryAPI {
   private sqliteBuffer?: SQLiteBufferInterface;
-  private exportIntervalMinutes: number;
   private hivePathBuilder: HivePathBuilder;
   private autoDiscoveryService?: AutoDiscoveryService;
   private s3Config?: S3QueryConfig;
@@ -498,13 +495,11 @@ export class HistoryAPI {
     private selfId: string,
     private dataDir: string,
     sqliteBuffer?: SQLiteBufferInterface,
-    exportIntervalMinutes: number = 5,
     autoDiscoveryService?: AutoDiscoveryService,
     s3Config?: S3QueryConfig,
     retentionDays: number = 7
   ) {
     this.sqliteBuffer = sqliteBuffer;
-    this.exportIntervalMinutes = exportIntervalMinutes;
     this.hivePathBuilder = new HivePathBuilder();
     this.autoDiscoveryService = autoDiscoveryService;
     this.s3Config = s3Config;

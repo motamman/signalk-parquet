@@ -106,7 +106,6 @@ export default function (app: ServerAPI): SignalKPlugin {
       // enableStreaming: options?.enableStreaming ?? false,
       // SQLite buffer options
       useSqliteBuffer: true, // Always use SQLite buffer
-      exportIntervalMinutes: options?.exportIntervalMinutes || 5,
       bufferRetentionHours: options?.bufferRetentionHours || 48,
       useHivePartitioning: true, // Always use Hive partitioning
       // Auto-discovery configuration
@@ -172,11 +171,11 @@ export default function (app: ServerAPI): SignalKPlugin {
         state.sqliteBuffer as SQLiteBuffer,
         state.parquetWriter,
         {
-          exportIntervalMinutes: state.currentConfig.exportIntervalMinutes!,
           outputDirectory: state.currentConfig.outputDirectory,
           filenamePrefix: state.currentConfig.filenamePrefix,
           useHivePartitioning: state.currentConfig.useHivePartitioning!,
           s3Upload: state.currentConfig.s3Upload,
+          dailyExportHour: state.currentConfig.dailyExportHour ?? 4,
         },
         app
       );
@@ -411,7 +410,6 @@ export default function (app: ServerAPI): SignalKPlugin {
         app.debug,
         app,
         state.sqliteBuffer, // Pass SQLite buffer for federated queries
-        state.currentConfig.exportIntervalMinutes || 5, // Export interval for buffer cutoff
         state.autoDiscoveryService, // Pass auto-discovery service
         s3QueryConfig, // S3 config for federated queries
         state.currentConfig.retentionDays // Retention days for local/S3 cutoff
@@ -611,30 +609,14 @@ export default function (app: ServerAPI): SignalKPlugin {
           'Prefix added to all generated Parquet files. Useful if running multiple instances or for organizing data. Example: "boat_name" produces "boat_name_2024-01-15T1200.parquet"',
         default: 'signalk_data',
       },
-      enableRetention: {
-        type: 'boolean',
-        title: 'Enable Automatic Cleanup (DEPRECATED)',
-        description:
-          'DEPRECATED: No longer used. The new pipeline creates daily files directly without a "processed" folder. File retention is handled differently.',
-        default: false,
-      },
       retentionDays: {
         type: 'number',
         title: 'Retention Period (days)',
         description:
-          'Number of days to keep files in the "processed" folder before automatic deletion. Only applies when "Enable Automatic Cleanup" is checked. Does not affect consolidated or active Parquet files.',
+          'Number of days to keep raw Parquet files on disk. Higher tiers are retained longer automatically (5s: 2x, 60s: 4x, 1h: 12x).',
         default: 7,
         minimum: 1,
         maximum: 365,
-      },
-      exportIntervalMinutes: {
-        type: 'number',
-        title: 'Parquet Export Interval (DEPRECATED)',
-        description:
-          'DEPRECATED: No longer used. Daily export now runs at the configured dailyExportHour instead of periodic intervals. This setting will be removed in a future version.',
-        default: 5,
-        minimum: 1,
-        maximum: 60,
       },
       exportBatchSize: {
         type: 'number',
@@ -662,15 +644,6 @@ export default function (app: ServerAPI): SignalKPlugin {
         default: 4,
         minimum: 0,
         maximum: 23,
-      },
-      consolidationLookbackDays: {
-        type: 'number',
-        title: 'Consolidation Lookback (DEPRECATED)',
-        description:
-          'DEPRECATED: No longer used. The new daily export creates consolidated files directly, eliminating the need for a separate consolidation step.',
-        default: 30,
-        minimum: 1,
-        maximum: 365,
       },
       autoDiscovery: {
         type: 'object',
