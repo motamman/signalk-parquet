@@ -35,6 +35,20 @@
   - Each export creates: `signalk_data_2026-03-03T1313.parquet`
   - Multiple restarts per day create separate files (no data loss)
 
+- **CRITICAL: Aggregated Tier Queries Returning No Data** - Fixed History API unable to read aggregated tier (5s, 60s, 1h) Parquet files
+  - Aggregated tiers use `bucket_time` and `value_avg` columns, but queries were hardcoded to `signalk_timestamp` and `AVG(value)` (raw tier schema)
+  - DuckDB's `union_by_name=true` silently returned NULL for missing columns, producing zero rows
+  - Now uses tier-aware column names: `bucket_time` for aggregated, `signalk_timestamp` for raw
+  - Pre-computed aggregates (`value_avg`, `value_sin_avg`/`value_cos_avg`) used instead of re-aggregating
+  - Weighted averaging via `sample_count` for correct multi-bucket rollups
+  - Also fixed in spatial filter timestamp correlation queries
+
+- **CRITICAL: Retention Cleanup Deleting Un-aggregated Data** - Removed automatic `cleanupOldData()` from daily aggregation
+  - Retention was running after every aggregation, deleting raw parquet files based on age alone
+  - No check for whether data had been aggregated or backed up
+  - Destroyed freshly migrated 2025 data immediately after migration (files older than retention window)
+  - Cleanup endpoint (`POST /api/aggregate/cleanup`) remains available as manual-only
+
 - **Federated Query Cutoff** - Fixed HistoryAPI only looking at last 5 minutes
   - Now correctly uses 48-hour cutoff for SQLite buffer queries
   - Recent data properly included in federated queries

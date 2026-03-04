@@ -524,32 +524,13 @@ export class HistoryAPI {
     to: ZonedDateTime,
     forceSource?: QuerySource
   ): QuerySource {
-    // If source is explicitly specified, use it (unless it's 'auto')
+    // Source routing is handled in getNumericValues:
+    // local always queried, S3 supplements for dates before earliest local data.
+    // forceSource only used for explicit API override (e.g. source=local or source=s3)
     if (forceSource && forceSource !== 'auto') {
       return forceSource;
     }
-
-    // If S3 is not configured/enabled, always use local
-    if (!this.s3Config?.enabled) {
-      return 'local';
-    }
-
-    const now = new Date();
-    const retentionCutoff = new Date(now);
-    retentionCutoff.setUTCDate(
-      retentionCutoff.getUTCDate() - this.retentionDays
-    );
-
-    const fromDate = new Date(from.toInstant().toString());
-    const toDate = new Date(to.toInstant().toString());
-
-    if (toDate < retentionCutoff) {
-      return 's3'; // All data is older than retention, query S3
-    }
-    if (fromDate >= retentionCutoff) {
-      return 'local'; // All data is within retention, query local
-    }
-    return 'hybrid'; // Data spans boundary, need both
+    return 'local';
   }
 
   /**
@@ -1089,55 +1070,61 @@ export class HistoryAPI {
         let s3FilePath: string | null = null;
         const effectiveTier = tier || 'raw';
 
-        // Determine which sources to query based on querySource
-        if (querySource === 'local' || querySource === 'hybrid') {
-          // Always use Hive-style path structure
-          const sanitizedContext =
-            this.hivePathBuilder.sanitizeContext(context);
-          const sanitizedSkPath = this.hivePathBuilder.sanitizePath(
-            pathSpec.path
-          );
-          localFilePath = path.join(
+        // Always query local first
+        const sanitizedContext =
+          this.hivePathBuilder.sanitizeContext(context);
+        const sanitizedSkPath = this.hivePathBuilder.sanitizePath(
+          pathSpec.path
+        );
+        localFilePath = path.join(
+          this.dataDir,
+          `tier=${effectiveTier}`,
+          `context=${sanitizedContext}`,
+          `path=${sanitizedSkPath}`,
+          '**',
+          '*.parquet'
+        );
+        debug(
+          `Querying local Hive tier=${effectiveTier} at: ${localFilePath}`
+        );
+
+        // S3 supplements local for dates before the earliest local data
+        if (this.s3Config?.enabled) {
+          // Find the earliest local data date
+          const localEarliestDate = this.hivePathBuilder.findEarliestDate(
             this.dataDir,
-            `tier=${effectiveTier}`,
-            `context=${sanitizedContext}`,
-            `path=${sanitizedSkPath}`,
-            '**',
-            '*.parquet'
+            effectiveTier,
+            sanitizedContext,
+            sanitizedSkPath
           );
-          debug(
-            `Querying local Hive tier=${effectiveTier} at: ${localFilePath}`
-          );
-        }
 
-        if (
-          (querySource === 's3' || querySource === 'hybrid') &&
-          this.s3Config?.enabled
-        ) {
-          // Build S3 pattern with partition pruning
-          const s3FromDate = querySource === 'hybrid' ? fromDate : fromDate;
-          const s3ToDate =
-            querySource === 'hybrid'
-              ? new Date(
-                  Math.min(
-                    retentionCutoff.getTime() - 86400000,
-                    toDate.getTime()
-                  )
-                )
-              : toDate;
-
-          // Only query S3 if there's a valid date range
-          if (s3FromDate <= s3ToDate) {
+          if (localEarliestDate && fromDate < localEarliestDate) {
+            // Only query S3 for the range before local data starts
+            const s3ToDate = new Date(localEarliestDate.getTime() - 86400000); // day before local starts
+            if (fromDate <= s3ToDate) {
+              s3FilePath = this.hivePathBuilder.buildS3Glob(
+                this.s3Config.bucket,
+                this.s3Config.keyPrefix || '',
+                effectiveTier,
+                context,
+                pathSpec.path,
+                fromDate,
+                s3ToDate
+              );
+              debug(`S3 supplement for ${fromDate.toISOString()} to ${s3ToDate.toISOString()}`);
+            }
+          } else if (!localEarliestDate) {
+            // No local data at all — query S3 for full range
             s3FilePath = this.hivePathBuilder.buildS3Glob(
               this.s3Config.bucket,
               this.s3Config.keyPrefix || '',
               effectiveTier,
               context,
               pathSpec.path,
-              s3FromDate,
-              s3ToDate
+              fromDate,
+              toDate
             );
-            debug(`Querying S3 parquet files at: ${s3FilePath}`);
+            debug(`No local data, querying S3 for full range`);
           }
         }
 
