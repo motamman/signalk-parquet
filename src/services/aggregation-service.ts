@@ -17,6 +17,7 @@ import { glob } from 'glob';
 import { ServerAPI } from '@signalk/server-api';
 import { DuckDBPool } from '../utils/duckdb-pool';
 import { HivePathBuilder, AggregationTier } from '../utils/hive-path-builder';
+import { isAngularPath } from '../utils/angular-paths';
 
 export interface AggregationConfig {
   outputDirectory: string;
@@ -254,47 +255,17 @@ export class AggregationService {
       `${this.config.filenamePrefix}_${date.toISOString().slice(0, 10)}_aggregated.parquet`
     );
 
-    // Use different query depending on source tier schema
+    // Use different query depending on source tier schema and whether the path is angular
     // Raw tier has: received_timestamp, value
     // Aggregated tiers have: bucket_time, value_avg, value_min, value_max, sample_count, first_timestamp, last_timestamp
-    const query = isSourceRaw
-      ? `
-        COPY (
-          SELECT
-            time_bucket(INTERVAL '${intervalSeconds} seconds', received_timestamp::TIMESTAMP) as bucket_time,
-            context,
-            path,
-            AVG(CASE WHEN value IS NOT NULL AND TRY_CAST(value AS DOUBLE) IS NOT NULL THEN CAST(value AS DOUBLE) END) as value_avg,
-            MIN(CASE WHEN value IS NOT NULL AND TRY_CAST(value AS DOUBLE) IS NOT NULL THEN CAST(value AS DOUBLE) END) as value_min,
-            MAX(CASE WHEN value IS NOT NULL AND TRY_CAST(value AS DOUBLE) IS NOT NULL THEN CAST(value AS DOUBLE) END) as value_max,
-            COUNT(*) as sample_count,
-            MIN(received_timestamp) as first_timestamp,
-            MAX(received_timestamp) as last_timestamp
-          FROM read_parquet([${fileListStr}], union_by_name=true)
-          GROUP BY bucket_time, context, path
-          ORDER BY bucket_time
-        ) TO '${outputFile}' (FORMAT PARQUET, COMPRESSION 'SNAPPY');
-      `
-      : `
-        COPY (
-          SELECT
-            time_bucket(INTERVAL '${intervalSeconds} seconds', src_bucket_time::TIMESTAMP) as bucket_time,
-            context,
-            path,
-            SUM(value_avg * sample_count) / SUM(sample_count) as value_avg,
-            MIN(value_min) as value_min,
-            MAX(value_max) as value_max,
-            SUM(sample_count)::BIGINT as sample_count,
-            MIN(first_timestamp) as first_timestamp,
-            MAX(last_timestamp) as last_timestamp
-          FROM (
-            SELECT bucket_time as src_bucket_time, context, path, value_avg, value_min, value_max, sample_count, first_timestamp, last_timestamp
-            FROM read_parquet([${fileListStr}], union_by_name=true)
-          ) src
-          GROUP BY time_bucket(INTERVAL '${intervalSeconds} seconds', src_bucket_time::TIMESTAMP), context, path
-          ORDER BY 1
-        ) TO '${outputFile}' (FORMAT PARQUET, COMPRESSION 'SNAPPY');
-      `;
+    const angular = isAngularPath(signalkPath, this.app, context);
+    const query = this.buildAggregationQuery(
+      fileListStr,
+      intervalSeconds,
+      isSourceRaw,
+      angular,
+      outputFile
+    );
 
     try {
       await connection.runAndReadAll(query);
@@ -312,6 +283,134 @@ export class AggregationService {
     } finally {
       connection.disconnectSync();
     }
+  }
+
+  /**
+   * Build the aggregation SQL query, branching on angular vs scalar paths
+   */
+  private buildAggregationQuery(
+    fileListStr: string,
+    intervalSeconds: number,
+    isSourceRaw: boolean,
+    isAngular: boolean,
+    outputFile: string
+  ): string {
+    if (isAngular) {
+      return this.buildAngularAggregationQuery(
+        fileListStr,
+        intervalSeconds,
+        isSourceRaw,
+        outputFile
+      );
+    }
+
+    // Standard scalar aggregation
+    if (isSourceRaw) {
+      return `
+        COPY (
+          SELECT
+            time_bucket(INTERVAL '${intervalSeconds} seconds', received_timestamp::TIMESTAMP) as bucket_time,
+            context,
+            path,
+            AVG(CASE WHEN value IS NOT NULL AND TRY_CAST(value AS DOUBLE) IS NOT NULL THEN CAST(value AS DOUBLE) END) as value_avg,
+            MIN(CASE WHEN value IS NOT NULL AND TRY_CAST(value AS DOUBLE) IS NOT NULL THEN CAST(value AS DOUBLE) END) as value_min,
+            MAX(CASE WHEN value IS NOT NULL AND TRY_CAST(value AS DOUBLE) IS NOT NULL THEN CAST(value AS DOUBLE) END) as value_max,
+            COUNT(*) as sample_count,
+            MIN(received_timestamp) as first_timestamp,
+            MAX(received_timestamp) as last_timestamp
+          FROM read_parquet([${fileListStr}], union_by_name=true)
+          GROUP BY bucket_time, context, path
+          ORDER BY bucket_time
+        ) TO '${outputFile}' (FORMAT PARQUET, COMPRESSION 'SNAPPY');
+      `;
+    }
+
+    return `
+      COPY (
+        SELECT
+          time_bucket(INTERVAL '${intervalSeconds} seconds', src_bucket_time::TIMESTAMP) as bucket_time,
+          context,
+          path,
+          SUM(value_avg * sample_count) / SUM(sample_count) as value_avg,
+          MIN(value_min) as value_min,
+          MAX(value_max) as value_max,
+          SUM(sample_count)::BIGINT as sample_count,
+          MIN(first_timestamp) as first_timestamp,
+          MAX(last_timestamp) as last_timestamp
+        FROM (
+          SELECT bucket_time as src_bucket_time, context, path, value_avg, value_min, value_max, sample_count, first_timestamp, last_timestamp
+          FROM read_parquet([${fileListStr}], union_by_name=true)
+        ) src
+        GROUP BY time_bucket(INTERVAL '${intervalSeconds} seconds', src_bucket_time::TIMESTAMP), context, path
+        ORDER BY 1
+      ) TO '${outputFile}' (FORMAT PARQUET, COMPRESSION 'SNAPPY');
+    `;
+  }
+
+  /**
+   * Build angular-specific aggregation query using vector decomposition:
+   * ATAN2(AVG(SIN(value)), AVG(COS(value)))
+   */
+  private buildAngularAggregationQuery(
+    fileListStr: string,
+    intervalSeconds: number,
+    isSourceRaw: boolean,
+    outputFile: string
+  ): string {
+    if (isSourceRaw) {
+      // Vector average from raw radian values
+      return `
+        COPY (
+          SELECT
+            time_bucket(INTERVAL '${intervalSeconds} seconds', received_timestamp::TIMESTAMP) as bucket_time,
+            context,
+            path,
+            ATAN2(
+              AVG(SIN(CAST(value AS DOUBLE))),
+              AVG(COS(CAST(value AS DOUBLE)))
+            ) as value_avg,
+            NULL::DOUBLE as value_min,
+            NULL::DOUBLE as value_max,
+            COUNT(*) as sample_count,
+            AVG(SIN(CAST(value AS DOUBLE))) as value_sin_avg,
+            AVG(COS(CAST(value AS DOUBLE))) as value_cos_avg,
+            MIN(received_timestamp) as first_timestamp,
+            MAX(received_timestamp) as last_timestamp
+          FROM read_parquet([${fileListStr}], union_by_name=true)
+          WHERE value IS NOT NULL AND TRY_CAST(value AS DOUBLE) IS NOT NULL
+          GROUP BY bucket_time, context, path
+          ORDER BY bucket_time
+        ) TO '${outputFile}' (FORMAT PARQUET, COMPRESSION 'SNAPPY');
+      `;
+    }
+
+    // Re-aggregate from already-aggregated data using stored sin/cos averages
+    // weighted by sample count for correct vector re-aggregation
+    return `
+      COPY (
+        SELECT
+          time_bucket(INTERVAL '${intervalSeconds} seconds', src_bucket_time::TIMESTAMP) as bucket_time,
+          context,
+          path,
+          ATAN2(
+            SUM(value_sin_avg * sample_count) / SUM(sample_count),
+            SUM(value_cos_avg * sample_count) / SUM(sample_count)
+          ) as value_avg,
+          NULL::DOUBLE as value_min,
+          NULL::DOUBLE as value_max,
+          SUM(sample_count)::BIGINT as sample_count,
+          SUM(value_sin_avg * sample_count) / SUM(sample_count) as value_sin_avg,
+          SUM(value_cos_avg * sample_count) / SUM(sample_count) as value_cos_avg,
+          MIN(first_timestamp) as first_timestamp,
+          MAX(last_timestamp) as last_timestamp
+        FROM (
+          SELECT bucket_time as src_bucket_time, context, path, value_sin_avg, value_cos_avg, sample_count, first_timestamp, last_timestamp
+          FROM read_parquet([${fileListStr}], union_by_name=true)
+        ) src
+        GROUP BY time_bucket(INTERVAL '${intervalSeconds} seconds', src_bucket_time::TIMESTAMP), context, path
+        ORDER BY 1
+      ) TO '${outputFile}' (FORMAT PARQUET, COMPRESSION 'SNAPPY');
+    `;
   }
 
   /**
