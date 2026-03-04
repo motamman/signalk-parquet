@@ -2,10 +2,9 @@ import * as fs from 'fs-extra';
 import * as path from 'path';
 import { ServerAPI, Context, Path } from '@signalk/server-api';
 import { PathInfo } from '../types';
-import { DuckDBInstance } from '@duckdb/node-api';
 import { ZonedDateTime } from '@js-joda/core';
-import { toContextFilePath } from './path-helpers';
 import { HivePathBuilder } from './hive-path-builder';
+import { DuckDBPool } from './duckdb-pool';
 
 /**
  * Get available SignalK paths from Hive directory structure
@@ -117,6 +116,7 @@ export function getAvailablePathsArray(
 /**
  * Get available SignalK paths that have data within a specific time range
  * This is compliant with SignalK History API specification
+ * Uses Hive-partitioned directory structure
  */
 export async function getAvailablePathsForTimeRange(
   dataDir: string,
@@ -124,24 +124,33 @@ export async function getAvailablePathsForTimeRange(
   from: ZonedDateTime,
   to: ZonedDateTime
 ): Promise<Path[]> {
-  const contextPath = toContextFilePath(context);
+  const hiveBuilder = new HivePathBuilder();
   const fromIso = from.toInstant().toString();
   const toIso = to.toInstant().toString();
 
-  // First, get all possible paths by scanning the directory structure
-  const allPaths = await scanPathDirectories(path.join(dataDir, contextPath));
+  // Build Hive-style context directory
+  const sanitizedContext = hiveBuilder.sanitizeContext(context);
+  const contextDir = path.join(
+    dataDir,
+    'tier=raw',
+    `context=${sanitizedContext}`
+  );
+
+  // Get all path= directories for this context
+  const allPaths = await scanHivePathDirectories(contextDir, hiveBuilder);
 
   // Then, check each path to see if it has data in the time range
   const pathsWithData: Path[] = [];
 
   await Promise.all(
     allPaths.map(async pathStr => {
-      const hasData = await checkPathHasDataInRange(
+      const hasData = await checkPathHasDataInRangeHive(
         dataDir,
-        contextPath,
+        context,
         pathStr,
         fromIso,
-        toIso
+        toIso,
+        hiveBuilder
       );
       if (hasData) {
         pathsWithData.push(pathStr as Path);
@@ -153,87 +162,114 @@ export async function getAvailablePathsForTimeRange(
 }
 
 /**
- * Recursively scan directories to find all paths with parquet files
+ * Scan Hive-style path= directories to find all SignalK paths
  */
-async function scanPathDirectories(contextDir: string): Promise<string[]> {
+async function scanHivePathDirectories(
+  contextDir: string,
+  hiveBuilder: HivePathBuilder
+): Promise<string[]> {
   const paths: string[] = [];
 
-  async function scan(dir: string, prefix: string = '') {
-    try {
-      const entries = await fs.readdir(dir, { withFileTypes: true });
+  try {
+    if (!(await fs.pathExists(contextDir))) {
+      return paths;
+    }
 
-      for (const entry of entries) {
+    const entries = await fs.readdir(contextDir, { withFileTypes: true });
+
+    for (const entry of entries) {
+      // Only look at path= directories
+      if (!entry.isDirectory() || !entry.name.startsWith('path=')) {
+        continue;
+      }
+
+      const sanitizedPath = entry.name.replace('path=', '');
+      const unsanitizedPath = hiveBuilder.unsanitizePath(sanitizedPath);
+
+      // Check if this path directory has any parquet files (recursively in year/day subdirs)
+      const pathDir = path.join(contextDir, entry.name);
+      const hasParquet = await hasParquetFilesRecursive(pathDir);
+
+      if (hasParquet) {
+        paths.push(unsanitizedPath);
+      }
+    }
+  } catch (error) {
+    // Directory doesn't exist or not accessible - skip
+  }
+
+  return paths;
+}
+
+/**
+ * Check if a directory (or its subdirectories) contains any parquet files
+ */
+async function hasParquetFilesRecursive(dir: string): Promise<boolean> {
+  try {
+    const entries = await fs.readdir(dir, { withFileTypes: true });
+
+    for (const entry of entries) {
+      if (entry.isFile() && entry.name.endsWith('.parquet')) {
+        return true;
+      }
+      if (entry.isDirectory()) {
         // Skip special directories
         if (
           entry.name === 'processed' ||
           entry.name === 'failed' ||
           entry.name === 'quarantine' ||
-          entry.name === 'claude-schemas' ||
           entry.name === 'repaired'
         ) {
           continue;
         }
-
-        if (entry.isDirectory()) {
-          const currentPath = prefix ? `${prefix}.${entry.name}` : entry.name;
-          const fullPath = path.join(dir, entry.name);
-
-          // Check if this directory contains parquet files
-          const files = await fs.readdir(fullPath);
-          const hasParquet = files.some(f => f.endsWith('.parquet'));
-
-          if (hasParquet) {
-            paths.push(currentPath);
-          }
-
-          // Recurse into subdirectories
-          await scan(fullPath, currentPath);
-        }
+        const hasFiles = await hasParquetFilesRecursive(
+          path.join(dir, entry.name)
+        );
+        if (hasFiles) return true;
       }
-    } catch (error) {
-      // Directory doesn't exist or not accessible - skip
     }
+  } catch (error) {
+    // Skip on error
   }
-
-  await scan(contextDir);
-  return paths;
+  return false;
 }
 
 /**
  * Check if a specific path has data within the given time range
+ * Uses Hive-partitioned directory structure
  */
-async function checkPathHasDataInRange(
+async function checkPathHasDataInRangeHive(
   dataDir: string,
-  contextPath: string,
+  context: Context,
   pathStr: string,
   fromIso: string,
-  toIso: string
+  toIso: string,
+  hiveBuilder: HivePathBuilder
 ): Promise<boolean> {
-  // Sanitize the path for filesystem use
-  const sanitizedPath = pathStr
-    .replace(/[^a-zA-Z0-9._]/g, '')
-    .replace(/\./g, '/');
-
-  const filePath = path.join(dataDir, contextPath, sanitizedPath, '*.parquet');
+  // Build Hive-style glob pattern for this path
+  const filePath = hiveBuilder.getGlobPattern(dataDir, 'raw', context, pathStr);
 
   try {
-    const duckDB = await DuckDBInstance.create();
-    const connection = await duckDB.connect();
+    const connection = await DuckDBPool.getConnection();
 
     try {
       // Fast query: just check if ANY row exists in time range
       const query = `
-        SELECT COUNT(*) as count
-        FROM read_parquet('${filePath}', union_by_name=true)
+        SELECT 1 as found
+        FROM read_parquet('${filePath}', union_by_name=true, filename=true)
         WHERE signalk_timestamp >= '${fromIso}'
           AND signalk_timestamp < '${toIso}'
+          AND filename NOT LIKE '%/processed/%'
+          AND filename NOT LIKE '%/quarantine/%'
+          AND filename NOT LIKE '%/failed/%'
+          AND filename NOT LIKE '%/repaired/%'
         LIMIT 1
       `;
 
       const result = await connection.runAndReadAll(query);
       const rows = result.getRowObjects();
 
-      return rows.length > 0 && (rows[0].count as number) > 0;
+      return rows.length > 0;
     } finally {
       connection.disconnectSync();
     }

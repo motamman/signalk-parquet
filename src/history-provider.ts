@@ -27,6 +27,7 @@ import { getAvailableContextsForTimeRange } from './utils/context-discovery';
 import { DuckDBPool } from './utils/duckdb-pool';
 import { getPathComponentSchema } from './utils/schema-cache';
 import { HivePathBuilder } from './utils/hive-path-builder';
+import { isAngularPath } from './utils/angular-paths';
 
 /**
  * Convert Temporal.Instant or ISO string to ZonedDateTime (UTC)
@@ -315,13 +316,19 @@ export class HistoryProvider implements HistoryApi {
           return [timestamp, obj];
         });
       } else {
-        // Scalar path
+        // Scalar path — use vector averaging for angular paths when aggregating by average
+        const angular = isAngularPath(pathSpec.path, this.app, context as string);
+        const valueExpression =
+          angular && (pathSpec.aggregate === 'average' || !pathSpec.aggregate)
+            ? 'ATAN2(AVG(SIN(TRY_CAST(value AS DOUBLE))), AVG(COS(TRY_CAST(value AS DOUBLE))))'
+            : `${aggFunc}(TRY_CAST(value AS DOUBLE))`;
+
         const query = `
           SELECT
             strftime(DATE_TRUNC('seconds',
               EPOCH_MS(CAST(FLOOR(EPOCH_MS(signalk_timestamp::TIMESTAMP) / ${resolutionMs}) * ${resolutionMs} AS BIGINT))
             ), '%Y-%m-%dT%H:%M:%SZ') as timestamp,
-            ${aggFunc}(TRY_CAST(value AS DOUBLE)) as value
+            ${valueExpression} as value
           FROM read_parquet('${filePath}', union_by_name=true, filename=true)
           WHERE
             signalk_timestamp >= '${fromIso}'
@@ -417,11 +424,21 @@ export function registerHistoryApiProvider(
   const provider = new HistoryProvider(selfId, dataDir, app, debug);
 
   // Debug: Check if registerHistoryApiProvider exists on app
-  console.log('[signalk-parquet] app.registerHistoryApiProvider exists:', typeof (app as any).registerHistoryApiProvider);
+  console.log(
+    '[signalk-parquet] app.registerHistoryApiProvider exists:',
+    typeof (app as any).registerHistoryApiProvider
+  );
 
   if (typeof (app as any).registerHistoryApiProvider !== 'function') {
-    console.error('[signalk-parquet] ERROR: app.registerHistoryApiProvider is not a function!');
-    console.error('[signalk-parquet] Available app methods:', Object.keys(app).filter(k => typeof (app as any)[k] === 'function').join(', '));
+    console.error(
+      '[signalk-parquet] ERROR: app.registerHistoryApiProvider is not a function!'
+    );
+    console.error(
+      '[signalk-parquet] Available app methods:',
+      Object.keys(app)
+        .filter(k => typeof (app as any)[k] === 'function')
+        .join(', ')
+    );
     return;
   }
 

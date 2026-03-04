@@ -40,6 +40,7 @@ import {
 import { MigrationService } from './services/migration-service';
 import { AggregationService } from './services/aggregation-service';
 import { AggregationTier } from './utils/hive-path-builder';
+import { isAngularPath } from './utils/angular-paths';
 import {
   loadWebAppConfig,
   saveWebAppConfig,
@@ -621,7 +622,12 @@ export function registerApiRoutes(
   // S3 compare job storage
   interface S3CompareJob {
     id: string;
-    status: 'scanning_local' | 'scanning_s3' | 'comparing' | 'completed' | 'error';
+    status:
+      | 'scanning_local'
+      | 'scanning_s3'
+      | 'comparing'
+      | 'completed'
+      | 'error';
     phase: string;
     localFilesScanned: number;
     localFilesTotal: number;
@@ -688,7 +694,9 @@ export function registerApiRoutes(
 
           // Phase 1: Scan local files
           job.phase = 'Discovering local files...';
-          const allLocalFiles = await glob(path.join(dataDir, '**', '*.parquet'));
+          const allLocalFiles = await glob(
+            path.join(dataDir, '**', '*.parquet')
+          );
 
           // Exclude processed/repaired/failed/quarantine directories
           const excludedDirs = [
@@ -698,7 +706,7 @@ export function registerApiRoutes(
             '/quarantine/',
           ];
           const localFiles = allLocalFiles.filter(
-            (f) => !excludedDirs.some((dir) => f.includes(dir))
+            f => !excludedDirs.some(dir => f.includes(dir))
           );
           job.localFilesTotal = localFiles.length;
 
@@ -919,7 +927,7 @@ export function registerApiRoutes(
               '/quarantine/',
             ];
             const localFiles = allLocalFiles.filter(
-              (f) => !excludedDirs.some((dir) => f.includes(dir))
+              f => !excludedDirs.some(dir => f.includes(dir))
             );
 
             job.phase = 'Listing S3 objects...';
@@ -4192,5 +4200,174 @@ export function registerApiRoutes(
         error: (error as Error).message,
       });
     }
+  });
+
+  // ===========================================
+  // VECTOR AVERAGING MIGRATION API ROUTES
+  // ===========================================
+
+  const vectorAvgJobs = new Map<
+    string,
+    {
+      id: string;
+      status: 'running' | 'completed' | 'cancelled' | 'error';
+      dryRun: boolean;
+      angularPaths: string[];
+      datesProcessed: number;
+      totalDates: number;
+      startTime: Date;
+      completedAt?: Date;
+      error?: string;
+      results: Array<{ date: string; tiersReaggregated: number; errors: string[] }>;
+    }
+  >();
+
+  // Start vector averaging migration job
+  router.post('/api/migrate/vector-averaging', async (req, res) => {
+    try {
+      const { dryRun = false } = req.body || {};
+      const jobId = `vecavg_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+
+      const job: {
+        id: string;
+        status: 'running' | 'completed' | 'cancelled' | 'error';
+        dryRun: boolean;
+        angularPaths: string[];
+        datesProcessed: number;
+        totalDates: number;
+        startTime: Date;
+        completedAt?: Date;
+        error?: string;
+        results: Array<{ date: string; tiersReaggregated: number; errors: string[] }>;
+      } = {
+        id: jobId,
+        status: 'running',
+        dryRun,
+        angularPaths: [],
+        datesProcessed: 0,
+        totalDates: 0,
+        startTime: new Date(),
+        results: [],
+      };
+      vectorAvgJobs.set(jobId, job);
+
+      // Fire async job (not awaited — runs in background)
+      (async () => {
+        try {
+          const dataDir = getDataDir();
+          const aggregatedTiers: AggregationTier[] = ['5s', '60s', '1h'];
+
+          // Scan for angular paths in aggregated tiers
+          const angularPathsFound = new Set<string>();
+          const datesToProcess = new Set<string>();
+
+          for (const tier of aggregatedTiers) {
+            const tierDir = path.join(dataDir, `tier=${tier}`);
+            if (!await fs.pathExists(tierDir)) continue;
+
+            const contextDirs = await glob(path.join(tierDir, 'context=*'));
+            for (const contextDir of contextDirs) {
+              const context = path.basename(contextDir).replace('context=', '').replace(/__/g, '.');
+              const pathDirs = await glob(path.join(contextDir, 'path=*'));
+              for (const pathDir of pathDirs) {
+                const signalkPath = path.basename(pathDir).replace('path=', '').replace(/__/g, '.');
+                if (isAngularPath(signalkPath, app, context)) {
+                  angularPathsFound.add(signalkPath);
+                  // Find dates with data for this path
+                  const yearDirs = await glob(path.join(pathDir, 'year=*'));
+                  for (const yearDir of yearDirs) {
+                    const dayDirs = await glob(path.join(yearDir, 'day=*'));
+                    for (const dayDir of dayDirs) {
+                      const yearStr = path.basename(yearDir).replace('year=', '');
+                      const dayStr = path.basename(dayDir).replace('day=', '');
+                      datesToProcess.add(`${yearStr}-${dayStr}`);
+                    }
+                  }
+                }
+              }
+            }
+          }
+
+          job.angularPaths = Array.from(angularPathsFound);
+          job.totalDates = datesToProcess.size;
+
+          app.debug(
+            `Vector averaging migration: found ${angularPathsFound.size} angular paths, ${datesToProcess.size} dates to process`
+          );
+
+          if (dryRun) {
+            job.status = 'completed';
+            job.completedAt = new Date();
+            return;
+          }
+
+          // Re-aggregate each date (this will now use vector averaging for angular paths)
+          for (const dateKey of datesToProcess) {
+            if (job.status === 'cancelled') break;
+
+            const [yearStr, dayStr] = dateKey.split('-');
+            const year = parseInt(yearStr);
+            const dayOfYear = parseInt(dayStr);
+            const date = new Date(Date.UTC(year, 0, dayOfYear));
+
+            try {
+              const results = await aggregationService.aggregateDate(date);
+              const errors = results.flatMap(r => r.errors);
+              const tiersReaggregated = results.filter(r => r.filesCreated > 0).length;
+              job.results.push({
+                date: date.toISOString().slice(0, 10),
+                tiersReaggregated,
+                errors,
+              });
+            } catch (error) {
+              job.results.push({
+                date: date.toISOString().slice(0, 10),
+                tiersReaggregated: 0,
+                errors: [(error as Error).message],
+              });
+            }
+
+            job.datesProcessed++;
+          }
+
+          job.status = 'completed';
+          job.completedAt = new Date();
+        } catch (error) {
+          job.status = 'error';
+          job.error = (error as Error).message;
+          job.completedAt = new Date();
+        }
+      })();
+
+      return res.json({ success: true, jobId, dryRun });
+    } catch (error) {
+      return res.status(500).json({
+        success: false,
+        error: (error as Error).message,
+      });
+    }
+  });
+
+  // Poll vector averaging migration progress
+  router.get('/api/migrate/vector-averaging/:jobId', (req, res) => {
+    const job = vectorAvgJobs.get(req.params.jobId);
+    if (!job) {
+      return res.status(404).json({ success: false, error: 'Job not found' });
+    }
+    return res.json({
+      success: true,
+      ...job,
+    });
+  });
+
+  // Cancel vector averaging migration
+  router.post('/api/migrate/vector-averaging/cancel/:jobId', (req, res) => {
+    const job = vectorAvgJobs.get(req.params.jobId);
+    if (!job || job.status !== 'running') {
+      return res.status(400).json({ success: false, error: 'Job not found or not running' });
+    }
+    job.status = 'cancelled';
+    job.completedAt = new Date();
+    return res.json({ success: true, jobId: job.id });
   });
 }

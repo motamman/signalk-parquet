@@ -11,7 +11,7 @@ import { VesselContextManager } from './vessel-context';
 import { getAvailablePaths } from './utils/path-discovery';
 import * as fs from 'fs-extra';
 import * as path from 'path';
-import { DuckDBInstance } from '@duckdb/node-api';
+import { DuckDBPool } from './utils/duckdb-pool';
 import { ClaudeModel } from './claude-models';
 import { shouldSkipDirectory } from './utils/path-helpers';
 
@@ -3365,12 +3365,8 @@ Begin your analysis by querying relevant data within the specified time range.`;
       }
     }
 
-    const instance = await DuckDBInstance.create();
-    const connection = await instance.connect();
-
-    // Load spatial extension for geographic queries
-    await connection.runAndReadAll('INSTALL spatial;');
-    await connection.runAndReadAll('LOAD spatial;');
+    // Use shared pool - spatial extension is already loaded at startup
+    const connection = await DuckDBPool.getConnection();
 
     try {
       this.app?.debug(`🔍 Executing SQL query for: ${purpose}`);
@@ -3403,7 +3399,7 @@ Begin your analysis by querying relevant data within the specified time range.`;
       this.app?.error(`SQL query failed: ${(error as Error).message}`);
       throw new Error(`Database query failed: ${(error as Error).message}`);
     } finally {
-      // DuckDB connections close automatically when instance is destroyed
+      connection.disconnectSync();
     }
   }
 

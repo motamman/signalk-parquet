@@ -23,8 +23,6 @@ import {
   updateDataSubscriptions,
   initializeRegimenStates,
   saveAllBuffers,
-  consolidateMissedDays,
-  consolidateYesterday,
   uploadAllConsolidatedFilesToS3,
   uploadConsolidatedFilesToS3,
 } from './data-handler';
@@ -85,15 +83,15 @@ export default function (app: ServerAPI): SignalKPlugin {
 
     // Use SignalK's main data directory (go up from plugin-config-data/<plugin-name>)
     const signalkDataDir = path.resolve(app.getDataDirPath(), '..', '..');
-    const defaultOutputDir = path.join(signalkDataDir, 'signalk-parquet');
+    const defaultOutputDir = path.join(signalkDataDir, 'signalk-parquet-data');
 
     state.currentConfig = {
       bufferSize: options?.bufferSize || 1000,
       saveIntervalSeconds: options?.saveIntervalSeconds || 30,
       outputDirectory: options?.outputDirectory
-        ? (path.isAbsolute(options.outputDirectory)
-            ? options.outputDirectory
-            : path.join(signalkDataDir, options.outputDirectory))
+        ? path.isAbsolute(options.outputDirectory)
+          ? options.outputDirectory
+          : path.join(signalkDataDir, options.outputDirectory)
         : defaultOutputDir,
       filenamePrefix: options?.filenamePrefix || 'signalk_data',
       retentionDays: options?.retentionDays || 7,
@@ -109,7 +107,7 @@ export default function (app: ServerAPI): SignalKPlugin {
       // SQLite buffer options
       useSqliteBuffer: true, // Always use SQLite buffer
       exportIntervalMinutes: options?.exportIntervalMinutes || 5,
-      bufferRetentionHours: options?.bufferRetentionHours || 24,
+      bufferRetentionHours: options?.bufferRetentionHours || 48,
       useHivePartitioning: true, // Always use Hive partitioning
       // Auto-discovery configuration
       autoDiscovery: options?.autoDiscovery || {
@@ -122,6 +120,8 @@ export default function (app: ServerAPI): SignalKPlugin {
       exportBatchSize: options?.exportBatchSize || 50000,
       // Enable raw SQL queries via /api/query endpoint
       enableRawSql: options?.enableRawSql || false,
+      // Daily export hour (0-23 UTC, default 2 AM)
+      dailyExportHour: options?.dailyExportHour ?? 4,
     };
 
     // Load webapp configuration including commands
@@ -235,20 +235,31 @@ export default function (app: ServerAPI): SignalKPlugin {
       saveAllBuffers(state.currentConfig!, state, app);
     }, state.currentConfig.saveIntervalSeconds * 1000);
 
-    // Set up daily consolidation (run at midnight UTC)
+    // Set up daily export scheduling (new simplified pipeline)
+    const dailyExportHour = state.currentConfig.dailyExportHour ?? 4;
     const now = new Date();
-    const nextMidnightUTC = new Date(
+
+    // Calculate next daily export time (at configured hour UTC)
+    const nextDailyExportUTC = new Date(
       Date.UTC(
         now.getUTCFullYear(),
         now.getUTCMonth(),
-        now.getUTCDate() + 1,
-        0,
+        now.getUTCDate(),
+        dailyExportHour,
         0,
         0,
         0
       )
     );
-    const msUntilMidnightUTC = nextMidnightUTC.getTime() - now.getTime();
+    // If we've already passed this hour today, schedule for tomorrow
+    if (nextDailyExportUTC.getTime() <= now.getTime()) {
+      nextDailyExportUTC.setUTCDate(nextDailyExportUTC.getUTCDate() + 1);
+    }
+    const msUntilDailyExport = nextDailyExportUTC.getTime() - now.getTime();
+
+    app.debug(
+      `[DailyExport] Scheduled for ${dailyExportHour}:00 UTC, next run in ${Math.round(msUntilDailyExport / 60000)} minutes`
+    );
 
     // Initialize aggregation service if Hive partitioning is enabled
     let aggregationService: AggregationService | undefined;
@@ -269,71 +280,97 @@ export default function (app: ServerAPI): SignalKPlugin {
       app.debug('Aggregation service initialized');
     }
 
-    setTimeout(() => {
-      consolidateYesterday(state.currentConfig!, state, app);
+    // Daily export function - exports yesterday's data from SQLite to Parquet
+    const runDailyExport = async () => {
+      const yesterday = new Date();
+      yesterday.setUTCDate(yesterday.getUTCDate() - 1);
+      yesterday.setUTCHours(0, 0, 0, 0);
 
-      // Run aggregation after consolidation if Hive partitioning is enabled
-      if (aggregationService) {
-        const yesterday = new Date();
-        yesterday.setUTCDate(yesterday.getUTCDate() - 1);
+      app.debug(`[DailyExport] Running daily export for ${yesterday.toISOString().slice(0, 10)}`);
 
-        aggregationService
-          .runDailyAggregation()
-          .then(async results => {
-            app.debug(
-              `Daily aggregation complete: ${JSON.stringify(results.map(r => ({ tier: r.targetTier, files: r.filesCreated })))}`
-            );
-            // Upload aggregated files to S3 AFTER aggregation completes
-            if (state.currentConfig?.s3Upload.enabled && state.currentConfig?.s3Upload.timing === 'consolidation') {
-              await uploadConsolidatedFilesToS3(state.currentConfig, yesterday, state, app);
-            }
-          })
-          .catch(err => {
-            app.error(`Daily aggregation failed: ${err.message}`);
-          });
-      }
+      try {
+        // Export yesterday's data to daily Parquet files
+        if (state.exportService) {
+          const result = await state.exportService.exportDayToParquet(yesterday);
+          app.debug(
+            `[DailyExport] Exported ${result.recordsExported} records to ${result.filesCreated.length} files`
+          );
 
-      // Then run daily consolidation every 24 hours
-      state.consolidationInterval = setInterval(
-        () => {
-          consolidateYesterday(state.currentConfig!, state, app);
-
-          // Run aggregation after consolidation
+          // Run aggregation after daily export if Hive partitioning is enabled
           if (aggregationService) {
-            const yesterday = new Date();
-            yesterday.setUTCDate(yesterday.getUTCDate() - 1);
+            try {
+              const aggResults = await aggregationService.runDailyAggregation();
+              app.debug(
+                `[DailyExport] Aggregation complete: ${JSON.stringify(aggResults.map(r => ({ tier: r.targetTier, files: r.filesCreated })))}`
+              );
 
-            aggregationService
-              .runDailyAggregation()
-              .then(async results => {
-                app.debug(
-                  `Daily aggregation complete: ${JSON.stringify(results.map(r => ({ tier: r.targetTier, files: r.filesCreated })))}`
+              // Upload files to S3 after aggregation
+              if (
+                state.currentConfig?.s3Upload.enabled &&
+                state.currentConfig?.s3Upload.timing === 'consolidation'
+              ) {
+                await uploadConsolidatedFilesToS3(
+                  state.currentConfig,
+                  yesterday,
+                  state,
+                  app
                 );
-                // Upload aggregated files to S3 AFTER aggregation completes
-                if (state.currentConfig?.s3Upload.enabled && state.currentConfig?.s3Upload.timing === 'consolidation') {
-                  await uploadConsolidatedFilesToS3(state.currentConfig, yesterday, state, app);
-                }
-              })
-              .catch(err => {
-                app.error(`Daily aggregation failed: ${err.message}`);
-              });
+              }
+            } catch (aggErr) {
+              app.error(`[DailyExport] Aggregation failed: ${(aggErr as Error).message}`);
+            }
           }
-        },
-        24 * 60 * 60 * 1000
-      );
-    }, msUntilMidnightUTC);
+        }
+      } catch (error) {
+        app.error(`[DailyExport] Failed: ${(error as Error).message}`);
+      }
+    };
 
-    // Run startup consolidation for missed previous days
+    // Schedule first daily export
     setTimeout(() => {
-      consolidateMissedDays(state.currentConfig!, state, app);
-    }, 5000); // Wait 5 seconds after startup to avoid conflicts
+      runDailyExport();
 
-    // Upload all existing consolidated files to S3 (for catching up after BigInt fix)
-    if (state.currentConfig.s3Upload.enabled) {
-      setTimeout(() => {
-        uploadAllConsolidatedFilesToS3(state.currentConfig!, state, app);
-      }, 10000); // Wait 10 seconds after startup to avoid conflicts
-    }
+      // Then run daily export every 24 hours
+      state.consolidationInterval = setInterval(runDailyExport, 24 * 60 * 60 * 1000);
+    }, msUntilDailyExport);
+
+    // Run startup export for ALL unexported records (catches up after downtime)
+    setTimeout(async () => {
+      if (state.exportService) {
+        try {
+          const result = await state.exportService.exportAllUnexported();
+          if (result.recordsExported > 0) {
+            app.debug(
+              `[StartupExport] Exported ${result.recordsExported} records to ${result.filesCreated.length} files`
+            );
+
+            // Run aggregation after startup export if enabled
+            if (aggregationService) {
+              try {
+                const aggResults = await aggregationService.runDailyAggregation();
+                app.debug(
+                  `[StartupExport] Aggregation complete: ${JSON.stringify(aggResults.map(r => ({ tier: r.targetTier, files: r.filesCreated })))}`
+                );
+              } catch (aggErr) {
+                app.error(`[StartupExport] Aggregation failed: ${(aggErr as Error).message}`);
+              }
+            }
+
+            // Upload to S3 after export and aggregation complete
+            if (state.currentConfig?.s3Upload.enabled) {
+              try {
+                await uploadAllConsolidatedFilesToS3(state.currentConfig, state, app);
+                app.debug('[StartupExport] S3 upload complete');
+              } catch (s3Err) {
+                app.error(`[StartupExport] S3 upload failed: ${(s3Err as Error).message}`);
+              }
+            }
+          }
+        } catch (error) {
+          app.error(`[StartupExport] Failed: ${(error as Error).message}`);
+        }
+      }
+    }, 10000); // Wait 10 seconds after startup
 
     // Always initialize auto-discovery service - it checks enabled state at runtime
     app.debug(
@@ -544,53 +581,57 @@ export default function (app: ServerAPI): SignalKPlugin {
     properties: {
       bufferSize: {
         type: 'number',
-        title: 'Buffer Size',
-        description: 'Number of records to buffer before writing to file',
+        title: 'Memory Buffer Size',
+        description:
+          'Number of SignalK data records to hold in memory before writing to the SQLite buffer. Higher values use more RAM but reduce disk writes. Recommended: 1000-5000 for most systems.',
         default: 1000,
         minimum: 10,
         maximum: 10000,
       },
       saveIntervalSeconds: {
         type: 'number',
-        title: 'Save Interval (seconds)',
-        description: 'How often to save buffered data to files',
+        title: 'Buffer Flush Interval (seconds)',
+        description:
+          'Maximum time between flushing the memory buffer to SQLite. Data is written when either this interval passes OR the buffer size is reached, whichever comes first.',
         default: 30,
         minimum: 5,
         maximum: 300,
       },
       outputDirectory: {
         type: 'string',
-        title: 'Output Directory',
+        title: 'Data Storage Directory',
         description:
-          'Directory to save data files (defaults to application_data/{vessel}/signalk-parquet)',
+          'Relative path from ~/.signalk (e.g., "data" becomes ~/.signalk/data). Leave empty for default (~/.signalk/signalk-parquet-data). Absolute paths also supported.',
         default: '',
       },
       filenamePrefix: {
         type: 'string',
         title: 'Filename Prefix',
-        description: 'Prefix for generated filenames',
+        description:
+          'Prefix added to all generated Parquet files. Useful if running multiple instances or for organizing data. Example: "boat_name" produces "boat_name_2024-01-15T1200.parquet"',
         default: 'signalk_data',
       },
-      fileFormat: {
-        type: 'string',
-        title: 'File Format',
-        description: 'Format for saved data files',
-        enum: ['json', 'csv', 'parquet'],
-        default: 'parquet',
+      enableRetention: {
+        type: 'boolean',
+        title: 'Enable Automatic Cleanup (DEPRECATED)',
+        description:
+          'DEPRECATED: No longer used. The new pipeline creates daily files directly without a "processed" folder. File retention is handled differently.',
+        default: false,
       },
       retentionDays: {
         type: 'number',
-        title: 'Retention Days',
-        description: 'Days to keep processed files',
+        title: 'Retention Period (days)',
+        description:
+          'Number of days to keep files in the "processed" folder before automatic deletion. Only applies when "Enable Automatic Cleanup" is checked. Does not affect consolidated or active Parquet files.',
         default: 7,
         minimum: 1,
         maximum: 365,
       },
       exportIntervalMinutes: {
         type: 'number',
-        title: 'Export Interval (minutes)',
+        title: 'Parquet Export Interval (DEPRECATED)',
         description:
-          'How often to export data from SQLite buffer to Parquet files.',
+          'DEPRECATED: No longer used. Daily export now runs at the configured dailyExportHour instead of periodic intervals. This setting will be removed in a future version.',
         default: 5,
         minimum: 1,
         maximum: 60,
@@ -599,19 +640,37 @@ export default function (app: ServerAPI): SignalKPlugin {
         type: 'number',
         title: 'Export Batch Size',
         description:
-          'Maximum number of records to export per cycle. Increase if pending records are backing up.',
+          'Maximum records to export per cycle. If you see "pending records" warnings in the logs, increase this value. Higher values use more memory during export but prevent backlogs.',
         default: 50000,
         minimum: 1000,
         maximum: 200000,
       },
       bufferRetentionHours: {
         type: 'number',
-        title: 'Buffer Retention (hours)',
+        title: 'SQLite Buffer Retention (hours)',
         description:
-          'How long to keep exported records in SQLite buffer before cleanup.',
-        default: 24,
+          'How long to keep data in the SQLite buffer after exporting to Parquet. Longer retention allows re-export if needed but uses more disk space. The buffer is separate from Parquet files.',
+        default: 48,
         minimum: 1,
         maximum: 168,
+      },
+      dailyExportHour: {
+        type: 'number',
+        title: 'Daily Export Hour (UTC)',
+        description:
+          'Hour of day (0-23 UTC) when daily Parquet export runs. Yesterday\'s data is exported at this hour. Default is 4 AM UTC.',
+        default: 4,
+        minimum: 0,
+        maximum: 23,
+      },
+      consolidationLookbackDays: {
+        type: 'number',
+        title: 'Consolidation Lookback (DEPRECATED)',
+        description:
+          'DEPRECATED: No longer used. The new daily export creates consolidated files directly, eliminating the need for a separate consolidation step.',
+        default: 30,
+        minimum: 1,
+        maximum: 365,
       },
       autoDiscovery: {
         type: 'object',

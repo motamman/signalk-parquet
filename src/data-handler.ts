@@ -1,6 +1,25 @@
 import * as fs from 'fs-extra';
 import * as path from 'path';
-import { glob } from 'glob';
+import { glob as globOriginal } from 'glob';
+import { promisify } from 'util';
+
+// Wrap glob for compatibility with both glob@7.x (callbacks) and glob@11.x (promises)
+const glob = async (pattern: string, options?: object): Promise<string[]> => {
+  // If glob returns a Promise (glob@11.x), use it directly
+  const result = globOriginal(pattern, options || {}) as unknown;
+  if (result && typeof (result as Promise<string[]>).then === 'function') {
+    return result as Promise<string[]>;
+  }
+  // Otherwise use promisify for glob@7.x callback style
+  const globPromise = promisify(
+    globOriginal as (
+      pattern: string,
+      options: object,
+      cb: (err: Error | null, matches: string[]) => void
+    ) => void
+  );
+  return globPromise(pattern, options || {}) as Promise<string[]>;
+};
 import {
   PluginConfig,
   PathConfig,
@@ -679,124 +698,14 @@ export function initializeRegimenStates(
   });
 }
 
-// Startup consolidation for missed previous days (last 7 days, excludes current day)
-export async function consolidateMissedDays(
-  config: PluginConfig,
-  state: PluginState,
-  app: ServerAPI
-): Promise<void> {
-  try {
-    const outputDir = config.outputDirectory;
-    if (!(await fs.pathExists(outputDir))) {
-      return;
-    }
-
-    const today = new Date();
-    today.setUTCHours(0, 0, 0, 0);
-
-    // Use targeted glob patterns for each date instead of scanning all files
-    // This avoids loading 100k+ files into memory on systems with large histories
-    const datesNeedingConsolidation = new Set<string>();
-    const prefix = config.filenamePrefix || 'signalk_data';
-    const daysToCheck = 7; // Check last 7 days for missed consolidations
-
-    for (let daysAgo = 1; daysAgo <= daysToCheck; daysAgo++) {
-      const targetDate = new Date(today);
-      targetDate.setUTCDate(today.getUTCDate() - daysAgo);
-      const dateStr = targetDate.toISOString().slice(0, 10); // "2025-07-14"
-
-      // Targeted glob: only match files from this specific date
-      const datePattern = path.join(
-        outputDir,
-        `**/${prefix}_${dateStr}T*.parquet`
-      );
-      const filesForDate = await glob(datePattern);
-
-      // Check if there are unconsolidated files for this date
-      const hasUnconsolidatedFiles = filesForDate.some(
-        f => !f.includes('_consolidated.parquet')
-      );
-
-      if (hasUnconsolidatedFiles) {
-        datesNeedingConsolidation.add(dateStr);
-        app.debug(`Found unconsolidated files for ${dateStr}`);
-      }
-    }
-
-    // Consolidate each missed day
-    for (const dateStr of datesNeedingConsolidation) {
-      // Parse date string format: 2025-07-14
-      const [yearStr, monthStr, dayStr] = dateStr.split('-');
-      const date = new Date(
-        parseInt(yearStr),
-        parseInt(monthStr) - 1,
-        parseInt(dayStr)
-      );
-
-      const consolidatedCount = await state.parquetWriter!.consolidateDaily(
-        config.outputDirectory,
-        date,
-        config.filenamePrefix
-      );
-
-      if (consolidatedCount > 0) {
-        // Upload consolidated files to S3 if enabled and timing is consolidation
-        if (
-          config.s3Upload.enabled &&
-          config.s3Upload.timing === 'consolidation'
-        ) {
-          await uploadConsolidatedFilesToS3(config, date, state, app);
-        } else {
-        }
-      }
-    }
-
-    if (datesNeedingConsolidation.size > 0) {
-    } else {
-    }
-  } catch (error) {
-    app.error(`Failed to consolidate missed days: ${(error as Error).message}`);
-    app.debug(`Consolidation error stack: ${(error as Error).stack}`);
-  }
-}
-
-// Daily consolidation function
-export async function consolidateYesterday(
-  config: PluginConfig,
-  state: PluginState,
-  app: ServerAPI
-): Promise<void> {
-  try {
-    const yesterday = new Date();
-    yesterday.setUTCDate(yesterday.getUTCDate() - 1);
-
-    const consolidatedCount = await state.parquetWriter!.consolidateDaily(
-      config.outputDirectory,
-      yesterday,
-      config.filenamePrefix
-    );
-
-    if (consolidatedCount > 0) {
-      // Upload consolidated files to S3 if enabled and timing is consolidation
-      if (
-        config.s3Upload.enabled &&
-        config.s3Upload.timing === 'consolidation'
-      ) {
-        await uploadConsolidatedFilesToS3(config, yesterday, state, app);
-      }
-    }
-  } catch (error) {
-    app.error(
-      `Failed to consolidate yesterday's files: ${(error as Error).message}`
-    );
-    app.debug(`Consolidation error stack: ${(error as Error).stack}`);
-  }
-}
+// REMOVED: consolidateMissedDays() and consolidateYesterday()
+// These functions have been replaced by the daily export system in parquet-export-service.ts
+// The new exportDayToParquet() creates consolidated daily files directly
 
 // Directories to exclude from S3 uploads
 const excludedDirs = ['/processed/', '/repaired/', '/failed/', '/quarantine/'];
 
-// Upload all existing consolidated files to S3 (for catching up after BigInt fix)
+// Upload all existing consolidated and aggregated files to S3 (for catching up)
 // Uses targeted date patterns to avoid scanning 100k+ files on large datasets
 export async function uploadAllConsolidatedFilesToS3(
   config: PluginConfig,
@@ -816,20 +725,41 @@ export async function uploadAllConsolidatedFilesToS3(
       targetDate.setUTCDate(today.getUTCDate() - daysAgo);
       const dateStr = targetDate.toISOString().slice(0, 10); // "2025-07-14"
 
-      // Targeted glob: only match consolidated files from this specific date
+      // Match both consolidated AND aggregated parquet files for this date
       const consolidatedPattern = `**/${prefix}_${dateStr}_consolidated.parquet`;
+      const aggregatedPattern = `**/${prefix}_${dateStr}_aggregated.parquet`;
+      // Also match daily export files (includes timestamped files)
+      const dailyPattern = `**/${prefix}_${dateStr}*.parquet`;
+
       const allConsolidatedFiles = await glob(consolidatedPattern, {
         cwd: config.outputDirectory,
         absolute: true,
         nodir: true,
       });
 
-      // Exclude processed/repaired/failed/quarantine directories
-      const consolidatedFiles = allConsolidatedFiles.filter(
-        (f) => !excludedDirs.some((dir) => f.includes(dir))
+      const allAggregatedFiles = await glob(aggregatedPattern, {
+        cwd: config.outputDirectory,
+        absolute: true,
+        nodir: true,
+      });
+
+      const allDailyFiles = await glob(dailyPattern, {
+        cwd: config.outputDirectory,
+        absolute: true,
+        nodir: true,
+      });
+
+      // Combine all files and exclude processed/repaired/failed/quarantine directories
+      const allFiles = [
+        ...allConsolidatedFiles,
+        ...allAggregatedFiles,
+        ...allDailyFiles,
+      ];
+      const filesToUpload = allFiles.filter(
+        f => !excludedDirs.some(dir => f.includes(dir))
       );
 
-      for (const filePath of consolidatedFiles) {
+      for (const filePath of filesToUpload) {
         const success = await uploadToS3(filePath, config, state, app);
         if (success) uploadedCount++;
       }
@@ -837,7 +767,7 @@ export async function uploadAllConsolidatedFilesToS3(
 
     if (uploadedCount > 0) {
       app.debug(
-        `S3 catchup: uploaded ${uploadedCount} consolidated files from last ${daysToCheck} days`
+        `S3 catchup: uploaded ${uploadedCount} files from last ${daysToCheck} days (consolidated + aggregated + daily)`
       );
     }
   } catch (error) {
@@ -845,7 +775,7 @@ export async function uploadAllConsolidatedFilesToS3(
   }
 }
 
-// Upload consolidated and aggregated files to S3
+// Upload daily export, consolidated, and aggregated files to S3
 export async function uploadConsolidatedFilesToS3(
   config: PluginConfig,
   date: Date,
@@ -854,12 +784,23 @@ export async function uploadConsolidatedFilesToS3(
 ): Promise<void> {
   try {
     const dateStr = date.toISOString().split('T')[0];
+    const prefix = config.filenamePrefix || 'signalk_data';
 
-    // Match both consolidated AND aggregated parquet files for this date
+    // Match daily export files (new simplified pipeline) - includes timestamped files
+    const dailyPattern = `**/${prefix}_${dateStr}*.parquet`;
+    // Match legacy consolidated files (for backwards compatibility)
     const consolidatedPattern = `**/*_${dateStr}_consolidated.parquet`;
+    // Match aggregated files (from tier aggregation)
     const aggregatedPattern = `**/*_${dateStr}_aggregated.parquet`;
 
-    // Find all consolidated files for the date
+    // Find all daily export files for the date (new pipeline)
+    const dailyFiles = await glob(dailyPattern, {
+      cwd: config.outputDirectory,
+      absolute: true,
+      nodir: true,
+    });
+
+    // Find all consolidated files for the date (legacy)
     const consolidatedFiles = await glob(consolidatedPattern, {
       cwd: config.outputDirectory,
       absolute: true,
@@ -873,12 +814,12 @@ export async function uploadConsolidatedFilesToS3(
       nodir: true,
     });
 
-    // Combine both lists
-    const allFiles = [...consolidatedFiles, ...aggregatedFiles];
+    // Combine all lists
+    const allFiles = [...dailyFiles, ...consolidatedFiles, ...aggregatedFiles];
 
     // Exclude processed/repaired/failed/quarantine directories
     const filesToUpload = allFiles.filter(
-      (f) => !excludedDirs.some((dir) => f.includes(dir))
+      f => !excludedDirs.some(dir => f.includes(dir))
     );
 
     // Upload each file
@@ -887,10 +828,14 @@ export async function uploadConsolidatedFilesToS3(
     }
 
     if (filesToUpload.length > 0) {
-      app.debug(`S3: Uploaded ${filesToUpload.length} files for ${dateStr} (consolidated + aggregated)`);
+      app.debug(
+        `S3: Uploaded ${filesToUpload.length} files for ${dateStr} (daily + consolidated + aggregated)`
+      );
     }
   } catch (error) {
-    app.error(`S3 upload failed for date ${date.toISOString().slice(0, 10)}: ${(error as Error).message}`);
+    app.error(
+      `S3 upload failed for date ${date.toISOString().slice(0, 10)}: ${(error as Error).message}`
+    );
   }
 }
 

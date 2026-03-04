@@ -1,5 +1,73 @@
 # Changelog
 
+## [0.7.5-beta.4] - 2026-03-04
+
+### Changed
+
+- **MAJOR: Simplified Export Pipeline** - Replaced periodic 5-minute exports with daily export mode
+  - Data now accumulates in SQLite buffer throughout the day
+  - Single daily export at configurable hour (default: 4 AM UTC)
+  - Creates consolidated daily Parquet files directly (no separate consolidation step)
+  - Eliminates file fragmentation from frequent small exports
+  - `exportIntervalMinutes` config option now deprecated
+
+- **Extended SQLite Buffer Retention** - Default changed from 24h to 48h
+  - Allows federated queries to span more recent data
+  - Better crash recovery window
+
+- **Removed Consolidation System** - No longer needed with daily export
+  - Removed `consolidateDaily()` and `mergeFiles()` from parquet-writer.ts
+  - Removed `consolidateMissedDays()` and `consolidateYesterday()` from data-handler.ts
+  - Daily export creates consolidated files directly
+
+### Fixed
+
+- **Buffer Bucketing in History API** - SQLite buffer data now bucketed before merging with Parquet results
+  - Previously: raw per-second buffer records merged directly, flooding results (e.g., 10,000 raw records mixed with 288 bucketed Parquet points for a 24h/5min query)
+  - Now: buffer records are bucketed and aggregated using the same resolution as the Parquet query
+  - Supports all aggregate methods: average, min, max, first, last
+  - Angular paths use vector averaging (`atan2(mean(sin), mean(cos))`)
+  - Object paths (e.g., position) average each numeric component
+
+- **CRITICAL: Parquet File Overwrite Bug** - Fixed exports overwriting existing files on restart
+  - Previous: Filename used first record's timestamp (could match existing file)
+  - Now: Filename uses current time, guaranteeing unique filenames
+  - Each export creates: `signalk_data_2026-03-03T1313.parquet`
+  - Multiple restarts per day create separate files (no data loss)
+
+- **Federated Query Cutoff** - Fixed HistoryAPI only looking at last 5 minutes
+  - Now correctly uses 48-hour cutoff for SQLite buffer queries
+  - Recent data properly included in federated queries
+
+- **S3 Upload Patterns** - Updated to match timestamped filenames
+  - Pattern changed from `${prefix}_${dateStr}.parquet` to `${prefix}_${dateStr}*.parquet`
+  - Matches both date-only (legacy) and timestamped (new) naming
+
+### Added
+
+- **Vector Averaging for Angular Paths** - Correct aggregation of circular data (headings, bearings, wind angles)
+  - Detects angular paths dynamically via `app.getMetadata(path).units === 'rad'`
+  - Uses `ATAN2(AVG(SIN(value)), AVG(COS(value)))` instead of arithmetic mean
+  - Stores `value_sin_avg`/`value_cos_avg` columns for lossless re-aggregation across tiers
+  - `value_min`/`value_max` set to NULL for angular paths (min/max undefined for circular data)
+  - Migration endpoint: `POST /api/migrate/vector-averaging` to rebuild existing aggregated files
+
+- **Daily Export Scheduling** - New `dailyExportHour` config option (0-23, default: 4)
+  - Configurable hour for daily Parquet export (UTC)
+  - Runs once per day, exports previous day's data
+
+- **Diagnostic Test Script** - New `tests/test-data-pipeline.js`
+  - Reports SQLite buffer status (records by date, exported vs unexported)
+  - Reports Parquet file statistics (counts, sizes, dates)
+  - Data integrity checks
+  - Run: `node tests/test-data-pipeline.js [--verbose]`
+
+- **Improved UI Status** - Migration tab now shows meaningful status
+  - "Export Service: Daily Mode" instead of "Stopped"
+  - "Schedule: Daily at 4:00 UTC" instead of "Interval: 5 min"
+
+---
+
 ## [0.7.4-beta.3] - 2026-03-02
 
 ### Fixed

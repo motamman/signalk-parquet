@@ -47,6 +47,7 @@ import {
   parseDurationToMillis,
   parseResolutionToMillis,
 } from './utils/duration-parser';
+import { isAngularPath } from './utils/angular-paths';
 
 // ============================================================================
 // Timestamp Conversion Helper Functions
@@ -171,11 +172,7 @@ export function registerHistoryApiRoute(
 
         if (!contexts) {
           // Cache miss - query the parquet files
-          contexts = await getAvailableContextsForTimeRange(
-            dataDir,
-            from,
-            to
-          );
+          contexts = await getAvailableContextsForTimeRange(dataDir, from, to);
           // Cache the result
           setCachedContexts(from, to, contexts);
         }
@@ -391,7 +388,8 @@ const getRequestParams = ({ query }: FromToContextRequest, selfId: string) => {
 
     const context: Context = getContext(query.context, selfId);
     const spatialFilter = parseSpatialParams(query.bbox, query.radius);
-    const positionPath = (query.positionPath as string) || 'navigation.position';
+    const positionPath =
+      (query.positionPath as string) || 'navigation.position';
     return { from, to, context, spatialFilter, shouldRefresh, positionPath };
   } catch (e: unknown) {
     console.error('Full error details:', e);
@@ -543,7 +541,9 @@ export class HistoryAPI {
 
     const now = new Date();
     const retentionCutoff = new Date(now);
-    retentionCutoff.setUTCDate(retentionCutoff.getUTCDate() - this.retentionDays);
+    retentionCutoff.setUTCDate(
+      retentionCutoff.getUTCDate() - this.retentionDays
+    );
 
     const fromDate = new Date(from.toInstant().toString());
     const toDate = new Date(to.toInstant().toString());
@@ -619,7 +619,8 @@ export class HistoryAPI {
   }
 
   /**
-   * Query recent data from SQLite buffer (within export interval)
+   * Query recent data from SQLite buffer
+   * With daily exports, data can sit in SQLite for up to 48 hours before export
    * Returns records for a specific context and path
    */
   private getRecentBufferData(
@@ -633,10 +634,13 @@ export class HistoryAPI {
       return [];
     }
 
+    // With daily exports, SQLite buffer holds up to 48 hours of data
+    // Query buffer for any data within retention period (not just export interval)
+    const bufferRetentionHours = 48;
     const cutoffTime = new Date();
-    cutoffTime.setMinutes(cutoffTime.getMinutes() - this.exportIntervalMinutes);
+    cutoffTime.setHours(cutoffTime.getHours() - bufferRetentionHours);
 
-    // Only query buffer if 'to' time is recent (within export interval)
+    // Only query buffer if 'to' time is within buffer retention period
     const toDate = new Date(to.toInstant().toString());
     if (toDate < cutoffTime) {
       debug(
@@ -645,19 +649,18 @@ export class HistoryAPI {
       return [];
     }
 
-    // Adjust 'from' to be at least the cutoff time for buffer query
+    // Query from the requested time, buffer will return what it has
     const fromDate = new Date(from.toInstant().toString());
-    const bufferFrom = fromDate > cutoffTime ? fromDate : cutoffTime;
 
     debug(
-      `Querying SQLite buffer for recent data: ${context}:${signalkPath} from ${bufferFrom.toISOString()}`
+      `Querying SQLite buffer for recent data: ${context}:${signalkPath} from ${fromDate.toISOString()}`
     );
 
     try {
       const records = this.sqliteBuffer.getRecordsForPath(
         context,
         signalkPath,
-        bufferFrom.toISOString(),
+        fromDate.toISOString(),
         toDate.toISOString()
       );
       debug(`Found ${records.length} records in SQLite buffer`);
@@ -669,28 +672,29 @@ export class HistoryAPI {
   }
 
   /**
-   * Merge parquet results with buffer results, removing duplicates by timestamp
+   * Merge parquet results with buffer results, removing duplicates by timestamp.
+   * Buffer records are bucketed and aggregated to match the parquet resolution.
    */
   private mergeWithBufferData(
     parquetData: Array<[Timestamp, unknown]>,
     bufferRecords: DataRecord[],
-    debug: (k: string) => void
+    debug: (k: string) => void,
+    timeResolutionMillis: number = 0,
+    aggregateMethod: string = 'average',
+    pathName: string = '',
+    isAngular: boolean = false
   ): Array<[Timestamp, unknown]> {
     if (bufferRecords.length === 0) {
       return parquetData;
     }
 
-    // Convert buffer records to the same format
-    const bufferData: Array<[Timestamp, unknown]> = bufferRecords.map(
-      record => {
-        const timestamp = record.signalk_timestamp as Timestamp;
-        const value = record.value_json
-          ? typeof record.value_json === 'string'
-            ? JSON.parse(record.value_json)
-            : record.value_json
-          : record.value;
-        return [timestamp, value];
-      }
+    // Bucket and aggregate buffer records to match parquet resolution
+    const bufferData = this.bucketBufferRecords(
+      bufferRecords,
+      timeResolutionMillis,
+      aggregateMethod,
+      isAngular,
+      debug
     );
 
     // Create a map of parquet data by timestamp for deduplication
@@ -712,9 +716,78 @@ export class HistoryAPI {
     );
 
     debug(
-      `Merged ${parquetData.length} parquet + ${bufferRecords.length} buffer records = ${merged.length} total`
+      `Merged ${parquetData.length} parquet + ${bufferData.length} bucketed buffer (from ${bufferRecords.length} raw) = ${merged.length} total`
     );
     return merged;
+  }
+
+  /**
+   * Bucket and aggregate raw buffer records into time-aligned buckets
+   */
+  private bucketBufferRecords(
+    records: DataRecord[],
+    resolutionMs: number,
+    aggregateMethod: string,
+    isAngular: boolean,
+    debug: (k: string) => void
+  ): Array<[Timestamp, unknown]> {
+    // If no resolution or very small, just convert without bucketing
+    if (resolutionMs <= 1000) {
+      return records.map(record => {
+        const timestamp = record.signalk_timestamp as Timestamp;
+        const value = record.value_json
+          ? typeof record.value_json === 'string'
+            ? JSON.parse(record.value_json)
+            : record.value_json
+          : record.value;
+        return [timestamp, value];
+      });
+    }
+
+    // Group records into buckets by resolution
+    const buckets = new Map<number, DataRecord[]>();
+    for (const record of records) {
+      const epochMs = new Date(record.signalk_timestamp).getTime();
+      const bucketKey = Math.floor(epochMs / resolutionMs) * resolutionMs;
+      let bucket = buckets.get(bucketKey);
+      if (!bucket) {
+        bucket = [];
+        buckets.set(bucketKey, bucket);
+      }
+      bucket.push(record);
+    }
+
+    debug(
+      `Bucketed ${records.length} buffer records into ${buckets.size} buckets (resolution=${resolutionMs}ms)`
+    );
+
+    // Aggregate each bucket
+    const result: Array<[Timestamp, unknown]> = [];
+    const sortedKeys = Array.from(buckets.keys()).sort((a, b) => a - b);
+
+    for (const bucketKey of sortedKeys) {
+      const bucket = buckets.get(bucketKey)!;
+      const timestamp = new Date(bucketKey).toISOString().replace('.000Z', 'Z') as Timestamp;
+
+      // Check if first record has object values (e.g., position)
+      const firstRecord = bucket[0];
+      const firstValue = firstRecord.value_json
+        ? typeof firstRecord.value_json === 'string'
+          ? JSON.parse(firstRecord.value_json)
+          : firstRecord.value_json
+        : firstRecord.value;
+
+      if (typeof firstValue === 'object' && firstValue !== null) {
+        result.push([timestamp, aggregateObjectBucket(bucket)]);
+      } else {
+        result.push([
+          timestamp,
+          aggregateNumericBucket(bucket, aggregateMethod, isAngular),
+        ]);
+      }
+    }
+
+    return result;
   }
 
   /**
@@ -860,7 +933,8 @@ export class HistoryAPI {
             tier,
             spatialFilter,
             querySource,
-            positionPath
+            positionPath,
+            app
           )
         : {
             context,
@@ -965,7 +1039,8 @@ export class HistoryAPI {
     tier?: AggregationTier,
     spatialFilter?: SpatialFilter | null,
     querySource: QuerySource = 'local',
-    positionPath: string = 'navigation.position'
+    positionPath: string = 'navigation.position',
+    app?: any
   ): Promise<DataResult> {
     const allData: { [path: string]: Array<[Timestamp, unknown]> } = {};
     const objectPaths = new Set<string>(); // Track which paths are object paths
@@ -976,7 +1051,9 @@ export class HistoryAPI {
 
     // Calculate retention cutoff for hybrid queries
     const retentionCutoff = new Date();
-    retentionCutoff.setUTCDate(retentionCutoff.getUTCDate() - this.retentionDays);
+    retentionCutoff.setUTCDate(
+      retentionCutoff.getUTCDate() - this.retentionDays
+    );
 
     // If spatial filter is set, get valid timestamps from position data
     // This allows filtering non-position paths by "when vessel was in this area"
@@ -1032,7 +1109,9 @@ export class HistoryAPI {
             '**',
             '*.parquet'
           );
-          debug(`Querying local Hive tier=${effectiveTier} at: ${localFilePath}`);
+          debug(
+            `Querying local Hive tier=${effectiveTier} at: ${localFilePath}`
+          );
         }
 
         if (
@@ -1040,12 +1119,14 @@ export class HistoryAPI {
           this.s3Config?.enabled
         ) {
           // Build S3 pattern with partition pruning
-          const s3FromDate =
-            querySource === 'hybrid' ? fromDate : fromDate;
+          const s3FromDate = querySource === 'hybrid' ? fromDate : fromDate;
           const s3ToDate =
             querySource === 'hybrid'
               ? new Date(
-                  Math.min(retentionCutoff.getTime() - 86400000, toDate.getTime())
+                  Math.min(
+                    retentionCutoff.getTime() - 86400000,
+                    toDate.getTime()
+                  )
                 )
               : toDate;
 
@@ -1217,7 +1298,11 @@ export class HistoryAPI {
             allData[pathSpec.path] = this.mergeWithBufferData(
               pathData,
               bufferRecords,
-              debug
+              debug,
+              timeResolutionMillis,
+              String(pathSpec.aggregateMethod || 'average'),
+              pathSpec.path,
+              false
             );
           } else {
             // Scalar path - use original logic
@@ -1227,7 +1312,8 @@ export class HistoryAPI {
             if (localFilePath) {
               try {
                 const schemaQuery = `SELECT * FROM parquet_schema('${localFilePath}') WHERE name = 'value_json'`;
-                const schemaResult = await connection.runAndReadAll(schemaQuery);
+                const schemaResult =
+                  await connection.runAndReadAll(schemaQuery);
                 hasValueJson = schemaResult.getRowObjects().length > 0;
               } catch {
                 // Schema check failed, assume no value_json
@@ -1252,7 +1338,7 @@ export class HistoryAPI {
                 strftime(DATE_TRUNC('seconds',
                   EPOCH_MS(CAST(FLOOR(EPOCH_MS(signalk_timestamp::TIMESTAMP) / ${timeResolutionMillis}) * ${timeResolutionMillis} AS BIGINT))
                 ), '%Y-%m-%dT%H:%M:%SZ') as timestamp,
-                ${getAggregateExpression(pathSpec.aggregateMethod, pathSpec.path, hasValueJson)} as value${valueJsonSelect}
+                ${getAggregateExpression(pathSpec.aggregateMethod, pathSpec.path, hasValueJson, app, context as string)} as value${valueJsonSelect}
               FROM ${fromClause} AS source_data
               WHERE
                 signalk_timestamp >= '${fromIso}'
@@ -1313,7 +1399,11 @@ export class HistoryAPI {
             allData[pathSpec.path] = this.mergeWithBufferData(
               pathData,
               bufferRecords,
-              debug
+              debug,
+              timeResolutionMillis,
+              String(pathSpec.aggregateMethod || 'average'),
+              pathSpec.path,
+              isAngularPath(pathSpec.path, app, context as string)
             );
           }
         } finally {
@@ -1355,7 +1445,11 @@ export class HistoryAPI {
           allData[pathSpec.path] = this.mergeWithBufferData(
             [],
             bufferRecords,
-            debug
+            debug,
+            timeResolutionMillis,
+            String(pathSpec.aggregateMethod || 'average'),
+            pathSpec.path,
+            isAngularPath(pathSpec.path, app, context as string)
           );
         } else {
           allData[pathSpec.path] = [];
@@ -1911,10 +2005,91 @@ function getValueExpression(pathName: string, hasValueJson: boolean): string {
   return 'TRY_CAST(value AS DOUBLE)';
 }
 
+/**
+ * Aggregate numeric values in a buffer bucket according to the requested method
+ */
+function aggregateNumericBucket(
+  records: DataRecord[],
+  method: string,
+  isAngular: boolean
+): number | null {
+  const values: number[] = [];
+  for (const r of records) {
+    const v = typeof r.value === 'number' ? r.value : parseFloat(r.value);
+    if (!isNaN(v)) values.push(v);
+  }
+  if (values.length === 0) return null;
+
+  switch (method) {
+    case 'min':
+      return Math.min(...values);
+    case 'max':
+      return Math.max(...values);
+    case 'first':
+      return values[0];
+    case 'last':
+      return values[values.length - 1];
+    case 'average':
+    default:
+      if (isAngular) {
+        let sinSum = 0;
+        let cosSum = 0;
+        for (const v of values) {
+          sinSum += Math.sin(v);
+          cosSum += Math.cos(v);
+        }
+        return Math.atan2(sinSum / values.length, cosSum / values.length);
+      }
+      return values.reduce((sum, v) => sum + v, 0) / values.length;
+  }
+}
+
+/**
+ * Aggregate object values (e.g., position {latitude, longitude}) in a buffer bucket
+ */
+function aggregateObjectBucket(
+  records: DataRecord[]
+): Record<string, unknown> | null {
+  // Parse all values
+  const objects: Record<string, unknown>[] = [];
+  for (const r of records) {
+    const val = r.value_json
+      ? typeof r.value_json === 'string'
+        ? JSON.parse(r.value_json)
+        : r.value_json
+      : r.value;
+    if (typeof val === 'object' && val !== null) {
+      objects.push(val as Record<string, unknown>);
+    }
+  }
+  if (objects.length === 0) return null;
+
+  // Average each numeric component
+  const result: Record<string, unknown> = {};
+  const keys = Object.keys(objects[0]);
+  for (const key of keys) {
+    const numericVals: number[] = [];
+    for (const obj of objects) {
+      const v = obj[key];
+      if (typeof v === 'number') numericVals.push(v);
+    }
+    if (numericVals.length > 0) {
+      result[key] =
+        numericVals.reduce((sum, v) => sum + v, 0) / numericVals.length;
+    } else {
+      // Non-numeric: take first value
+      result[key] = objects[0][key];
+    }
+  }
+  return result;
+}
+
 function getAggregateExpression(
   method: AggregateMethod,
   pathName: string,
-  hasValueJson: boolean
+  hasValueJson: boolean,
+  app?: any,
+  context?: string
 ): string {
   const valueExpr = getValueExpression(pathName, hasValueJson);
 
@@ -1922,6 +2097,16 @@ function getAggregateExpression(
     // For middle_index, use FIRST as a simple fallback for now
     // TODO: Implement proper middle index selection
     return `FIRST(${valueExpr})`;
+  }
+
+  // Use vector averaging for angular paths (heading, COG, wind direction, etc.)
+  if (
+    (method === 'average' || method === undefined) &&
+    app &&
+    context &&
+    isAngularPath(pathName, app, context)
+  ) {
+    return `ATAN2(AVG(SIN(${valueExpr})), AVG(COS(${valueExpr})))`;
   }
 
   return `${getAggregateFunction(method)}(${valueExpr})`;

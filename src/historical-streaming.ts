@@ -93,10 +93,12 @@ export class HistoricalStreamingService {
     // Define which paths should trigger historical data streaming
     // For now, let's make all navigation paths historical
     return !!(
-      path &&
-      (path.startsWith('navigation.') ||
-        path.startsWith('environment.') ||
-        path.includes('history.')) // Special prefix for historical requests
+      (
+        path &&
+        (path.startsWith('navigation.') ||
+          path.startsWith('environment.') ||
+          path.includes('history.'))
+      ) // Special prefix for historical requests
     );
   }
 

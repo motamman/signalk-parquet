@@ -193,7 +193,7 @@ export class ParquetWriter {
           quarantineDir,
           path.basename(filepath)
         );
-        await fs.move(filepath, quarantineFile);
+        await fs.move(filepath, quarantineFile, { overwrite: true });
 
         await this.logQuarantine(
           quarantineFile,
@@ -680,7 +680,8 @@ export class ParquetWriter {
       const fieldType = schemaFields[fieldName].type;
 
       if (value === null || value === undefined) {
-        cleanRecord[fieldName] = null;
+        // Use undefined instead of null - parquet handles undefined (omit field) better than null
+        cleanRecord[fieldName] = undefined;
       } else if (typeof value === 'bigint') {
         // Handle BigInt values by converting to appropriate type
         switch (fieldType) {
@@ -736,60 +737,6 @@ export class ParquetWriter {
     });
 
     return cleanRecord;
-  }
-
-  // Merge multiple files (for daily consolidation like Python version)
-  async mergeFiles(sourceFiles: string[], targetFile: string): Promise<number> {
-    try {
-      const allRecords: DataRecord[] = [];
-
-      for (const sourceFile of sourceFiles) {
-        if (await fs.pathExists(sourceFile)) {
-          const ext = path.extname(sourceFile).toLowerCase();
-
-          if (ext === '.json') {
-            const records = await fs.readJson(sourceFile);
-            allRecords.push(...(Array.isArray(records) ? records : [records]));
-          } else if (ext === '.parquet') {
-            // Read Parquet file
-            if (parquet) {
-              try {
-                const reader = await parquet.ParquetReader.openFile(sourceFile);
-                const cursor = reader.getCursor();
-                let record: DataRecord | null = null;
-                while ((record = await cursor.next())) {
-                  allRecords.push(record);
-                }
-                await reader.close();
-              } catch (parquetError) {
-                this.app?.debug(
-                  `Failed to read Parquet file ${sourceFile}: ${(parquetError as Error).message}`
-                );
-              }
-            }
-          } else if (ext === '.csv') {
-            // Could implement CSV reading if needed
-            this.app?.debug(`CSV merging not implemented for ${sourceFile}`);
-          }
-        }
-      }
-
-      if (allRecords.length > 0) {
-        // Sort by timestamp
-        allRecords.sort((a, b) => {
-          const timeA = a.received_timestamp || a.signalk_timestamp || '';
-          const timeB = b.received_timestamp || b.signalk_timestamp || '';
-          return String(timeA).localeCompare(String(timeB));
-        });
-
-        await this.writeRecords(targetFile, allRecords);
-        return allRecords.length;
-      }
-
-      return 0;
-    } catch (error) {
-      throw new Error(`Failed to merge files: ${(error as Error).message}`);
-    }
   }
 
   // Validate parquet file for corruption
@@ -867,118 +814,6 @@ export class ParquetWriter {
     } catch (error) {
       this.app?.debug(
         `Failed to log quarantine entry: ${(error as Error).message}`
-      );
-    }
-  }
-
-  // Daily file consolidation (matching Python behavior)
-  async consolidateDaily(
-    dataDir: string,
-    date: Date,
-    filenamePrefix: string = 'signalk_data'
-  ): Promise<number> {
-    try {
-      const dateStr = date.toISOString().split('T')[0]; // YYYY-MM-DD
-      const consolidatedFiles: Array<{ target: string; sources: string[] }> =
-        [];
-
-      // Use cached directory scanner instead of manual walkDir
-      // This significantly reduces filesystem operations (7000+ -> ~100s)
-      const matchingFiles = await this.directoryScanner.findFilesByDate(
-        dataDir,
-        dateStr,
-        true // exclude already consolidated files
-      );
-
-      // Group files by directory for consolidation
-      for (const fileInfo of matchingFiles) {
-        // Skip aggregated tier files - they don't need consolidation
-        // Only consolidate raw tier (hive) or flat structure (vessels/)
-        if (
-          fileInfo.path.includes('/tier=5s/') ||
-          fileInfo.path.includes('/tier=60s/') ||
-          fileInfo.path.includes('/tier=1h/')
-        ) {
-          continue;
-        }
-
-        const topicDir = fileInfo.directory;
-        const consolidatedFile = path.join(
-          topicDir,
-          `${filenamePrefix}_${dateStr}_consolidated.parquet`
-        );
-
-        // Find or create entry for this target file
-        let entry = consolidatedFiles.find(f => f.target === consolidatedFile);
-        if (!entry) {
-          entry = {
-            target: consolidatedFile,
-            sources: [],
-          };
-          consolidatedFiles.push(entry);
-        }
-
-        entry.sources.push(fileInfo.path);
-      }
-
-      // Consolidate each topic's files
-      for (const entry of consolidatedFiles) {
-        const recordCount = await this.mergeFiles(entry.sources, entry.target);
-        this.app?.debug(
-          `Consolidated ${entry.sources.length} files into ${entry.target} (${recordCount} records)`
-        );
-
-        // Skip validation if no records were written (no file created)
-        if (recordCount === 0) {
-          this.app?.debug(
-            `⚠️ No records to consolidate for ${entry.target}, skipping`
-          );
-          continue;
-        }
-
-        // Validate consolidated parquet file
-        const isValid = await this.validateParquetFile(entry.target);
-        if (!isValid) {
-          // Move corrupt file to quarantine
-          const quarantineDir = path.join(
-            path.dirname(entry.target),
-            'quarantine'
-          );
-          await fs.ensureDir(quarantineDir);
-          const quarantineFile = path.join(
-            quarantineDir,
-            path.basename(entry.target)
-          );
-          await fs.move(entry.target, quarantineFile);
-
-          // Log to quarantine log
-          await this.logQuarantine(
-            quarantineFile,
-            'consolidation',
-            'File failed validation after consolidation'
-          );
-
-          this.app?.debug(
-            `⚠️ Moved corrupt file to quarantine: ${quarantineFile}`
-          );
-          continue; // Skip moving source files since consolidation failed
-        }
-
-        // Move source files to processed folder
-        const processedDir = path.join(path.dirname(entry.target), 'processed');
-        await fs.ensureDir(processedDir);
-
-        for (const sourceFile of entry.sources) {
-          const basename = path.basename(sourceFile);
-          const processedFile = path.join(processedDir, basename);
-          await fs.move(sourceFile, processedFile);
-        }
-      }
-
-      return consolidatedFiles.length;
-    } catch (error) {
-      throw new Error(
-        `Failed to consolidate daily files: ${(error as Error).message}`
       );
     }
   }
