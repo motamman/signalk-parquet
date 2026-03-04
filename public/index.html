@@ -976,7 +976,7 @@
             <button id="queryDatabaseTab" class="tab-button" onclick="showTab('dataPaths')">🗄️ Query Database</button>
             <button class="tab-button" onclick="showTab('aiAnalysis')" style="display: none;">🧠 AI Analysis <small>(EXPERIMENTAL)</small></button>
             <button class="tab-button" onclick="showTab('dataValidation')" style="display: none;">🔍 Data Validation</button>
-            <button class="tab-button" onclick="showTab('migration')">📦 Migration</button>
+            <button class="tab-button" onclick="showTab('migration')">📊 Status</button>
             <button class="tab-button" onclick="showTab('s3Config')">☁️ Cloud Status</button>
         </div>
 
@@ -1704,8 +1704,19 @@
             <!-- Migration Tab -->
             <div id="migration" class="tab-panel">
                 <div class="section">
-                    <h2>📦 Data Migration & Buffer Status</h2>
-                    <p>Migrate existing flat-structure Parquet files to Hive-style partitioning and monitor the SQLite buffer.</p>
+                    <h2>📊 Store Status & Migration</h2>
+                    <p>Parquet store overview, SQLite buffer status, and data migration tools.</p>
+
+                    <!-- Parquet Store Stats Section -->
+                    <div style="margin-bottom: 30px; padding: 20px; background: #e8f5e9; border-radius: 8px; border: 2px solid #4CAF50;">
+                        <h3 style="margin-top: 0; color: #2e7d32;">📊 Parquet Store</h3>
+                        <div id="storeStats">
+                            <p><span class="loading">Loading store stats...</span></p>
+                        </div>
+                        <div style="margin-top: 15px;">
+                            <button onclick="refreshStoreStats()" style="background: #4CAF50;">🔄 Refresh</button>
+                        </div>
+                    </div>
 
                     <!-- Buffer Status Section -->
                     <div style="margin-bottom: 30px; padding: 20px; background: #e3f2fd; border-radius: 8px; border: 2px solid #2196F3;">
