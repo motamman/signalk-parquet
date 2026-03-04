@@ -16,17 +16,7 @@ AVG(10°, 350°) = 180°  ← WRONG!
 Correct answer = 0° (or 360°)
 ```
 
-This affects all angular SignalK paths:
-- `navigation.headingTrue`
-- `navigation.headingMagnetic`
-- `navigation.courseOverGroundTrue`
-- `navigation.courseOverGroundMagnetic`
-- `environment.wind.directionTrue`
-- `environment.wind.directionMagnetic`
-- `environment.wind.angleApparent`
-- `environment.wind.angleTrueWater`
-- `environment.current.setTrue`
-- etc.
+This affects all SignalK paths where `units === "rad"` (heading, COG, wind direction, current set, rudder angle, attitude, etc.).
 
 ---
 
@@ -86,50 +76,52 @@ avg_speed = AVG(speed)
 
 ## Implementation Plan
 
-### Phase 1: Identify Angular Paths
+### Phase 1: Identify Angular Paths — Dynamic Detection via Metadata
 
-Create a registry of paths that contain angular data:
+**No hardcoded path registry needed.** The plugin already has the infrastructure to detect angular paths dynamically using SignalK server metadata.
+
+#### Existing Infrastructure (already in codebase)
+
+1. **`app.getMetadata(path)`** — called on every delta in `data-handler.ts:449`. This is a **server-side API call** that reads from the server's internal model, not from the WebSocket meta stream. It returns metadata including `units: "rad"` for angular paths and is available anytime, not just on first push.
+
+2. **`type-detector.ts:42`** — already has `ANGULAR_UNITS = ['rad']` and classifies paths with `units: "rad"` as `dataType: 'angular'`.
+
+3. **`schema-service.ts:192`** — already checks `metadata.units === 'rad'` for schema typing.
+
+4. **The meta object is already stored** with each record (`record.meta = metadata` at `data-handler.ts:475`).
+
+#### Why Not Hardcode?
+
+- The `isMeta` deltas from streambundle are filtered out at `data-handler.ts:394` (we skip them).
+- But `app.getMetadata(path)` is a **server-side API**, not dependent on the one-shot WebSocket meta push. It's always available.
+- Dynamic detection handles custom paths, new SignalK spec additions, and third-party plugins automatically.
+- The hardcoded `ANGULAR_PATHS` set would need manual maintenance and could miss paths.
+
+#### Implementation
 
 **File**: `src/utils/angular-paths.ts`
 
 ```typescript
+import { ServerAPI } from '@signalk/server-api';
+
 /**
- * SignalK paths that contain angular values (in radians)
- * These require vector averaging, not arithmetic averaging
+ * Detect if a path contains angular data by checking server metadata.
+ * Uses app.getMetadata() which reads from the server's internal model
+ * (always available, not dependent on WebSocket meta push).
  */
-export const ANGULAR_PATHS: Set<string> = new Set([
-  // Navigation angles
-  'navigation.headingTrue',
-  'navigation.headingMagnetic',
-  'navigation.courseOverGroundTrue',
-  'navigation.courseOverGroundMagnetic',
-  'navigation.courseRhumbline',
-  'navigation.courseGreatCircle',
-
-  // Wind angles
-  'environment.wind.directionTrue',
-  'environment.wind.directionMagnetic',
-  'environment.wind.angleApparent',
-  'environment.wind.angleTrueGround',
-  'environment.wind.angleTrueWater',
-
-  // Current
-  'environment.current.setTrue',
-  'environment.current.setMagnetic',
-
-  // Attitude
-  'navigation.attitude.roll',
-  'navigation.attitude.pitch',
-  'navigation.attitude.yaw',
-
-  // Rudder
-  'steering.rudderAngle',
-  'steering.rudderAngleTarget',
-]);
+export function isAngularPath(path: string, app: ServerAPI): boolean {
+  try {
+    const metadata = (app as any).getMetadata?.(path);
+    return metadata?.units === 'rad';
+  } catch {
+    return false;
+  }
+}
 
 /**
- * Paths where angle should be weighted by an associated magnitude
- * Key: angle path, Value: magnitude path
+ * Paths where angle should be weighted by an associated magnitude.
+ * These are well-defined SignalK path pairs and unlikely to change,
+ * so a static map is appropriate here.
  */
 export const WEIGHTED_ANGULAR_PATHS: Map<string, string> = new Map([
   ['environment.wind.directionTrue', 'environment.wind.speedTrue'],
@@ -138,52 +130,37 @@ export const WEIGHTED_ANGULAR_PATHS: Map<string, string> = new Map([
   ['environment.current.setTrue', 'environment.current.drift'],
 ]);
 
-export function isAngularPath(path: string): boolean {
-  return ANGULAR_PATHS.has(path);
-}
-
 export function getWeightPath(anglePath: string): string | undefined {
   return WEIGHTED_ANGULAR_PATHS.get(anglePath);
 }
 ```
 
-### Phase 2: Add Vector Columns During Export
+#### Metadata Flow (for reference)
 
-When exporting angular data to Parquet, also store the x/y components:
-
-**File**: `src/services/parquet-export-service.ts`
-
-```typescript
-import { isAngularPath } from '../utils/angular-paths';
-
-function prepareRecord(record: DataRecord): DataRecord {
-  const prepared = { ...record };
-
-  // For angular paths, add sin/cos components for vector averaging
-  if (isAngularPath(record.path) && typeof record.value === 'number') {
-    prepared.value_sin = Math.sin(record.value);
-    prepared.value_cos = Math.cos(record.value);
-  }
-
-  return prepared;
-}
+```
+SignalK Server internal model
+    │
+    │  app.getMetadata(path) — always available, reads server state
+    │  Returns: { units: "rad", description: "...", ... }
+    │
+    ▼
+data-handler.ts:449           ← already called on every delta
+    │
+    │  metadata stored in record.meta (line 475)
+    │  available downstream in SQLite and Parquet
+    │
+    ▼
+type-detector.ts:105          ← already classifies dataType: 'angular'
+schema-service.ts:192         ← already uses units === 'rad' for schema
 ```
 
-**Schema change** - add optional columns:
-```typescript
-const angularSchema = {
-  value_sin: { type: 'DOUBLE', optional: true },
-  value_cos: { type: 'DOUBLE', optional: true },
-};
-```
+> **Note**: The streambundle `isMeta` deltas (pushed once per path per connection) are a separate mechanism. We don't need them — `app.getMetadata()` is the reliable, always-available source.
 
-### Phase 3: Vector Aggregation in DuckDB
+### Phase 2: Vector Aggregation in DuckDB
 
 **File**: `src/services/aggregation-service.ts`
 
 ```typescript
-import { isAngularPath, getWeightPath } from '../utils/angular-paths';
-
 private buildAggregationQuery(
   files: string[],
   signalkPath: string,
@@ -192,7 +169,7 @@ private buildAggregationQuery(
 ): string {
   const fileListStr = files.map(f => `'${f}'`).join(', ');
 
-  if (isAngularPath(signalkPath)) {
+  if (isAngularPath(signalkPath, this.app)) {
     return this.buildAngularAggregationQuery(
       fileListStr,
       signalkPath,
@@ -303,7 +280,7 @@ private buildAngularAggregationQuery(
 }
 ```
 
-### Phase 4: History API Vector Averaging
+### Phase 3: History API Vector Averaging
 
 **File**: `src/history-provider.ts`
 
@@ -311,7 +288,7 @@ Update the `queryPath` method to use vector averaging for angular paths:
 
 ```typescript
 private async queryPath(...): Promise<Array<[Timestamp, unknown]>> {
-  const isAngular = isAngularPath(pathSpec.path);
+  const isAngular = isAngularPath(pathSpec.path, this.app);
 
   if (isAngular) {
     // Use vector averaging
@@ -424,17 +401,43 @@ function vectorAverage(anglesInDegrees) {
 
 ---
 
-## Migration Considerations
+## Phase 4: Migration Endpoint
 
-### Existing Aggregated Data
+### Problem
 
-Existing aggregated Parquet files don't have `value_sin_avg` and `value_cos_avg` columns. Options:
+Existing aggregated Parquet files (tier=5min, tier=1hr, etc.) have `value_avg` computed with arithmetic averaging — incorrect for angular paths. Raw data (tier=raw) is unaffected since it stores original radian values.
 
-1. **Regenerate** - Re-run aggregation from raw data
-2. **Decompose on read** - Calculate sin/cos from `value_avg` when re-aggregating
-3. **Ignore** - Old aggregated data keeps incorrect averages
+### Solution: Re-aggregate from raw
 
-Recommendation: Option 2 for backwards compatibility.
+Provide an API endpoint that re-runs aggregation from raw Parquet for angular paths, replacing the incorrectly averaged tiered files.
+
+**File**: `src/api-routes.ts`
+
+```typescript
+// POST /signalk/v1/api/plugins/signalk-parquet/migrate/vector-averaging
+app.post('/migrate/vector-averaging', async (req, res) => {
+  // 1. Find all aggregated tier directories
+  // 2. Identify angular paths (units === 'rad') within them
+  // 3. For each angular path, re-aggregate from tier=raw using vector averaging
+  // 4. Replace old aggregated files with corrected versions
+  // 5. Return summary of migrated paths/files
+});
+```
+
+### Behavior
+
+- Scans all aggregated tiers for paths where `app.getMetadata(path).units === 'rad'`
+- Re-reads corresponding raw Parquet files and re-aggregates using `ATAN2(AVG(SIN), AVG(COS))`
+- Writes corrected files, moves old files to a backup directory
+- Reports progress and results
+- Safe to run multiple times (idempotent)
+
+### No schema change needed
+
+- Raw Parquet files: unchanged, still store original radian `value`
+- Aggregated Parquet files: `value_avg` is recomputed correctly, no new columns needed
+- DuckDB computes `SIN(value)` and `COS(value)` on the fly during aggregation
+- Re-aggregation from aggregated tiers uses `SIN(value_avg)` and `COS(value_avg)` weighted by `sample_count`
 
 ---
 
@@ -442,11 +445,11 @@ Recommendation: Option 2 for backwards compatibility.
 
 | File | Change |
 |------|--------|
-| `src/utils/angular-paths.ts` | New - path registry |
+| `src/utils/angular-paths.ts` | New - dynamic detection via `app.getMetadata()` + weight map |
 | `src/services/aggregation-service.ts` | Vector aggregation queries |
-| `src/services/parquet-export-service.ts` | Add sin/cos columns |
 | `src/history-provider.ts` | Vector averaging in queries |
 | `src/HistoryAPI.ts` | Vector averaging in queries |
+| `src/api-routes.ts` | Migration endpoint for re-aggregating old tiered data |
 | `tests/test-vector-averaging.js` | New - test cases |
 
 ---
@@ -455,10 +458,10 @@ Recommendation: Option 2 for backwards compatibility.
 
 This plan implements correct vector averaging for angular SignalK data:
 
-1. **Identify** angular paths via registry
-2. **Store** sin/cos components alongside raw values
-3. **Aggregate** using `ATAN2(AVG(SIN), AVG(COS))`
-4. **Weight** wind direction by speed where applicable
+1. **Identify** angular paths dynamically via `app.getMetadata(path).units === 'rad'`
+2. **Aggregate** using `ATAN2(AVG(SIN), AVG(COS))` — computed on the fly, no extra columns needed
+3. **Weight** wind direction by speed where applicable
+4. **Migrate** old aggregated tiers via API endpoint (re-aggregate from raw)
 5. **Test** edge cases (0/360 boundary, opposite angles)
 
 The result: `AVG(10°, 350°) = 0°` instead of `180°`.
