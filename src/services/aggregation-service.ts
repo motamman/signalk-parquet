@@ -532,9 +532,6 @@ export class AggregationService {
 
     const results = await this.aggregateDate(yesterday);
 
-    // Also run cleanup
-    await this.cleanupOldData();
-
     return results;
   }
 }

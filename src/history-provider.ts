@@ -317,7 +317,11 @@ export class HistoryProvider implements HistoryApi {
         });
       } else {
         // Scalar path — use vector averaging for angular paths when aggregating by average
-        const angular = isAngularPath(pathSpec.path, this.app, context as string);
+        const angular = isAngularPath(
+          pathSpec.path,
+          this.app,
+          context as string
+        );
         const valueExpression =
           angular && (pathSpec.aggregate === 'average' || !pathSpec.aggregate)
             ? 'ATAN2(AVG(SIN(TRY_CAST(value AS DOUBLE))), AVG(COS(TRY_CAST(value AS DOUBLE))))'

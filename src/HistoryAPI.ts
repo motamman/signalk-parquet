@@ -110,7 +110,6 @@ export function registerHistoryApiRoute(
   debug: (k: string) => void,
   app: any,
   sqliteBuffer?: SQLiteBufferInterface,
-  exportIntervalMinutes: number = 5,
   autoDiscoveryService?: AutoDiscoveryService,
   s3Config?: S3QueryConfig,
   retentionDays: number = 7
@@ -119,7 +118,6 @@ export function registerHistoryApiRoute(
     selfId,
     dataDir,
     sqliteBuffer,
-    exportIntervalMinutes,
     autoDiscoveryService,
     s3Config,
     retentionDays
@@ -488,7 +486,6 @@ export interface S3QueryConfig {
 
 export class HistoryAPI {
   private sqliteBuffer?: SQLiteBufferInterface;
-  private exportIntervalMinutes: number;
   private hivePathBuilder: HivePathBuilder;
   private autoDiscoveryService?: AutoDiscoveryService;
   private s3Config?: S3QueryConfig;
@@ -498,13 +495,11 @@ export class HistoryAPI {
     private selfId: string,
     private dataDir: string,
     sqliteBuffer?: SQLiteBufferInterface,
-    exportIntervalMinutes: number = 5,
     autoDiscoveryService?: AutoDiscoveryService,
     s3Config?: S3QueryConfig,
     retentionDays: number = 7
   ) {
     this.sqliteBuffer = sqliteBuffer;
-    this.exportIntervalMinutes = exportIntervalMinutes;
     this.hivePathBuilder = new HivePathBuilder();
     this.autoDiscoveryService = autoDiscoveryService;
     this.s3Config = s3Config;
@@ -529,32 +524,13 @@ export class HistoryAPI {
     to: ZonedDateTime,
     forceSource?: QuerySource
   ): QuerySource {
-    // If source is explicitly specified, use it (unless it's 'auto')
+    // Source routing is handled in getNumericValues:
+    // local always queried, S3 supplements for dates before earliest local data.
+    // forceSource only used for explicit API override (e.g. source=local or source=s3)
     if (forceSource && forceSource !== 'auto') {
       return forceSource;
     }
-
-    // If S3 is not configured/enabled, always use local
-    if (!this.s3Config?.enabled) {
-      return 'local';
-    }
-
-    const now = new Date();
-    const retentionCutoff = new Date(now);
-    retentionCutoff.setUTCDate(
-      retentionCutoff.getUTCDate() - this.retentionDays
-    );
-
-    const fromDate = new Date(from.toInstant().toString());
-    const toDate = new Date(to.toInstant().toString());
-
-    if (toDate < retentionCutoff) {
-      return 's3'; // All data is older than retention, query S3
-    }
-    if (fromDate >= retentionCutoff) {
-      return 'local'; // All data is within retention, query local
-    }
-    return 'hybrid'; // Data spans boundary, need both
+    return 'local';
   }
 
   /**
@@ -767,7 +743,9 @@ export class HistoryAPI {
 
     for (const bucketKey of sortedKeys) {
       const bucket = buckets.get(bucketKey)!;
-      const timestamp = new Date(bucketKey).toISOString().replace('.000Z', 'Z') as Timestamp;
+      const timestamp = new Date(bucketKey)
+        .toISOString()
+        .replace('.000Z', 'Z') as Timestamp;
 
       // Check if first record has object values (e.g., position)
       const firstRecord = bucket[0];
@@ -830,15 +808,16 @@ export class HistoryAPI {
         const spatialWhereClause = buildSpatialSqlClause(spatialFilter);
 
         // Query position data with spatial filter to get valid timestamps
+        const spatialTsCol = getTierTimestampColumn(effectiveTier);
         const query = `
           SELECT DISTINCT
             strftime(DATE_TRUNC('seconds',
-              EPOCH_MS(CAST(FLOOR(EPOCH_MS(signalk_timestamp::TIMESTAMP) / ${timeResolutionMillis}) * ${timeResolutionMillis} AS BIGINT))
+              EPOCH_MS(CAST(FLOOR(EPOCH_MS(${spatialTsCol}::TIMESTAMP) / ${timeResolutionMillis}) * ${timeResolutionMillis} AS BIGINT))
             ), '%Y-%m-%dT%H:%M:%SZ') as timestamp
           FROM read_parquet('${localFilePath}', union_by_name=true, filename=true)
           WHERE
-            signalk_timestamp >= '${fromIso}'
-            AND signalk_timestamp < '${toIso}'
+            ${spatialTsCol} >= '${fromIso}'
+            AND ${spatialTsCol} < '${toIso}'
             AND value_latitude IS NOT NULL
             AND value_longitude IS NOT NULL
             AND ${spatialWhereClause}
@@ -1093,55 +1072,60 @@ export class HistoryAPI {
         let s3FilePath: string | null = null;
         const effectiveTier = tier || 'raw';
 
-        // Determine which sources to query based on querySource
-        if (querySource === 'local' || querySource === 'hybrid') {
-          // Always use Hive-style path structure
-          const sanitizedContext =
-            this.hivePathBuilder.sanitizeContext(context);
-          const sanitizedSkPath = this.hivePathBuilder.sanitizePath(
-            pathSpec.path
-          );
-          localFilePath = path.join(
+        // Always query local first
+        const sanitizedContext = this.hivePathBuilder.sanitizeContext(context);
+        const sanitizedSkPath = this.hivePathBuilder.sanitizePath(
+          pathSpec.path
+        );
+        localFilePath = path.join(
+          this.dataDir,
+          `tier=${effectiveTier}`,
+          `context=${sanitizedContext}`,
+          `path=${sanitizedSkPath}`,
+          '**',
+          '*.parquet'
+        );
+        debug(`Querying local Hive tier=${effectiveTier} at: ${localFilePath}`);
+
+        // S3 supplements local for dates before the earliest local data
+        if (this.s3Config?.enabled) {
+          // Find the earliest local data date
+          const localEarliestDate = this.hivePathBuilder.findEarliestDate(
             this.dataDir,
-            `tier=${effectiveTier}`,
-            `context=${sanitizedContext}`,
-            `path=${sanitizedSkPath}`,
-            '**',
-            '*.parquet'
+            effectiveTier,
+            sanitizedContext,
+            sanitizedSkPath
           );
-          debug(
-            `Querying local Hive tier=${effectiveTier} at: ${localFilePath}`
-          );
-        }
 
-        if (
-          (querySource === 's3' || querySource === 'hybrid') &&
-          this.s3Config?.enabled
-        ) {
-          // Build S3 pattern with partition pruning
-          const s3FromDate = querySource === 'hybrid' ? fromDate : fromDate;
-          const s3ToDate =
-            querySource === 'hybrid'
-              ? new Date(
-                  Math.min(
-                    retentionCutoff.getTime() - 86400000,
-                    toDate.getTime()
-                  )
-                )
-              : toDate;
-
-          // Only query S3 if there's a valid date range
-          if (s3FromDate <= s3ToDate) {
+          if (localEarliestDate && fromDate < localEarliestDate) {
+            // Only query S3 for the range before local data starts
+            const s3ToDate = new Date(localEarliestDate.getTime() - 86400000); // day before local starts
+            if (fromDate <= s3ToDate) {
+              s3FilePath = this.hivePathBuilder.buildS3Glob(
+                this.s3Config.bucket,
+                this.s3Config.keyPrefix || '',
+                effectiveTier,
+                context,
+                pathSpec.path,
+                fromDate,
+                s3ToDate
+              );
+              debug(
+                `S3 supplement for ${fromDate.toISOString()} to ${s3ToDate.toISOString()}`
+              );
+            }
+          } else if (!localEarliestDate) {
+            // No local data at all — query S3 for full range
             s3FilePath = this.hivePathBuilder.buildS3Glob(
               this.s3Config.bucket,
               this.s3Config.keyPrefix || '',
               effectiveTier,
               context,
               pathSpec.path,
-              s3FromDate,
-              s3ToDate
+              fromDate,
+              toDate
             );
-            debug(`Querying S3 parquet files at: ${s3FilePath}`);
+            debug(`No local data, querying S3 for full range`);
           }
         }
 
@@ -1165,27 +1149,48 @@ export class HistoryAPI {
             return `(SELECT * FROM read_parquet('${filePath}', union_by_name=true, filename=true) WHERE filename NOT LIKE '%/processed/%' AND filename NOT LIKE '%/quarantine/%' AND filename NOT LIKE '%/failed/%' AND filename NOT LIKE '%/repaired/%')`;
           };
 
+          // Build FROM clause: local-only by default, hybrid only if S3 has data
           let fromClause: string;
-          if (localFilePath && s3FilePath) {
-            // Hybrid: UNION both sources
+          const localFromClause = localFilePath
+            ? buildFromClause(localFilePath)
+            : null;
+
+          if (s3FilePath && localFromClause) {
+            // Try hybrid: UNION local + S3, fall back to local if S3 glob has no files
             fromClause = `(
-              SELECT * FROM ${buildFromClause(localFilePath)}
+              SELECT * FROM ${localFromClause}
               UNION ALL
               SELECT * FROM ${buildFromClause(s3FilePath)}
             )`;
             debug(`Hybrid query: combining local and S3 sources`);
           } else if (s3FilePath) {
-            // S3 only
             fromClause = buildFromClause(s3FilePath);
-          } else if (localFilePath) {
-            // Local only
-            fromClause = buildFromClause(localFilePath);
+          } else if (localFromClause) {
+            fromClause = localFromClause;
           } else {
-            // No source available (shouldn't happen)
             debug(`No data source available for path ${pathSpec.path}`);
             allData[pathSpec.path] = [];
             return;
           }
+
+          // Run query with S3 fallback — if hybrid/S3 query fails, retry local-only
+          const runQueryWithFallback = async (
+            buildQuery: (fc: string) => string
+          ): Promise<any> => {
+            try {
+              return await connection.runAndReadAll(buildQuery(fromClause));
+            } catch (err) {
+              if (s3FilePath && localFromClause) {
+                debug(
+                  `Hybrid query failed, falling back to local-only: ${err}`
+                );
+                return await connection.runAndReadAll(
+                  buildQuery(localFromClause)
+                );
+              }
+              throw err;
+            }
+          };
 
           // Check if this path has object components (value_latitude, value_longitude, etc.)
           // Use local path for schema check (S3 schema should match)
@@ -1237,23 +1242,24 @@ export class HistoryAPI {
               );
             }
 
-            const dynamicQuery = `
+            const objTsCol = getTierTimestampColumn(effectiveTier);
+            const buildObjQuery = (fc: string) => `
               SELECT
                 strftime(DATE_TRUNC('seconds',
-                  EPOCH_MS(CAST(FLOOR(EPOCH_MS(signalk_timestamp::TIMESTAMP) / ${timeResolutionMillis}) * ${timeResolutionMillis} AS BIGINT))
+                  EPOCH_MS(CAST(FLOOR(EPOCH_MS(${objTsCol}::TIMESTAMP) / ${timeResolutionMillis}) * ${timeResolutionMillis} AS BIGINT))
                 ), '%Y-%m-%dT%H:%M:%SZ') as timestamp,
                 ${componentSelects}
-              FROM ${fromClause} AS source_data
+              FROM ${fc} AS source_data
               WHERE
-                signalk_timestamp >= '${fromIso}'
+                ${objTsCol} >= '${fromIso}'
                 AND
-                signalk_timestamp < '${toIso}'
+                ${objTsCol} < '${toIso}'
                 AND (${componentWhereConditions})${spatialWhereClause}
               GROUP BY timestamp
               ORDER BY timestamp
               `;
 
-            const result = await connection.runAndReadAll(dynamicQuery);
+            const result = await runQueryWithFallback(buildObjQuery);
             const rows = result.getRowObjects();
 
             // Reconstruct objects from aggregated components
@@ -1325,31 +1331,31 @@ export class HistoryAPI {
               `Path ${pathSpec.path}: value_json column ${hasValueJson ? 'exists' : 'does not exist'}`
             );
 
-            // Rebuild the query based on actual column availability
-            const valueJsonSelect = hasValueJson
-              ? ', FIRST(value_json) as value_json'
-              : '';
-            const whereClause = hasValueJson
-              ? '(value IS NOT NULL OR value_json IS NOT NULL)'
-              : 'value IS NOT NULL';
+            // Rebuild the query based on actual column availability and tier
+            const tsCol = getTierTimestampColumn(effectiveTier);
+            const valueJsonSelect =
+              hasValueJson && effectiveTier === 'raw'
+                ? ', FIRST(value_json) as value_json'
+                : '';
+            const whereClause = getTierWhereClause(effectiveTier, hasValueJson);
 
-            const dynamicQuery = `
+            const buildScalarQuery = (fc: string) => `
               SELECT
                 strftime(DATE_TRUNC('seconds',
-                  EPOCH_MS(CAST(FLOOR(EPOCH_MS(signalk_timestamp::TIMESTAMP) / ${timeResolutionMillis}) * ${timeResolutionMillis} AS BIGINT))
+                  EPOCH_MS(CAST(FLOOR(EPOCH_MS(${tsCol}::TIMESTAMP) / ${timeResolutionMillis}) * ${timeResolutionMillis} AS BIGINT))
                 ), '%Y-%m-%dT%H:%M:%SZ') as timestamp,
-                ${getAggregateExpression(pathSpec.aggregateMethod, pathSpec.path, hasValueJson, app, context as string)} as value${valueJsonSelect}
-              FROM ${fromClause} AS source_data
+                ${getTierAggregateExpression(pathSpec.aggregateMethod, pathSpec.path, effectiveTier, hasValueJson, app, context as string)} as value${valueJsonSelect}
+              FROM ${fc} AS source_data
               WHERE
-                signalk_timestamp >= '${fromIso}'
+                ${tsCol} >= '${fromIso}'
                 AND
-                signalk_timestamp < '${toIso}'
+                ${tsCol} < '${toIso}'
                 AND ${whereClause}
               GROUP BY timestamp
               ORDER BY timestamp
               `;
 
-            const result = await connection.runAndReadAll(dynamicQuery);
+            const result = await runQueryWithFallback(buildScalarQuery);
             const rows = result.getRowObjects();
 
             // Convert rows to the expected format using bucketed timestamps
@@ -2003,6 +2009,73 @@ function getValueExpression(pathName: string, hasValueJson: boolean): string {
 
   // For numeric data, try to cast to DOUBLE, fallback to the original value
   return 'TRY_CAST(value AS DOUBLE)';
+}
+
+/**
+ * Get the timestamp column name based on the tier.
+ * Raw tier uses signalk_timestamp, aggregated tiers use bucket_time.
+ */
+function getTierTimestampColumn(tier: string): string {
+  return tier === 'raw' ? 'signalk_timestamp' : 'bucket_time';
+}
+
+/**
+ * Get the aggregate expression for a tier-aware query.
+ * For raw tier, aggregates from raw value column.
+ * For aggregated tiers, uses pre-computed value_avg (or re-aggregates from sin/cos for angular).
+ */
+function getTierAggregateExpression(
+  method: AggregateMethod,
+  pathName: string,
+  tier: string,
+  hasValueJson: boolean,
+  app?: any,
+  context?: string
+): string {
+  // Raw tier: use original aggregate expression
+  if (tier === 'raw') {
+    return getAggregateExpression(method, pathName, hasValueJson, app, context);
+  }
+
+  // Aggregated tier: use pre-computed columns
+  const isAngular = app && context && isAngularPath(pathName, app, context);
+
+  if (isAngular) {
+    // Re-aggregate angular paths using pre-computed sin/cos averages
+    // Weight by sample_count for correct weighted averaging
+    return `ATAN2(
+      SUM(COALESCE(value_sin_avg, SIN(value_avg)) * sample_count) / SUM(sample_count),
+      SUM(COALESCE(value_cos_avg, COS(value_avg)) * sample_count) / SUM(sample_count)
+    )`;
+  }
+
+  // For standard numeric aggregation methods on pre-aggregated data
+  switch (method) {
+    case 'min':
+      return 'MIN(value_min)';
+    case 'max':
+      return 'MAX(value_max)';
+    case 'average':
+    case undefined:
+      // Weighted average using sample_count
+      return 'SUM(value_avg * sample_count) / SUM(sample_count)';
+    default:
+      // For other methods (first, last, median), fall back to value_avg
+      return `${getAggregateFunction(method)}(value_avg)`;
+  }
+}
+
+/**
+ * Get the WHERE clause for null filtering based on tier.
+ * Raw tier checks value column, aggregated tiers check value_avg.
+ */
+function getTierWhereClause(tier: string, hasValueJson: boolean): string {
+  if (tier === 'raw') {
+    return hasValueJson
+      ? '(value IS NOT NULL OR value_json IS NOT NULL)'
+      : 'value IS NOT NULL';
+  }
+  return 'value_avg IS NOT NULL';
 }
 
 /**

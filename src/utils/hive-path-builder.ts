@@ -5,6 +5,7 @@
  * Target structure: tier=raw/context={ctx}/path={path}/year={year}/day={day}/
  */
 
+import * as fs from 'fs';
 import * as path from 'path';
 
 export type AggregationTier = 'raw' | '5s' | '60s' | '1h';
@@ -428,5 +429,73 @@ export class HivePathBuilder {
 
     // Local pattern would be handled by existing logic
     return result;
+  }
+
+  /**
+   * Find the earliest date that has local parquet data for a given tier/context/path.
+   * Scans year= and day= directories to find the minimum date.
+   */
+  findEarliestDate(
+    dataDir: string,
+    tier: string,
+    sanitizedContext: string,
+    sanitizedPath: string
+  ): Date | null {
+    const basePath = path.join(
+      dataDir,
+      `tier=${tier}`,
+      `context=${sanitizedContext}`,
+      `path=${sanitizedPath}`
+    );
+
+    if (!fs.existsSync(basePath)) {
+      return null;
+    }
+
+    let earliestYear = Infinity;
+    let earliestDay = Infinity;
+
+    try {
+      const yearDirs = fs
+        .readdirSync(basePath)
+        .filter((d: string) => d.startsWith('year='));
+      for (const yearDir of yearDirs) {
+        const year = parseInt(yearDir.split('=')[1], 10);
+        if (isNaN(year)) continue;
+
+        const yearPath = path.join(basePath, yearDir);
+        const dayDirs = fs
+          .readdirSync(yearPath)
+          .filter((d: string) => d.startsWith('day='));
+
+        for (const dayDir of dayDirs) {
+          const day = parseInt(dayDir.split('=')[1], 10);
+          if (isNaN(day)) continue;
+
+          // Check if directory has any parquet files
+          const dayPath = path.join(yearPath, dayDir);
+          const files = fs
+            .readdirSync(dayPath)
+            .filter((f: string) => f.endsWith('.parquet'));
+          if (files.length === 0) continue;
+
+          if (
+            year < earliestYear ||
+            (year === earliestYear && day < earliestDay)
+          ) {
+            earliestYear = year;
+            earliestDay = day;
+          }
+        }
+      }
+    } catch {
+      return null;
+    }
+
+    if (earliestYear === Infinity) {
+      return null;
+    }
+
+    return this.dateFromDayOfYear(earliestYear, earliestDay);
   }
 }

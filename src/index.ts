@@ -106,7 +106,6 @@ export default function (app: ServerAPI): SignalKPlugin {
       // enableStreaming: options?.enableStreaming ?? false,
       // SQLite buffer options
       useSqliteBuffer: true, // Always use SQLite buffer
-      exportIntervalMinutes: options?.exportIntervalMinutes || 5,
       bufferRetentionHours: options?.bufferRetentionHours || 48,
       useHivePartitioning: true, // Always use Hive partitioning
       // Auto-discovery configuration
@@ -172,11 +171,11 @@ export default function (app: ServerAPI): SignalKPlugin {
         state.sqliteBuffer as SQLiteBuffer,
         state.parquetWriter,
         {
-          exportIntervalMinutes: state.currentConfig.exportIntervalMinutes!,
           outputDirectory: state.currentConfig.outputDirectory,
           filenamePrefix: state.currentConfig.filenamePrefix,
           useHivePartitioning: state.currentConfig.useHivePartitioning!,
           s3Upload: state.currentConfig.s3Upload,
+          dailyExportHour: state.currentConfig.dailyExportHour ?? 4,
         },
         app
       );
@@ -286,12 +285,15 @@ export default function (app: ServerAPI): SignalKPlugin {
       yesterday.setUTCDate(yesterday.getUTCDate() - 1);
       yesterday.setUTCHours(0, 0, 0, 0);
 
-      app.debug(`[DailyExport] Running daily export for ${yesterday.toISOString().slice(0, 10)}`);
+      app.debug(
+        `[DailyExport] Running daily export for ${yesterday.toISOString().slice(0, 10)}`
+      );
 
       try {
         // Export yesterday's data to daily Parquet files
         if (state.exportService) {
-          const result = await state.exportService.exportDayToParquet(yesterday);
+          const result =
+            await state.exportService.exportDayToParquet(yesterday);
           app.debug(
             `[DailyExport] Exported ${result.recordsExported} records to ${result.filesCreated.length} files`
           );
@@ -317,7 +319,9 @@ export default function (app: ServerAPI): SignalKPlugin {
                 );
               }
             } catch (aggErr) {
-              app.error(`[DailyExport] Aggregation failed: ${(aggErr as Error).message}`);
+              app.error(
+                `[DailyExport] Aggregation failed: ${(aggErr as Error).message}`
+              );
             }
           }
         }
@@ -331,7 +335,10 @@ export default function (app: ServerAPI): SignalKPlugin {
       runDailyExport();
 
       // Then run daily export every 24 hours
-      state.consolidationInterval = setInterval(runDailyExport, 24 * 60 * 60 * 1000);
+      state.consolidationInterval = setInterval(
+        runDailyExport,
+        24 * 60 * 60 * 1000
+      );
     }, msUntilDailyExport);
 
     // Run startup export for ALL unexported records (catches up after downtime)
@@ -347,22 +354,31 @@ export default function (app: ServerAPI): SignalKPlugin {
             // Run aggregation after startup export if enabled
             if (aggregationService) {
               try {
-                const aggResults = await aggregationService.runDailyAggregation();
+                const aggResults =
+                  await aggregationService.runDailyAggregation();
                 app.debug(
                   `[StartupExport] Aggregation complete: ${JSON.stringify(aggResults.map(r => ({ tier: r.targetTier, files: r.filesCreated })))}`
                 );
               } catch (aggErr) {
-                app.error(`[StartupExport] Aggregation failed: ${(aggErr as Error).message}`);
+                app.error(
+                  `[StartupExport] Aggregation failed: ${(aggErr as Error).message}`
+                );
               }
             }
 
             // Upload to S3 after export and aggregation complete
             if (state.currentConfig?.s3Upload.enabled) {
               try {
-                await uploadAllConsolidatedFilesToS3(state.currentConfig, state, app);
+                await uploadAllConsolidatedFilesToS3(
+                  state.currentConfig,
+                  state,
+                  app
+                );
                 app.debug('[StartupExport] S3 upload complete');
               } catch (s3Err) {
-                app.error(`[StartupExport] S3 upload failed: ${(s3Err as Error).message}`);
+                app.error(
+                  `[StartupExport] S3 upload failed: ${(s3Err as Error).message}`
+                );
               }
             }
           }
@@ -411,7 +427,6 @@ export default function (app: ServerAPI): SignalKPlugin {
         app.debug,
         app,
         state.sqliteBuffer, // Pass SQLite buffer for federated queries
-        state.currentConfig.exportIntervalMinutes || 5, // Export interval for buffer cutoff
         state.autoDiscoveryService, // Pass auto-discovery service
         s3QueryConfig, // S3 config for federated queries
         state.currentConfig.retentionDays // Retention days for local/S3 cutoff
@@ -611,30 +626,14 @@ export default function (app: ServerAPI): SignalKPlugin {
           'Prefix added to all generated Parquet files. Useful if running multiple instances or for organizing data. Example: "boat_name" produces "boat_name_2024-01-15T1200.parquet"',
         default: 'signalk_data',
       },
-      enableRetention: {
-        type: 'boolean',
-        title: 'Enable Automatic Cleanup (DEPRECATED)',
-        description:
-          'DEPRECATED: No longer used. The new pipeline creates daily files directly without a "processed" folder. File retention is handled differently.',
-        default: false,
-      },
       retentionDays: {
         type: 'number',
         title: 'Retention Period (days)',
         description:
-          'Number of days to keep files in the "processed" folder before automatic deletion. Only applies when "Enable Automatic Cleanup" is checked. Does not affect consolidated or active Parquet files.',
+          'Number of days to keep raw Parquet files on disk. Higher tiers are retained longer automatically (5s: 2x, 60s: 4x, 1h: 12x).',
         default: 7,
         minimum: 1,
         maximum: 365,
-      },
-      exportIntervalMinutes: {
-        type: 'number',
-        title: 'Parquet Export Interval (DEPRECATED)',
-        description:
-          'DEPRECATED: No longer used. Daily export now runs at the configured dailyExportHour instead of periodic intervals. This setting will be removed in a future version.',
-        default: 5,
-        minimum: 1,
-        maximum: 60,
       },
       exportBatchSize: {
         type: 'number',
@@ -658,19 +657,10 @@ export default function (app: ServerAPI): SignalKPlugin {
         type: 'number',
         title: 'Daily Export Hour (UTC)',
         description:
-          'Hour of day (0-23 UTC) when daily Parquet export runs. Yesterday\'s data is exported at this hour. Default is 4 AM UTC.',
+          "Hour of day (0-23 UTC) when daily Parquet export runs. Yesterday's data is exported at this hour. Default is 4 AM UTC.",
         default: 4,
         minimum: 0,
         maximum: 23,
-      },
-      consolidationLookbackDays: {
-        type: 'number',
-        title: 'Consolidation Lookback (DEPRECATED)',
-        description:
-          'DEPRECATED: No longer used. The new daily export creates consolidated files directly, eliminating the need for a separate consolidation step.',
-        default: 30,
-        minimum: 1,
-        maximum: 365,
       },
       autoDiscovery: {
         type: 'object',

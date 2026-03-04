@@ -71,13 +71,11 @@ async function refreshBufferStatus() {
       ${exportStatus ? `
       <div style="margin-top: 15px; padding: 10px; background: white; border-radius: 5px; border: 1px solid #ddd;">
         <strong>Export Service:</strong>
-        ${exportStatus.mode === 'daily'
-          ? '<span style="color: #4CAF50;">Daily Mode</span>'
-          : (exportStatus.isRunning ? '<span style="color: #4CAF50;">Running</span>' : '<span style="color: #f44336;">Stopped</span>')}
+        <span style="color: #4CAF50;">Daily Mode</span>
         ${exportStatus.isExporting ? ' (exporting...)' : ''}
         | <strong>Last Export:</strong> ${formatTime(exportStatus.lastExportTime)}
         | <strong>Last Batch:</strong> ${(exportStatus.lastBatchExported || 0).toLocaleString()} records
-        | <strong>Schedule:</strong> ${exportStatus.mode === 'daily' ? 'Daily at 4:00 UTC' : `Every ${exportStatus.exportIntervalMinutes} min`}
+        | <strong>Schedule:</strong> Daily at ${exportStatus.dailyExportHour}:00 UTC
       </div>
       ` : ''}
 

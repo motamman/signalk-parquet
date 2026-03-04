@@ -13,10 +13,10 @@ import { ServerAPI } from '@signalk/server-api';
 import { HivePathBuilder } from '../utils/hive-path-builder';
 
 export interface ExportServiceConfig {
-  exportIntervalMinutes: number;
   outputDirectory: string;
   filenamePrefix: string;
   useHivePartitioning: boolean;
+  dailyExportHour: number;
   s3Upload?: {
     enabled: boolean;
     timing?: 'realtime' | 'consolidation';
@@ -323,8 +323,8 @@ export class ParquetExportService {
     lastBatchExported: number;
     totalExported: number;
     pendingRecords: number;
-    exportIntervalMinutes: number;
-    mode: 'daily' | 'interval';
+    dailyExportHour: number;
+    mode: 'daily';
   } {
     return {
       isRunning: true, // Always running in daily mode (scheduled from index.ts)
@@ -333,8 +333,8 @@ export class ParquetExportService {
       lastBatchExported: this.lastBatchExported,
       totalExported: this.totalExported,
       pendingRecords: this.sqliteBuffer.getPendingCount(),
-      exportIntervalMinutes: this.config.exportIntervalMinutes,
-      mode: 'daily', // New simplified pipeline uses daily exports
+      dailyExportHour: this.config.dailyExportHour,
+      mode: 'daily',
     };
   }
 
@@ -348,7 +348,7 @@ export class ParquetExportService {
     bufferStats: ReturnType<SQLiteBuffer['getStats']>;
   } {
     const stats = this.sqliteBuffer.getStats();
-    const healthy = this.exportInterval !== null && !this.isExporting;
+    const healthy = !this.isExporting;
 
     return {
       healthy,

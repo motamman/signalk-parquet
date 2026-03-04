@@ -4218,7 +4218,11 @@ export function registerApiRoutes(
       startTime: Date;
       completedAt?: Date;
       error?: string;
-      results: Array<{ date: string; tiersReaggregated: number; errors: string[] }>;
+      results: Array<{
+        date: string;
+        tiersReaggregated: number;
+        errors: string[];
+      }>;
     }
   >();
 
@@ -4238,7 +4242,11 @@ export function registerApiRoutes(
         startTime: Date;
         completedAt?: Date;
         error?: string;
-        results: Array<{ date: string; tiersReaggregated: number; errors: string[] }>;
+        results: Array<{
+          date: string;
+          tiersReaggregated: number;
+          errors: string[];
+        }>;
       } = {
         id: jobId,
         status: 'running',
@@ -4263,14 +4271,20 @@ export function registerApiRoutes(
 
           for (const tier of aggregatedTiers) {
             const tierDir = path.join(dataDir, `tier=${tier}`);
-            if (!await fs.pathExists(tierDir)) continue;
+            if (!(await fs.pathExists(tierDir))) continue;
 
             const contextDirs = await glob(path.join(tierDir, 'context=*'));
             for (const contextDir of contextDirs) {
-              const context = path.basename(contextDir).replace('context=', '').replace(/__/g, '.');
+              const context = path
+                .basename(contextDir)
+                .replace('context=', '')
+                .replace(/__/g, '.');
               const pathDirs = await glob(path.join(contextDir, 'path=*'));
               for (const pathDir of pathDirs) {
-                const signalkPath = path.basename(pathDir).replace('path=', '').replace(/__/g, '.');
+                const signalkPath = path
+                  .basename(pathDir)
+                  .replace('path=', '')
+                  .replace(/__/g, '.');
                 if (isAngularPath(signalkPath, app, context)) {
                   angularPathsFound.add(signalkPath);
                   // Find dates with data for this path
@@ -4278,7 +4292,9 @@ export function registerApiRoutes(
                   for (const yearDir of yearDirs) {
                     const dayDirs = await glob(path.join(yearDir, 'day=*'));
                     for (const dayDir of dayDirs) {
-                      const yearStr = path.basename(yearDir).replace('year=', '');
+                      const yearStr = path
+                        .basename(yearDir)
+                        .replace('year=', '');
                       const dayStr = path.basename(dayDir).replace('day=', '');
                       datesToProcess.add(`${yearStr}-${dayStr}`);
                     }
@@ -4313,7 +4329,9 @@ export function registerApiRoutes(
             try {
               const results = await aggregationService.aggregateDate(date);
               const errors = results.flatMap(r => r.errors);
-              const tiersReaggregated = results.filter(r => r.filesCreated > 0).length;
+              const tiersReaggregated = results.filter(
+                r => r.filesCreated > 0
+              ).length;
               job.results.push({
                 date: date.toISOString().slice(0, 10),
                 tiersReaggregated,
@@ -4364,7 +4382,9 @@ export function registerApiRoutes(
   router.post('/api/migrate/vector-averaging/cancel/:jobId', (req, res) => {
     const job = vectorAvgJobs.get(req.params.jobId);
     if (!job || job.status !== 'running') {
-      return res.status(400).json({ success: false, error: 'Job not found or not running' });
+      return res
+        .status(400)
+        .json({ success: false, error: 'Job not found or not running' });
     }
     job.status = 'cancelled';
     job.completedAt = new Date();
