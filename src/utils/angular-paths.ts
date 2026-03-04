@@ -23,6 +23,7 @@ export function isAngularPath(
   context: string
 ): boolean {
   try {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const metadata = (app as any).getMetadata?.(`${context}.${path}`);
     return metadata?.units === 'rad';
   } catch {

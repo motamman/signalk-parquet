@@ -130,7 +130,11 @@ export async function getAvailablePathsForTimeRange(
 
   // Build Hive-style context directory
   const sanitizedContext = hiveBuilder.sanitizeContext(context);
-  const contextDir = path.join(dataDir, 'tier=raw', `context=${sanitizedContext}`);
+  const contextDir = path.join(
+    dataDir,
+    'tier=raw',
+    `context=${sanitizedContext}`
+  );
 
   // Get all path= directories for this context
   const allPaths = await scanHivePathDirectories(contextDir, hiveBuilder);
