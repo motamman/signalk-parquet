@@ -12,7 +12,8 @@ let migrationPollInterval = null;
  */
 async function refreshBufferStatus() {
   const container = document.getElementById('bufferStatus');
-  container.innerHTML = '<p><span class="loading">Loading buffer status...</span></p>';
+  container.innerHTML =
+    '<p><span class="loading">Loading buffer status...</span></p>';
 
   try {
     const response = await fetch('/plugins/signalk-parquet/api/buffer/stats');
@@ -36,35 +37,33 @@ async function refreshBufferStatus() {
     const stats = data.stats;
     const exportStatus = data.exportService;
 
-    const formatBytes = (bytes) => {
+    const formatBytes = bytes => {
       if (bytes < 1024) return `${bytes} B`;
       if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
       return `${(bytes / 1024 / 1024).toFixed(2)} MB`;
     };
 
-    const formatTime = (isoString) => {
+    const formatTime = isoString => {
       if (!isoString) return 'Never';
       const d = new Date(isoString);
       const utcTime = d.toLocaleString([], { timeZone: 'UTC' });
       return `${d.toLocaleString()} (${utcTime} UTC)`;
     };
 
-    const formatUtcHourAsLocal = (utcHour) => {
+    const formatUtcHourAsLocal = utcHour => {
       const d = new Date();
       d.setUTCHours(utcHour, 0, 0, 0);
-      const localTime = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+      const localTime = d.toLocaleTimeString([], {
+        hour: 'numeric',
+        minute: '2-digit',
+      });
       return localTime;
     };
 
     container.innerHTML = `
       <p style="color: #555; margin: 0 0 15px 0; font-size: 0.95em;">
-        Incoming SignalK data is buffered in SQLite, then exported to Parquet files on a daily schedule (or on restart). Exported records are retained for 24 hours as a safety net, then purged.</p>
+        Incoming SignalK data is buffered in SQLite, then exported to Parquet files on a daily schedule (or on restart). Exported records are retained for 48 hours as a safety net, then purged.</p>
       <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px;">
-        <div style="background: white; padding: 15px; border-radius: 5px; border: 1px solid #ddd;">
-          <strong style="color: #1565C0;">Total Records</strong><br>
-          <span style="font-size: 1.5em;">${stats.totalRecords.toLocaleString()}</span>
-          <small style="display: block; color: #999; margin-top: 4px;">Pending + exported still in buffer</small>
-        </div>
         <div style="background: white; padding: 15px; border-radius: 5px; border: 1px solid #ddd;">
           <strong style="color: #FF9800;">Pending Export</strong><br>
           <span style="font-size: 1.5em;">${stats.pendingRecords.toLocaleString()}</span>
@@ -73,7 +72,12 @@ async function refreshBufferStatus() {
         <div style="background: white; padding: 15px; border-radius: 5px; border: 1px solid #ddd;">
           <strong style="color: #4CAF50;">Exported</strong><br>
           <span style="font-size: 1.5em;">${stats.exportedRecords.toLocaleString()}</span>
-          <small style="display: block; color: #999; margin-top: 4px;">Written to Parquet, purged after 24h</small>
+          <small style="display: block; color: #999; margin-top: 4px;">Written to Parquet, purged after 48h</small>
+        </div>
+        <div style="background: white; padding: 15px; border-radius: 5px; border: 1px solid #ddd;">
+          <strong style="color: #1565C0;">Total Records</strong><br>
+          <span style="font-size: 1.5em;">${stats.totalRecords.toLocaleString()}</span>
+          <small style="display: block; color: #999; margin-top: 4px;">Pending + exported still in buffer</small>
         </div>
         <div style="background: white; padding: 15px; border-radius: 5px; border: 1px solid #ddd;">
           <strong style="color: #666;">Database Size</strong><br>
@@ -83,7 +87,9 @@ async function refreshBufferStatus() {
         </div>
       </div>
 
-      ${exportStatus ? `
+      ${
+        exportStatus
+          ? `
       <div style="margin-top: 15px; padding: 10px; background: white; border-radius: 5px; border: 1px solid #ddd;">
         <strong>Export Service:</strong>
         <span style="color: #4CAF50;">Daily Mode</span>
@@ -94,14 +100,20 @@ async function refreshBufferStatus() {
         <strong>Last Batch:</strong> ${(exportStatus.lastBatchExported || 0).toLocaleString()} records
         | <strong>Schedule:</strong> Daily at ${formatUtcHourAsLocal(exportStatus.dailyExportHour)} (${exportStatus.dailyExportHour}:00 UTC)
       </div>
-      ` : ''}
+      `
+          : ''
+      }
 
-      ${stats.oldestPendingTimestamp ? `
+      ${
+        stats.oldestPendingTimestamp
+          ? `
       <div style="margin-top: 10px; font-size: 0.9em; color: #666;">
         <strong>Oldest pending:</strong> ${formatTime(stats.oldestPendingTimestamp)}
         | <strong>Newest record:</strong> ${formatTime(stats.newestRecordTimestamp)}
       </div>
-      ` : ''}
+      `
+          : ''
+      }
     `;
   } catch (error) {
     container.innerHTML = `<p style="color: red;">Failed to load buffer status: ${error.message}</p>`;
@@ -118,12 +130,14 @@ async function forceBufferExport() {
 
   try {
     const response = await fetch('/plugins/signalk-parquet/api/buffer/export', {
-      method: 'POST'
+      method: 'POST',
     });
     const data = await response.json();
 
     if (data.success) {
-      alert(`Export complete!\n\nRecords exported: ${data.recordsExported}\nFiles created: ${data.filesCreated.length}\nDuration: ${data.duration}ms`);
+      alert(
+        `Export complete!\n\nRecords exported: ${data.recordsExported}\nFiles created: ${data.filesCreated.length}\nDuration: ${data.duration}ms`
+      );
       refreshBufferStatus();
     } else {
       alert(`Export failed: ${data.error}`);
@@ -145,14 +159,15 @@ async function scanForMigration() {
   const startBtn = document.getElementById('startMigrationBtn');
 
   resultsDiv.style.display = 'block';
-  contentDiv.innerHTML = '<p><span class="loading">Scanning files...</span></p>';
+  contentDiv.innerHTML =
+    '<p><span class="loading">Scanning files...</span></p>';
   startBtn.disabled = true;
 
   try {
     const response = await fetch('/plugins/signalk-parquet/api/migrate/scan', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({})
+      body: JSON.stringify({}),
     });
     const data = await response.json();
 
@@ -170,13 +185,17 @@ async function scanForMigration() {
     }
 
     // Build path summary table
-    const pathRows = data.byPath.map(p => `
+    const pathRows = data.byPath
+      .map(
+        p => `
       <tr>
         <td style="font-family: monospace; font-size: 0.9em;">${p.path}</td>
         <td style="text-align: right;">${p.count.toLocaleString()}</td>
         <td style="text-align: right;">${(p.size / 1024 / 1024).toFixed(2)} MB</td>
       </tr>
-    `).join('');
+    `
+      )
+      .join('');
 
     contentDiv.innerHTML = `
       <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 15px;">
@@ -250,8 +269,8 @@ async function startMigration() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         targetTier: tier,
-        deleteSource: deleteSource
-      })
+        deleteSource: deleteSource,
+      }),
     });
     const data = await response.json();
 
@@ -266,7 +285,6 @@ async function startMigration() {
 
     // Start polling for progress
     migrationPollInterval = setInterval(pollMigrationProgress, 1000);
-
   } catch (error) {
     alert(`Failed to start migration: ${error.message}`);
     startBtn.disabled = false;
@@ -281,7 +299,9 @@ async function pollMigrationProgress() {
   if (!currentMigrationJobId) return;
 
   try {
-    const response = await fetch(`/plugins/signalk-parquet/api/migrate/progress/${currentMigrationJobId}`);
+    const response = await fetch(
+      `/plugins/signalk-parquet/api/migrate/progress/${currentMigrationJobId}`
+    );
     const data = await response.json();
 
     if (!data.success) {
@@ -292,14 +312,20 @@ async function pollMigrationProgress() {
     updateMigrationProgress(data);
 
     // Check if completed
-    if (data.status === 'completed' || data.status === 'cancelled' || data.status === 'error') {
+    if (
+      data.status === 'completed' ||
+      data.status === 'cancelled' ||
+      data.status === 'error'
+    ) {
       clearInterval(migrationPollInterval);
       migrationPollInterval = null;
       document.getElementById('startMigrationBtn').disabled = false;
       document.getElementById('cancelMigrationBtn').disabled = true;
 
       if (data.status === 'completed') {
-        alert(`Migration complete!\n\nFiles migrated: ${data.filesMigrated}\nFiles skipped: ${data.filesSkipped}\nData processed: ${data.bytesProcessedMB} MB`);
+        alert(
+          `Migration complete!\n\nFiles migrated: ${data.filesMigrated}\nFiles skipped: ${data.filesSkipped}\nData processed: ${data.bytesProcessedMB} MB`
+        );
       } else if (data.status === 'cancelled') {
         alert('Migration cancelled.');
       } else if (data.status === 'error') {
@@ -347,13 +373,17 @@ async function cancelMigration() {
   if (!currentMigrationJobId) return;
 
   try {
-    const response = await fetch(`/plugins/signalk-parquet/api/migrate/cancel/${currentMigrationJobId}`, {
-      method: 'POST'
-    });
+    const response = await fetch(
+      `/plugins/signalk-parquet/api/migrate/cancel/${currentMigrationJobId}`,
+      {
+        method: 'POST',
+      }
+    );
     const data = await response.json();
 
     if (data.success) {
-      document.getElementById('migrationProgressText').textContent = 'Cancelling...';
+      document.getElementById('migrationProgressText').textContent =
+        'Cancelling...';
     } else {
       alert(`Failed to cancel: ${data.error}`);
     }
@@ -367,7 +397,8 @@ async function cancelMigration() {
  */
 async function refreshStoreStats() {
   const container = document.getElementById('storeStats');
-  container.innerHTML = '<p><span class="loading">Loading store stats...</span></p>';
+  container.innerHTML =
+    '<p><span class="loading">Loading store stats...</span></p>';
 
   try {
     const response = await fetch('/plugins/signalk-parquet/api/store/stats');
@@ -389,23 +420,31 @@ async function refreshStoreStats() {
     }
 
     // Build context rows
-    const contextRows = stats.contexts.map(ctx => `
+    const contextRows = stats.contexts
+      .map(
+        ctx => `
       <tr>
         <td style="font-family: monospace; font-size: 0.9em;">${ctx.name}</td>
         <td style="text-align: right;">${ctx.pathCount.toLocaleString()}</td>
         <td style="text-align: right;">${ctx.fileCount.toLocaleString()}</td>
       </tr>
-    `).join('');
+    `
+      )
+      .join('');
 
     // Build tier rows
-    const tierRows = stats.tiers.map(t => `
+    const tierRows = stats.tiers
+      .map(
+        t => `
       <tr>
         <td style="font-family: monospace;">${t.tier}</td>
         <td style="text-align: right;">${t.fileCount.toLocaleString()}</td>
       </tr>
-    `).join('');
+    `
+      )
+      .join('');
 
-    const formatDate = (iso) => {
+    const formatDate = iso => {
       if (!iso) return 'N/A';
       return new Date(iso).toLocaleDateString();
     };

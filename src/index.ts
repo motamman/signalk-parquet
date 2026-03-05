@@ -519,12 +519,10 @@ export default function (app: ServerAPI): SignalKPlugin {
       saveAllBuffers(state.currentConfig, state, app);
     }
 
-    // Stop export service and flush SQLite buffer
+    // Stop export service (pending records will be exported on next startup)
     if (state.exportService) {
       try {
         state.exportService.stop();
-        // Force final export of pending records
-        await state.exportService.forceExport();
         app.debug('Parquet export service stopped');
       } catch (error) {
         app.error(`Error stopping export service: ${error}`);
@@ -626,38 +624,38 @@ export default function (app: ServerAPI): SignalKPlugin {
           'Prefix added to all generated Parquet files. Useful if running multiple instances or for organizing data. Example: "boat_name" produces "boat_name_2024-01-15T1200.parquet"',
         default: 'signalk_data',
       },
-      retentionDays: {
-        type: 'number',
-        title: 'Retention Period (days)',
-        description:
-          'Number of days to keep raw Parquet files on disk. Higher tiers are retained longer automatically (5s: 2x, 60s: 4x, 1h: 12x).',
-        default: 7,
-        minimum: 1,
-        maximum: 365,
-      },
+      // retentionDays: {
+      //   type: 'number',
+      //   title: 'Retention Period (days)',
+      //   description:
+      //     'Number of days to keep raw Parquet files on disk. Higher tiers are retained longer automatically (5s: 2x, 60s: 4x, 1h: 12x).',
+      //   default: 7,
+      //   minimum: 1,
+      //   maximum: 365,
+      // },
       exportBatchSize: {
         type: 'number',
         title: 'Export Batch Size',
         description:
-          'Maximum records to export per cycle. If you see "pending records" warnings in the logs, increase this value. Higher values use more memory during export but prevent backlogs.',
+          'Number of records loaded from SQLite into memory per batch when exporting to Parquet. The export loops through all pending records in chunks of this size. Higher values use more memory but export faster.',
         default: 50000,
         minimum: 1000,
         maximum: 200000,
       },
-      bufferRetentionHours: {
-        type: 'number',
-        title: 'SQLite Buffer Retention (hours)',
-        description:
-          'How long to keep data in the SQLite buffer after exporting to Parquet. Longer retention allows re-export if needed but uses more disk space. The buffer is separate from Parquet files.',
-        default: 48,
-        minimum: 1,
-        maximum: 168,
-      },
+      // bufferRetentionHours: {
+      //   type: 'number',
+      //   title: 'SQLite Buffer Retention (hours)',
+      //   description:
+      //     'How long to keep already-exported records in SQLite as a backup after they have been written to Parquet. Longer retention allows re-export if a Parquet file is lost, but uses more disk space.',
+      //   default: 48,
+      //   minimum: 48,
+      //   maximum: 168,
+      // },
       dailyExportHour: {
         type: 'number',
         title: 'Daily Export Hour (UTC)',
         description:
-          "Hour of day (0-23 UTC) when daily Parquet export runs. Yesterday's data is exported at this hour. Default is 4 AM UTC.",
+          'Hour of day in UTC (0-23) when daily Parquet export runs. This is shown in local time on the Status tab. Default is 4 (4:00 UTC).',
         default: 4,
         minimum: 0,
         maximum: 23,
