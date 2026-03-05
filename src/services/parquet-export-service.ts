@@ -117,47 +117,44 @@ export class ParquetExportService {
     let recordsExported = 0;
 
     try {
-      // Get pending records grouped by context:path, WITH their IDs
-      const grouped = this.sqliteBuffer.getPendingRecordsGroupedWithIds();
+      // Loop through batches until all pending records are exported
+      let batchNumber = 0;
+      let grouped = this.sqliteBuffer.getPendingRecordsGroupedWithIds();
 
-      if (grouped.size === 0) {
-        this.app.debug('No pending records to export');
-        return {
-          batchId,
-          recordsExported: 0,
-          filesCreated: [],
-          duration: Date.now() - startTime,
-          errors: [],
-        };
-      }
+      while (grouped.size > 0) {
+        batchNumber++;
+        const currentBatchId = batchNumber === 1 ? batchId : this.generateBatchId();
 
-      this.app.debug(`Exporting ${grouped.size} path groups to Parquet`);
+        this.app.debug(`Exporting batch ${batchNumber}: ${grouped.size} path groups to Parquet`);
 
-      // Export each group to a separate file
-      for (const [key, { records, ids }] of grouped) {
-        try {
-          const [context, signalkPath] = this.parseBufferKey(key);
-          const filePath = await this.exportGroup(
-            context,
-            signalkPath,
-            records,
-            batchId
-          );
+        for (const [key, { records, ids }] of grouped) {
+          try {
+            const [context, signalkPath] = this.parseBufferKey(key);
+            const filePath = await this.exportGroup(
+              context,
+              signalkPath,
+              records,
+              currentBatchId
+            );
 
-          if (filePath) {
-            filesCreated.push(filePath);
-            recordsExported += records.length;
+            if (filePath) {
+              filesCreated.push(filePath);
+              recordsExported += records.length;
 
-            // Mark records as exported using the IDs we already have
-            if (ids.length > 0) {
-              this.sqliteBuffer.markAsExported(ids, batchId);
+              // Mark records as exported using the IDs we already have
+              if (ids.length > 0) {
+                this.sqliteBuffer.markAsExported(ids, currentBatchId);
+              }
             }
+          } catch (error) {
+            const errorMsg = `Failed to export ${key}: ${(error as Error).message}`;
+            this.app.error(errorMsg);
+            errors.push(errorMsg);
           }
-        } catch (error) {
-          const errorMsg = `Failed to export ${key}: ${(error as Error).message}`;
-          this.app.error(errorMsg);
-          errors.push(errorMsg);
         }
+
+        // Get next batch
+        grouped = this.sqliteBuffer.getPendingRecordsGroupedWithIds();
       }
 
       // Cleanup old exported records

@@ -48,23 +48,30 @@ async function refreshBufferStatus() {
     };
 
     container.innerHTML = `
+      <p style="color: #555; margin: 0 0 15px 0; font-size: 0.95em;">
+        Incoming SignalK data is buffered in SQLite, then exported to Parquet files on a daily schedule (or on restart). Exported records are retained for 24 hours as a safety net, then purged. The database file size does not shrink automatically after purging.
+      </p>
       <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px;">
         <div style="background: white; padding: 15px; border-radius: 5px; border: 1px solid #ddd;">
           <strong style="color: #1565C0;">Total Records</strong><br>
           <span style="font-size: 1.5em;">${stats.totalRecords.toLocaleString()}</span>
+          <small style="display: block; color: #999; margin-top: 4px;">Pending + exported still in buffer</small>
         </div>
         <div style="background: white; padding: 15px; border-radius: 5px; border: 1px solid #ddd;">
           <strong style="color: #FF9800;">Pending Export</strong><br>
           <span style="font-size: 1.5em;">${stats.pendingRecords.toLocaleString()}</span>
+          <small style="display: block; color: #999; margin-top: 4px;">Waiting to be written to Parquet</small>
         </div>
         <div style="background: white; padding: 15px; border-radius: 5px; border: 1px solid #ddd;">
           <strong style="color: #4CAF50;">Exported</strong><br>
           <span style="font-size: 1.5em;">${stats.exportedRecords.toLocaleString()}</span>
+          <small style="display: block; color: #999; margin-top: 4px;">Written to Parquet, purged after 24h</small>
         </div>
         <div style="background: white; padding: 15px; border-radius: 5px; border: 1px solid #ddd;">
           <strong style="color: #666;">Database Size</strong><br>
           <span style="font-size: 1.5em;">${formatBytes(stats.dbSizeBytes + stats.walSizeBytes)}</span>
           <small style="display: block; color: #999;">DB: ${formatBytes(stats.dbSizeBytes)}, WAL: ${formatBytes(stats.walSizeBytes)}</small>
+          <small style="display: block; color: #999; margin-top: 4px;">VACUUM to reclaim space after purge</small>
         </div>
       </div>
 
