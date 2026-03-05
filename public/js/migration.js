@@ -345,18 +345,120 @@ async function cancelMigration() {
   }
 }
 
+/**
+ * Refresh Parquet store stats display
+ */
+async function refreshStoreStats() {
+  const container = document.getElementById('storeStats');
+  container.innerHTML = '<p><span class="loading">Loading store stats...</span></p>';
+
+  try {
+    const response = await fetch('/plugins/signalk-parquet/api/store/stats');
+    const data = await response.json();
+
+    if (!data.success) {
+      container.innerHTML = `<p style="color: red;">Error: ${data.error}</p>`;
+      return;
+    }
+
+    const stats = data.stats;
+
+    if (stats.totalFiles === 0) {
+      container.innerHTML = `
+        <p style="color: #666;">No Parquet files found in the data store.</p>
+        <p><small>Data will appear here once the plugin starts collecting and exporting data.</small></p>
+      `;
+      return;
+    }
+
+    // Build context rows
+    const contextRows = stats.contexts.map(ctx => `
+      <tr>
+        <td style="font-family: monospace; font-size: 0.9em;">${ctx.name}</td>
+        <td style="text-align: right;">${ctx.pathCount.toLocaleString()}</td>
+        <td style="text-align: right;">${ctx.fileCount.toLocaleString()}</td>
+      </tr>
+    `).join('');
+
+    // Build tier rows
+    const tierRows = stats.tiers.map(t => `
+      <tr>
+        <td style="font-family: monospace;">${t.tier}</td>
+        <td style="text-align: right;">${t.fileCount.toLocaleString()}</td>
+      </tr>
+    `).join('');
+
+    const formatDate = (iso) => {
+      if (!iso) return 'N/A';
+      return new Date(iso).toLocaleDateString();
+    };
+
+    container.innerHTML = `
+      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 15px; margin-bottom: 15px;">
+        <div style="background: white; padding: 15px; border-radius: 5px; border: 1px solid #ddd;">
+          <strong style="color: #2e7d32;">Vessels</strong><br>
+          <span style="font-size: 1.5em;">${stats.totalContexts}</span>
+        </div>
+        <div style="background: white; padding: 15px; border-radius: 5px; border: 1px solid #ddd;">
+          <strong style="color: #1565C0;">Total Paths</strong><br>
+          <span style="font-size: 1.5em;">${stats.totalPaths.toLocaleString()}</span>
+        </div>
+        <div style="background: white; padding: 15px; border-radius: 5px; border: 1px solid #ddd;">
+          <strong style="color: #FF9800;">Total Files</strong><br>
+          <span style="font-size: 1.5em;">${stats.totalFiles.toLocaleString()}</span>
+        </div>
+        <div style="background: white; padding: 15px; border-radius: 5px; border: 1px solid #ddd;">
+          <strong style="color: #666;">Data Range</strong><br>
+          <span style="font-size: 1.1em;">${formatDate(stats.earliestDate)} &ndash; ${formatDate(stats.latestDate)}</span>
+        </div>
+      </div>
+
+      <details style="margin-top: 10px;">
+        <summary style="cursor: pointer; color: #2e7d32; font-weight: 500;">Vessels/Contexts (${stats.totalContexts})</summary>
+        <table style="width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 0.9em;">
+          <thead>
+            <tr style="background: #f5f5f5;">
+              <th style="text-align: left; padding: 8px; border-bottom: 2px solid #ddd;">Context</th>
+              <th style="text-align: right; padding: 8px; border-bottom: 2px solid #ddd;">Paths</th>
+              <th style="text-align: right; padding: 8px; border-bottom: 2px solid #ddd;">Files</th>
+            </tr>
+          </thead>
+          <tbody>${contextRows}</tbody>
+        </table>
+      </details>
+
+      <details style="margin-top: 10px;">
+        <summary style="cursor: pointer; color: #2e7d32; font-weight: 500;">Files by Tier</summary>
+        <table style="width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 0.9em;">
+          <thead>
+            <tr style="background: #f5f5f5;">
+              <th style="text-align: left; padding: 8px; border-bottom: 2px solid #ddd;">Tier</th>
+              <th style="text-align: right; padding: 8px; border-bottom: 2px solid #ddd;">Files</th>
+            </tr>
+          </thead>
+          <tbody>${tierRows}</tbody>
+        </table>
+      </details>
+    `;
+  } catch (error) {
+    container.innerHTML = `<p style="color: red;">Failed to load store stats: ${error.message}</p>`;
+  }
+}
+
 // Export functions for global access
 window.refreshBufferStatus = refreshBufferStatus;
 window.forceBufferExport = forceBufferExport;
 window.scanForMigration = scanForMigration;
 window.startMigration = startMigration;
 window.cancelMigration = cancelMigration;
+window.refreshStoreStats = refreshStoreStats;
 
 // Initialize on tab show
 document.addEventListener('DOMContentLoaded', () => {
   // Check if we're on the migration tab
   const migrationTab = document.getElementById('migration');
   if (migrationTab && migrationTab.classList.contains('active')) {
+    refreshStoreStats();
     refreshBufferStatus();
   }
 });

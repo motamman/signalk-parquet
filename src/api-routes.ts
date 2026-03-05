@@ -39,7 +39,7 @@ import {
 } from './types';
 import { MigrationService } from './services/migration-service';
 import { AggregationService } from './services/aggregation-service';
-import { AggregationTier } from './utils/hive-path-builder';
+import { AggregationTier, HivePathBuilder } from './utils/hive-path-builder';
 import { isAngularPath } from './utils/angular-paths';
 import {
   loadWebAppConfig,
@@ -3827,6 +3827,215 @@ export function registerApiRoutes(
       return res.status(500).json({
         success: false,
         message: `Repair failed: ${(error as Error).message}`,
+      });
+    }
+  });
+
+  // ===========================================
+  // PARQUET STORE STATS API
+  // ===========================================
+
+  router.get('/api/store/stats', async (_req, res) => {
+    try {
+      const dataDir = getDataDir();
+      const hiveBuilder = new HivePathBuilder();
+      const tiers: Array<{ tier: string; fileCount: number }> = [];
+      const contexts: Array<{
+        name: string;
+        pathCount: number;
+        fileCount: number;
+      }> = [];
+      let totalFiles = 0;
+      let totalPaths = 0;
+      let earliestDate: Date | null = null;
+      let latestDate: Date | null = null;
+
+      // Helper to count parquet files recursively
+      const countFiles = (dir: string): number => {
+        let count = 0;
+        try {
+          const items = fs.readdirSync(dir);
+          for (const item of items) {
+            const fullPath = path.join(dir, item);
+            const stat = fs.statSync(fullPath);
+            if (stat.isDirectory()) {
+              if (
+                !['processed', 'failed', 'quarantine', 'repaired'].includes(
+                  item
+                )
+              ) {
+                count += countFiles(fullPath);
+              }
+            } else if (item.endsWith('.parquet')) {
+              count++;
+            }
+          }
+        } catch {
+          // skip unreadable dirs
+        }
+        return count;
+      };
+
+      // Helper to find earliest/latest year+day in a path directory
+      const scanDateRange = (
+        pathDir: string
+      ): { earliest: Date | null; latest: Date | null } => {
+        let minYear = Infinity,
+          minDay = Infinity;
+        let maxYear = -Infinity,
+          maxDay = -Infinity;
+        try {
+          const yearDirs = fs
+            .readdirSync(pathDir)
+            .filter((d: string) => d.startsWith('year='));
+          for (const yearDir of yearDirs) {
+            const year = parseInt(yearDir.split('=')[1], 10);
+            if (isNaN(year)) continue;
+            const yearPath = path.join(pathDir, yearDir);
+            const dayDirs = fs
+              .readdirSync(yearPath)
+              .filter((d: string) => d.startsWith('day='));
+            for (const dayDir of dayDirs) {
+              const day = parseInt(dayDir.split('=')[1], 10);
+              if (isNaN(day)) continue;
+              const dayPath = path.join(yearPath, dayDir);
+              const hasFiles = fs
+                .readdirSync(dayPath)
+                .some((f: string) => f.endsWith('.parquet'));
+              if (!hasFiles) continue;
+              if (year < minYear || (year === minYear && day < minDay)) {
+                minYear = year;
+                minDay = day;
+              }
+              if (year > maxYear || (year === maxYear && day > maxDay)) {
+                maxYear = year;
+                maxDay = day;
+              }
+            }
+          }
+        } catch {
+          // skip
+        }
+        return {
+          earliest:
+            minYear !== Infinity
+              ? hiveBuilder.dateFromDayOfYear(minYear, minDay)
+              : null,
+          latest:
+            maxYear !== -Infinity
+              ? hiveBuilder.dateFromDayOfYear(maxYear, maxDay)
+              : null,
+        };
+      };
+
+      // Scan all tiers
+      const tierNames = ['raw', '5s', '60s', '1h'];
+      const contextMap = new Map<
+        string,
+        { pathCount: number; fileCount: number }
+      >();
+
+      for (const tierName of tierNames) {
+        const tierDir = path.join(dataDir, `tier=${tierName}`);
+        let tierFileCount = 0;
+
+        if (!fs.existsSync(tierDir)) {
+          tiers.push({ tier: tierName, fileCount: 0 });
+          continue;
+        }
+
+        const contextDirs = fs
+          .readdirSync(tierDir)
+          .filter((d: string) => d.startsWith('context='));
+
+        for (const contextDir of contextDirs) {
+          const sanitizedCtx = contextDir.replace('context=', '');
+          const ctxName = hiveBuilder.unsanitizeContext(sanitizedCtx);
+          const ctxFullPath = path.join(tierDir, contextDir);
+
+          const pathDirs = fs
+            .readdirSync(ctxFullPath)
+            .filter((d: string) => d.startsWith('path='));
+
+          let ctxFileCount = 0;
+          const ctxPaths = new Set<string>();
+
+          for (const pathDir of pathDirs) {
+            const pathFullPath = path.join(ctxFullPath, pathDir);
+            const fileCount = countFiles(pathFullPath);
+            if (fileCount > 0) {
+              ctxPaths.add(pathDir);
+              ctxFileCount += fileCount;
+
+              // Scan date range (only on raw tier for efficiency)
+              if (tierName === 'raw') {
+                const range = scanDateRange(pathFullPath);
+                if (
+                  range.earliest &&
+                  (!earliestDate || range.earliest < earliestDate)
+                ) {
+                  earliestDate = range.earliest;
+                }
+                if (
+                  range.latest &&
+                  (!latestDate || range.latest > latestDate)
+                ) {
+                  latestDate = range.latest;
+                }
+              }
+            }
+          }
+
+          tierFileCount += ctxFileCount;
+
+          // Aggregate context stats across tiers
+          const existing = contextMap.get(ctxName);
+          if (existing) {
+            existing.fileCount += ctxFileCount;
+            // Only count paths from raw tier to avoid double-counting
+            if (tierName === 'raw') {
+              existing.pathCount += ctxPaths.size;
+            }
+          } else {
+            contextMap.set(ctxName, {
+              pathCount: tierName === 'raw' ? ctxPaths.size : 0,
+              fileCount: ctxFileCount,
+            });
+          }
+        }
+
+        tiers.push({ tier: tierName, fileCount: tierFileCount });
+        totalFiles += tierFileCount;
+      }
+
+      // Build contexts array and totals
+      for (const [name, data] of contextMap) {
+        contexts.push({
+          name,
+          pathCount: data.pathCount,
+          fileCount: data.fileCount,
+        });
+        totalPaths += data.pathCount;
+      }
+      contexts.sort((a, b) => b.pathCount - a.pathCount);
+
+      return res.json({
+        success: true,
+        stats: {
+          totalContexts: contexts.length,
+          totalPaths,
+          totalFiles,
+          earliestDate: earliestDate ? earliestDate.toISOString() : null,
+          latestDate: latestDate ? latestDate.toISOString() : null,
+          contexts,
+          tiers,
+        },
+      });
+    } catch (error) {
+      return res.status(500).json({
+        success: false,
+        error:
+          error instanceof Error ? error.message : 'Failed to get store stats',
       });
     }
   });

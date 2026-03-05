@@ -47,7 +47,10 @@ function showTab(tabId) {
   }
 
   if (tabId === 'migration') {
-    // Refresh buffer status when migration tab is shown
+    // Refresh store stats and buffer status when status tab is shown
+    if (typeof window.refreshStoreStats === 'function') {
+      window.refreshStoreStats();
+    }
     if (typeof window.refreshBufferStatus === 'function') {
       window.refreshBufferStatus();
     }
