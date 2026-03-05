@@ -595,6 +595,13 @@ export class HistoryAPI {
   }
 
   /**
+   * Get today's UTC midnight as ISO string for tier gap fix
+   */
+  private getTodayUtcIso(): string {
+    return new Date().toISOString().slice(0, 10) + 'T00:00:00Z';
+  }
+
+  /**
    * Query recent data from SQLite buffer
    * With daily exports, data can sit in SQLite for up to 48 hours before export
    * Returns records for a specific context and path
@@ -745,7 +752,7 @@ export class HistoryAPI {
       const bucket = buckets.get(bucketKey)!;
       const timestamp = new Date(bucketKey)
         .toISOString()
-        .replace('.000Z', 'Z') as Timestamp;
+        .replace(/\.\d{3}Z$/, 'Z') as Timestamp;
 
       // Check if first record has object values (e.g., position)
       const firstRecord = bucket[0];
@@ -1263,7 +1270,7 @@ export class HistoryAPI {
             const rows = result.getRowObjects();
 
             // Reconstruct objects from aggregated components
-            const pathData: Array<[Timestamp, unknown]> = rows.map(
+            let pathData: Array<[Timestamp, unknown]> = rows.map(
               (row: any) => {
                 const timestamp = row.timestamp as Timestamp;
                 const reconstructedObject: any = {};
@@ -1279,6 +1286,76 @@ export class HistoryAPI {
                 return [timestamp, reconstructedObject];
               }
             );
+
+            // Tier gap fix: supplement with raw tier data for today
+            if (effectiveTier !== 'raw') {
+              const todayStart = this.getTodayUtcIso();
+              if (toIso > todayStart) {
+                try {
+                  const rawFilePath = path.join(
+                    this.dataDir,
+                    'tier=raw',
+                    `context=${sanitizedContext}`,
+                    `path=${sanitizedSkPath}`,
+                    '**',
+                    '*.parquet'
+                  );
+                  const rawFrom = fromIso > todayStart ? fromIso : todayStart;
+                  const rawObjTsCol = getTierTimestampColumn('raw');
+                  const rawObjQuery = `
+                    SELECT
+                      strftime(DATE_TRUNC('seconds',
+                        EPOCH_MS(CAST(FLOOR(EPOCH_MS(${rawObjTsCol}::TIMESTAMP) / ${timeResolutionMillis}) * ${timeResolutionMillis} AS BIGINT))
+                      ), '%Y-%m-%dT%H:%M:%SZ') as timestamp,
+                      ${componentSelects}
+                    FROM ${buildFromClause(rawFilePath)} AS source_data
+                    WHERE
+                      ${rawObjTsCol} >= '${rawFrom}'
+                      AND ${rawObjTsCol} < '${toIso}'
+                      AND (${componentWhereConditions})
+                    GROUP BY timestamp
+                    ORDER BY timestamp
+                  `;
+                  const rawResult = await connection.runAndReadAll(rawObjQuery);
+                  const rawRows = rawResult.getRowObjects();
+                  if (rawRows.length > 0) {
+                    const rawData: Array<[Timestamp, unknown]> = rawRows.map(
+                      (row: any) => {
+                        const timestamp = row.timestamp as Timestamp;
+                        const reconstructedObject: any = {};
+                        componentSchema.components.forEach(
+                          (comp, componentName) => {
+                            const value = (row as any)[componentName];
+                            if (value !== null && value !== undefined) {
+                              reconstructedObject[componentName] = value;
+                            }
+                          }
+                        );
+                        return [timestamp, reconstructedObject];
+                      }
+                    );
+                    // Merge: raw overwrites tier on timestamp collision
+                    const merged = new Map<string, [Timestamp, unknown]>();
+                    for (const entry of pathData) {
+                      merged.set(entry[0] as string, entry);
+                    }
+                    for (const entry of rawData) {
+                      merged.set(entry[0] as string, entry);
+                    }
+                    pathData = Array.from(merged.values()).sort((a, b) =>
+                      (a[0] as string).localeCompare(b[0] as string)
+                    );
+                    debug(
+                      `Tier gap fix: added ${rawRows.length} raw records for today (object path), merged total: ${pathData.length}`
+                    );
+                  }
+                } catch (err) {
+                  debug(
+                    `Raw tier supplement failed for object path (ok, buffer will cover): ${err}`
+                  );
+                }
+              }
+            }
 
             // Merge with SQLite buffer data for recent records (federated query)
             let bufferRecords = this.getRecentBufferData(
@@ -1359,7 +1436,7 @@ export class HistoryAPI {
             const rows = result.getRowObjects();
 
             // Convert rows to the expected format using bucketed timestamps
-            const pathData: Array<[Timestamp, unknown]> = rows.map(
+            let pathData: Array<[Timestamp, unknown]> = rows.map(
               (row: any) => {
                 const rowData = row as {
                   timestamp: Timestamp;
@@ -1375,6 +1452,97 @@ export class HistoryAPI {
                 return [timestamp, value];
               }
             );
+
+            // Tier gap fix: supplement with raw tier data for today
+            if (effectiveTier !== 'raw') {
+              const todayStart = this.getTodayUtcIso();
+              if (toIso > todayStart) {
+                try {
+                  const rawFilePath = path.join(
+                    this.dataDir,
+                    'tier=raw',
+                    `context=${sanitizedContext}`,
+                    `path=${sanitizedSkPath}`,
+                    '**',
+                    '*.parquet'
+                  );
+                  const rawFrom = fromIso > todayStart ? fromIso : todayStart;
+                  const rawTsCol = getTierTimestampColumn('raw');
+
+                  // Check if raw files have value_json
+                  let rawHasValueJson = false;
+                  try {
+                    const rawSchemaQuery = `SELECT * FROM parquet_schema('${rawFilePath}') WHERE name = 'value_json'`;
+                    const rawSchemaResult =
+                      await connection.runAndReadAll(rawSchemaQuery);
+                    rawHasValueJson =
+                      rawSchemaResult.getRowObjects().length > 0;
+                  } catch {
+                    rawHasValueJson = false;
+                  }
+
+                  const rawValueJsonSelect =
+                    rawHasValueJson
+                      ? ', FIRST(value_json) as value_json'
+                      : '';
+                  const rawWhereClause = getTierWhereClause(
+                    'raw',
+                    rawHasValueJson
+                  );
+
+                  const rawScalarQuery = `
+                    SELECT
+                      strftime(DATE_TRUNC('seconds',
+                        EPOCH_MS(CAST(FLOOR(EPOCH_MS(${rawTsCol}::TIMESTAMP) / ${timeResolutionMillis}) * ${timeResolutionMillis} AS BIGINT))
+                      ), '%Y-%m-%dT%H:%M:%SZ') as timestamp,
+                      ${getTierAggregateExpression(pathSpec.aggregateMethod, pathSpec.path, 'raw', rawHasValueJson, app, context as string)} as value${rawValueJsonSelect}
+                    FROM ${buildFromClause(rawFilePath)} AS source_data
+                    WHERE
+                      ${rawTsCol} >= '${rawFrom}'
+                      AND ${rawTsCol} < '${toIso}'
+                      AND ${rawWhereClause}
+                    GROUP BY timestamp
+                    ORDER BY timestamp
+                  `;
+                  const rawResult =
+                    await connection.runAndReadAll(rawScalarQuery);
+                  const rawRows = rawResult.getRowObjects();
+                  if (rawRows.length > 0) {
+                    const rawData: Array<[Timestamp, unknown]> = rawRows.map(
+                      (row: any) => {
+                        const rowData = row as {
+                          timestamp: Timestamp;
+                          value: unknown;
+                          value_json?: string;
+                        };
+                        const value = rowData.value_json
+                          ? JSON.parse(String(rowData.value_json))
+                          : rowData.value;
+                        return [rowData.timestamp, value];
+                      }
+                    );
+                    // Merge: raw overwrites tier on timestamp collision
+                    const merged = new Map<string, [Timestamp, unknown]>();
+                    for (const entry of pathData) {
+                      merged.set(entry[0] as string, entry);
+                    }
+                    for (const entry of rawData) {
+                      merged.set(entry[0] as string, entry);
+                    }
+                    pathData = Array.from(merged.values()).sort((a, b) =>
+                      (a[0] as string).localeCompare(b[0] as string)
+                    );
+                    debug(
+                      `Tier gap fix: added ${rawRows.length} raw records for today (scalar path), merged total: ${pathData.length}`
+                    );
+                  }
+                } catch (err) {
+                  debug(
+                    `Raw tier supplement failed for scalar path (ok, buffer will cover): ${err}`
+                  );
+                }
+              }
+            }
 
             // Merge with SQLite buffer data for recent records (federated query)
             let bufferRecords = this.getRecentBufferData(
