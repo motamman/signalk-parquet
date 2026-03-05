@@ -42,6 +42,7 @@ export class ParquetExportService {
   private lastExportTime: Date | null = null;
   private totalExported: number = 0;
   private lastBatchExported: number = 0;
+  private lastExportTrigger: 'startup' | 'daily' | 'forced' | null = null;
 
   constructor(
     sqliteBuffer: SQLiteBuffer,
@@ -66,6 +67,7 @@ export class ParquetExportService {
   start(): void {
     // Export any pending records from crash recovery (for records that weren't
     // exported before a crash or restart)
+    this.lastExportTrigger = 'startup';
     this.exportPending().catch(err => {
       this.app.error(`Initial export failed: ${err.message}`);
     });
@@ -91,6 +93,7 @@ export class ParquetExportService {
    * Force an immediate export of pending records
    */
   async forceExport(): Promise<ExportResult> {
+    this.lastExportTrigger = 'forced';
     return this.exportPending();
   }
 
@@ -321,6 +324,7 @@ export class ParquetExportService {
     totalExported: number;
     pendingRecords: number;
     dailyExportHour: number;
+    lastExportTrigger: string | null;
     mode: 'daily';
   } {
     return {
@@ -331,6 +335,7 @@ export class ParquetExportService {
       totalExported: this.totalExported,
       pendingRecords: this.sqliteBuffer.getPendingCount(),
       dailyExportHour: this.config.dailyExportHour,
+      lastExportTrigger: this.lastExportTrigger,
       mode: 'daily',
     };
   }
@@ -523,6 +528,7 @@ export class ParquetExportService {
       this.lastExportTime = new Date();
       this.lastBatchExported = recordsExported;
       this.totalExported += recordsExported;
+      this.lastExportTrigger = 'daily';
 
       this.app.debug(
         `[DailyExport] Complete: ${recordsExported} records to ${filesCreated.length} files in ${Date.now() - startTime}ms`

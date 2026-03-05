@@ -44,13 +44,21 @@ async function refreshBufferStatus() {
 
     const formatTime = (isoString) => {
       if (!isoString) return 'Never';
-      return new Date(isoString).toLocaleString();
+      const d = new Date(isoString);
+      const utcTime = d.toLocaleString([], { timeZone: 'UTC' });
+      return `${d.toLocaleString()} (${utcTime} UTC)`;
+    };
+
+    const formatUtcHourAsLocal = (utcHour) => {
+      const d = new Date();
+      d.setUTCHours(utcHour, 0, 0, 0);
+      const localTime = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+      return localTime;
     };
 
     container.innerHTML = `
       <p style="color: #555; margin: 0 0 15px 0; font-size: 0.95em;">
-        Incoming SignalK data is buffered in SQLite, then exported to Parquet files on a daily schedule (or on restart). Exported records are retained for 24 hours as a safety net, then purged. The database file size does not shrink automatically after purging.
-      </p>
+        Incoming SignalK data is buffered in SQLite, then exported to Parquet files on a daily schedule (or on restart). Exported records are retained for 24 hours as a safety net, then purged.</p>
       <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px;">
         <div style="background: white; padding: 15px; border-radius: 5px; border: 1px solid #ddd;">
           <strong style="color: #1565C0;">Total Records</strong><br>
@@ -71,7 +79,7 @@ async function refreshBufferStatus() {
           <strong style="color: #666;">Database Size</strong><br>
           <span style="font-size: 1.5em;">${formatBytes(stats.dbSizeBytes + stats.walSizeBytes)}</span>
           <small style="display: block; color: #999;">DB: ${formatBytes(stats.dbSizeBytes)}, WAL: ${formatBytes(stats.walSizeBytes)}</small>
-          <small style="display: block; color: #999; margin-top: 4px;">VACUUM to reclaim space after purge</small>
+          <small style="display: block; color: #999; margin-top: 4px;"></small>
         </div>
       </div>
 
@@ -80,9 +88,11 @@ async function refreshBufferStatus() {
         <strong>Export Service:</strong>
         <span style="color: #4CAF50;">Daily Mode</span>
         ${exportStatus.isExporting ? ' (exporting...)' : ''}
+        | <strong>Last Process:</strong> ${exportStatus.lastExportTrigger ? exportStatus.lastExportTrigger.charAt(0).toUpperCase() + exportStatus.lastExportTrigger.slice(1) : 'None'}
         | <strong>Last Export:</strong> ${formatTime(exportStatus.lastExportTime)}
-        | <strong>Last Batch:</strong> ${(exportStatus.lastBatchExported || 0).toLocaleString()} records
-        | <strong>Schedule:</strong> Daily at ${exportStatus.dailyExportHour}:00 UTC
+        <br>
+        <strong>Last Batch:</strong> ${(exportStatus.lastBatchExported || 0).toLocaleString()} records
+        | <strong>Schedule:</strong> Daily at ${formatUtcHourAsLocal(exportStatus.dailyExportHour)} (${exportStatus.dailyExportHour}:00 UTC)
       </div>
       ` : ''}
 
