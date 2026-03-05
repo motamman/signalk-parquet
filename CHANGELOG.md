@@ -1,5 +1,34 @@
 # Changelog
 
+## [0.7.6-beta.6] - 2026-03-05
+
+### Fixed
+
+- **CRITICAL: Parquet File Overwrite on Batch Export** - Fixed filename collision when exporting multiple batches
+  - Filename timestamp was truncated to the minute (`.slice(0, 15)`), causing all batches within the same minute to overwrite each other
+  - Only the last batch's data survived; all previous batches' parquet files were silently overwritten
+  - Now uses second-level precision (`.slice(0, 17)`) plus a uniqueness suffix for same-second collisions
+
+- **Export Loop for Large Buffers** - `exportPending()` now loops through all pending records in batches
+  - Previously exported only one batch (maxBatchSize) and stopped
+  - Large backlogs (e.g., 500k+ records) now fully drain on startup or force export
+
+- **Trailing Space in outputDirectory** - Added `.trim()` to config loading to prevent invisible path errors
+  - A trailing space caused files to be written to a wrong directory (e.g., `data /` instead of `data/`)
+
+### Improved
+
+- **Buffer Status UI** - Added explainer text and subtitles to SQLite buffer dashboard
+  - Description paragraph explaining the buffer-to-parquet pipeline
+  - Subtitles under each stat (Total Records, Pending, Exported, DB Size)
+  - Last Export timestamp now shows UTC time parenthetically
+  - Schedule shows local time with UTC parenthetical
+  - Last Process indicator shows whether export was triggered by Daily/Startup/Forced
+
+- **Removed tier dropdown** from migration UI (hardcoded to raw)
+
+---
+
 ## [0.7.6-beta.5] - 2026-03-04
 
 ### Fixed

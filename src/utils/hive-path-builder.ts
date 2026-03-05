@@ -78,9 +78,17 @@ export class HivePathBuilder {
     const timestampStr = timestamp
       .toISOString()
       .replace(/[:.]/g, '')
-      .slice(0, 15);
+      .slice(0, 17);
 
-    return path.join(dirPath, `${filenamePrefix}_${timestampStr}.parquet`);
+    // Ensure unique filename if file already exists (e.g. multiple batches in same second)
+    let filePath = path.join(dirPath, `${filenamePrefix}_${timestampStr}.parquet`);
+    let suffix = 1;
+    while (fs.existsSync(filePath)) {
+      filePath = path.join(dirPath, `${filenamePrefix}_${timestampStr}_${suffix}.parquet`);
+      suffix++;
+    }
+
+    return filePath;
   }
 
   /**

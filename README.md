@@ -1567,17 +1567,3 @@ curl "http://localhost:3000/signalk/v1/history/contexts"
 ## Changelog
 
 See [CHANGELOG.md](CHANGELOG.md) for complete version history.
-
-### Recent Major Changes (v0.7.4)
-- **📦 Simplified Export Pipeline**: Replaced 5-minute interval exports with daily export mode
-  - Data accumulates in SQLite buffer throughout the day
-  - Single export at configurable hour (default: 4 AM UTC)
-  - Creates consolidated files directly (no separate consolidation step)
-- **🗄️ SQLite WAL Buffering**: Crash-safe data ingestion with Write-Ahead Logging
-  - 48-hour retention for federated queries
-  - Automatic recovery after power loss or crashes
-- **🏗️ Hive-Partitioned Storage**: Efficient file organization with partition pruning
-- **🔄 Migration Service**: Convert legacy flat structure to Hive partitioning
-- **🔍 Auto-Discovery**: Automatic path configuration on first query
-- **🌐 S3 Federated Querying**: Query historical data directly from S3 using DuckDB
-- **🎯 Spatial Correlation**: Filter any sensor data by vessel location

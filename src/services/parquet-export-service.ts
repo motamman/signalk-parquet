@@ -42,6 +42,7 @@ export class ParquetExportService {
   private lastExportTime: Date | null = null;
   private totalExported: number = 0;
   private lastBatchExported: number = 0;
+  private lastExportTrigger: 'startup' | 'daily' | 'forced' | null = null;
 
   constructor(
     sqliteBuffer: SQLiteBuffer,
@@ -66,6 +67,7 @@ export class ParquetExportService {
   start(): void {
     // Export any pending records from crash recovery (for records that weren't
     // exported before a crash or restart)
+    this.lastExportTrigger = 'startup';
     this.exportPending().catch(err => {
       this.app.error(`Initial export failed: ${err.message}`);
     });
@@ -91,6 +93,7 @@ export class ParquetExportService {
    * Force an immediate export of pending records
    */
   async forceExport(): Promise<ExportResult> {
+    this.lastExportTrigger = 'forced';
     return this.exportPending();
   }
 
@@ -117,47 +120,44 @@ export class ParquetExportService {
     let recordsExported = 0;
 
     try {
-      // Get pending records grouped by context:path, WITH their IDs
-      const grouped = this.sqliteBuffer.getPendingRecordsGroupedWithIds();
+      // Loop through batches until all pending records are exported
+      let batchNumber = 0;
+      let grouped = this.sqliteBuffer.getPendingRecordsGroupedWithIds();
 
-      if (grouped.size === 0) {
-        this.app.debug('No pending records to export');
-        return {
-          batchId,
-          recordsExported: 0,
-          filesCreated: [],
-          duration: Date.now() - startTime,
-          errors: [],
-        };
-      }
+      while (grouped.size > 0) {
+        batchNumber++;
+        const currentBatchId = batchNumber === 1 ? batchId : this.generateBatchId();
 
-      this.app.debug(`Exporting ${grouped.size} path groups to Parquet`);
+        this.app.debug(`Exporting batch ${batchNumber}: ${grouped.size} path groups to Parquet`);
 
-      // Export each group to a separate file
-      for (const [key, { records, ids }] of grouped) {
-        try {
-          const [context, signalkPath] = this.parseBufferKey(key);
-          const filePath = await this.exportGroup(
-            context,
-            signalkPath,
-            records,
-            batchId
-          );
+        for (const [key, { records, ids }] of grouped) {
+          try {
+            const [context, signalkPath] = this.parseBufferKey(key);
+            const filePath = await this.exportGroup(
+              context,
+              signalkPath,
+              records,
+              currentBatchId
+            );
 
-          if (filePath) {
-            filesCreated.push(filePath);
-            recordsExported += records.length;
+            if (filePath) {
+              filesCreated.push(filePath);
+              recordsExported += records.length;
 
-            // Mark records as exported using the IDs we already have
-            if (ids.length > 0) {
-              this.sqliteBuffer.markAsExported(ids, batchId);
+              // Mark records as exported using the IDs we already have
+              if (ids.length > 0) {
+                this.sqliteBuffer.markAsExported(ids, currentBatchId);
+              }
             }
+          } catch (error) {
+            const errorMsg = `Failed to export ${key}: ${(error as Error).message}`;
+            this.app.error(errorMsg);
+            errors.push(errorMsg);
           }
-        } catch (error) {
-          const errorMsg = `Failed to export ${key}: ${(error as Error).message}`;
-          this.app.error(errorMsg);
-          errors.push(errorMsg);
         }
+
+        // Get next batch
+        grouped = this.sqliteBuffer.getPendingRecordsGroupedWithIds();
       }
 
       // Cleanup old exported records
@@ -324,6 +324,7 @@ export class ParquetExportService {
     totalExported: number;
     pendingRecords: number;
     dailyExportHour: number;
+    lastExportTrigger: string | null;
     mode: 'daily';
   } {
     return {
@@ -334,6 +335,7 @@ export class ParquetExportService {
       totalExported: this.totalExported,
       pendingRecords: this.sqliteBuffer.getPendingCount(),
       dailyExportHour: this.config.dailyExportHour,
+      lastExportTrigger: this.lastExportTrigger,
       mode: 'daily',
     };
   }
@@ -526,6 +528,7 @@ export class ParquetExportService {
       this.lastExportTime = new Date();
       this.lastBatchExported = recordsExported;
       this.totalExported += recordsExported;
+      this.lastExportTrigger = 'daily';
 
       this.app.debug(
         `[DailyExport] Complete: ${recordsExported} records to ${filesCreated.length} files in ${Date.now() - startTime}ms`
