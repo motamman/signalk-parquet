@@ -1735,15 +1735,7 @@
                         <h3 style="margin-top: 0; color: #E65100;">📁 Migrate to Hive Partitioning</h3>
                         <p style="color: #666; margin-bottom: 15px;">Convert existing flat-structure Parquet files to Hive-style partitioned structure for better query performance.</p>
 
-                        <div class="form-group">
-                            <label for="migrationTier">Target Tier:</label>
-                            <select id="migrationTier">
-                                <option value="raw">Raw (original resolution)</option>
-                                <option value="5s">5 Second Aggregates</option>
-                                <option value="60s">1 Minute Aggregates</option>
-                                <option value="1h">Hourly Aggregates</option>
-                            </select>
-                        </div>
+                        <input type="hidden" id="migrationTier" value="raw">
 
                         <div class="form-group" style="display: flex; align-items: center; gap: 10px;">
                             <input type="checkbox" id="migrationDeleteSource" style="width: auto;">

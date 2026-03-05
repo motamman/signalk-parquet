@@ -88,10 +88,10 @@ export default function (app: ServerAPI): SignalKPlugin {
     state.currentConfig = {
       bufferSize: options?.bufferSize || 1000,
       saveIntervalSeconds: options?.saveIntervalSeconds || 30,
-      outputDirectory: options?.outputDirectory
-        ? path.isAbsolute(options.outputDirectory)
-          ? options.outputDirectory
-          : path.join(signalkDataDir, options.outputDirectory)
+      outputDirectory: options?.outputDirectory?.trim()
+        ? path.isAbsolute(options.outputDirectory.trim())
+          ? options.outputDirectory.trim()
+          : path.join(signalkDataDir, options.outputDirectory.trim())
         : defaultOutputDir,
       filenamePrefix: options?.filenamePrefix || 'signalk_data',
       retentionDays: options?.retentionDays || 7,
