@@ -1111,9 +1111,10 @@ function processThresholdValue(
 
   try {
     const normalizedValue = normalizeThresholdValue(value, threshold);
-    appInstance?.debug(
-      `📈 Threshold monitor ${commandName}:${threshold.watchPath} received value: ${JSON.stringify(normalizedValue)}`
-    );
+    // Verbose: logs on every value update
+    // appInstance?.debug(
+    //   `📈 Threshold monitor ${commandName}:${threshold.watchPath} received value: ${JSON.stringify(normalizedValue)}`
+    // );
 
     // Check if automation is enabled for this command
     const autoEnabledRaw = appInstance?.getSelfPath(
@@ -1194,9 +1195,10 @@ function processThresholdValue(
       thresholdDesc = `value=${threshold.value}`;
     }
 
-    appInstance?.debug(
-      `📉 Threshold evaluation for ${commandName}:${threshold.watchPath} operator=${threshold.operator} ${thresholdDesc} conditionMet=${conditionMet}`
-    );
+    // Verbose: logs on every value update
+    // appInstance?.debug(
+    //   `📉 Threshold evaluation for ${commandName}:${threshold.watchPath} operator=${threshold.operator} ${thresholdDesc} conditionMet=${conditionMet}`
+    // );
 
     if (!conditionMet) {
       // For position-based operators, we need bidirectional triggering:
@@ -1263,9 +1265,10 @@ function processThresholdValue(
         : currentCommandValue;
     const currentlyActive = Boolean(actualValue);
 
-    appInstance?.debug(
-      `🔍 Command state check for ${commandName}: current=${actualValue} (bool=${currentlyActive}), desired=${desiredState}`
-    );
+    // Verbose: logs on every value update
+    // appInstance?.debug(
+    //   `🔍 Command state check for ${commandName}: current=${actualValue} (bool=${currentlyActive}), desired=${desiredState}`
+    // );
 
     if (currentlyActive !== desiredState) {
       appInstance?.debug(
@@ -1287,9 +1290,10 @@ function processThresholdValue(
         );
       }
     } else {
-      appInstance?.debug(
-        `ℹ️ Command ${commandName} already ${desiredState ? 'ON' : 'OFF'}, no action taken`
-      );
+      // Verbose: logs on every value update when state unchanged
+      // appInstance?.debug(
+      //   `ℹ️ Command ${commandName} already ${desiredState ? 'ON' : 'OFF'}, no action taken`
+      // );
     }
 
     state.lastConditionMet = true;

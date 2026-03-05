@@ -465,6 +465,9 @@ export class ParquetExportService {
 
       if (pathsForDate.length === 0) {
         this.app.debug(`[DailyExport] No data found for ${dateStr}`);
+        this.lastExportTime = new Date();
+        this.lastBatchExported = 0;
+        this.lastExportTrigger = 'daily';
         return {
           batchId,
           recordsExported: 0,

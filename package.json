@@ -1,6 +1,6 @@
 {
   "name": "signalk-parquet",
-  "version": "0.7.6-beta.6",
+  "version": "0.7.6-beta.7",
   "description": "A comprehensive SignalK plugin and webapp that saves SignalK data directly to Parquet files with manual and automated regimen-based archiving and advanced querying features, including a REST API built on the SignalK History API and spatial geographic analysis capabilities.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.7.6-beta.7] - 2026-03-05
+
+### Fixed
+
+- **Shutdown Export Removed** - Removed risky `forceExport()` call during plugin shutdown
+  - Async Parquet writes during shutdown are fragile (process may be killed mid-write)
+  - Startup export already catches up on all unexported records, making the shutdown export redundant
+
+- **Daily Export Status Not Updating** - `exportDayToParquet` now updates status (Last Process, Last Batch, Last Export time) even when no data is found for the target date
+  - Previously the status page would still show the previous export's info after a daily run with 0 records
+
+### Improved
+
+- **Config UI Cleanup** - Removed settings that don't need user configuration
+  - Hidden `retentionDays` (only used by manual cleanup API, not normal operation)
+  - Hidden `bufferRetentionHours` (hardcoded to 48h to match HistoryAPI assumptions)
+  - Updated `exportBatchSize` description to clarify it's per-batch in a loop, not per-cycle
+  - Updated `dailyExportHour` description to reference UTC and Status tab
+
+- **Reduced Debug Log Noise** - Silenced per-update threshold monitor logging
+  - Threshold evaluation, command state checks, and "no action taken" messages no longer flood logs
+  - Action-taken and error messages still logged
+
+---
+
 ## [0.7.6-beta.6] - 2026-03-05
 
 ### Fixed
