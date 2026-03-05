@@ -126,9 +126,12 @@ export class ParquetExportService {
 
       while (grouped.size > 0) {
         batchNumber++;
-        const currentBatchId = batchNumber === 1 ? batchId : this.generateBatchId();
+        const currentBatchId =
+          batchNumber === 1 ? batchId : this.generateBatchId();
 
-        this.app.debug(`Exporting batch ${batchNumber}: ${grouped.size} path groups to Parquet`);
+        this.app.debug(
+          `Exporting batch ${batchNumber}: ${grouped.size} path groups to Parquet`
+        );
 
         for (const [key, { records, ids }] of grouped) {
           try {

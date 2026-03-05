@@ -81,10 +81,16 @@ export class HivePathBuilder {
       .slice(0, 17);
 
     // Ensure unique filename if file already exists (e.g. multiple batches in same second)
-    let filePath = path.join(dirPath, `${filenamePrefix}_${timestampStr}.parquet`);
+    let filePath = path.join(
+      dirPath,
+      `${filenamePrefix}_${timestampStr}.parquet`
+    );
     let suffix = 1;
     while (fs.existsSync(filePath)) {
-      filePath = path.join(dirPath, `${filenamePrefix}_${timestampStr}_${suffix}.parquet`);
+      filePath = path.join(
+        dirPath,
+        `${filenamePrefix}_${timestampStr}_${suffix}.parquet`
+      );
       suffix++;
     }
 
