@@ -72,7 +72,7 @@ async function refreshBufferStatus() {
         <div style="background: white; padding: 15px; border-radius: 5px; border: 1px solid #ddd;">
           <strong style="color: #4CAF50;">Exported</strong><br>
           <span style="font-size: 1.5em;">${stats.exportedRecords.toLocaleString()}</span>
-          <small style="display: block; color: #999; margin-top: 4px;">Written to Parquet, purged after 48h</small>
+          <small style="display: block; color: #999; margin-top: 4px;">Written to Parquet, purged from SQLite after 48h</small>
         </div>
         <div style="background: white; padding: 15px; border-radius: 5px; border: 1px solid #ddd;">
           <strong style="color: #1565C0;">Total Records</strong><br>
