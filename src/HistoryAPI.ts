@@ -49,60 +49,6 @@ import {
 } from './utils/duration-parser';
 import { isAngularPath } from './utils/angular-paths';
 
-// ============================================================================
-// Timestamp Conversion Helper Functions
-// ============================================================================
-
-/**
- * Get the target timezone ID
- * @param timezoneParam - Optional timezone from query parameter
- * @returns ZoneId object for the target timezone
- */
-function getTargetTimezone(timezoneParam?: string): ZoneId {
-  if (timezoneParam) {
-    try {
-      return ZoneId.of(timezoneParam);
-    } catch (error) {
-      console.error(
-        `[Timestamp Conversion] Invalid timezone '${timezoneParam}', falling back to system default`
-      );
-    }
-  }
-
-  // Use system default timezone
-  return ZoneId.systemDefault();
-}
-
-/**
- * Convert a UTC timestamp string to a target timezone
- * @param utcTimestamp - UTC timestamp string (e.g., "2025-10-18T20:44:09Z")
- * @param targetZone - Target timezone
- * @returns Converted timestamp string in target timezone (ISO 8601 format with offset)
- */
-function convertTimestampToTimezone(
-  utcTimestamp: Timestamp,
-  targetZone: ZoneId
-): Timestamp {
-  try {
-    // Parse the UTC timestamp
-    const zonedDateTime = ZonedDateTime.parse(utcTimestamp);
-
-    // Convert to target timezone
-    const converted = zonedDateTime.withZoneSameInstant(targetZone);
-
-    // Format to ISO 8601 with offset (e.g., "2025-10-20T08:12:14-04:00")
-    // Use toOffsetDateTime() to get clean ISO format without [SYSTEM] suffix
-    const offsetDateTime = converted.toOffsetDateTime();
-    return offsetDateTime.toString() as Timestamp;
-  } catch (error) {
-    console.error(
-      `[Timestamp Conversion] Error converting timestamp ${utcTimestamp}:`,
-      error
-    );
-    return utcTimestamp; // Return original on error
-  }
-}
-
 export function registerHistoryApiRoute(
   router: Pick<Router, 'get'>,
   selfId: string,
@@ -124,27 +70,19 @@ export function registerHistoryApiRoute(
   );
   // Handler for values endpoint
   const handleValues = (req: Request, res: Response) => {
-    const { from, to, context, spatialFilter, shouldRefresh, positionPath } =
-      getRequestParams(req as FromToContextRequest, selfId);
-    const convertTimesToLocal =
-      req.query.convertTimesToLocal === 'true' ||
-      req.query.convertTimesToLocal === '1';
-    const timezone = req.query.timezone as string | undefined;
-    const source = (req.query.source as QuerySource) || 'auto';
+    const { from, to, context, spatialFilter } = getRequestParams(
+      req as FromToContextRequest,
+      selfId
+    );
     historyApi.getValues(
       context,
       from,
       to,
-      shouldRefresh,
-      convertTimesToLocal,
-      timezone,
       spatialFilter,
       app,
       debug,
       req,
-      res,
-      source,
-      positionPath
+      res
     );
   };
 
@@ -236,27 +174,19 @@ export function registerHistoryApiRoute(
 
   // Also register as plugin-style routes for testing
   router.get('/api/history/values', (req: Request, res: Response) => {
-    const { from, to, context, spatialFilter, shouldRefresh, positionPath } =
-      getRequestParams(req as FromToContextRequest, selfId);
-    const convertTimesToLocal =
-      req.query.convertTimesToLocal === 'true' ||
-      req.query.convertTimesToLocal === '1';
-    const timezone = req.query.timezone as string | undefined;
-    const source = (req.query.source as QuerySource) || 'auto';
+    const { from, to, context, spatialFilter } = getRequestParams(
+      req as FromToContextRequest,
+      selfId
+    );
     historyApi.getValues(
       context,
       from,
       to,
-      shouldRefresh,
-      convertTimesToLocal,
-      timezone,
       spatialFilter,
       app,
       debug,
       req,
-      res,
-      source,
-      positionPath
+      res
     );
   });
   router.get('/api/history/contexts', async (req: Request, res: Response) => {
@@ -337,10 +267,6 @@ const getRequestParams = ({ query }: FromToContextRequest, selfId: string) => {
   try {
     let from: ZonedDateTime;
     let to: ZonedDateTime;
-    let shouldRefresh = false;
-
-    // Check if user wants to work in UTC (default: false, use local timezone)
-    const useUTC = query.useUTC === 'true' || query.useUTC === '1';
 
     // ============================================================================
     // STANDARD SIGNALK TIME RANGE PATTERNS
@@ -350,29 +276,28 @@ const getRequestParams = ({ query }: FromToContextRequest, selfId: string) => {
       const durationMs = parseDuration(query.duration);
       to = ZonedDateTime.now(ZoneOffset.UTC);
       from = to.minusNanos(durationMs * 1000000);
-      shouldRefresh = query.refresh === 'true' || query.refresh === '1';
     }
     // Pattern 2: from + duration → query forward from start
     else if (query.from && query.duration && !query.to) {
-      from = parseDateTime(query.from, useUTC);
+      from = parseDateTime(query.from);
       const durationMs = parseDuration(query.duration);
       to = from.plusNanos(durationMs * 1000000);
     }
     // Pattern 3: to + duration → query backward to end
     else if (query.to && query.duration && !query.from) {
-      to = parseDateTime(query.to, useUTC);
+      to = parseDateTime(query.to);
       const durationMs = parseDuration(query.duration);
       from = to.minusNanos(durationMs * 1000000);
     }
     // Pattern 4: from only → from start to now
     else if (query.from && !query.duration && !query.to) {
-      from = parseDateTime(query.from, useUTC);
+      from = parseDateTime(query.from);
       to = ZonedDateTime.now(ZoneOffset.UTC);
     }
     // Pattern 5: from + to → specific range
     else if (query.from && query.to && !query.duration) {
-      from = parseDateTime(query.from, useUTC);
-      to = parseDateTime(query.to, useUTC);
+      from = parseDateTime(query.from);
+      to = parseDateTime(query.to);
     } else {
       throw new Error(
         'Invalid time range parameters. Use one of the following patterns:\n' +
@@ -386,9 +311,7 @@ const getRequestParams = ({ query }: FromToContextRequest, selfId: string) => {
 
     const context: Context = getContext(query.context, selfId);
     const spatialFilter = parseSpatialParams(query.bbox, query.radius);
-    const positionPath =
-      (query.positionPath as string) || 'navigation.position';
-    return { from, to, context, spatialFilter, shouldRefresh, positionPath };
+    return { from, to, context, spatialFilter };
   } catch (e: unknown) {
     console.error('Full error details:', e);
     throw new Error(
@@ -415,8 +338,10 @@ function hasTimezoneInfo(dateTimeStr: string): boolean {
   );
 }
 
-// Parse datetime string and convert to UTC if needed
-function parseDateTime(dateTimeStr: string, useUTC: boolean): ZonedDateTime {
+// Parse datetime string per ISO 8601:
+// - Bare timestamps (no Z, no offset) → local time, converted to UTC
+// - Timestamps with Z or offset → parsed as-is
+function parseDateTime(dateTimeStr: string): ZonedDateTime {
   // Normalize the datetime string to include seconds if missing
   let normalizedStr = dateTimeStr;
   if (dateTimeStr.match(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/)) {
@@ -424,39 +349,27 @@ function parseDateTime(dateTimeStr: string, useUTC: boolean): ZonedDateTime {
     normalizedStr = dateTimeStr + ':00';
   }
 
-  if (useUTC) {
-    // When useUTC=true, treat the datetime as UTC
-    if (hasTimezoneInfo(normalizedStr)) {
-      // Already has timezone info, parse as-is
-      return ZonedDateTime.parse(normalizedStr);
-    } else {
-      // No timezone info, assume UTC by adding 'Z'
-      return ZonedDateTime.parse(normalizedStr + 'Z');
-    }
+  if (hasTimezoneInfo(normalizedStr)) {
+    // Has timezone info (Z or offset), parse as-is and convert to UTC
+    return ZonedDateTime.parse(normalizedStr).withZoneSameInstant(
+      ZoneOffset.UTC
+    );
   } else {
-    // When useUTC=false, handle timezone conversion
-    if (hasTimezoneInfo(normalizedStr)) {
-      // Already has timezone info, parse as-is (will be in UTC or specified timezone)
-      return ZonedDateTime.parse(normalizedStr).withZoneSameInstant(
-        ZoneOffset.UTC
-      );
-    } else {
-      // No timezone info, treat as local time and convert to UTC
-      try {
-        // JavaScript Date constructor treats ISO strings without timezone as local time
-        const localDate = new Date(normalizedStr);
-        if (isNaN(localDate.getTime())) {
-          throw new Error('Invalid date');
-        }
-
-        // Convert to UTC ISO string and parse with ZonedDateTime
-        const utcIsoString = localDate.toISOString();
-        return ZonedDateTime.parse(utcIsoString);
-      } catch (e) {
-        throw new Error(
-          `Unable to parse datetime '${dateTimeStr}': ${e}. Use format like '2025-08-13T08:00:00' or '2025-08-13T08:00:00Z'`
-        );
+    // No timezone info — per ISO 8601, treat as local time and convert to UTC
+    try {
+      // JavaScript Date constructor treats ISO strings without timezone as local time
+      const localDate = new Date(normalizedStr);
+      if (isNaN(localDate.getTime())) {
+        throw new Error('Invalid date');
       }
+
+      // Convert to UTC ISO string and parse with ZonedDateTime
+      const utcIsoString = localDate.toISOString();
+      return ZonedDateTime.parse(utcIsoString);
+    } catch (e) {
+      throw new Error(
+        `Unable to parse datetime '${dateTimeStr}': ${e}. Use format like '2025-08-13T08:00:00' or '2025-08-13T08:00:00Z'`
+      );
     }
   }
 }
@@ -475,13 +388,35 @@ function getContext(
   return contextFromQuery.replace(/ /gi, '') as Context;
 }
 
-export type QuerySource = 'local' | 's3' | 'hybrid' | 'auto';
+type QuerySource = 'local' | 's3' | 'hybrid' | 'auto';
 
 export interface S3QueryConfig {
   enabled: boolean;
   bucket: string;
   keyPrefix: string;
   region: string;
+}
+
+/**
+ * Convert a UTC timestamp string to server-local time with offset suffix.
+ * e.g. "2026-03-06T19:00:00Z" → "2026-03-06T14:00:00-05:00" (EST)
+ */
+function utcToLocalTimestamp(utcTs: Timestamp): Timestamp {
+  try {
+    const zdt = ZonedDateTime.parse(utcTs).withZoneSameInstant(ZoneId.systemDefault());
+    // ZonedDateTime.toString() appends "[SYSTEM]" zone ID — strip it
+    return zdt.toString().replace(/\[.*\]$/, '') as Timestamp;
+  } catch {
+    // If parsing fails (e.g. already has offset or unusual format), try via Date
+    const d = new Date(utcTs);
+    if (isNaN(d.getTime())) return utcTs;
+    const offsetMin = d.getTimezoneOffset();
+    const local = new Date(d.getTime() - offsetMin * 60000);
+    const sign = offsetMin <= 0 ? '+' : '-';
+    const absH = String(Math.floor(Math.abs(offsetMin) / 60)).padStart(2, '0');
+    const absM = String(Math.abs(offsetMin) % 60).padStart(2, '0');
+    return (local.toISOString().replace('Z', '') + sign + absH + ':' + absM) as Timestamp;
+  }
 }
 
 export class HistoryAPI {
@@ -514,26 +449,6 @@ export class HistoryAPI {
   }
 
   /**
-   * Determine the query source based on time range and retention settings
-   * - 'local': All data is within retention period (on local disk)
-   * - 's3': All data is older than retention period (in S3)
-   * - 'hybrid': Data spans retention boundary (need both local and S3)
-   */
-  private getQuerySource(
-    from: ZonedDateTime,
-    to: ZonedDateTime,
-    forceSource?: QuerySource
-  ): QuerySource {
-    // Source routing is handled in getNumericValues:
-    // local always queried, S3 supplements for dates before earliest local data.
-    // forceSource only used for explicit API override (e.g. source=local or source=s3)
-    if (forceSource && forceSource !== 'auto') {
-      return forceSource;
-    }
-    return 'local';
-  }
-
-  /**
    * Set the auto-discovery service
    */
   setAutoDiscoveryService(service: AutoDiscoveryService | undefined): void {
@@ -545,6 +460,24 @@ export class HistoryAPI {
    */
   setSqliteBuffer(buffer: SQLiteBufferInterface | undefined): void {
     this.sqliteBuffer = buffer;
+  }
+
+  /**
+   * Convert all timestamps in a DataResult from UTC to server local time.
+   */
+  private convertToLocalTime(result: DataResult): DataResult {
+    return {
+      ...result,
+      range: {
+        from: utcToLocalTimestamp(result.range.from),
+        to: utcToLocalTimestamp(result.range.to),
+      },
+      data: result.data.map(row => {
+        const newRow = [...row] as typeof row;
+        newRow[0] = utcToLocalTimestamp(row[0]);
+        return newRow;
+      }),
+    };
   }
 
   /**
@@ -856,18 +789,13 @@ export class HistoryAPI {
     context: Context,
     from: ZonedDateTime,
     to: ZonedDateTime,
-    shouldRefresh: boolean,
-    convertTimesToLocal: boolean,
-    timezone: string | undefined,
     spatialFilter: SpatialFilter | null,
     app: any,
     debug: (k: string) => void,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     req: Request<ParamsDictionary, any, any, ParsedQs, Record<string, any>>,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    res: Response<any, Record<string, any>>,
-    source: QuerySource = 'auto',
-    positionPath: string = 'navigation.position'
+    res: Response<any, Record<string, any>>
   ) {
     try {
       // Resolution now in SECONDS (breaking change from v0.7.0)
@@ -879,21 +807,12 @@ export class HistoryAPI {
         .split(',');
       const pathSpecs: PathSpec[] = pathExpressions.map(splitPathExpression);
 
-      // Parse tier parameter (raw, 5s, 60s, 1h) or auto-select based on resolution
-      const tierParam = req.query.tier as string | undefined;
-      const validTiers: AggregationTier[] = ['raw', '5s', '60s', '1h'];
-      let tier: AggregationTier | undefined;
-
-      if (tierParam === 'auto' || !tierParam) {
-        // Auto-select tier based on resolution
-        tier = this.selectOptimalTier(timeResolutionMillis);
-        if (tier) {
-          debug(
-            `Auto-selected tier=${tier} for resolution=${timeResolutionMillis}ms`
-          );
-        }
-      } else if (validTiers.includes(tierParam as AggregationTier)) {
-        tier = tierParam as AggregationTier;
+      // Auto-select tier based on resolution (provider selects automatically)
+      const tier = this.selectOptimalTier(timeResolutionMillis);
+      if (tier) {
+        debug(
+          `Auto-selected tier=${tier} for resolution=${timeResolutionMillis}ms`
+        );
       }
 
       // Log spatial filter if present
@@ -903,11 +822,8 @@ export class HistoryAPI {
         );
       }
 
-      // Determine query source based on time range and configuration
-      const querySource = this.getQuerySource(from, to, source);
-      debug(`Query source determined: ${querySource} (requested: ${source})`);
-
       // Handle position and numeric paths together
+      const positionPath = 'navigation.position';
       let allResult = pathSpecs.length
         ? await this.getNumericValues(
             context,
@@ -918,7 +834,7 @@ export class HistoryAPI {
             debug,
             tier,
             spatialFilter,
-            querySource,
+            'local',
             positionPath,
             app
           )
@@ -979,32 +895,7 @@ export class HistoryAPI {
         }
       }
 
-      // Apply timestamp conversions if requested
-      if (convertTimesToLocal) {
-        allResult = this.convertTimestamps(allResult, timezone, debug);
-      }
-
-      // Add refresh headers if shouldRefresh is enabled
-      if (shouldRefresh) {
-        const refreshIntervalSeconds = Math.max(
-          Math.round(timeResolutionMillis / 1000),
-          1
-        ); // At least 1 second
-        res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
-        res.setHeader('Pragma', 'no-cache');
-        res.setHeader('Expires', '0');
-        res.setHeader('Refresh', refreshIntervalSeconds.toString());
-
-        // Add refresh info to response
-        (allResult as any).refresh = {
-          enabled: true,
-          intervalSeconds: refreshIntervalSeconds,
-          nextRefresh: new Date(
-            Date.now() + refreshIntervalSeconds * 1000
-          ).toISOString(),
-        };
-      }
-
+      allResult = this.convertToLocalTime(allResult);
       res.json(allResult);
     } catch (error) {
       debug(`Error in getValues: ${error}`);
@@ -1270,22 +1161,20 @@ export class HistoryAPI {
             const rows = result.getRowObjects();
 
             // Reconstruct objects from aggregated components
-            let pathData: Array<[Timestamp, unknown]> = rows.map(
-              (row: any) => {
-                const timestamp = row.timestamp as Timestamp;
-                const reconstructedObject: any = {};
+            let pathData: Array<[Timestamp, unknown]> = rows.map((row: any) => {
+              const timestamp = row.timestamp as Timestamp;
+              const reconstructedObject: any = {};
 
-                // Build object from component values
-                componentSchema.components.forEach((comp, componentName) => {
-                  const value = (row as any)[componentName];
-                  if (value !== null && value !== undefined) {
-                    reconstructedObject[componentName] = value;
-                  }
-                });
+              // Build object from component values
+              componentSchema.components.forEach((comp, componentName) => {
+                const value = (row as any)[componentName];
+                if (value !== null && value !== undefined) {
+                  reconstructedObject[componentName] = value;
+                }
+              });
 
-                return [timestamp, reconstructedObject];
-              }
-            );
+              return [timestamp, reconstructedObject];
+            });
 
             // Tier gap fix: supplement with raw tier data for today
             if (effectiveTier !== 'raw') {
@@ -1436,22 +1325,20 @@ export class HistoryAPI {
             const rows = result.getRowObjects();
 
             // Convert rows to the expected format using bucketed timestamps
-            let pathData: Array<[Timestamp, unknown]> = rows.map(
-              (row: any) => {
-                const rowData = row as {
-                  timestamp: Timestamp;
-                  value: unknown;
-                  value_json?: string;
-                };
-                const { timestamp } = rowData;
-                // Handle both JSON values (like position objects) and simple values
-                const value = rowData.value_json
-                  ? JSON.parse(String(rowData.value_json))
-                  : rowData.value;
+            let pathData: Array<[Timestamp, unknown]> = rows.map((row: any) => {
+              const rowData = row as {
+                timestamp: Timestamp;
+                value: unknown;
+                value_json?: string;
+              };
+              const { timestamp } = rowData;
+              // Handle both JSON values (like position objects) and simple values
+              const value = rowData.value_json
+                ? JSON.parse(String(rowData.value_json))
+                : rowData.value;
 
-                return [timestamp, value];
-              }
-            );
+              return [timestamp, value];
+            });
 
             // Tier gap fix: supplement with raw tier data for today
             if (effectiveTier !== 'raw') {
@@ -1481,10 +1368,9 @@ export class HistoryAPI {
                     rawHasValueJson = false;
                   }
 
-                  const rawValueJsonSelect =
-                    rawHasValueJson
-                      ? ', FIRST(value_json) as value_json'
-                      : '';
+                  const rawValueJsonSelect = rawHasValueJson
+                    ? ', FIRST(value_json) as value_json'
+                    : '';
                   const rawWhereClause = getTierWhereClause(
                     'raw',
                     rawHasValueJson
@@ -1994,88 +1880,6 @@ export class HistoryAPI {
     );
 
     return result;
-  }
-
-  /**
-   * Convert all timestamps in the data result to a target timezone
-   */
-  private convertTimestamps(
-    result: DataResult,
-    timezoneParam: string | undefined,
-    debug: (k: string) => void
-  ): DataResult {
-    try {
-      const targetZone = getTargetTimezone(timezoneParam);
-      const targetZoneName = targetZone.toString();
-
-      // Get current time in both UTC and target zone for verification
-      const now = ZonedDateTime.now(ZoneOffset.UTC);
-      const nowInTarget = now.withZoneSameInstant(targetZone);
-      const offset = nowInTarget.offset().toString();
-
-      debug(
-        `[Timestamp Conversion] Converting timestamps to timezone: ${targetZoneName}`
-      );
-      console.log(`[Timestamp Conversion] Target timezone: ${targetZoneName}`);
-      console.log(`[Timestamp Conversion] Current UTC time: ${now.toString()}`);
-      console.log(
-        `[Timestamp Conversion] Current local time: ${nowInTarget.toOffsetDateTime().toString()} (offset: ${offset})`
-      );
-      console.log(
-        `[Timestamp Conversion] Converting ${result.data.length} rows`
-      );
-
-      // Convert all timestamps in the data array
-      const convertedData = result.data.map(row => {
-        const [timestamp, ...values] = row;
-        const convertedTimestamp = convertTimestampToTimezone(
-          timestamp,
-          targetZone
-        );
-        return [convertedTimestamp, ...values] as [Timestamp, ...unknown[]];
-      });
-
-      // Also convert the range timestamps
-      const convertedRange = {
-        from: convertTimestampToTimezone(result.range.from, targetZone),
-        to: convertTimestampToTimezone(result.range.to, targetZone),
-      };
-
-      console.log(
-        `[Timestamp Conversion] ✅ Successfully converted timestamps to ${targetZoneName}`
-      );
-
-      // Get a sample timestamp to show the conversion
-      const sampleOriginal =
-        result.data.length > 0 ? result.data[0][0] : result.range.from;
-      const sampleConverted =
-        convertedData.length > 0 ? convertedData[0][0] : convertedRange.from;
-      console.log(
-        `[Timestamp Conversion] Example: ${sampleOriginal} → ${sampleConverted}`
-      );
-
-      return {
-        ...result,
-        data: convertedData,
-        range: convertedRange,
-        timezone: {
-          converted: true,
-          targetTimezone: targetZoneName,
-          offset: offset,
-          description: timezoneParam
-            ? `Converted to user-specified timezone: ${targetZoneName} (${offset})`
-            : `Converted to server local timezone: ${targetZoneName} (${offset}). To use a different timezone, add &timezone=America/New_York (or other IANA timezone ID)`,
-        },
-      };
-    } catch (error) {
-      console.error(
-        '[Timestamp Conversion] Error converting timestamps:',
-        error
-      );
-      debug(`Error converting timestamps: ${error}`);
-      // Return original result if conversion fails
-      return result;
-    }
   }
 }
 

@@ -159,9 +159,6 @@ export class HistoricalStreamingService {
         this.app.selfContext as Context,
         from,
         to,
-        false, // shouldRefresh
-        false, // convertTimesToLocal
-        undefined, // timezone
         null, // spatialFilter
         this.app, // app
         this.app.debug.bind(this.app),
@@ -834,9 +831,6 @@ export class HistoricalStreamingService {
           this.app.selfContext as Context,
           from,
           to,
-          false, // shouldRefresh
-          false, // convertTimesToLocal
-          undefined, // timezone
           null, // spatialFilter
           this.app, // app
           this.app.debug.bind(this.app),

@@ -8,19 +8,7 @@ This document describes what the V2 API would need to accept in order for histor
 
 ---
 
-## 1. Aggregation Tier Selection
-
-**What it does:** Allows the client to request a specific pre-aggregated resolution of data rather than always querying raw records. The plugin maintains four tiers: raw samples, 5-second averages, 60-second averages, and 1-hour averages. Querying a pre-aggregated tier is dramatically faster and returns far less data for long time ranges.
-
-**What V2 would need:** A `tier` parameter on `/values` accepting values like `raw`, `5s`, `60s`, `1h`, or `auto`. When set to `auto`, the provider selects the most appropriate tier based on the requested resolution and time range.
-
-**Why it matters:** Without this, every V2 query hits raw data. A 30-day query at 1-hour resolution scans millions of raw rows instead of reading a few thousand pre-aggregated ones. 
-
-**Is this essential?** No. It could (and is) automated but this would allow it to be explicit.
-
----
-
-## 2. Spatial Filtering
+## 1. Spatial Filtering
 
 **What it does:** Filters results to only include data points recorded while the vessel was within a geographic area. Two modes: bounding box (west, south, east, north coordinates) and radius (center lat/lon plus distance in meters).
 
@@ -28,39 +16,27 @@ This document describes what the V2 API would need to accept in order for histor
 - `bbox` — four comma-separated decimal values representing west, south, east, north bounds
 - `radius` — three comma-separated decimal values representing latitude, longitude, and distance in meters
 
-**Why it matters:** Enables queries like "show me engine temperature only while away from home port" or "what was my average speed within 5 miles of port." 
+**Why it matters:** Enables queries like "show me engine temperature only while away from home port" or "what was my average speed within 5 miles of port."
+
+**What V2 would also need:** A `positionPath` parameter on `/values`, accepting a SignalK path string. Defaults to `navigation.position`. This specifies which SignalK path provides the vessel's position when performing the spatial correlation.
+
+Spatial filtering correlates the queried data path with a position path to determine *where the vessel was* when each value was recorded. That correlation is the entire mechanism — without a position path, there is no spatial query.
+
+Hardcoding `navigation.position` works for the simple case, but the moment you think about what spatial filtering actually enables, the need for flexibility becomes clear:
+
+- **Route replay:** A vessel transits a narrow channel approach every week. The owner wants engine load, RPM, and fuel rate *only while in that corridor*, across six months of data. The query uses `bbox` to define the corridor and `positionPath` to say which position source was authoritative during those transits. If the vessel switched from a chartplotter GPS to a standalone unit mid-season, the recorded position path may differ.
+
+- **Track-based analysis:** A racing sailor wants to compare wind angle and boat speed along a specific leg of a course they've sailed dozens of times. The spatial filter defines the leg; the position path ties each sensor reading to the vessel's location at that moment. If race instruments log position under a different path than the cruise setup, the query needs to follow the data.
+
+- **Multi-source vessels:** Commercial and research vessels routinely carry multiple GPS receivers under different paths — a primary navigation unit, a DGPS for survey work, an AIS transponder's position. Which one to correlate against depends on the question being asked.
+
+The default covers most recreational use. But spatial filtering without a configurable position source is spatial filtering that only works until it doesn't. The parameter is trivial to implement and defaults silently — clients that don't need it never see it.
 
 **Is this essential?** Yes. Impossible without.
 
 ---
 
-## 3. Position Path for Spatial Correlation
-
-**What it does:** Specifies which SignalK path provides the vessel's position when performing spatial filtering. Defaults to `navigation.position` but can be overridden for vessels with multiple GPS sources or non-standard configurations.
-
-**What V2 would need:** A `positionPath` parameter on `/values`, accepting a SignalK path string.
-
-**Why it matters:** Without this, spatial filtering is locked to a single hardcoded position source, which doesn't work for all vessel setups.
-
-**Is this essential?** Yes. Without only a default could be used.
-
----
-
-## 4. Timezone Conversion
-
-**What it does:** Converts all timestamps in the response from UTC to a specified local timezone. The response includes metadata indicating the target timezone, UTC offset, and a human-readable description.
-
-**What V2 would need:** Two parameters on `/values`:
-- `convertTimesToLocal` — boolean flag to enable conversion
-- `timezone` — an IANA timezone identifier (e.g., `America/New_York`, `Europe/Amsterdam`)
-
-**Why it matters:** Client applications displaying data to users in their local time currently have to do this conversion themselves. Providing it server-side simplifies clients and ensures consistency, especially for applications that don't have access to a timezone library.
-
-**Is this essential?** No. Would default to local time.
-
----
-
-## 5. SMA and EMA as Post-Processing Smoothing (Extended Semantics)
+## 2. SMA and EMA as Post-Processing Smoothing (Extended Semantics)
 
 **What V2 currently supports:** The V2 spec already recognizes `sma` and `ema` as aggregate methods in path expressions (e.g., `navigation.speedOverGround:sma`). In the spec, these are treated as aggregation methods — they replace the raw value with the smoothed value.
 
@@ -74,43 +50,28 @@ This document describes what the V2 API would need to accept in order for histor
 
 **Why it matters:** The two-stage approach (aggregate then smooth) is fundamentally different from using SMA/EMA as the aggregation method. Aggregate-only SMA gives you a rolling average of raw values. Aggregate-then-smooth gives you a smoothed trend line of already-bucketed data. Both are useful for different visualization needs.
 
-**Is this essential?** No but I think very important. EMA and SMA are fundamentally different than other aggregators and are used paired with an aggregation. 
+**Is this essential?** No but very important. EMA and SMA are fundamentally different than other aggregators and are used paired with an aggregation.
 
 ---
 
-## 6. Auto-Refresh Metadata
+## Sections Removed from Previous Draft
 
-**What it does:** When enabled, the response includes metadata telling the client when to re-query for updated data: a recommended refresh interval in seconds and an ISO timestamp for the next suggested refresh.
+The following sections were in the previous version of this proposal and have been removed based on review feedback:
 
-**What V2 would need:** A `refresh` boolean parameter on `/values`. When true, the response includes refresh guidance alongside the data.
+### Aggregation Tier Selection (removed)
+Previously proposed a `tier` parameter for clients to select raw/5s/60s/1h aggregation. **Reviewer feedback:** This should be internal and automatic to the implementation. The backend has all the information it needs (time range, resolution) to select the optimal tier. Clients have no knowledge of what aggregations exist, so exposing this creates a leaky abstraction. The provider already does this automatically — no API surface needed.
 
-**Why it matters:** Clients building live dashboards with historical context need to know how often to poll. Without server guidance, they either poll too aggressively (wasting resources) or too infrequently (showing stale data).
+### Timezone Conversion (removed)
+Previously proposed `convertTimesToLocal` and `timezone` parameters for server-side timestamp conversion. **Reviewer feedback:** Everything related to time conversion blows up in complexity. Edge cases like DST fall-back transitions (where e.g. 01:30 occurs twice) make server-side conversion fragile and error-prone. Clients are better positioned to handle this with their own timezone libraries.
 
-**Is this essential?** No. But why not? Handy.
+### Auto-Refresh Metadata (removed)
+Previously proposed a `refresh` flag to include polling guidance in responses. **Reviewer feedback:** Refresh interval is a function of the time range and resolution — information the client already has. The server doesn't know better than the client when to re-query.
 
----
+### Storage Tier Discovery and Selection (removed)
+Previously proposed a `tiers` parameter and a `GET /history/tiers` discovery endpoint for clients to select and inspect storage backends (local, S3, etc.). **Reviewer feedback:** Don't prescribe the values — instead, create a metadata endpoint for storage tiers with an ordered `tiers=local:s3:` list on query endpoints. However, on further consideration this is premature. The provider should handle tier routing automatically. If a discovery endpoint is needed later, it can be added without requiring changes to the query API.
 
-## 7. Data Source Routing
-
-**What it does:** Controls where the provider looks for data. Options are local disk only, S3 archive only, hybrid (local + S3 merged), or auto (provider decides based on data availability and retention boundaries).
-
-**What V2 would need:** A `source` parameter on `/values` accepting `local`, `s3`, `hybrid`, or `auto`.
-
-**Why it matters:** Vessels with limited local storage archive older data to cloud storage. A client querying a multi-year range needs to pull from both local and archived sources. A client querying the last hour should skip the S3 lookup entirely for performance. Letting the client express this intent avoids unnecessary latency or missing data.
-
-**Is this essential?** No. But again, why not?
-
----
-
-## 8. UTC Interpretation Flag
-
-**What it does:** Controls whether input time parameters (`from`, `to`) are interpreted as UTC. Defaults to true. When false, the provider interprets them in the vessel's local timezone.
-
-**What V2 would need:** A `useUTC` boolean parameter on `/values`.
-
-**Why it matters:** Some client applications work in local time and would need to convert to UTC before querying. This flag lets them pass local times directly.
-
-**Is this essential?** No. But then everything has to be local and set up as the default.
+### UTC Interpretation Flag (removed)
+Previously proposed a `useUTC` boolean to control whether `from`/`to` are interpreted as UTC or local time. **Reviewer feedback:** The V2 spec already documents these as ISO 8601 timestamps, and ISO 8601 states that timestamps without UTC relation information are assumed to be in local time. Timestamps with a `Z` suffix or `+00:00` offset are UTC. The timezone interpretation is already embedded in the timestamp itself — no additional flag needed, provided the server correctly parses ISO 8601 offsets.
 
 ---
 
@@ -118,18 +79,12 @@ This document describes what the V2 API would need to accept in order for histor
 
 | Parameter | Type | Purpose |
 |---|---|---|
-| `tier` | string | Aggregation tier selection |
 | `bbox` | string (4 decimals) | Spatial bounding box filter |
 | `radius` | string (3 decimals) | Spatial radius filter |
 | `positionPath` | string | Position source for spatial queries |
-| `convertTimesToLocal` | boolean | Enable timezone conversion |
-| `timezone` | string | IANA timezone ID |
-| `refresh` | boolean | Include refresh metadata |
-| `source` | string | Data source routing |
-| `useUTC` | boolean | Input time interpretation |
 
 Path expression syntax extension: `path:aggregate:smoothing:param` (4-segment form for post-aggregation SMA/EMA)
 
 ## Response Extensions Needed
 
-The V2 `ValuesResponse` currently defines `context`, `range`, `values`, and `data`. To carry the metadata from these features, the response would also need to support optional fields for timezone conversion metadata and refresh guidance.
+The V2 `ValuesResponse` currently defines `context`, `range`, `values`, and `data`. No additional response fields are proposed in this revision.

@@ -56,7 +56,7 @@ export function parseBboxParam(bboxStr: string): BoundingBox | null {
 }
 
 /**
- * Parse radius query parameter in "lat,lon,meters" format
+ * Parse radius query parameter in "lon,lat,meters" format (GeoJSON convention)
  * @param radiusStr - Comma-separated radius string
  * @returns SpatialFilter with bbox approximation and precise radius info, or null if invalid
  */
@@ -68,7 +68,7 @@ export function parseRadiusParam(radiusStr: string): SpatialFilter | null {
     return null;
   }
 
-  const [lat, lon, meters] = parts;
+  const [lon, lat, meters] = parts;
 
   // Validate latitude range (-90 to 90)
   if (lat < -90 || lat > 90) {

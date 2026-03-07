@@ -63,11 +63,7 @@ The validation system checks each Parquet file for:
   - **Standard Time Parameters**: All 5 standard query patterns supported
   - **Time-Filtered Discovery**: Paths and contexts filtered by time range
   - **Optional Analytics**: Moving averages (EMA/SMA) available on demand
-- **🌍 Timezone Conversion**: Convert UTC timestamps to local or specified timezone
-  - Add `?convertTimesToLocal=true` to convert timestamps to local time
-  - Optional `&timezone=America/New_York` for custom IANA timezone
-  - Automatic daylight saving time handling
-  - Clean ISO 8601 format with offset (e.g., `2025-10-20T12:34:04-04:00`)
+- **🌍 ISO 8601 Timestamps**: All timestamps returned in server local time with offset (e.g., `2025-10-20T12:34:04-04:00`)
 - **Flexible Time Querying**: Multiple ways to specify time ranges
   - Query from now, from specific times, or between time ranges
   - Duration-based windows (1h, 30m, 2d) for easy relative queries
@@ -719,12 +715,12 @@ The plugin provides full SignalK History API compliance, allowing you to query h
 
 | Endpoint | Description | Parameters |
 |----------|-------------|------------|
-| `/signalk/v1/history/values` | Get historical values for specified paths | **Standard patterns** (see below)<br>**Optional**: `resolution`, `refresh`, `includeMovingAverages`, `useUTC` |
+| `/signalk/v1/history/values` | Get historical values for specified paths | **Standard patterns** (see below)<br>**Optional**: `resolution`, `includeMovingAverages`, `bbox`, `radius` |
 | `/signalk/v1/history/contexts` | Get available vessel contexts for time range | **Time Range**: Any standard pattern (see below) ⚠️<br>Returns only contexts with data in specified range |
 | `/signalk/v1/history/paths` | Get available SignalK paths for time range | **Time Range**: Any standard pattern (see below) ⚠️<br>Returns only paths with data in specified range |
 | `/signalk/v2/api/history/*` | **Spec-compliant** - handled by registered `HistoryApi` provider | Per SignalK spec (ISO 8601 durations, no extensions) |
 
-> **Note:** V2 routes (`/signalk/v2/api/history/*`) are handled by the registered `HistoryApi` provider (`history-provider.ts`) for SignalK server multi-provider support. V1 routes include signalk-parquet extensions (spatial filtering, timezone conversion, shorthand durations, etc.) not available in V2.
+> **Note:** V2 routes (`/signalk/v2/api/history/*`) are handled by the registered `HistoryApi` provider (`history-provider.ts`) for SignalK server multi-provider support. V1 routes include signalk-parquet extensions (spatial filtering, shorthand durations, etc.) not available in V2.
 
 > ⚠️ **Extension**: The `/contexts` and `/paths` endpoints accept time range parameters as **optional**. The official spec requires time parameters; without them, these endpoints return all available data (more permissive behavior).
 
@@ -801,17 +797,10 @@ curl "http://localhost:3000/signalk/v1/history/values?duration=1h&paths=environm
 | Parameter | Description | Format | Examples |
 |-----------|-------------|---------|----------|
 | `paths` ⚠️ | Extended smoothing syntax: `path:method:smoothing:param` (returns raw AND smoothed) | Extended format | `navigation.speedOverGround:average:sma:5` |
-| `refresh` ⚠️ | Enable auto-refresh (pattern 1 only) | `true` or `1` | `refresh=true` |
 | `includeMovingAverages` ⚠️ | Include EMA/SMA calculations | `true` or `1` | `includeMovingAverages=true` |
-| `useUTC` ⚠️ | Treat datetime inputs as UTC | `true` or `1` | `useUTC=true` |
 | `convertUnits` ⚠️ | Convert to preferred units (requires signalk-units-preference plugin) | `true` or `1` | `convertUnits=true` |
-| `convertTimesToLocal` ⚠️ | Convert timestamps to local/specified timezone | `true` or `1` | `convertTimesToLocal=true` |
-| `timezone` ⚠️ | IANA timezone ID (used with convertTimesToLocal) | IANA timezone | `timezone=America/New_York` |
 | `bbox` ⚠️ | Bounding box filter: `west,south,east,north` | Coordinates | `bbox=-74.5,40.2,-73.8,40.9` |
-| `radius` ⚠️ | Radius filter: `lat,lon,meters` | Coordinates + meters | `radius=40.646,-73.981,100` |
-| `positionPath` ⚠️ | Position path for spatial correlation | SignalK path | `positionPath=navigation.position` |
-| `source` ⚠️ | Query source: `auto`, `local`, `s3`, `hybrid` | Source type | `source=s3` |
-| `tier` ⚠️ | Aggregation tier: `raw`, `5s`, `60s`, `1h`, `auto` | Tier name | `tier=60s` |
+| `radius` ⚠️ | Radius filter: `lon,lat,meters` (GeoJSON convention) | Coordinates + meters | `radius=-73.981,40.646,100` |
 
 > ⚠️ **Extensions**: Parameters marked with ⚠️ are non-standard extensions to the SignalK History API specification. They provide additional functionality but may not be supported by other SignalK history providers.
 
@@ -825,8 +814,6 @@ curl "http://localhost:3000/signalk/v1/history/values?duration=1h&paths=environm
 # Last 30 minutes with moving averages
 curl "http://localhost:3000/signalk/v1/history/values?duration=30m&paths=environment.wind.speedApparent&includeMovingAverages=true"
 
-# Real-time with auto-refresh
-curl "http://localhost:3000/signalk/v1/history/values?duration=15m&paths=navigation.position&refresh=true"
 ```
 
 #### Pattern 2: From + Duration (Query forward)
@@ -938,62 +925,6 @@ curl "http://localhost:3000/signalk/v1/history/values?duration=24h&paths=environ
 }
 ```
 
-#### Timezone Conversion (NEW in v0.6.0)
-
-**Convert to server's local time:**
-```bash
-curl "http://localhost:3000/signalk/v1/history/values?duration=2d&paths=environment.wind.speedApparent&convertTimesToLocal=true"
-```
-
-**Convert to specific timezone:**
-```bash
-# New York time (Eastern)
-curl "http://localhost:3000/signalk/v1/history/values?duration=2d&paths=navigation.position&convertTimesToLocal=true&timezone=America/New_York"
-
-# London time
-curl "http://localhost:3000/signalk/v1/history/values?duration=1h&paths=environment.wind.speedApparent&convertTimesToLocal=true&timezone=Europe/London"
-
-# Tokyo time
-curl "http://localhost:3000/signalk/v1/history/values?duration=1h&paths=navigation.speedOverGround&convertTimesToLocal=true&timezone=Asia/Tokyo"
-```
-
-**Response includes timezone metadata:**
-```json
-{
-  "range": {
-    "from": "2025-10-20T12:12:19-04:00",
-    "to": "2025-10-20T13:12:19-04:00"
-  },
-  "data": [
-    ["2025-10-20T12:12:14-04:00", 5.84],
-    ["2025-10-20T12:12:28-04:00", 5.26]
-  ],
-  "timezone": {
-    "converted": true,
-    "targetTimezone": "America/New_York",
-    "offset": "-04:00",
-    "description": "Converted to user-specified timezone: America/New_York (-04:00)"
-  }
-}
-```
-
-**Combine both conversions:**
-```bash
-# Convert values to knots AND timestamps to New York time
-curl "http://localhost:3000/signalk/v1/history/values?duration=2d&paths=navigation.speedOverGround,environment.wind.speedApparent&convertUnits=true&convertTimesToLocal=true&timezone=America/New_York"
-```
-
-**Common IANA Timezone IDs:**
-- `America/New_York` - Eastern Time (US)
-- `America/Chicago` - Central Time (US)
-- `America/Denver` - Mountain Time (US)
-- `America/Los_Angeles` - Pacific Time (US)
-- `Europe/London` - UK
-- `Europe/Paris` - Central European Time
-- `Asia/Tokyo` - Japan
-- `Pacific/Auckland` - New Zealand
-- `Australia/Sydney` - Australian Eastern Time
-
 #### Duration Formats
 - `30s` - 30 seconds
 - `15m` - 15 minutes
@@ -1012,90 +943,44 @@ curl "http://localhost:3000/signalk/v1/history/values?duration=1h&paths=navigati
 
 **Radius Filter:**
 ```bash
-# Position data within 100m of a point (lat,lon,meters)
-curl "http://localhost:3000/signalk/v1/history/values?duration=1h&paths=navigation.position&radius=40.646,-73.981,100"
+# Position data within 100m of a point (lon,lat,meters — GeoJSON convention)
+curl "http://localhost:3000/signalk/v1/history/values?duration=1h&paths=navigation.position&radius=-73.981,40.646,100"
 ```
 
 **Spatial Correlation (filter non-position paths by location):**
 ```bash
 # Wind data when vessel was within 100m of point
-curl "http://localhost:3000/signalk/v1/history/values?duration=24h&paths=environment.wind.speedApparent&radius=40.646,-73.981,100"
+curl "http://localhost:3000/signalk/v1/history/values?duration=24h&paths=environment.wind.speedApparent&radius=-73.981,40.646,100"
 
 # Multiple paths filtered by bounding box
 curl "http://localhost:3000/signalk/v1/history/values?duration=7d&paths=environment.wind.speedApparent,environment.depth.belowKeel&bbox=-74.0,40.6,-73.9,40.7"
 
-# Use anchor position for correlation instead of vessel position
-curl "http://localhost:3000/signalk/v1/history/values?duration=7d&paths=environment.depth.belowKeel&radius=40.646,-73.981,50&positionPath=navigation.anchor.position"
 ```
 
 **How Spatial Correlation Works:**
 - For **position paths** (e.g., `navigation.position`): Filters directly on lat/lon
 - For **non-position paths** (e.g., `environment.wind.speedApparent`): First queries position data to find timestamps when vessel was within the spatial filter, then returns only data from those times
-- The `positionPath` parameter specifies which position path to correlate with (default: `navigation.position`)
+- Spatial correlation always uses `navigation.position` for location lookup
 
-#### S3 Federated Querying (NEW)
+### Timestamp Handling
 
-Query historical data directly from S3 without downloading files first:
+All timestamps follow ISO 8601 conventions:
+- **Bare timestamps** (e.g., `2025-08-13T09:00:00`) are treated as server local time
+- **Z-suffix** (e.g., `2025-08-13T09:00:00Z`) is UTC
+- **Explicit offset** (e.g., `2025-08-13T09:00:00-04:00`) is parsed as-is
 
-**Query Source Parameter:**
+All response timestamps are in server local time with offset (e.g., `2025-10-20T12:34:04-04:00`).
+
 ```bash
-# Auto-select source based on retention cutoff (default)
-curl "http://localhost:3000/signalk/v1/history/values?duration=7d&paths=navigation.speedOverGround&source=auto"
-
-# Force local-only query
-curl "http://localhost:3000/signalk/v1/history/values?duration=1d&paths=navigation.speedOverGround&source=local"
-
-# Force S3-only query (for archived data)
-curl "http://localhost:3000/signalk/v1/history/values?from=2024-01-01&to=2024-01-07&paths=navigation.speedOverGround&source=s3"
-```
-
-**How Source Selection Works:**
-- `auto` (default): Uses `retentionDays` config as boundary
-  - Data within retention period → queries local files
-  - Data older than retention → queries S3
-  - Query spanning boundary → queries both with UNION
-- `local`: Only query local Parquet files
-- `s3`: Only query S3 (requires S3 to be enabled with valid credentials)
-
-**Data Transfer Optimization:**
-DuckDB's native S3 support provides:
-- **Partition pruning**: Hive structure (`year=/day=`) allows skipping irrelevant files
-- **Predicate pushdown**: WHERE clauses filter at Parquet level before transfer
-- **Projection pushdown**: Only SELECT columns are transferred
-- **Combined effect**: 70-99% reduction vs downloading full files
-
-**Requirements:**
-- S3 must be enabled in plugin configuration
-- Valid AWS credentials configured
-- Data must be uploaded to S3 using Hive partition structure
-
-### Timezone Handling
-
-**Local time conversion (default behavior):**
-```bash
-# 8:00 AM local time → automatically converted to UTC
+# Bare timestamp — interpreted as server local time
 curl "http://localhost:3000/signalk/v1/history/values?context=vessels.self&to=2025-08-13T09:00:00&duration=1h&paths=navigation.position"
-```
 
-**UTC time mode:**
-```bash
-# 8:00 AM UTC (not converted)
-curl "http://localhost:3000/signalk/v1/history/values?context=vessels.self&to=2025-08-13T09:00:00&duration=1h&paths=navigation.position&useUTC=true"
-```
-
-**Explicit timezone (always respected):**
-```bash
-# Explicit UTC timezone
+# Explicit UTC
 curl "http://localhost:3000/signalk/v1/history/values?context=vessels.self&to=2025-08-13T09:00:00Z&duration=1h&paths=navigation.position"
 
-# Explicit timezone offset
+# Explicit offset
 curl "http://localhost:3000/signalk/v1/history/values?context=vessels.self&to=2025-08-13T09:00:00-04:00&duration=1h&paths=navigation.position"
 ```
-
-**Timezone behavior:**
-- **Default (`useUTC=false`)**: Datetime strings without timezone info are treated as local time and automatically converted to UTC
-- **UTC mode (`useUTC=true`)**: Datetime strings without timezone info are treated as UTC time
-- **Explicit timezone**: Strings with `Z`, `+HH:MM`, or `-HH:MM` are always parsed as-is regardless of `useUTC` setting
 
 **Get available contexts:**
 ```bash
@@ -1214,8 +1099,6 @@ When using extension parameters, the response may include additional non-standar
 | Field | Added by | Description |
 |-------|----------|-------------|
 | `units` | `convertUnits=true` | Unit conversion metadata (baseUnit, targetUnit, symbol) |
-| `timezone` | `convertTimesToLocal=true` | Timezone conversion metadata (offset, description) |
-| `refresh` | `refresh=true` | Auto-refresh metadata (intervalSeconds, nextRefresh) |
 | `meta.autoConfigured` | Auto-discovery | Indicates paths were auto-configured for recording |
 
 These fields are extensions and may not be present in responses from other SignalK history providers.

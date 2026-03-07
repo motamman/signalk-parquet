@@ -29,12 +29,6 @@ export interface DataResult {
       symbol: string;
     }>;
   };
-  timezone?: {
-    converted: boolean;
-    targetTimezone: string;
-    offset: string;
-    description: string;
-  };
   meta?: {
     autoConfigured: boolean;
     paths: string[];
@@ -94,14 +88,8 @@ export type FromToContextRequest = Request<
     paths?: string;
     resolution?: string;
     bbox?: string;
-    radius?: string; // "lat,lon,meters" format for circular area filter
-    positionPath?: string; // Position path for spatial correlation (default: navigation.position)
-    refresh?: string;
-    useUTC?: string;
+    radius?: string; // "lon,lat,meters" format for circular area filter (GeoJSON convention)
     convertUnits?: string; // 'true' | '1' to convert to user's preferred units
-    convertTimesToLocal?: string; // 'true' | '1' to convert timestamps to local time
-    timezone?: string; // Optional timezone ID (e.g., 'America/New_York', 'Europe/London'). If not specified, uses server local time
-    tier?: string; // Aggregation tier: 'raw' (default), '5s', '60s', '1h'
   }
 >;
 

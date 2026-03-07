@@ -2,6 +2,25 @@
 
 ## [0.7.6-beta.8] - 2026-03-07
 
+### Changed
+
+- **Breaking: Radius Parameter Coordinate Order** — Swapped `radius` parameter from `lat,lon,meters` to `lon,lat,meters` to match the SignalK Resources API's GeoJSON convention
+  - The `bbox` parameter already used `lon,lat` order; `radius` now aligns
+  - API consumers using `radius=lat,lon,meters` must swap to `radius=lon,lat,meters`
+
+### Removed
+
+- **Deprecated Query Parameters** — Removed parameters that are no longer needed after V2 API alignment
+  - `useUTC` — bare timestamps now follow ISO 8601 rules (bare = local, `Z` = UTC, offset = explicit)
+  - `convertTimesToLocal` — timestamps always returned in server local time with offset
+  - `timezone` — no longer converting timestamps to arbitrary timezones
+  - `refresh` — auto-refresh removed; clients should poll as needed
+  - `tier` — aggregation tier now auto-selected based on resolution and time range
+  - `source` — query source (`auto`, `local`, `s3`, `hybrid`) auto-determined
+  - `positionPath` — spatial correlation always uses `navigation.position`
+- **Timezone conversion helpers** — Removed `getTargetTimezone()` and `convertTimestampToTimezone()` from HistoryAPI
+- **`timezone` metadata block** — Removed from `DataResult` response type
+
 ### Fixed
 
 - **WAL Bloat After Export** - Added WAL checkpoint after startup and daily export cleanup

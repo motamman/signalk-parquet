@@ -376,12 +376,12 @@ check_response "$RESPONSE" "G1: Bounding box" "range"
 
 # G2: Radius filter
 log_test "G2: Radius filter (100m)"
-RESPONSE=$(auth_request GET "/signalk/v1/history/values?duration=24h&paths=navigation.position&radius=${TEST_LAT},${TEST_LON},100")
+RESPONSE=$(auth_request GET "/signalk/v1/history/values?duration=24h&paths=navigation.position&radius=${TEST_LON},${TEST_LAT},100")
 check_response "$RESPONSE" "G2: Radius filter" "range"
 
 # G3: Spatial + non-position path
 log_test "G3: Spatial correlation (wind data by location)"
-RESPONSE=$(auth_request GET "/signalk/v1/history/values?duration=24h&paths=${TEST_PATH}&radius=${TEST_LAT},${TEST_LON},100")
+RESPONSE=$(auth_request GET "/signalk/v1/history/values?duration=24h&paths=${TEST_PATH}&radius=${TEST_LON},${TEST_LAT},100")
 check_response "$RESPONSE" "G3: Spatial correlation" "range"
 
 # G4: Bounding box with non-position path
