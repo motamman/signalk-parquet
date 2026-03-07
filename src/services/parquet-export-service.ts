@@ -169,6 +169,13 @@ export class ParquetExportService {
         this.app.debug(`Cleaned up ${cleaned} old exported records`);
       }
 
+      // Truncate WAL after startup export+cleanup batch
+      try {
+        this.sqliteBuffer.checkpoint();
+      } catch {
+        // Non-critical — WAL will be checkpointed eventually
+      }
+
       this.lastExportTime = new Date();
       this.lastBatchExported = recordsExported;
       this.totalExported += recordsExported;
@@ -529,6 +536,13 @@ export class ParquetExportService {
         this.app.debug(
           `[DailyExport] Cleaned up ${cleaned} old exported records`
         );
+      }
+
+      // Truncate WAL after heavy export+cleanup batch
+      try {
+        this.sqliteBuffer.checkpoint();
+      } catch {
+        // Non-critical — WAL will be checkpointed eventually
       }
 
       this.lastExportTime = new Date();
