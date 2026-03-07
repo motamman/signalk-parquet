@@ -962,6 +962,25 @@ curl "http://localhost:3000/signalk/v1/history/values?duration=7d&paths=environm
 - For **non-position paths** (e.g., `environment.wind.speedApparent`): First queries position data to find timestamps when vessel was within the spatial filter, then returns only data from those times
 - Spatial correlation always uses `navigation.position` for location lookup
 
+#### S3 Federated Querying
+
+Query historical data directly from S3 without downloading files first. The query source is auto-determined based on the `retentionDays` config boundary:
+- Data within retention period → queries local files
+- Data older than retention → queries S3
+- Query spanning boundary → queries both with UNION
+
+**Data Transfer Optimization:**
+DuckDB's native S3 support provides:
+- **Partition pruning**: Hive structure (`year=/day=`) allows skipping irrelevant files
+- **Predicate pushdown**: WHERE clauses filter at Parquet level before transfer
+- **Projection pushdown**: Only SELECT columns are transferred
+- **Combined effect**: 70-99% reduction vs downloading full files
+
+**Requirements:**
+- S3 must be enabled in plugin configuration
+- Valid AWS credentials configured
+- Data must be uploaded to S3 using Hive partition structure
+
 ### Timestamp Handling
 
 All timestamps follow ISO 8601 conventions:
