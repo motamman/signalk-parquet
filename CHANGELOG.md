@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.7.6-beta.8] - 2026-03-07
+
+### Fixed
+
+- **WAL Bloat After Export** - Added WAL checkpoint after startup and daily export cleanup
+  - The heavy export+cleanup batch (hundreds of thousands of record updates and deletes) bloated the SQLite WAL file to ~255 MB
+  - WAL now truncates immediately after each export cycle, reclaiming disk space on resource-constrained devices (Pi)
+  - Shutdown checkpoint retained as a safety net
+
+---
+
 ## [0.7.6-beta.7] - 2026-03-05
 
 ### Fixed
