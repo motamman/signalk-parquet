@@ -14,23 +14,11 @@ This document describes what the V2 API would need to accept in order for histor
 
 **What V2 would need:** Two mutually exclusive parameters on `/values`:
 - `bbox` — four comma-separated decimal values representing west, south, east, north bounds
-- `radius` — three comma-separated decimal values representing latitude, longitude, and distance in meters
+- `radius` — three comma-separated decimal values representing longitude, latitude, and distance in meters (GeoJSON `lon,lat` convention, matching the Resources API's `position` parameter)
 
 **Why it matters:** Enables queries like "show me engine temperature only while away from home port" or "what was my average speed within 5 miles of port."
 
-**What V2 would also need:** A `positionPath` parameter on `/values`, accepting a SignalK path string. Defaults to `navigation.position`. This specifies which SignalK path provides the vessel's position when performing the spatial correlation.
-
-Spatial filtering correlates the queried data path with a position path to determine *where the vessel was* when each value was recorded. That correlation is the entire mechanism — without a position path, there is no spatial query.
-
-Hardcoding `navigation.position` works for the simple case, but the moment you think about what spatial filtering actually enables, the need for flexibility becomes clear:
-
-- **Route replay:** A vessel transits a narrow channel approach every week. The owner wants engine load, RPM, and fuel rate *only while in that corridor*, across six months of data. The query uses `bbox` to define the corridor and `positionPath` to say which position source was authoritative during those transits. If the vessel switched from a chartplotter GPS to a standalone unit mid-season, the recorded position path may differ.
-
-- **Track-based analysis:** A racing sailor wants to compare wind angle and boat speed along a specific leg of a course they've sailed dozens of times. The spatial filter defines the leg; the position path ties each sensor reading to the vessel's location at that moment. If race instruments log position under a different path than the cruise setup, the query needs to follow the data.
-
-- **Multi-source vessels:** Commercial and research vessels routinely carry multiple GPS receivers under different paths — a primary navigation unit, a DGPS for survey work, an AIS transponder's position. Which one to correlate against depends on the question being asked.
-
-The default covers most recreational use. But spatial filtering without a configurable position source is spatial filtering that only works until it doesn't. The parameter is trivial to implement and defaults silently — clients that don't need it never see it.
+Spatial filtering correlates the queried data path with `navigation.position` to determine *where the vessel was* when each value was recorded. For non-position paths, the provider first queries position data to find timestamps within the spatial area, then returns only data from those times.
 
 **Is this essential?** Yes. Impossible without.
 
@@ -73,15 +61,17 @@ Previously proposed a `tiers` parameter and a `GET /history/tiers` discovery end
 ### UTC Interpretation Flag (removed)
 Previously proposed a `useUTC` boolean to control whether `from`/`to` are interpreted as UTC or local time. **Reviewer feedback:** The V2 spec already documents these as ISO 8601 timestamps, and ISO 8601 states that timestamps without UTC relation information are assumed to be in local time. Timestamps with a `Z` suffix or `+00:00` offset are UTC. The timezone interpretation is already embedded in the timestamp itself — no additional flag needed, provided the server correctly parses ISO 8601 offsets.
 
+### Position Path Parameter (removed)
+Previously proposed a `positionPath` parameter to let clients specify which position source to use for spatial correlation (e.g., `navigation.anchor.position` instead of `navigation.position`). **Decision:** Hardcoding `navigation.position` covers the standard case. The added complexity of a configurable position source is not justified for the initial proposal. Can be revisited if multi-GPS-source vessels need it.
+
 ---
 
 ## Summary of New Parameters Needed on V2 `/values`
 
 | Parameter | Type | Purpose |
 |---|---|---|
-| `bbox` | string (4 decimals) | Spatial bounding box filter |
-| `radius` | string (3 decimals) | Spatial radius filter |
-| `positionPath` | string | Position source for spatial queries |
+| `bbox` | string (4 decimals) | Spatial bounding box filter (`west,south,east,north`) |
+| `radius` | string (3 decimals) | Spatial radius filter (`lon,lat,meters`) |
 
 Path expression syntax extension: `path:aggregate:smoothing:param` (4-segment form for post-aggregation SMA/EMA)
 

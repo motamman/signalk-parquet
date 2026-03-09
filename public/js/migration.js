@@ -93,12 +93,17 @@ async function refreshBufferStatus() {
       <div style="margin-top: 15px; padding: 10px; background: white; border-radius: 5px; border: 1px solid #ddd;">
         <strong>Export Service:</strong>
         <span style="color: #4CAF50;">Daily Mode</span>
-        ${exportStatus.isExporting ? ' (exporting...)' : ''}
-        | <strong>Last Process:</strong> ${exportStatus.lastExportTrigger ? exportStatus.lastExportTrigger.charAt(0).toUpperCase() + exportStatus.lastExportTrigger.slice(1) : 'None'}
-        | <strong>Last Export:</strong> ${formatTime(exportStatus.lastExportTime)}
-        <br>
-        <strong>Last Batch:</strong> ${(exportStatus.lastBatchExported || 0).toLocaleString()} records
+        ${exportStatus.isExporting ? ' <span style="color: #FF9800;">(exporting...)</span>' : ''}
         | <strong>Schedule:</strong> Daily at ${formatUtcHourAsLocal(exportStatus.dailyExportHour)} (${exportStatus.dailyExportHour}:00 UTC)
+        <br>
+        <strong>Last Export:</strong>
+        ${exportStatus.lastExportTime
+          ? `${formatTime(exportStatus.lastExportTime)}
+             | <strong>Trigger:</strong> ${exportStatus.lastExportTrigger ? exportStatus.lastExportTrigger.charAt(0).toUpperCase() + exportStatus.lastExportTrigger.slice(1) : 'Unknown'}
+             | <strong>Result:</strong> ${exportStatus.lastBatchExported > 0
+               ? `<span style="color: #4CAF50;">${exportStatus.lastBatchExported.toLocaleString()} records exported</span>`
+               : '<span style="color: #999;">no pending records</span>'}`
+          : '<span style="color: #999;">none since restart</span>'}
       </div>
       `
           : ''

@@ -60,21 +60,13 @@ export class ParquetExportService {
   /**
    * Start the export service
    *
-   * Note: The periodic every-N-minutes export has been removed. Daily exports
-   * are now scheduled from index.ts using exportDayToParquet(). This method
-   * only performs initial crash recovery export.
+   * No startup export — catchup for completed days is handled by
+   * exportAllUnexported() called from index.ts after a 10s delay.
+   * Today's data stays in SQLite for the History API to read live.
    */
   start(): void {
-    // Export any pending records from crash recovery (for records that weren't
-    // exported before a crash or restart)
-    this.lastExportTrigger = 'startup';
-    this.exportPending().catch(err => {
-      this.app.error(`Initial export failed: ${err.message}`);
-    });
-
-    // Note: Periodic export removed - daily export now handles this
     this.app.debug(
-      `ParquetExportService started (daily export mode, interval export disabled)`
+      `ParquetExportService started (daily export mode, no startup blast)`
     );
   }
 
@@ -90,175 +82,11 @@ export class ParquetExportService {
   }
 
   /**
-   * Force an immediate export of pending records
+   * Force an immediate export of completed days (excludes today)
    */
   async forceExport(): Promise<ExportResult> {
     this.lastExportTrigger = 'forced';
-    return this.exportPending();
-  }
-
-  /**
-   * Export all pending records from the SQLite buffer to Parquet files
-   */
-  async exportPending(): Promise<ExportResult> {
-    if (this.isExporting) {
-      this.app.debug('Export already in progress, skipping');
-      return {
-        batchId: '',
-        recordsExported: 0,
-        filesCreated: [],
-        duration: 0,
-        errors: ['Export already in progress'],
-      };
-    }
-
-    this.isExporting = true;
-    const startTime = Date.now();
-    const batchId = this.generateBatchId();
-    const filesCreated: string[] = [];
-    const errors: string[] = [];
-    let recordsExported = 0;
-
-    try {
-      // Loop through batches until all pending records are exported
-      let batchNumber = 0;
-      let grouped = this.sqliteBuffer.getPendingRecordsGroupedWithIds();
-
-      while (grouped.size > 0) {
-        batchNumber++;
-        const currentBatchId =
-          batchNumber === 1 ? batchId : this.generateBatchId();
-
-        this.app.debug(
-          `Exporting batch ${batchNumber}: ${grouped.size} path groups to Parquet`
-        );
-
-        for (const [key, { records, ids }] of grouped) {
-          try {
-            const [context, signalkPath] = this.parseBufferKey(key);
-            const filePath = await this.exportGroup(
-              context,
-              signalkPath,
-              records,
-              currentBatchId
-            );
-
-            if (filePath) {
-              filesCreated.push(filePath);
-              recordsExported += records.length;
-
-              // Mark records as exported using the IDs we already have
-              if (ids.length > 0) {
-                this.sqliteBuffer.markAsExported(ids, currentBatchId);
-              }
-            }
-          } catch (error) {
-            const errorMsg = `Failed to export ${key}: ${(error as Error).message}`;
-            this.app.error(errorMsg);
-            errors.push(errorMsg);
-          }
-        }
-
-        // Get next batch
-        grouped = this.sqliteBuffer.getPendingRecordsGroupedWithIds();
-      }
-
-      // Cleanup old exported records
-      const cleaned = this.sqliteBuffer.cleanup();
-      if (cleaned > 0) {
-        this.app.debug(`Cleaned up ${cleaned} old exported records`);
-      }
-
-      // Truncate WAL after startup export+cleanup batch
-      try {
-        this.sqliteBuffer.checkpoint();
-      } catch {
-        // Non-critical — WAL will be checkpointed eventually
-      }
-
-      this.lastExportTime = new Date();
-      this.lastBatchExported = recordsExported;
-      this.totalExported += recordsExported;
-
-      this.app.debug(
-        `Export complete: ${recordsExported} records to ${filesCreated.length} files in ${Date.now() - startTime}ms`
-      );
-
-      return {
-        batchId,
-        recordsExported,
-        filesCreated,
-        duration: Date.now() - startTime,
-        errors,
-      };
-    } finally {
-      this.isExporting = false;
-    }
-  }
-
-  /**
-   * Export a group of records for a specific context/path
-   */
-  private async exportGroup(
-    context: string,
-    signalkPath: string,
-    records: DataRecord[],
-    _batchId: string
-  ): Promise<string | null> {
-    if (records.length === 0) return null;
-
-    // Build file path
-    let filePath: string;
-
-    if (this.config.useHivePartitioning) {
-      // Resolve vessels.self to actual vessel context
-      const resolvedContext =
-        context === 'vessels.self' ? this.app.selfContext : context;
-      // Use Hive-style partitioning with CURRENT time for unique filename
-      // (not records[0].received_timestamp which could cause overwrites)
-      const timestamp = new Date();
-      filePath = this.hivePathBuilder.buildFilePath(
-        this.config.outputDirectory,
-        'raw',
-        resolvedContext,
-        signalkPath,
-        timestamp,
-        this.config.filenamePrefix
-      );
-    } else {
-      // Use legacy flat structure
-      filePath = this.buildFlatFilePath(context, signalkPath);
-    }
-
-    // Ensure directory exists
-    await fs.ensureDir(path.dirname(filePath));
-
-    // Write to temp file first for atomic operation
-    const tempFilePath = filePath + '.tmp';
-
-    try {
-      // Write records to temp file
-      await this.parquetWriter.writeRecords(tempFilePath, records);
-
-      // Validate the written file
-      const stats = await fs.stat(tempFilePath);
-      if (stats.size < 100) {
-        throw new Error('Written file is too small, likely corrupt');
-      }
-
-      // Atomic rename
-      await fs.rename(tempFilePath, filePath);
-
-      return filePath;
-    } catch (error) {
-      // Clean up temp file on failure
-      try {
-        await fs.remove(tempFilePath);
-      } catch {
-        // Ignore cleanup errors
-      }
-      throw error;
-    }
+    return this.exportAllUnexported();
   }
 
   /**
@@ -291,24 +119,6 @@ export class ParquetExportService {
       dirPath,
       `${this.config.filenamePrefix}_${timestamp}.parquet`
     );
-  }
-
-  /**
-   * Parse a buffer key into context and path
-   */
-  private parseBufferKey(key: string): [string, string] {
-    // Buffer key format: "context:path"
-    // Need to handle cases like "vessels.urn:mrn:signalk:uuid:xxx:navigation.speedOverGround"
-    const pathMatch = key.match(/^(.+):([a-zA-Z][a-zA-Z0-9._]*)$/);
-    if (pathMatch) {
-      return [pathMatch[1], pathMatch[2]];
-    }
-    // Fallback: split on last colon
-    const lastColon = key.lastIndexOf(':');
-    if (lastColon > 0) {
-      return [key.substring(0, lastColon), key.substring(lastColon + 1)];
-    }
-    return ['vessels.self', key];
   }
 
   /**
@@ -388,6 +198,9 @@ export class ParquetExportService {
 
     if (dates.length === 0) {
       this.app.debug('[StartupExport] No unexported records found');
+      this.lastExportTime = new Date();
+      this.lastBatchExported = 0;
+      this.lastExportTrigger = 'startup';
       return {
         batchId,
         recordsExported: 0,
@@ -422,6 +235,11 @@ export class ParquetExportService {
         allErrors.push(errorMsg);
       }
     }
+
+    this.lastExportTime = new Date();
+    this.lastBatchExported = totalRecordsExported;
+    this.totalExported += totalRecordsExported;
+    this.lastExportTrigger = 'startup';
 
     this.app.debug(
       `[StartupExport] Complete: ${totalRecordsExported} records to ${allFilesCreated.length} files in ${Date.now() - startTime}ms`

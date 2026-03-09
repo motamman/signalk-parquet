@@ -351,18 +351,35 @@ export default function (app: ServerAPI): SignalKPlugin {
               `[StartupExport] Exported ${result.recordsExported} records to ${result.filesCreated.length} files`
             );
 
-            // Run aggregation after startup export if enabled
+            // Re-aggregate each date that had late exports
             if (aggregationService) {
-              try {
-                const aggResults =
-                  await aggregationService.runDailyAggregation();
-                app.debug(
-                  `[StartupExport] Aggregation complete: ${JSON.stringify(aggResults.map(r => ({ tier: r.targetTier, files: r.filesCreated })))}`
-                );
-              } catch (aggErr) {
-                app.error(
-                  `[StartupExport] Aggregation failed: ${(aggErr as Error).message}`
-                );
+              // Extract unique dates from exported file paths
+              // Paths contain .../year=YYYY/day=DDD/... — parse dates from them
+              const exportedDates = new Set<string>();
+              for (const filePath of result.filesCreated) {
+                const yearMatch = filePath.match(/year=(\d{4})/);
+                const dayMatch = filePath.match(/day=(\d{3})/);
+                if (yearMatch && dayMatch) {
+                  const year = parseInt(yearMatch[1], 10);
+                  const dayOfYear = parseInt(dayMatch[1], 10);
+                  const date = new Date(Date.UTC(year, 0, dayOfYear));
+                  exportedDates.add(date.toISOString().slice(0, 10));
+                }
+              }
+
+              for (const dateStr of exportedDates) {
+                try {
+                  const date = new Date(dateStr + 'T00:00:00.000Z');
+                  const aggResults =
+                    await aggregationService.aggregateDate(date);
+                  app.debug(
+                    `[StartupExport] Aggregation for ${dateStr}: ${JSON.stringify(aggResults.map(r => ({ tier: r.targetTier, files: r.filesCreated })))}`
+                  );
+                } catch (aggErr) {
+                  app.error(
+                    `[StartupExport] Aggregation failed for ${dateStr}: ${(aggErr as Error).message}`
+                  );
+                }
               }
             }
 
