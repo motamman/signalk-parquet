@@ -698,19 +698,12 @@ export function registerApiRoutes(
           const dataDir = getDataDir();
 
           job.phase = 'Discovering local files...';
+          // Only scan hive-partitioned files (tier=X/context=Y/path=Z/year=YYYY/day=DDD/)
+          const excludedDirs = ['/processed/', '/repaired/', '/failed/', '/quarantine/'];
           const allLocalFiles = await glob(
-            path.join(dataDir, '**', '*.parquet')
+            path.join(dataDir, 'tier=*', '**', '*.parquet')
           );
-
-          const excludedDirs = [
-            '/processed/',
-            '/repaired/',
-            '/failed/',
-            '/quarantine/',
-          ];
-          const localFiles = allLocalFiles.filter(
-            f => !excludedDirs.some(dir => f.includes(dir))
-          );
+          const localFiles = allLocalFiles.filter(f => !excludedDirs.some(dir => f.includes(dir)));
           job.localFilesTotal = localFiles.length;
 
           const localKeys = new Map<string, { path: string; size: number }>();
@@ -916,18 +909,12 @@ export function registerApiRoutes(
             }
           } else {
             job.phase = 'Scanning local files...';
+            // Only sync hive-partitioned files (tier=X/context=Y/path=Z/year=YYYY/day=DDD/)
+            const excludedDirs = ['/processed/', '/repaired/', '/failed/', '/quarantine/'];
             const allLocalFiles = await glob(
-              path.join(dataDir, '**', '*.parquet')
+              path.join(dataDir, 'tier=*', '**', '*.parquet')
             );
-            const excludedDirs = [
-              '/processed/',
-              '/repaired/',
-              '/failed/',
-              '/quarantine/',
-            ];
-            const localFiles = allLocalFiles.filter(
-              f => !excludedDirs.some(dir => f.includes(dir))
-            );
+            const localFiles = allLocalFiles.filter(f => !excludedDirs.some(dir => f.includes(dir)));
 
             job.phase = `Listing ${label} objects...`;
             job.progress = 10;

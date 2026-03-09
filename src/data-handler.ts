@@ -44,9 +44,7 @@ let S3Client: any,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   PutObjectCommand: any,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  ListObjectsV2Command: any,
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  HeadObjectCommand: any;
+  ListObjectsV2Command: any;
 
 let appInstance: ServerAPI;
 
@@ -72,7 +70,6 @@ export async function initializeCloudSDK(
         S3Client = awsS3.S3Client;
         PutObjectCommand = awsS3.PutObjectCommand;
         ListObjectsV2Command = awsS3.ListObjectsV2Command;
-        HeadObjectCommand = awsS3.HeadObjectCommand;
       }
     } catch (importError) {
       S3Client = undefined;
@@ -695,17 +692,6 @@ async function saveBufferToParquet(
 
     // Use ParquetWriter to save in the configured format
     const savedPath = await state.parquetWriter!.writeRecords(filepath, buffer);
-
-    // Upload to cloud if enabled and timing is real-time
-    if (
-      config.cloudUpload.provider !== 'none' &&
-      config.cloudUpload.timing === 'realtime'
-    ) {
-      const target = getCloudTarget(config, state);
-      if (target) {
-        await uploadToCloud(savedPath, target, config, app);
-      }
-    }
   } catch (error) {}
 }
 
@@ -761,11 +747,119 @@ export function initializeRegimenStates(
 // These functions have been replaced by the daily export system in parquet-export-service.ts
 // The new exportDayToParquet() creates consolidated daily files directly
 
-// Directories to exclude from S3 uploads
-const excludedDirs = ['/processed/', '/repaired/', '/failed/', '/quarantine/'];
+// List all existing keys in cloud bucket (paginated)
+async function listCloudKeys(
+  client: any,
+  bucket: string,
+  prefix?: string
+): Promise<Set<string>> {
+  const keys = new Set<string>();
+  if (!ListObjectsV2Command) return keys;
 
-// Upload all existing consolidated and aggregated files to all cloud targets (for catching up)
-// Uses targeted date patterns to avoid scanning 100k+ files on large datasets
+  let continuationToken: string | undefined;
+  do {
+    const response = await client.send(
+      new ListObjectsV2Command({
+        Bucket: bucket,
+        Prefix: prefix || undefined,
+        ContinuationToken: continuationToken,
+      })
+    );
+    if (response.Contents) {
+      for (const obj of response.Contents) {
+        if (obj.Key) keys.add(obj.Key);
+      }
+    }
+    continuationToken = response.IsTruncated
+      ? response.NextContinuationToken
+      : undefined;
+  } while (continuationToken);
+
+  return keys;
+}
+
+// Upload a single file to cloud (no HEAD check — caller handles dedup)
+async function putToCloud(
+  filePath: string,
+  target: CloudTarget,
+  config: PluginConfig
+): Promise<boolean> {
+  if (!target.client || !PutObjectCommand) return false;
+
+  try {
+    const relativePath = path.relative(config.outputDirectory, filePath);
+    let cloudKey = relativePath;
+    if (target.keyPrefix) {
+      const prefix = target.keyPrefix.endsWith('/')
+        ? target.keyPrefix
+        : `${target.keyPrefix}/`;
+      cloudKey = `${prefix}${relativePath}`;
+    }
+
+    const fileContent = await fs.readFile(filePath);
+    await target.client.send(
+      new PutObjectCommand({
+        Bucket: target.bucket,
+        Key: cloudKey,
+        Body: fileContent,
+        ContentType: 'application/octet-stream',
+      })
+    );
+
+    if (target.deleteAfterUpload) {
+      await fs.unlink(filePath);
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// Get cloud key for a local file path
+function getCloudKey(filePath: string, target: CloudTarget, config: PluginConfig): string {
+  const relativePath = path.relative(config.outputDirectory, filePath);
+  if (target.keyPrefix) {
+    const prefix = target.keyPrefix.endsWith('/')
+      ? target.keyPrefix
+      : `${target.keyPrefix}/`;
+    return `${prefix}${relativePath}`;
+  }
+  return relativePath;
+}
+
+// Upload missing hive files to cloud with batch concurrency
+async function uploadMissingFiles(
+  localFiles: string[],
+  existingKeys: Set<string>,
+  target: CloudTarget,
+  config: PluginConfig,
+  app: ServerAPI,
+  concurrency = 3
+): Promise<number> {
+  const excludedDirs = ['/processed/', '/repaired/', '/failed/', '/quarantine/'];
+  const filtered = localFiles.filter(f => !excludedDirs.some(dir => f.includes(dir)));
+  const missing = filtered.filter(
+    f => !existingKeys.has(getCloudKey(f, target, config))
+  );
+
+  if (missing.length === 0) return 0;
+
+  app.debug(`[CloudSync] ${missing.length} files to upload (${concurrency} concurrent)`);
+
+  let uploaded = 0;
+  for (let i = 0; i < missing.length; i += concurrency) {
+    const batch = missing.slice(i, i + concurrency);
+    const results = await Promise.all(
+      batch.map(f => putToCloud(f, target, config))
+    );
+    uploaded += results.filter(Boolean).length;
+    // Yield to event loop between batches
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+  return uploaded;
+}
+
+// Upload all hive-partitioned parquet files to cloud (3-day lookback)
 export async function uploadAllConsolidatedFilesToS3(
   config: PluginConfig,
   state: PluginState,
@@ -775,64 +869,61 @@ export async function uploadAllConsolidatedFilesToS3(
   if (!target) return;
 
   try {
-    const prefix = config.filenamePrefix || 'signalk_data';
     const daysToCheck = 30;
     const today = new Date();
-    let uploadedCount = 0;
 
+    // List existing cloud keys once
+    app.debug(`[StartupSync] Listing existing ${target.label} objects...`);
+    const existingKeys = await listCloudKeys(
+      target.client,
+      target.bucket,
+      target.keyPrefix || undefined
+    );
+    app.debug(`[StartupSync] Found ${existingKeys.size} existing ${target.label} objects`);
+
+    // Gather local files for the lookback window
+    const allLocalFiles: string[] = [];
     for (let daysAgo = 1; daysAgo <= daysToCheck; daysAgo++) {
       const targetDate = new Date(today);
       targetDate.setUTCDate(today.getUTCDate() - daysAgo);
-      const dateStr = targetDate.toISOString().slice(0, 10);
+      const year = targetDate.getUTCFullYear();
+      const dayOfYear = String(
+        Math.floor(
+          (targetDate.getTime() - Date.UTC(year, 0, 1)) / 86400000
+        ) + 1
+      ).padStart(3, '0');
 
-      const consolidatedPattern = `**/${prefix}_${dateStr}_consolidated.parquet`;
-      const aggregatedPattern = `**/${prefix}_${dateStr}_aggregated.parquet`;
-      const dailyPattern = `**/${prefix}_${dateStr}*.parquet`;
-
-      const allConsolidatedFiles = await glob(consolidatedPattern, {
+      const files = await glob(`tier=*/**/year=${year}/day=${dayOfYear}/*.parquet`, {
         cwd: config.outputDirectory,
         absolute: true,
         nodir: true,
       });
-
-      const allAggregatedFiles = await glob(aggregatedPattern, {
-        cwd: config.outputDirectory,
-        absolute: true,
-        nodir: true,
-      });
-
-      const allDailyFiles = await glob(dailyPattern, {
-        cwd: config.outputDirectory,
-        absolute: true,
-        nodir: true,
-      });
-
-      const allFiles = [
-        ...allConsolidatedFiles,
-        ...allAggregatedFiles,
-        ...allDailyFiles,
-      ];
-      const filesToUpload = allFiles.filter(
-        f => !excludedDirs.some(dir => f.includes(dir))
-      );
-
-      for (const filePath of filesToUpload) {
-        const success = await uploadToCloud(filePath, target, config, app);
-        if (success) uploadedCount++;
-      }
+      allLocalFiles.push(...files);
     }
 
-    if (uploadedCount > 0) {
+    app.debug(`[StartupSync] Found ${allLocalFiles.length} local files in last ${daysToCheck} days`);
+
+    const uploaded = await uploadMissingFiles(
+      allLocalFiles,
+      existingKeys,
+      target,
+      config,
+      app
+    );
+
+    if (uploaded > 0) {
       app.debug(
-        `${target.label} catchup: uploaded ${uploadedCount} files from last ${daysToCheck} days (consolidated + aggregated + daily)`
+        `[StartupSync] Uploaded ${uploaded} files to ${target.label}`
       );
+    } else {
+      app.debug(`[StartupSync] All files already synced`);
     }
   } catch (error) {
-    app.error(`Cloud catchup upload failed: ${(error as Error).message}`);
+    app.error(`[StartupSync] Failed: ${(error as Error).message}`);
   }
 }
 
-// Upload daily export, consolidated, and aggregated files to all cloud targets
+// Upload hive-partitioned parquet files for a specific date to cloud
 export async function uploadConsolidatedFilesToS3(
   config: PluginConfig,
   date: Date,
@@ -843,43 +934,40 @@ export async function uploadConsolidatedFilesToS3(
   if (!target) return;
 
   try {
-    const dateStr = date.toISOString().split('T')[0];
-    const prefix = config.filenamePrefix || 'signalk_data';
+    const year = date.getUTCFullYear();
+    const dayOfYear = String(
+      Math.floor(
+        (date.getTime() - Date.UTC(year, 0, 1)) / 86400000
+      ) + 1
+    ).padStart(3, '0');
+    const dateStr = date.toISOString().slice(0, 10);
 
-    const dailyPattern = `**/${prefix}_${dateStr}*.parquet`;
-    const consolidatedPattern = `**/*_${dateStr}_consolidated.parquet`;
-    const aggregatedPattern = `**/*_${dateStr}_aggregated.parquet`;
-
-    const dailyFiles = await glob(dailyPattern, {
+    const localFiles = await glob(`tier=*/**/year=${year}/day=${dayOfYear}/*.parquet`, {
       cwd: config.outputDirectory,
       absolute: true,
       nodir: true,
     });
 
-    const consolidatedFiles = await glob(consolidatedPattern, {
-      cwd: config.outputDirectory,
-      absolute: true,
-      nodir: true,
-    });
+    if (localFiles.length === 0) return;
 
-    const aggregatedFiles = await glob(aggregatedPattern, {
-      cwd: config.outputDirectory,
-      absolute: true,
-      nodir: true,
-    });
-
-    const allFiles = [...dailyFiles, ...consolidatedFiles, ...aggregatedFiles];
-    const filesToUpload = allFiles.filter(
-      f => !excludedDirs.some(dir => f.includes(dir))
+    // List existing keys and only upload missing
+    const existingKeys = await listCloudKeys(
+      target.client,
+      target.bucket,
+      target.keyPrefix || undefined
     );
 
-    for (const filePath of filesToUpload) {
-      await uploadToCloud(filePath, target, config, app);
-    }
+    const uploaded = await uploadMissingFiles(
+      localFiles,
+      existingKeys,
+      target,
+      config,
+      app
+    );
 
-    if (filesToUpload.length > 0) {
+    if (uploaded > 0) {
       app.debug(
-        `${target.label}: Uploaded ${filesToUpload.length} files for ${dateStr} (daily + consolidated + aggregated)`
+        `${target.label}: Uploaded ${uploaded} hive files for ${dateStr}`
       );
     }
   } catch (error) {
@@ -889,84 +977,3 @@ export async function uploadConsolidatedFilesToS3(
   }
 }
 
-// Generic cloud upload function (works with S3, R2, or any S3-compatible target)
-async function uploadToCloud(
-  filePath: string,
-  target: CloudTarget,
-  config: PluginConfig,
-  app: ServerAPI
-): Promise<boolean> {
-  if (!target.client || !PutObjectCommand) {
-    return false;
-  }
-
-  try {
-    // Generate cloud key
-    const relativePath = path.relative(config.outputDirectory, filePath);
-    let cloudKey = relativePath;
-    if (target.keyPrefix) {
-      const prefix = target.keyPrefix.endsWith('/')
-        ? target.keyPrefix
-        : `${target.keyPrefix}/`;
-      cloudKey = `${prefix}${relativePath}`;
-    }
-
-    // Check if file exists in cloud and compare timestamps
-    const localStats = await fs.stat(filePath);
-    let shouldUpload = true;
-
-    try {
-      if (HeadObjectCommand) {
-        const headCommand = new HeadObjectCommand({
-          Bucket: target.bucket,
-          Key: cloudKey,
-        });
-        const cloudObject = await target.client.send(headCommand);
-
-        if (cloudObject.LastModified) {
-          const cloudLastModified = new Date(cloudObject.LastModified);
-          const localLastModified = new Date(localStats.mtime);
-
-          if (localLastModified <= cloudLastModified) {
-            shouldUpload = false;
-          }
-        }
-      }
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    } catch (headError: any) {
-      if (
-        headError.name === 'NotFound' ||
-        headError.$metadata?.httpStatusCode === 404
-      ) {
-        shouldUpload = true;
-      } else {
-        shouldUpload = true;
-      }
-    }
-
-    if (!shouldUpload) {
-      return true;
-    }
-
-    const fileContent = await fs.readFile(filePath);
-
-    const command = new PutObjectCommand({
-      Bucket: target.bucket,
-      Key: cloudKey,
-      Body: fileContent,
-      ContentType: filePath.endsWith('.parquet')
-        ? 'application/octet-stream'
-        : 'application/json',
-    });
-
-    await target.client.send(command);
-
-    if (target.deleteAfterUpload) {
-      await fs.unlink(filePath);
-    }
-
-    return true;
-  } catch (error) {
-    return false;
-  }
-}

@@ -260,7 +260,6 @@ export interface WebAppPathConfig {
 
 export interface CloudUploadConfig {
   provider: 'none' | 's3' | 'r2';
-  timing?: 'realtime' | 'consolidation';
   bucket?: string;
   region?: string; // S3 only
   accountId?: string; // R2 only (Cloudflare account ID)

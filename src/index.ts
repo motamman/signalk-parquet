@@ -195,7 +195,6 @@ export default function (app: ServerAPI): SignalKPlugin {
           useHivePartitioning: state.currentConfig.useHivePartitioning!,
           s3Upload: {
             enabled: state.currentConfig.cloudUpload.provider !== 'none',
-            timing: state.currentConfig.cloudUpload.timing,
           },
           dailyExportHour: state.currentConfig.dailyExportHour ?? 4,
         },
@@ -333,10 +332,7 @@ export default function (app: ServerAPI): SignalKPlugin {
               );
 
               // Upload files to cloud after aggregation
-              if (
-                state.currentConfig?.cloudUpload.provider !== 'none' &&
-                state.currentConfig?.cloudUpload.timing === 'consolidation'
-              ) {
+              if (state.currentConfig?.cloudUpload.provider !== 'none') {
                 await uploadConsolidatedFilesToS3(
                   state.currentConfig!,
                   yesterday,
@@ -409,24 +405,26 @@ export default function (app: ServerAPI): SignalKPlugin {
               }
             }
 
-            // Upload to cloud after export and aggregation complete
-            if (state.currentConfig?.cloudUpload.provider !== 'none') {
-              try {
-                await uploadAllConsolidatedFilesToS3(
-                  state.currentConfig!,
-                  state,
-                  app
-                );
-                app.debug('[StartupExport] Cloud upload complete');
-              } catch (s3Err) {
-                app.error(
-                  `[StartupExport] Cloud upload failed: ${(s3Err as Error).message}`
-                );
-              }
-            }
           }
         } catch (error) {
           app.error(`[StartupExport] Failed: ${(error as Error).message}`);
+        }
+      }
+
+      // Upload recent hive files to cloud (3-day lookback)
+      if (state.currentConfig?.cloudUpload.provider !== 'none') {
+        try {
+          app.debug('[StartupSync] Starting cloud sync...');
+          await uploadAllConsolidatedFilesToS3(
+            state.currentConfig!,
+            state,
+            app
+          );
+          app.debug('[StartupSync] Cloud upload complete');
+        } catch (s3Err) {
+          app.error(
+            `[StartupSync] Cloud upload failed: ${(s3Err as Error).message}`
+          );
         }
       }
     }, 10000); // Wait 10 seconds after startup

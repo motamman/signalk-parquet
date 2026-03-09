@@ -19,7 +19,6 @@ export interface ExportServiceConfig {
   dailyExportHour: number;
   s3Upload?: {
     enabled: boolean;
-    timing?: 'realtime' | 'consolidation';
   };
 }
 
