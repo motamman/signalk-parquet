@@ -869,7 +869,7 @@ export async function uploadAllConsolidatedFilesToS3(
   if (!target) return;
 
   try {
-    const daysToCheck = 30;
+    const daysToCheck = 7;
     const today = new Date();
 
     // List existing cloud keys once
