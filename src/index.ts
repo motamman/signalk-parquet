@@ -17,8 +17,8 @@ import {
   stopThresholdMonitoring,
 } from './commands';
 import {
-  initializeS3,
-  createS3Client,
+  initializeCloudSDK,
+  createCloudClient,
   subscribeToCommandPaths,
   updateDataSubscriptions,
   initializeRegimenStates,
@@ -61,7 +61,7 @@ export default function (app: ServerAPI): SignalKPlugin {
     saveInterval: undefined,
     consolidationInterval: undefined,
     parquetWriter: undefined,
-    s3Client: undefined,
+    cloudClient: undefined,
     currentConfig: undefined,
     commandState: {
       registeredCommands: new Map(),
@@ -97,7 +97,26 @@ export default function (app: ServerAPI): SignalKPlugin {
       retentionDays: options?.retentionDays || 7,
       fileFormat: options?.fileFormat || 'parquet',
       vesselMMSI: vesselMMSI,
-      s3Upload: options?.s3Upload || { enabled: false },
+      cloudUpload: (() => {
+        // New config format already present
+        if (options?.cloudUpload && (options.cloudUpload as any).provider) {
+          return options.cloudUpload;
+        }
+        // Migrate from old s3Upload format
+        const oldS3 = (options as any)?.s3Upload;
+        if (oldS3) {
+          return {
+            provider: oldS3.enabled ? ('s3' as const) : ('none' as const),
+            bucket: oldS3.bucket,
+            region: oldS3.region,
+            keyPrefix: oldS3.keyPrefix,
+            accessKeyId: oldS3.accessKeyId,
+            secretAccessKey: oldS3.secretAccessKey,
+            deleteAfterUpload: oldS3.deleteAfterUpload,
+          } as import('./types').CloudUploadConfig;
+        }
+        return { provider: 'none' as const };
+      })(),
       homePortLatitude: options?.homePortLatitude || 0,
       homePortLongitude: options?.homePortLongitude || 0,
       setCurrentLocationAction: options?.setCurrentLocationAction || {
@@ -174,7 +193,10 @@ export default function (app: ServerAPI): SignalKPlugin {
           outputDirectory: state.currentConfig.outputDirectory,
           filenamePrefix: state.currentConfig.filenamePrefix,
           useHivePartitioning: state.currentConfig.useHivePartitioning!,
-          s3Upload: state.currentConfig.s3Upload,
+          s3Upload: {
+            enabled: state.currentConfig.cloudUpload.provider !== 'none',
+            timing: state.currentConfig.cloudUpload.timing,
+          },
           dailyExportHour: state.currentConfig.dailyExportHour ?? 4,
         },
         app
@@ -183,9 +205,14 @@ export default function (app: ServerAPI): SignalKPlugin {
       app.debug('Parquet export service started');
     }
 
-    // Initialize S3 client if enabled
-    await initializeS3(state.currentConfig, app);
-    state.s3Client = createS3Client(state.currentConfig, app);
+    // Initialize cloud client if enabled (S3 or R2)
+    await initializeCloudSDK(state.currentConfig, app);
+    state.cloudClient = createCloudClient(state.currentConfig, app);
+    if (state.cloudClient) {
+      app.debug(
+        `${state.currentConfig.cloudUpload.provider.toUpperCase()} client initialized`
+      );
+    }
 
     // Ensure output directory exists
     fs.ensureDirSync(state.currentConfig.outputDirectory);
@@ -194,22 +221,21 @@ export default function (app: ServerAPI): SignalKPlugin {
     await DuckDBPool.initialize();
     app.debug('DuckDB connection pool initialized');
 
-    // Initialize S3 credentials in DuckDB if S3 upload is enabled
+    // Initialize S3 credentials in DuckDB if S3 provider is configured
     if (
-      state.currentConfig.s3Upload.enabled &&
-      state.currentConfig.s3Upload.accessKeyId &&
-      state.currentConfig.s3Upload.secretAccessKey
+      state.currentConfig.cloudUpload.provider === 's3' &&
+      state.currentConfig.cloudUpload.accessKeyId &&
+      state.currentConfig.cloudUpload.secretAccessKey
     ) {
       try {
         await DuckDBPool.initializeS3({
-          accessKeyId: state.currentConfig.s3Upload.accessKeyId,
-          secretAccessKey: state.currentConfig.s3Upload.secretAccessKey,
-          region: state.currentConfig.s3Upload.region || 'us-east-1',
+          accessKeyId: state.currentConfig.cloudUpload.accessKeyId,
+          secretAccessKey: state.currentConfig.cloudUpload.secretAccessKey,
+          region: state.currentConfig.cloudUpload.region || 'us-east-1',
         });
         app.debug('DuckDB S3 credentials initialized for federated queries');
       } catch (error) {
         app.error(`Failed to initialize DuckDB S3 credentials: ${error}`);
-        // Don't fail startup, S3 queries will just not work
       }
     }
 
@@ -306,13 +332,13 @@ export default function (app: ServerAPI): SignalKPlugin {
                 `[DailyExport] Aggregation complete: ${JSON.stringify(aggResults.map(r => ({ tier: r.targetTier, files: r.filesCreated })))}`
               );
 
-              // Upload files to S3 after aggregation
+              // Upload files to cloud after aggregation
               if (
-                state.currentConfig?.s3Upload.enabled &&
-                state.currentConfig?.s3Upload.timing === 'consolidation'
+                state.currentConfig?.cloudUpload.provider !== 'none' &&
+                state.currentConfig?.cloudUpload.timing === 'consolidation'
               ) {
                 await uploadConsolidatedFilesToS3(
-                  state.currentConfig,
+                  state.currentConfig!,
                   yesterday,
                   state,
                   app
@@ -383,18 +409,18 @@ export default function (app: ServerAPI): SignalKPlugin {
               }
             }
 
-            // Upload to S3 after export and aggregation complete
-            if (state.currentConfig?.s3Upload.enabled) {
+            // Upload to cloud after export and aggregation complete
+            if (state.currentConfig?.cloudUpload.provider !== 'none') {
               try {
                 await uploadAllConsolidatedFilesToS3(
-                  state.currentConfig,
+                  state.currentConfig!,
                   state,
                   app
                 );
-                app.debug('[StartupExport] S3 upload complete');
+                app.debug('[StartupExport] Cloud upload complete');
               } catch (s3Err) {
                 app.error(
-                  `[StartupExport] S3 upload failed: ${(s3Err as Error).message}`
+                  `[StartupExport] Cloud upload failed: ${(s3Err as Error).message}`
                 );
               }
             }
@@ -428,14 +454,16 @@ export default function (app: ServerAPI): SignalKPlugin {
     // Register History API routes directly with the main app
     try {
       // Build S3 query config if S3 is enabled
-      const s3QueryConfig = state.currentConfig.s3Upload.enabled
-        ? {
-            enabled: true,
-            bucket: state.currentConfig.s3Upload.bucket || '',
-            keyPrefix: state.currentConfig.s3Upload.keyPrefix || '',
-            region: state.currentConfig.s3Upload.region || 'us-east-1',
-          }
-        : undefined;
+      // S3 federated queries only work with S3 provider (not R2, for now)
+      const s3QueryConfig =
+        state.currentConfig.cloudUpload.provider === 's3'
+          ? {
+              enabled: true,
+              bucket: state.currentConfig.cloudUpload.bucket || '',
+              keyPrefix: state.currentConfig.cloudUpload.keyPrefix || '',
+              region: state.currentConfig.cloudUpload.region || 'us-east-1',
+            }
+          : undefined;
 
       registerHistoryApiRoute(
         app as unknown as Router,
@@ -718,66 +746,87 @@ export default function (app: ServerAPI): SignalKPlugin {
           },
         },
       },
-      s3Upload: {
+      cloudUpload: {
         type: 'object',
-        title: 'S3 Upload Configuration',
-        description: 'Optional S3 backup/archive functionality',
+        title: 'Cloud Storage Configuration',
+        description:
+          'Upload Parquet files to Amazon S3 or Cloudflare R2 for backup/archive',
         properties: {
-          enabled: {
-            type: 'boolean',
-            title: 'Enable S3 Upload',
-            description: 'Enable uploading files to Amazon S3',
-            default: false,
-          },
-          timing: {
+          provider: {
             type: 'string',
-            title: 'Upload Timing',
-            description: 'When to upload files to S3',
-            enum: ['realtime', 'consolidation'],
-            enumNames: [
-              'Real-time (after each file save)',
-              'At consolidation (daily)',
-            ],
-            default: 'consolidation',
+            title: 'Cloud Provider',
+            description: 'Select cloud storage provider (S3 or R2)',
+            enum: ['none', 's3', 'r2'],
+            enumNames: ['Disabled', 'Amazon S3', 'Cloudflare R2'],
+            default: 'none',
           },
           bucket: {
             type: 'string',
-            title: 'S3 Bucket Name',
-            description: 'Name of the S3 bucket to upload to',
+            title: 'Bucket Name',
+            description: 'Name of the S3 or R2 bucket to upload to',
             default: '',
-          },
-          region: {
-            type: 'string',
-            title: 'AWS Region',
-            description: 'AWS region where the S3 bucket is located',
-            default: 'us-east-1',
           },
           keyPrefix: {
             type: 'string',
-            title: 'S3 Key Prefix',
+            title: 'Key Prefix',
             description:
-              'Optional prefix for S3 object keys (e.g., "marine-data/")',
+              'Optional prefix for object keys (e.g., "marine-data/")',
             default: '',
           },
           accessKeyId: {
             type: 'string',
-            title: 'AWS Access Key ID',
-            description:
-              'AWS Access Key ID (leave empty to use IAM role or environment variables)',
+            title: 'Access Key ID',
+            description: 'AWS Access Key ID or R2 API token access key',
             default: '',
           },
           secretAccessKey: {
             type: 'string',
-            title: 'AWS Secret Access Key',
-            description:
-              'AWS Secret Access Key (leave empty to use IAM role or environment variables)',
+            title: 'Secret Access Key',
+            description: 'AWS Secret Access Key or R2 API token secret key',
             default: '',
           },
           deleteAfterUpload: {
             type: 'boolean',
             title: 'Delete Local Files After Upload',
-            description: 'Delete local files after successful upload to S3',
+            description:
+              'Delete local files after successful upload to cloud storage',
             default: false,
+          },
+        },
+        dependencies: {
+          provider: {
+            oneOf: [
+              {
+                properties: {
+                  provider: { enum: ['none'] },
+                },
+              },
+              {
+                properties: {
+                  provider: { enum: ['s3'] },
+                  region: {
+                    type: 'string',
+                    title: 'AWS Region',
+                    description: 'AWS region where the S3 bucket is located',
+                    default: 'us-east-1',
+                  },
+                },
+                description:
+                  'NOTE: Querying S3 buckets incurs AWS data transfer costs that can rise quickly with large or frequent queries. Typically, R2 has no such fees.',
+              },
+              {
+                properties: {
+                  provider: { enum: ['r2'] },
+                  accountId: {
+                    type: 'string',
+                    title: 'Cloudflare Account ID',
+                    description:
+                      'Your Cloudflare account ID (found in the R2 dashboard URL)',
+                    default: '',
+                  },
+                },
+              },
+            ],
           },
         },
       },

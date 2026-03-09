@@ -1,15 +1,18 @@
 import { getPluginPath } from './utils.js';
 
-export async function testS3Connection() {
-  const resultDiv = document.getElementById('s3TestResult');
-  const button = document.querySelector('button[onclick="testS3Connection()"]');
+export async function testCloudConnection() {
+  const resultDiv = document.getElementById('cloudTestResult');
+  const button = document.querySelector(
+    'button[onclick="testCloudConnection()"]'
+  );
 
   button.disabled = true;
   button.textContent = '🔄 Testing...';
-  resultDiv.innerHTML = '<div class="loading">Testing S3 connection...</div>';
+  resultDiv.innerHTML =
+    '<div class="loading">Testing cloud connection...</div>';
 
   try {
-    const response = await fetch(`${getPluginPath()}/api/test-s3`, {
+    const response = await fetch(`${getPluginPath()}/api/test-cloud`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -19,12 +22,19 @@ export async function testS3Connection() {
     const result = await response.json();
 
     if (result.success) {
+      const label = (result.provider || 's3').toUpperCase();
+      let details = `<strong>Provider:</strong> ${label}<br>
+                    <strong>Bucket:</strong> ${result.bucket}<br>`;
+      if (result.region)
+        details += `<strong>Region:</strong> ${result.region}<br>`;
+      if (result.accountId)
+        details += `<strong>Account ID:</strong> ${result.accountId}<br>`;
+      details += `<strong>Key Prefix:</strong> ${result.keyPrefix}`;
+
       resultDiv.innerHTML = `
                 <div class="success">
                     ✅ ${result.message}<br>
-                    <strong>Bucket:</strong> ${result.bucket}<br>
-                    <strong>Region:</strong> ${result.region}<br>
-                    <strong>Key Prefix:</strong> ${result.keyPrefix}
+                    ${details}
                 </div>
             `;
     } else {
@@ -34,7 +44,7 @@ export async function testS3Connection() {
     resultDiv.innerHTML = `<div class="error">❌ Network error: ${error.message}</div>`;
   } finally {
     button.disabled = false;
-    button.textContent = '🔗 Test S3 Connection';
+    button.textContent = '🔗 Test Cloud Connection';
   }
 }
 
@@ -42,10 +52,12 @@ export async function testS3Connection() {
 let pendingSync = [];
 let compareJobId = null;
 
-export async function compareS3Files() {
-  const resultDiv = document.getElementById('s3CompareResult');
-  const syncBtn = document.getElementById('syncToS3Btn');
-  const compareBtn = document.querySelector('button[onclick="compareS3Files()"]');
+export async function compareCloudFiles() {
+  const resultDiv = document.getElementById('cloudCompareResult');
+  const syncBtn = document.getElementById('syncToCloudBtn');
+  const compareBtn = document.querySelector(
+    'button[onclick="compareCloudFiles()"]'
+  );
 
   compareBtn.disabled = true;
   syncBtn.disabled = true;
@@ -53,21 +65,20 @@ export async function compareS3Files() {
 
   resultDiv.innerHTML = `
     <div style="background: #fff; padding: 15px; border-radius: 5px; margin-top: 10px;">
-      <div id="s3CompareProgress">
+      <div id="cloudCompareProgress">
         <div class="loading">Starting comparison...</div>
         <div style="margin-top: 10px;">
           <div style="background: #e0e0e0; height: 20px; border-radius: 10px; overflow: hidden;">
-            <div id="s3ProgressBar" style="background: #2196F3; height: 100%; width: 0%; transition: width 0.3s;"></div>
+            <div id="cloudProgressBar" style="background: #2196F3; height: 100%; width: 0%; transition: width 0.3s;"></div>
           </div>
-          <p id="s3ProgressText" style="margin-top: 5px; color: #666;">Initializing...</p>
+          <p id="cloudProgressText" style="margin-top: 5px; color: #666;">Initializing...</p>
         </div>
       </div>
     </div>
   `;
 
   try {
-    // Start the compare job
-    const startResponse = await fetch(`${getPluginPath()}/api/s3/compare`, {
+    const startResponse = await fetch(`${getPluginPath()}/api/cloud/compare`, {
       method: 'POST',
     });
     const startResult = await startResponse.json();
@@ -80,10 +91,11 @@ export async function compareS3Files() {
 
     compareJobId = startResult.jobId;
 
-    // Poll for progress
     const pollInterval = setInterval(async () => {
       try {
-        const statusResponse = await fetch(`${getPluginPath()}/api/s3/compare/${compareJobId}`);
+        const statusResponse = await fetch(
+          `${getPluginPath()}/api/cloud/compare/${compareJobId}`
+        );
         const status = await statusResponse.json();
 
         if (!status.success) {
@@ -93,9 +105,9 @@ export async function compareS3Files() {
           return;
         }
 
-        // Update progress
-        document.getElementById('s3ProgressBar').style.width = `${status.progress}%`;
-        document.getElementById('s3ProgressText').textContent = status.phase;
+        document.getElementById('cloudProgressBar').style.width =
+          `${status.progress}%`;
+        document.getElementById('cloudProgressText').textContent = status.phase;
 
         if (status.status === 'completed') {
           clearInterval(pollInterval);
@@ -111,8 +123,7 @@ export async function compareS3Files() {
         resultDiv.innerHTML = `<div class="error">❌ Polling error: ${err.message}</div>`;
         compareBtn.disabled = false;
       }
-    }, 500); // Poll every 500ms
-
+    }, 500);
   } catch (error) {
     resultDiv.innerHTML = `<div class="error">❌ Network error: ${error.message}</div>`;
     compareBtn.disabled = false;
@@ -120,9 +131,10 @@ export async function compareS3Files() {
 }
 
 function showCompareResults(result) {
-  const resultDiv = document.getElementById('s3CompareResult');
-  const syncBtn = document.getElementById('syncToS3Btn');
+  const resultDiv = document.getElementById('cloudCompareResult');
+  const syncBtn = document.getElementById('syncToCloudBtn');
   const summary = result.summary;
+  const label = (result.provider || 's3').toUpperCase();
   pendingSync = result.localOnly || [];
 
   let html = `
@@ -130,48 +142,48 @@ function showCompareResults(result) {
       <h4 style="margin-top: 0;">📊 Comparison Summary</h4>
       <table style="width: 100%; border-collapse: collapse;">
         <tr><td style="padding: 5px;"><strong>Local Files:</strong></td><td>${summary.localTotal.toLocaleString()}</td></tr>
-        <tr><td style="padding: 5px;"><strong>S3 Files:</strong></td><td>${summary.s3Total.toLocaleString()}</td></tr>
+        <tr><td style="padding: 5px;"><strong>${label} Files:</strong></td><td>${summary.cloudTotal.toLocaleString()}</td></tr>
         <tr style="background: #e8f5e9;"><td style="padding: 5px;"><strong>✅ Synced:</strong></td><td>${summary.synced.toLocaleString()}</td></tr>
         <tr style="background: #fff3e0;"><td style="padding: 5px;"><strong>⬆️ Local Only (need upload):</strong></td><td>${summary.localOnly.toLocaleString()} (${summary.localOnlySizeMB} MB)</td></tr>
-        <tr style="background: #fce4ec;"><td style="padding: 5px;"><strong>☁️ S3 Only (orphaned):</strong></td><td>${summary.s3Only.toLocaleString()}</td></tr>
+        <tr style="background: #fce4ec;"><td style="padding: 5px;"><strong>☁️ ${label} Only (orphaned):</strong></td><td>${summary.cloudOnly.toLocaleString()}</td></tr>
       </table>
   `;
 
   if (summary.localOnly > 0) {
     syncBtn.disabled = false;
-    html += `<p style="margin-top: 15px; color: #E65100;">⚠️ ${summary.localOnly} files need to be uploaded to S3.</p>`;
+    html += `<p style="margin-top: 15px; color: #E65100;">⚠️ ${summary.localOnly} files need to be uploaded to ${label}.</p>`;
   } else {
-    html += `<p style="margin-top: 15px; color: #2E7D32;">✅ All local files are synced to S3!</p>`;
+    html += `<p style="margin-top: 15px; color: #2E7D32;">✅ All local files are synced to ${label}!</p>`;
   }
 
   html += '</div>';
   resultDiv.innerHTML = html;
 }
 
-export async function syncToS3() {
-  const resultDiv = document.getElementById('s3CompareResult');
-  const syncBtn = document.getElementById('syncToS3Btn');
-  const compareBtn = document.querySelector('button[onclick="compareS3Files()"]');
+export async function syncToCloud() {
+  const resultDiv = document.getElementById('cloudCompareResult');
+  const syncBtn = document.getElementById('syncToCloudBtn');
+  const compareBtn = document.querySelector(
+    'button[onclick="compareCloudFiles()"]'
+  );
 
   syncBtn.disabled = true;
   compareBtn.disabled = true;
 
-  // Add progress indicator
   resultDiv.innerHTML += `
     <div id="syncProgress" style="margin-top: 15px; padding: 15px; background: #e3f2fd; border-radius: 5px;">
       <div style="margin-bottom: 10px;">
         <div style="background: #e0e0e0; height: 20px; border-radius: 10px; overflow: hidden;">
-          <div id="s3SyncProgressBar" style="background: #4CAF50; height: 100%; width: 0%; transition: width 0.3s;"></div>
+          <div id="cloudSyncProgressBar" style="background: #4CAF50; height: 100%; width: 0%; transition: width 0.3s;"></div>
         </div>
       </div>
-      <p id="s3SyncProgressText" style="margin: 5px 0; color: #666;">Starting sync...</p>
-      <p id="s3SyncStats" style="margin: 5px 0; font-size: 12px; color: #888;"></p>
+      <p id="cloudSyncProgressText" style="margin: 5px 0; color: #666;">Starting sync...</p>
+      <p id="cloudSyncStats" style="margin: 5px 0; font-size: 12px; color: #888;"></p>
     </div>
   `;
 
   try {
-    // Start the sync job
-    const startResponse = await fetch(`${getPluginPath()}/api/s3/sync`, {
+    const startResponse = await fetch(`${getPluginPath()}/api/cloud/sync`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -182,7 +194,8 @@ export async function syncToS3() {
     const startResult = await startResponse.json();
 
     if (!startResult.success) {
-      document.getElementById('syncProgress').innerHTML = `<div class="error">❌ ${startResult.error}</div>`;
+      document.getElementById('syncProgress').innerHTML =
+        `<div class="error">❌ ${startResult.error}</div>`;
       syncBtn.disabled = false;
       compareBtn.disabled = false;
       return;
@@ -190,24 +203,27 @@ export async function syncToS3() {
 
     const syncJobId = startResult.jobId;
 
-    // Poll for progress
     const pollInterval = setInterval(async () => {
       try {
-        const statusResponse = await fetch(`${getPluginPath()}/api/s3/sync/${syncJobId}`);
+        const statusResponse = await fetch(
+          `${getPluginPath()}/api/cloud/sync/${syncJobId}`
+        );
         const status = await statusResponse.json();
 
         if (!status.success) {
           clearInterval(pollInterval);
-          document.getElementById('syncProgress').innerHTML = `<div class="error">❌ ${status.error}</div>`;
+          document.getElementById('syncProgress').innerHTML =
+            `<div class="error">❌ ${status.error}</div>`;
           syncBtn.disabled = false;
           compareBtn.disabled = false;
           return;
         }
 
-        // Update progress
-        document.getElementById('s3SyncProgressBar').style.width = `${status.progress}%`;
-        document.getElementById('s3SyncProgressText').textContent = status.phase;
-        document.getElementById('s3SyncStats').textContent =
+        document.getElementById('cloudSyncProgressBar').style.width =
+          `${status.progress}%`;
+        document.getElementById('cloudSyncProgressText').textContent =
+          status.phase;
+        document.getElementById('cloudSyncStats').textContent =
           `Uploaded: ${status.filesUploaded} | Failed: ${status.filesFailed} | Total: ${status.filesTotal}`;
 
         if (status.status === 'completed') {
@@ -221,25 +237,27 @@ export async function syncToS3() {
             </div>
           `;
           pendingSync = [];
-          syncBtn.textContent = '📤 Sync Missing to S3';
+          syncBtn.textContent = '📤 Sync Missing Files';
           syncBtn.disabled = true;
           compareBtn.disabled = false;
         } else if (status.status === 'error') {
           clearInterval(pollInterval);
-          document.getElementById('syncProgress').innerHTML = `<div class="error">❌ ${status.phase}</div>`;
+          document.getElementById('syncProgress').innerHTML =
+            `<div class="error">❌ ${status.phase}</div>`;
           syncBtn.disabled = false;
           compareBtn.disabled = false;
         }
       } catch (err) {
         clearInterval(pollInterval);
-        document.getElementById('syncProgress').innerHTML = `<div class="error">❌ Polling error: ${err.message}</div>`;
+        document.getElementById('syncProgress').innerHTML =
+          `<div class="error">❌ Polling error: ${err.message}</div>`;
         syncBtn.disabled = false;
         compareBtn.disabled = false;
       }
     }, 500);
-
   } catch (error) {
-    document.getElementById('syncProgress').innerHTML = `<div class="error">❌ Network error: ${error.message}</div>`;
+    document.getElementById('syncProgress').innerHTML =
+      `<div class="error">❌ Network error: ${error.message}</div>`;
     syncBtn.disabled = false;
     compareBtn.disabled = false;
   }

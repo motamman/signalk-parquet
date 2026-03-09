@@ -51,7 +51,7 @@ export interface PluginConfig {
   retentionDays: number;
   fileFormat: 'json' | 'csv' | 'parquet';
   vesselMMSI: string;
-  s3Upload: S3UploadConfig;
+  cloudUpload: CloudUploadConfig;
   enableStreaming?: boolean; // Enable WebSocket streaming functionality
   claudeIntegration?: ClaudeIntegrationConfig;
   homePortLatitude?: number;
@@ -258,11 +258,12 @@ export interface WebAppPathConfig {
   commands: CommandConfig[];
 }
 
-export interface S3UploadConfig {
-  enabled: boolean;
+export interface CloudUploadConfig {
+  provider: 'none' | 's3' | 'r2';
   timing?: 'realtime' | 'consolidation';
   bucket?: string;
-  region?: string;
+  region?: string; // S3 only
+  accountId?: string; // R2 only (Cloudflare account ID)
   keyPrefix?: string;
   accessKeyId?: string;
   secretAccessKey?: string;
@@ -377,11 +378,16 @@ export interface HealthApiResponse extends ApiResponse {
   duckdb?: string;
 }
 
-export interface S3TestApiResponse extends ApiResponse {
+export interface CloudTestApiResponse extends ApiResponse {
+  provider?: string;
   bucket?: string;
   region?: string;
+  accountId?: string;
   keyPrefix?: string;
 }
+
+// Legacy alias
+export type S3TestApiResponse = CloudTestApiResponse;
 
 export interface ValidationViolation {
   file: string;
@@ -606,7 +612,7 @@ export interface PluginState {
   consolidationInterval?: NodeJS.Timeout;
   parquetWriter?: ParquetWriter;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  s3Client?: any;
+  cloudClient?: any; // S3 or R2 client (S3-compatible)
   currentConfig?: PluginConfig;
   commandState: CommandRegistrationState;
   // Process management

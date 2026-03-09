@@ -50,16 +50,22 @@ let S3Client: any,
 
 let appInstance: ServerAPI;
 
-export async function initializeS3(
+// Generic cloud target for S3-compatible uploads (S3, R2, etc.)
+export interface CloudTarget {
+  client: any;
+  bucket: string;
+  keyPrefix: string;
+  deleteAfterUpload: boolean;
+  label: string; // "S3" or "R2" for logging
+}
+
+export async function initializeCloudSDK(
   config: PluginConfig,
   app: ServerAPI
 ): Promise<void> {
   appInstance = app;
 
-  // Initialize S3 client if enabled
-
-  if (config.s3Upload.enabled) {
-    // Wait for AWS SDK import to complete
+  if (config.cloudUpload.provider !== 'none') {
     try {
       if (!S3Client) {
         const awsS3 = await import('@aws-sdk/client-s3');
@@ -74,32 +80,79 @@ export async function initializeS3(
   }
 }
 
-export function createS3Client(config: PluginConfig, app: ServerAPI): any {
-  if (!config.s3Upload.enabled || !S3Client) {
+// Legacy alias
+export const initializeS3 = initializeCloudSDK;
+
+export function createCloudClient(config: PluginConfig, app: ServerAPI): any {
+  const cloud = config.cloudUpload;
+  if (cloud.provider === 'none' || !S3Client) {
     return undefined;
   }
 
   try {
+    if (cloud.provider === 'r2') {
+      if (!cloud.accountId) {
+        app.error('R2 upload enabled but no account ID configured');
+        return undefined;
+      }
+      return new S3Client({
+        region: 'auto',
+        endpoint: `https://${cloud.accountId}.r2.cloudflarestorage.com`,
+        credentials:
+          cloud.accessKeyId && cloud.secretAccessKey
+            ? {
+                accessKeyId: cloud.accessKeyId,
+                secretAccessKey: cloud.secretAccessKey,
+              }
+            : undefined,
+      });
+    }
+
+    // S3 provider
     const s3Config: {
       region: string;
       credentials?: { accessKeyId: string; secretAccessKey: string };
     } = {
-      region: config.s3Upload.region || 'us-east-1',
+      region: cloud.region || 'us-east-1',
     };
 
-    // Add credentials if provided
-    if (config.s3Upload.accessKeyId && config.s3Upload.secretAccessKey) {
+    if (cloud.accessKeyId && cloud.secretAccessKey) {
       s3Config.credentials = {
-        accessKeyId: config.s3Upload.accessKeyId,
-        secretAccessKey: config.s3Upload.secretAccessKey,
+        accessKeyId: cloud.accessKeyId,
+        secretAccessKey: cloud.secretAccessKey,
       };
     }
 
-    const s3Client = new S3Client(s3Config);
-    return s3Client;
+    return new S3Client(s3Config);
   } catch (error) {
+    app.error(
+      `Failed to create ${cloud.provider.toUpperCase()} client: ${(error as Error).message}`
+    );
     return undefined;
   }
+}
+
+// Legacy aliases
+export const createS3Client = createCloudClient;
+export const createR2Client = createCloudClient;
+
+// Build cloud target from config and state
+export function getCloudTarget(
+  config: PluginConfig,
+  state: PluginState
+): CloudTarget | null {
+  const cloud = config.cloudUpload;
+  if (cloud.provider === 'none' || !state.cloudClient) {
+    return null;
+  }
+
+  return {
+    client: state.cloudClient,
+    bucket: cloud.bucket || '',
+    keyPrefix: cloud.keyPrefix || '',
+    deleteAfterUpload: cloud.deleteAfterUpload || false,
+    label: cloud.provider.toUpperCase(),
+  };
 }
 
 // Subscribe to command paths that control regimens using proper subscription manager
@@ -643,9 +696,15 @@ async function saveBufferToParquet(
     // Use ParquetWriter to save in the configured format
     const savedPath = await state.parquetWriter!.writeRecords(filepath, buffer);
 
-    // Upload to S3 if enabled and timing is real-time
-    if (config.s3Upload.enabled && config.s3Upload.timing === 'realtime') {
-      await uploadToS3(savedPath, config, state, app);
+    // Upload to cloud if enabled and timing is real-time
+    if (
+      config.cloudUpload.provider !== 'none' &&
+      config.cloudUpload.timing === 'realtime'
+    ) {
+      const target = getCloudTarget(config, state);
+      if (target) {
+        await uploadToCloud(savedPath, target, config, app);
+      }
     }
   } catch (error) {}
 }
@@ -705,30 +764,29 @@ export function initializeRegimenStates(
 // Directories to exclude from S3 uploads
 const excludedDirs = ['/processed/', '/repaired/', '/failed/', '/quarantine/'];
 
-// Upload all existing consolidated and aggregated files to S3 (for catching up)
+// Upload all existing consolidated and aggregated files to all cloud targets (for catching up)
 // Uses targeted date patterns to avoid scanning 100k+ files on large datasets
 export async function uploadAllConsolidatedFilesToS3(
   config: PluginConfig,
   state: PluginState,
   app: ServerAPI
 ): Promise<void> {
+  const target = getCloudTarget(config, state);
+  if (!target) return;
+
   try {
     const prefix = config.filenamePrefix || 'signalk_data';
-    const daysToCheck = 30; // Check last 30 days for S3 upload catchup
+    const daysToCheck = 30;
     const today = new Date();
-
     let uploadedCount = 0;
 
-    // Use targeted glob patterns for each date instead of scanning all files
     for (let daysAgo = 1; daysAgo <= daysToCheck; daysAgo++) {
       const targetDate = new Date(today);
       targetDate.setUTCDate(today.getUTCDate() - daysAgo);
-      const dateStr = targetDate.toISOString().slice(0, 10); // "2025-07-14"
+      const dateStr = targetDate.toISOString().slice(0, 10);
 
-      // Match both consolidated AND aggregated parquet files for this date
       const consolidatedPattern = `**/${prefix}_${dateStr}_consolidated.parquet`;
       const aggregatedPattern = `**/${prefix}_${dateStr}_aggregated.parquet`;
-      // Also match daily export files (includes timestamped files)
       const dailyPattern = `**/${prefix}_${dateStr}*.parquet`;
 
       const allConsolidatedFiles = await glob(consolidatedPattern, {
@@ -749,7 +807,6 @@ export async function uploadAllConsolidatedFilesToS3(
         nodir: true,
       });
 
-      // Combine all files and exclude processed/repaired/failed/quarantine directories
       const allFiles = [
         ...allConsolidatedFiles,
         ...allAggregatedFiles,
@@ -760,126 +817,118 @@ export async function uploadAllConsolidatedFilesToS3(
       );
 
       for (const filePath of filesToUpload) {
-        const success = await uploadToS3(filePath, config, state, app);
+        const success = await uploadToCloud(filePath, target, config, app);
         if (success) uploadedCount++;
       }
     }
 
     if (uploadedCount > 0) {
       app.debug(
-        `S3 catchup: uploaded ${uploadedCount} files from last ${daysToCheck} days (consolidated + aggregated + daily)`
+        `${target.label} catchup: uploaded ${uploadedCount} files from last ${daysToCheck} days (consolidated + aggregated + daily)`
       );
     }
   } catch (error) {
-    app.error(`S3 catchup upload failed: ${(error as Error).message}`);
+    app.error(`Cloud catchup upload failed: ${(error as Error).message}`);
   }
 }
 
-// Upload daily export, consolidated, and aggregated files to S3
+// Upload daily export, consolidated, and aggregated files to all cloud targets
 export async function uploadConsolidatedFilesToS3(
   config: PluginConfig,
   date: Date,
   state: PluginState,
   app: ServerAPI
 ): Promise<void> {
+  const target = getCloudTarget(config, state);
+  if (!target) return;
+
   try {
     const dateStr = date.toISOString().split('T')[0];
     const prefix = config.filenamePrefix || 'signalk_data';
 
-    // Match daily export files (new simplified pipeline) - includes timestamped files
     const dailyPattern = `**/${prefix}_${dateStr}*.parquet`;
-    // Match legacy consolidated files (for backwards compatibility)
     const consolidatedPattern = `**/*_${dateStr}_consolidated.parquet`;
-    // Match aggregated files (from tier aggregation)
     const aggregatedPattern = `**/*_${dateStr}_aggregated.parquet`;
 
-    // Find all daily export files for the date (new pipeline)
     const dailyFiles = await glob(dailyPattern, {
       cwd: config.outputDirectory,
       absolute: true,
       nodir: true,
     });
 
-    // Find all consolidated files for the date (legacy)
     const consolidatedFiles = await glob(consolidatedPattern, {
       cwd: config.outputDirectory,
       absolute: true,
       nodir: true,
     });
 
-    // Find all aggregated files for the date (from tier aggregation)
     const aggregatedFiles = await glob(aggregatedPattern, {
       cwd: config.outputDirectory,
       absolute: true,
       nodir: true,
     });
 
-    // Combine all lists
     const allFiles = [...dailyFiles, ...consolidatedFiles, ...aggregatedFiles];
-
-    // Exclude processed/repaired/failed/quarantine directories
     const filesToUpload = allFiles.filter(
       f => !excludedDirs.some(dir => f.includes(dir))
     );
 
-    // Upload each file
     for (const filePath of filesToUpload) {
-      await uploadToS3(filePath, config, state, app);
+      await uploadToCloud(filePath, target, config, app);
     }
 
     if (filesToUpload.length > 0) {
       app.debug(
-        `S3: Uploaded ${filesToUpload.length} files for ${dateStr} (daily + consolidated + aggregated)`
+        `${target.label}: Uploaded ${filesToUpload.length} files for ${dateStr} (daily + consolidated + aggregated)`
       );
     }
   } catch (error) {
     app.error(
-      `S3 upload failed for date ${date.toISOString().slice(0, 10)}: ${(error as Error).message}`
+      `Cloud upload failed for date ${date.toISOString().slice(0, 10)}: ${(error as Error).message}`
     );
   }
 }
 
-// S3 upload function
-async function uploadToS3(
+// Generic cloud upload function (works with S3, R2, or any S3-compatible target)
+async function uploadToCloud(
   filePath: string,
+  target: CloudTarget,
   config: PluginConfig,
-  state: PluginState,
   app: ServerAPI
 ): Promise<boolean> {
-  if (!config.s3Upload.enabled || !state.s3Client || !PutObjectCommand) {
+  if (!target.client || !PutObjectCommand) {
     return false;
   }
 
   try {
-    // Generate S3 key first
+    // Generate cloud key
     const relativePath = path.relative(config.outputDirectory, filePath);
-    let s3Key = relativePath;
-    if (config.s3Upload.keyPrefix) {
-      const prefix = config.s3Upload.keyPrefix.endsWith('/')
-        ? config.s3Upload.keyPrefix
-        : `${config.s3Upload.keyPrefix}/`;
-      s3Key = `${prefix}${relativePath}`;
+    let cloudKey = relativePath;
+    if (target.keyPrefix) {
+      const prefix = target.keyPrefix.endsWith('/')
+        ? target.keyPrefix
+        : `${target.keyPrefix}/`;
+      cloudKey = `${prefix}${relativePath}`;
     }
 
-    // Check if file exists in S3 and compare timestamps
+    // Check if file exists in cloud and compare timestamps
     const localStats = await fs.stat(filePath);
     let shouldUpload = true;
 
     try {
       if (HeadObjectCommand) {
         const headCommand = new HeadObjectCommand({
-          Bucket: config.s3Upload.bucket,
-          Key: s3Key,
+          Bucket: target.bucket,
+          Key: cloudKey,
         });
-        const s3Object = await state.s3Client.send(headCommand);
+        const cloudObject = await target.client.send(headCommand);
 
-        if (s3Object.LastModified) {
-          const s3LastModified = new Date(s3Object.LastModified);
+        if (cloudObject.LastModified) {
+          const cloudLastModified = new Date(cloudObject.LastModified);
           const localLastModified = new Date(localStats.mtime);
 
-          if (localLastModified <= s3LastModified) {
+          if (localLastModified <= cloudLastModified) {
             shouldUpload = false;
-          } else {
           }
         }
       }
@@ -896,26 +945,23 @@ async function uploadToS3(
     }
 
     if (!shouldUpload) {
-      return true; // Consider it successful since file is already up to date
+      return true;
     }
 
-    // Read the file
     const fileContent = await fs.readFile(filePath);
 
-    // Upload to S3
     const command = new PutObjectCommand({
-      Bucket: config.s3Upload.bucket,
-      Key: s3Key,
+      Bucket: target.bucket,
+      Key: cloudKey,
       Body: fileContent,
       ContentType: filePath.endsWith('.parquet')
         ? 'application/octet-stream'
         : 'application/json',
     });
 
-    await state.s3Client.send(command);
+    await target.client.send(command);
 
-    // Delete local file if configured
-    if (config.s3Upload.deleteAfterUpload) {
+    if (target.deleteAfterUpload) {
       await fs.unlink(filePath);
     }
 

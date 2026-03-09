@@ -1,1862 +1,3312 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>SignalK Parquet Data Interface</title>
-    <link rel="icon" type="image/png" href="parquet.png">
+    <link rel="icon" type="image/png" href="parquet.png" />
     <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
     <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-
-        html {
-            overflow-x: hidden;
-        }
-
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-            background-color: #f5f5f5;
-            color: #333;
-            line-height: 1.6;
-            overflow-x: hidden;
-            max-width: 100vw;
-        }
-
-        .container {
-            max-width: 1400px;
-            margin: 0 auto;
-            padding: 20px;
-            overflow-x: hidden;
-        }
-
-        .header {
-            background: linear-gradient(135deg, #2BB5D6 0%, #013542 100%);
-            color: white;
-            padding: 20px 0;
-            margin-bottom: 20px;
-            border-radius: 10px;
-            text-align: center;
-            position: relative;
-        }
-
-        .header h1 {
-            font-size: 2.5rem;
-            margin-bottom: 10px;
-            margin: 0 0 10px 0;
-        }
-
-        .header p {
-            font-size: 1.1rem;
-            opacity: 0.9;
-        }
-
-        .section {
-            background: white;
-            padding: 20px;
-            margin-bottom: 20px;
-            border-radius: 10px;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-            overflow-x: hidden;
-            max-width: 100%;
-        }
-
-        .section h2 {
-            color: #667eea;
-            margin-bottom: 15px;
-            font-size: 1.5rem;
-        }
-
-        .form-group {
-            margin-bottom: 15px;
-        }
-
-        label {
-            display: block;
-            margin-bottom: 5px;
-            font-weight: 500;
-            color: #555;
-        }
-
-        input, select, textarea {
-            width: 100%;
-            padding: 10px;
-            border: 2px solid #ddd;
-            border-radius: 5px;
-            font-size: 14px;
-            transition: border-color 0.3s;
-        }
-
-        input:focus, select:focus, textarea:focus {
-            outline: none;
-            border-color: #667eea;
-        }
-
-        textarea {
-            resize: vertical;
-            min-height: 100px;
-            font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
-        }
-
-        button {
-            background: #667eea;
-            color: white;
-            padding: 12px 20px;
-            border: none;
-            border-radius: 5px;
-            cursor: pointer;
-            font-size: 14px;
-            transition: background-color 0.3s;
-            margin-right: 10px;
-            margin-bottom: 10px;
-        }
-
-        button:hover {
-            background: #5a6fd8;
-        }
-
-        button:disabled {
-            background: #ccc;
-            cursor: not-allowed;
-        }
-
-        .btn-secondary {
-            background: #6c757d;
-        }
-
-        .btn-secondary:hover {
-            background: #5a6268;
-        }
-
-        .results {
-            margin-top: 20px;
-        }
-
-        .table-container {
-            overflow-x: auto;
-            -webkit-overflow-scrolling: touch;
-            margin-top: 15px;
-            max-width: 100%;
-        }
-
-        table {
-            width: 100%;
-            border-collapse: collapse;
-            table-layout: auto;
-        }
-
-        th, td {
-            padding: 8px;
-            text-align: left;
-            border-bottom: 1px solid #ddd;
-            word-wrap: break-word;
-            word-break: break-word;
-        }
-
-        /* Code elements in tables should wrap */
-        td code {
-            word-break: break-all;
-            white-space: normal;
-            display: inline-block;
-            max-width: 100%;
-        }
-
-        th {
-            background-color: #f8f9fa;
-            font-weight: 600;
-            color: #495057;
-        }
-
-        tr:hover {
-            background-color: #f8f9fa;
-        }
-
-        .edit-command-form-row td {
-            padding: 0;
-            background: transparent;
-        }
-
-        .loading {
-            text-align: center;
-            padding: 20px;
-            color: #666;
-        }
-
-        .error {
-            background-color: #f8d7da;
-            border: 1px solid #f5c6cb;
-            color: #721c24;
-            padding: 10px;
-            border-radius: 5px;
-            margin-top: 10px;
-        }
-
-        .success {
-            background-color: #d4edda;
-            border: 1px solid #c3e6cb;
-            color: #155724;
-            padding: 10px;
-            border-radius: 5px;
-            margin-top: 10px;
-        }
-
-        .path-list {
-            display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-            gap: 15px;
-            margin-top: 15px;
-        }
-
-        .path-item {
-            background: #f8f9fa;
-            padding: 15px;
-            border-radius: 5px;
-            border-left: 4px solid #667eea;
-        }
-
-        .path-item h4 {
-            margin-bottom: 5px;
-            color: #495057;
-        }
-
-        .path-item p {
-            font-size: 0.9rem;
-            color: #666;
-        }
-
-        .path-item button {
-            margin-top: 10px;
-            padding: 5px 10px;
-            font-size: 12px;
-        }
-
-
-        .query-examples {
-            background: #f8f9fa;
-            padding: 15px;
-            border-radius: 5px;
-            margin-top: 15px;
-        }
-
-        .query-examples h4 {
-            margin-bottom: 10px;
-            color: #495057;
-        }
-
-        .query-examples ul {
-            list-style: none;
-            padding: 0;
-        }
-
-        .query-examples li {
-            margin-bottom: 10px;
-            padding: 10px;
-            background: white;
-            border-radius: 3px;
-            cursor: pointer;
-            transition: background-color 0.3s;
-        }
-
-        .query-examples li:hover {
-            background: #e9ecef;
-        }
-
-        .query-examples code {
-            font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
-            font-size: 0.9rem;
-        }
-
-        .stats {
-            display: flex;
-            justify-content: space-between;
-            margin-bottom: 15px;
-            padding: 10px;
-            background: #f8f9fa;
-            border-radius: 5px;
-        }
-
-        .stat-item {
-            text-align: center;
-        }
-
-        .stat-value {
-            font-size: 1.5rem;
-            font-weight: bold;
-            color: #667eea;
-        }
-
-        .stat-label {
-            font-size: 0.9rem;
-            color: #666;
-        }
-
-        .collapsible-header {
-            cursor: pointer;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            padding: 15px 20px;
-            margin: -20px -20px 15px -20px;
-            background: #f8f9fa;
-            border-radius: 10px 10px 0 0;
-            transition: background-color 0.3s;
-        }
-
-        .collapsible-header:hover {
-            background: #e9ecef;
-        }
-
-        .collapsible-header h2 {
-            margin: 0;
-        }
-
-        .collapse-icon {
-            font-size: 1.2rem;
-            transition: transform 0.3s;
-        }
-
-        .collapse-icon.collapsed {
-            transform: rotate(-90deg);
-        }
-
-        .collapsible-content {
-            overflow: hidden;
-            transition: max-height 0.3s ease-out;
-        }
-
-        .collapsible-content.collapsed {
-            max-height: 0;
-        }
-
-        .collapsible-content.expanded {
-            max-height: 2000px;
-        }
-
-        /* Tab Navigation Styles */
-        .tab-navigation {
-            display: flex;
-            background: white;
-            border-radius: 10px 10px 0 0;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-            margin-bottom: 0;
-            overflow-x: auto;
-        }
-
-        .tab-button {
-            background: #f8f9fa;
-            border: none;
-            padding: 15px 20px;
-            cursor: pointer;
-            font-size: 14px;
-            font-weight: 500;
-            color: #666;
-            border-radius: 0;
-            transition: all 0.3s;
-            white-space: nowrap;
-            border-bottom: 3px solid transparent;
-            margin: 0;
-        }
-
-        .tab-button:first-child {
-            border-radius: 10px 0 0 0;
-        }
-
-        .tab-button:last-child {
-            border-radius: 0 10px 0 0;
-        }
-
-        .tab-button:hover {
-            background: #e9ecef;
-            color: #333;
-        }
-
-        .tab-button.active {
-            background: white;
-            color: #667eea;
-            border-bottom-color: #667eea;
-        }
-
-        .tab-content {
-            background: white;
-            border-radius: 0 0 10px 10px;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-            margin-bottom: 20px;
-            overflow-x: hidden;
-            max-width: 100%;
-        }
-
-        .tab-panel {
-            display: none;
-        }
-
-        .tab-panel.active {
-            display: block;
-        }
-
-        .tab-panel .section {
-            margin-bottom: 0;
-            box-shadow: none;
-            border-radius: 0 0 10px 10px;
-        }
-
-        /* Modal styles for responsiveness */
-        .modal-overlay {
-            display: flex;
-            align-items: flex-start;
-            justify-content: center;
-            padding: 20px;
-        }
-
-        .modal-content {
-            position: relative;
-            width: 100%;
-        }
-
-        /* Button groups for responsive layout */
-        .btn-group {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 8px;
-        }
-
-        .btn-group button {
-            flex: 1 1 auto;
-        }
-
-        /* Responsive utility classes */
-        .hide-mobile {
-            display: block;
-        }
-
-        .show-mobile {
-            display: none;
-        }
-
-        .text-truncate {
-            overflow: hidden;
-            text-overflow: ellipsis;
-            white-space: nowrap;
-        }
-
-        /* ============================================
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+
+      html {
+        overflow-x: hidden;
+      }
+
+      body {
+        font-family:
+          -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu,
+          Cantarell, sans-serif;
+        background-color: #f5f5f5;
+        color: #333;
+        line-height: 1.6;
+        overflow-x: hidden;
+        max-width: 100vw;
+      }
+
+      .container {
+        max-width: 1400px;
+        margin: 0 auto;
+        padding: 20px;
+        overflow-x: hidden;
+      }
+
+      .header {
+        background: linear-gradient(135deg, #2bb5d6 0%, #013542 100%);
+        color: white;
+        padding: 20px 0;
+        margin-bottom: 20px;
+        border-radius: 10px;
+        text-align: center;
+        position: relative;
+      }
+
+      .header h1 {
+        font-size: 2.5rem;
+        margin-bottom: 10px;
+        margin: 0 0 10px 0;
+      }
+
+      .header p {
+        font-size: 1.1rem;
+        opacity: 0.9;
+      }
+
+      .section {
+        background: white;
+        padding: 20px;
+        margin-bottom: 20px;
+        border-radius: 10px;
+        box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+        overflow-x: hidden;
+        max-width: 100%;
+      }
+
+      .section h2 {
+        color: #667eea;
+        margin-bottom: 15px;
+        font-size: 1.5rem;
+      }
+
+      .form-group {
+        margin-bottom: 15px;
+      }
+
+      label {
+        display: block;
+        margin-bottom: 5px;
+        font-weight: 500;
+        color: #555;
+      }
+
+      input,
+      select,
+      textarea {
+        width: 100%;
+        padding: 10px;
+        border: 2px solid #ddd;
+        border-radius: 5px;
+        font-size: 14px;
+        transition: border-color 0.3s;
+      }
+
+      input:focus,
+      select:focus,
+      textarea:focus {
+        outline: none;
+        border-color: #667eea;
+      }
+
+      textarea {
+        resize: vertical;
+        min-height: 100px;
+        font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+      }
+
+      button {
+        background: #667eea;
+        color: white;
+        padding: 12px 20px;
+        border: none;
+        border-radius: 5px;
+        cursor: pointer;
+        font-size: 14px;
+        transition: background-color 0.3s;
+        margin-right: 10px;
+        margin-bottom: 10px;
+      }
+
+      button:hover {
+        background: #5a6fd8;
+      }
+
+      button:disabled {
+        background: #ccc;
+        cursor: not-allowed;
+      }
+
+      .btn-secondary {
+        background: #6c757d;
+      }
+
+      .btn-secondary:hover {
+        background: #5a6268;
+      }
+
+      .results {
+        margin-top: 20px;
+      }
+
+      .table-container {
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+        margin-top: 15px;
+        max-width: 100%;
+      }
+
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        table-layout: auto;
+      }
+
+      th,
+      td {
+        padding: 8px;
+        text-align: left;
+        border-bottom: 1px solid #ddd;
+        word-wrap: break-word;
+        word-break: break-word;
+      }
+
+      /* Code elements in tables should wrap */
+      td code {
+        word-break: break-all;
+        white-space: normal;
+        display: inline-block;
+        max-width: 100%;
+      }
+
+      th {
+        background-color: #f8f9fa;
+        font-weight: 600;
+        color: #495057;
+      }
+
+      tr:hover {
+        background-color: #f8f9fa;
+      }
+
+      .edit-command-form-row td {
+        padding: 0;
+        background: transparent;
+      }
+
+      .loading {
+        text-align: center;
+        padding: 20px;
+        color: #666;
+      }
+
+      .error {
+        background-color: #f8d7da;
+        border: 1px solid #f5c6cb;
+        color: #721c24;
+        padding: 10px;
+        border-radius: 5px;
+        margin-top: 10px;
+      }
+
+      .success {
+        background-color: #d4edda;
+        border: 1px solid #c3e6cb;
+        color: #155724;
+        padding: 10px;
+        border-radius: 5px;
+        margin-top: 10px;
+      }
+
+      .path-list {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+        gap: 15px;
+        margin-top: 15px;
+      }
+
+      .path-item {
+        background: #f8f9fa;
+        padding: 15px;
+        border-radius: 5px;
+        border-left: 4px solid #667eea;
+      }
+
+      .path-item h4 {
+        margin-bottom: 5px;
+        color: #495057;
+      }
+
+      .path-item p {
+        font-size: 0.9rem;
+        color: #666;
+      }
+
+      .path-item button {
+        margin-top: 10px;
+        padding: 5px 10px;
+        font-size: 12px;
+      }
+
+      .query-examples {
+        background: #f8f9fa;
+        padding: 15px;
+        border-radius: 5px;
+        margin-top: 15px;
+      }
+
+      .query-examples h4 {
+        margin-bottom: 10px;
+        color: #495057;
+      }
+
+      .query-examples ul {
+        list-style: none;
+        padding: 0;
+      }
+
+      .query-examples li {
+        margin-bottom: 10px;
+        padding: 10px;
+        background: white;
+        border-radius: 3px;
+        cursor: pointer;
+        transition: background-color 0.3s;
+      }
+
+      .query-examples li:hover {
+        background: #e9ecef;
+      }
+
+      .query-examples code {
+        font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+        font-size: 0.9rem;
+      }
+
+      .stats {
+        display: flex;
+        justify-content: space-between;
+        margin-bottom: 15px;
+        padding: 10px;
+        background: #f8f9fa;
+        border-radius: 5px;
+      }
+
+      .stat-item {
+        text-align: center;
+      }
+
+      .stat-value {
+        font-size: 1.5rem;
+        font-weight: bold;
+        color: #667eea;
+      }
+
+      .stat-label {
+        font-size: 0.9rem;
+        color: #666;
+      }
+
+      .collapsible-header {
+        cursor: pointer;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 15px 20px;
+        margin: -20px -20px 15px -20px;
+        background: #f8f9fa;
+        border-radius: 10px 10px 0 0;
+        transition: background-color 0.3s;
+      }
+
+      .collapsible-header:hover {
+        background: #e9ecef;
+      }
+
+      .collapsible-header h2 {
+        margin: 0;
+      }
+
+      .collapse-icon {
+        font-size: 1.2rem;
+        transition: transform 0.3s;
+      }
+
+      .collapse-icon.collapsed {
+        transform: rotate(-90deg);
+      }
+
+      .collapsible-content {
+        overflow: hidden;
+        transition: max-height 0.3s ease-out;
+      }
+
+      .collapsible-content.collapsed {
+        max-height: 0;
+      }
+
+      .collapsible-content.expanded {
+        max-height: 2000px;
+      }
+
+      /* Tab Navigation Styles */
+      .tab-navigation {
+        display: flex;
+        background: white;
+        border-radius: 10px 10px 0 0;
+        box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+        margin-bottom: 0;
+        overflow-x: auto;
+      }
+
+      .tab-button {
+        background: #f8f9fa;
+        border: none;
+        padding: 15px 20px;
+        cursor: pointer;
+        font-size: 14px;
+        font-weight: 500;
+        color: #666;
+        border-radius: 0;
+        transition: all 0.3s;
+        white-space: nowrap;
+        border-bottom: 3px solid transparent;
+        margin: 0;
+      }
+
+      .tab-button:first-child {
+        border-radius: 10px 0 0 0;
+      }
+
+      .tab-button:last-child {
+        border-radius: 0 10px 0 0;
+      }
+
+      .tab-button:hover {
+        background: #e9ecef;
+        color: #333;
+      }
+
+      .tab-button.active {
+        background: white;
+        color: #667eea;
+        border-bottom-color: #667eea;
+      }
+
+      .tab-content {
+        background: white;
+        border-radius: 0 0 10px 10px;
+        box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+        margin-bottom: 20px;
+        overflow-x: hidden;
+        max-width: 100%;
+      }
+
+      .tab-panel {
+        display: none;
+      }
+
+      .tab-panel.active {
+        display: block;
+      }
+
+      .tab-panel .section {
+        margin-bottom: 0;
+        box-shadow: none;
+        border-radius: 0 0 10px 10px;
+      }
+
+      /* Modal styles for responsiveness */
+      .modal-overlay {
+        display: flex;
+        align-items: flex-start;
+        justify-content: center;
+        padding: 20px;
+      }
+
+      .modal-content {
+        position: relative;
+        width: 100%;
+      }
+
+      /* Button groups for responsive layout */
+      .btn-group {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+      }
+
+      .btn-group button {
+        flex: 1 1 auto;
+      }
+
+      /* Responsive utility classes */
+      .hide-mobile {
+        display: block;
+      }
+
+      .show-mobile {
+        display: none;
+      }
+
+      .text-truncate {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      /* ============================================
            RESPONSIVE DESIGN - Mobile First Approach
            ============================================ */
 
-        /* Extra small devices (phones, 480px and down) */
-        @media (max-width: 480px) {
-            .container {
-                padding: 8px;
-            }
+      /* Extra small devices (phones, 480px and down) */
+      @media (max-width: 480px) {
+        .container {
+          padding: 8px;
+        }
 
-            .header {
-                padding: 15px 10px;
-                border-radius: 8px;
-            }
+        .header {
+          padding: 15px 10px;
+          border-radius: 8px;
+        }
 
-            .header img {
-                position: static !important;
-                height: 50px !important;
-                margin-bottom: 10px;
-            }
+        .header img {
+          position: static !important;
+          height: 50px !important;
+          margin-bottom: 10px;
+        }
 
-            .header h1 {
-                font-size: 1.4rem;
-            }
+        .header h1 {
+          font-size: 1.4rem;
+        }
 
-            .header p {
-                font-size: 0.9rem;
-            }
+        .header p {
+          font-size: 0.9rem;
+        }
 
-            .section {
-                padding: 12px;
-                border-radius: 8px;
-            }
+        .section {
+          padding: 12px;
+          border-radius: 8px;
+        }
 
-            .section h2 {
-                font-size: 1.2rem;
-            }
+        .section h2 {
+          font-size: 1.2rem;
+        }
 
-            .stats {
-                flex-direction: column;
-                gap: 8px;
-                padding: 8px;
-            }
+        .stats {
+          flex-direction: column;
+          gap: 8px;
+          padding: 8px;
+        }
 
-            .stat-value {
-                font-size: 1.2rem;
-            }
+        .stat-value {
+          font-size: 1.2rem;
+        }
 
-            .stat-label {
-                font-size: 0.8rem;
-            }
+        .stat-label {
+          font-size: 0.8rem;
+        }
 
-            /* Tab navigation - horizontal scroll on very small screens */
-            .tab-navigation {
-                flex-wrap: nowrap;
-                overflow-x: auto;
-                -webkit-overflow-scrolling: touch;
-                scrollbar-width: thin;
-            }
+        /* Tab navigation - horizontal scroll on very small screens */
+        .tab-navigation {
+          flex-wrap: nowrap;
+          overflow-x: auto;
+          -webkit-overflow-scrolling: touch;
+          scrollbar-width: thin;
+        }
 
-            .tab-button {
-                flex: 0 0 auto;
-                min-width: 100px;
-                padding: 10px 12px;
-                font-size: 12px;
-            }
+        .tab-button {
+          flex: 0 0 auto;
+          min-width: 100px;
+          padding: 10px 12px;
+          font-size: 12px;
+        }
 
-            .tab-button:first-child,
-            .tab-button:last-child {
-                border-radius: 0;
-            }
+        .tab-button:first-child,
+        .tab-button:last-child {
+          border-radius: 0;
+        }
 
-            /* Buttons - full width on mobile */
-            button {
-                width: 100%;
-                margin-right: 0;
-                padding: 14px 16px;
-                font-size: 15px;
-                min-height: 48px; /* Touch-friendly */
-            }
+        /* Buttons - full width on mobile */
+        button {
+          width: 100%;
+          margin-right: 0;
+          padding: 14px 16px;
+          font-size: 15px;
+          min-height: 48px; /* Touch-friendly */
+        }
 
-            .btn-group {
-                display: flex;
-                flex-direction: column;
-                gap: 8px;
-            }
+        .btn-group {
+          display: flex;
+          flex-direction: column;
+          gap: 8px;
+        }
 
-            /* Form inputs - larger touch targets */
-            input, select, textarea {
-                padding: 12px;
-                font-size: 16px; /* Prevents iOS zoom */
-                min-height: 48px;
-            }
+        /* Form inputs - larger touch targets */
+        input,
+        select,
+        textarea {
+          padding: 12px;
+          font-size: 16px; /* Prevents iOS zoom */
+          min-height: 48px;
+        }
 
-            /* Tables - responsive on mobile */
-            .table-container {
-                margin: 0 -8px;
-                padding: 0;
-                overflow-x: auto;
-                max-width: calc(100% + 16px);
-            }
+        /* Tables - responsive on mobile */
+        .table-container {
+          margin: 0 -8px;
+          padding: 0;
+          overflow-x: auto;
+          max-width: calc(100% + 16px);
+        }
 
-            table {
-                min-width: 500px;
-                font-size: 12px;
-            }
+        table {
+          min-width: 500px;
+          font-size: 12px;
+        }
 
-            th, td {
-                padding: 8px 6px;
-                font-size: 12px;
-            }
+        th,
+        td {
+          padding: 8px 6px;
+          font-size: 12px;
+        }
 
-            td code {
-                font-size: 11px;
-            }
+        td code {
+          font-size: 11px;
+        }
 
-            /* Hide less important columns on mobile */
-            th:nth-child(4), td:nth-child(4), /* Source */
+        /* Hide less important columns on mobile */
+        th:nth-child(4), td:nth-child(4), /* Source */
             th:nth-child(5), td:nth-child(5), /* Context */
-            th:nth-child(6), td:nth-child(6) { /* Exclude MMSI */
-                display: none;
-            }
-
-            /* Compact action buttons on mobile */
-            td button {
-                padding: 6px 8px !important;
-                font-size: 11px !important;
-                margin: 2px !important;
-                width: auto !important;
-                min-height: 32px !important;
-            }
-
-            /* Path list - single column */
-            .path-list {
-                grid-template-columns: 1fr;
-                gap: 10px;
-            }
-
-            .path-item {
-                padding: 12px;
-            }
-
-            /* Collapsible sections */
-            .collapsible-header {
-                padding: 12px 15px;
-                margin: -12px -12px 12px -12px;
-            }
-
-            /* Path tree */
-            .path-tree-container {
-                max-height: 300px;
-            }
-
-            .path-tree-item {
-                padding: 10px 8px;
-                min-height: 44px;
-            }
-
-            /* Query examples */
-            .query-examples {
-                padding: 10px;
-            }
-
-            .query-examples code {
-                font-size: 0.8rem;
-                word-break: break-all;
-            }
-
-            /* Utility class toggles for mobile */
-            .hide-mobile {
-                display: none !important;
-            }
-
-            .show-mobile {
-                display: block !important;
-            }
-        }
-
-        /* Small devices (large phones, tablets portrait - 481px to 768px) */
-        @media (min-width: 481px) and (max-width: 768px) {
-            .container {
-                padding: 12px;
-            }
-
-            .header {
-                padding: 15px;
-            }
-
-            .header img {
-                height: 60px !important;
-                left: 15px !important;
-                top: 15px !important;
-            }
-
-            .header h1 {
-                font-size: 1.8rem;
-            }
-
-            .section {
-                padding: 15px;
-            }
-
-            .stats {
-                flex-direction: column;
-                gap: 10px;
-            }
-
-            .tab-navigation {
-                flex-wrap: wrap;
-            }
-
-            .tab-button {
-                flex: 1 1 calc(25% - 2px);
-                min-width: 100px;
-                padding: 12px 15px;
-                font-size: 13px;
-            }
-
-            .tab-button:first-child,
-            .tab-button:last-child {
-                border-radius: 0;
-            }
-
-            /* Two column grid for path list */
-            .path-list {
-                grid-template-columns: repeat(2, 1fr);
-            }
-
-            /* Table responsive for tablets */
-            .table-container {
-                overflow-x: auto;
-            }
-
-            table {
-                min-width: 600px;
-                font-size: 13px;
-            }
-
-            th, td {
-                padding: 8px;
-            }
-
-            /* Show more table columns on tablet */
-            th:nth-child(4), td:nth-child(4) {
-                display: table-cell;
-            }
-
-            /* Hide context and exclude MMSI on tablet */
-            th:nth-child(5), td:nth-child(5),
             th:nth-child(6), td:nth-child(6) {
-                display: none;
-            }
-
-            button {
-                min-height: 44px;
-            }
-
-            input, select, textarea {
-                font-size: 16px;
-            }
+          /* Exclude MMSI */
+          display: none;
         }
 
-        /* Medium devices (tablets landscape, small laptops - 769px to 1024px) */
-        @media (min-width: 769px) and (max-width: 1024px) {
-            .container {
-                padding: 15px;
-            }
-
-            .header h1 {
-                font-size: 2.2rem;
-            }
-
-            .stats {
-                flex-wrap: wrap;
-                justify-content: center;
-                gap: 15px;
-            }
-
-            .stat-item {
-                flex: 1 1 auto;
-                min-width: 100px;
-            }
-
-            .path-list {
-                grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-            }
-
-            /* Table on medium screens */
-            .table-container {
-                overflow-x: auto;
-            }
-
-            table {
-                min-width: 700px;
-            }
-
-            /* Hide exclude MMSI on medium screens */
-            th:nth-child(6), td:nth-child(6) {
-                display: none;
-            }
+        /* Compact action buttons on mobile */
+        td button {
+          padding: 6px 8px !important;
+          font-size: 11px !important;
+          margin: 2px !important;
+          width: auto !important;
+          min-height: 32px !important;
         }
 
-        /* Large devices (desktops - 1025px to 1440px) */
-        @media (min-width: 1025px) and (max-width: 1440px) {
-            .container {
-                padding: 20px;
-            }
+        /* Path list - single column */
+        .path-list {
+          grid-template-columns: 1fr;
+          gap: 10px;
         }
 
-        /* Extra large devices (large desktops, TVs - 1441px and up) */
-        @media (min-width: 1441px) {
-            .container {
-                max-width: 1600px;
-            }
-
-            .header h1 {
-                font-size: 3rem;
-            }
-
-            .section h2 {
-                font-size: 1.8rem;
-            }
-
-            .stat-value {
-                font-size: 2rem;
-            }
-
-            .path-list {
-                grid-template-columns: repeat(auto-fill, minmax(350px, 1fr));
-            }
+        .path-item {
+          padding: 12px;
         }
 
-        /* Landscape orientation for phones */
-        @media (max-height: 500px) and (orientation: landscape) {
-            .header {
-                padding: 10px;
-            }
-
-            .header img {
-                height: 40px !important;
-            }
-
-            .header h1 {
-                font-size: 1.5rem;
-            }
-
-            .header p {
-                display: none;
-            }
-
-            .tab-navigation {
-                position: sticky;
-                top: 0;
-                z-index: 100;
-            }
+        /* Collapsible sections */
+        .collapsible-header {
+          padding: 12px 15px;
+          margin: -12px -12px 12px -12px;
         }
 
-        /* High DPI / Retina display optimizations */
-        @media (-webkit-min-device-pixel-ratio: 2), (min-resolution: 192dpi) {
-            .header img {
-                image-rendering: -webkit-optimize-contrast;
-            }
-        }
-
-        /* Print styles */
-        @media print {
-            .tab-navigation,
-            button,
-            .header img {
-                display: none;
-            }
-
-            .tab-panel {
-                display: block !important;
-                page-break-inside: avoid;
-            }
-
-            .section {
-                box-shadow: none;
-                border: 1px solid #ddd;
-            }
-        }
-
-        /* Responsive modal styles */
-        .modal-responsive {
-            margin: 20px !important;
-            max-width: calc(100% - 40px) !important;
-            max-height: calc(100vh - 40px) !important;
-        }
-
-        @media (max-width: 480px) {
-            .modal-responsive,
-            #contextPreviewModal > div,
-            #analysisHistoryModal > div,
-            #analysisViewModal > div,
-            #thresholdModal > div {
-                margin: 0 !important;
-                max-width: 100% !important;
-                width: 100% !important;
-                max-height: 100vh !important;
-                height: 100vh !important;
-                border-radius: 0 !important;
-            }
-        }
-
-        @media (max-width: 768px) {
-            #contextPreviewModal > div,
-            #analysisHistoryModal > div,
-            #analysisViewModal > div,
-            #thresholdModal > div {
-                margin: 10px !important;
-                max-width: calc(100% - 20px) !important;
-                max-height: calc(100vh - 20px) !important;
-            }
-        }
-
-        /* Touch-friendly scrollbars */
-        @media (pointer: coarse) {
-            .table-container,
-            .path-tree-container,
-            .tab-navigation {
-                scrollbar-width: thin;
-            }
-
-            .table-container::-webkit-scrollbar,
-            .path-tree-container::-webkit-scrollbar,
-            .tab-navigation::-webkit-scrollbar {
-                height: 6px;
-                width: 6px;
-            }
-
-            .table-container::-webkit-scrollbar-thumb,
-            .path-tree-container::-webkit-scrollbar-thumb,
-            .tab-navigation::-webkit-scrollbar-thumb {
-                background: #ccc;
-                border-radius: 3px;
-            }
-        }
-
-        /* Reduce motion for accessibility */
-        @media (prefers-reduced-motion: reduce) {
-            *,
-            *::before,
-            *::after {
-                animation-duration: 0.01ms !important;
-                animation-iteration-count: 1 !important;
-                transition-duration: 0.01ms !important;
-            }
-        }
-
-        /* Hierarchical Path Tree Styles */
+        /* Path tree */
         .path-tree-container {
-            border: 1px solid #ddd;
-            border-radius: 4px;
-            background: white;
-            max-height: 400px;
-            overflow-y: auto;
-            padding: 8px;
+          max-height: 300px;
         }
 
         .path-tree-item {
-            padding: 4px 8px;
-            cursor: pointer;
-            user-select: none;
-            display: flex;
-            align-items: center;
-            gap: 4px;
+          padding: 10px 8px;
+          min-height: 44px;
         }
 
-        .path-tree-item:hover {
-            background: #f0f8ff;
+        /* Query examples */
+        .query-examples {
+          padding: 10px;
         }
 
-        .path-tree-item.selected {
-            background: #d0e8ff;
-            font-weight: 500;
+        .query-examples code {
+          font-size: 0.8rem;
+          word-break: break-all;
         }
 
-        .path-tree-item.has-value {
-            color: #0066cc;
+        /* Utility class toggles for mobile */
+        .hide-mobile {
+          display: none !important;
         }
 
-        .path-tree-toggle {
-            width: 16px;
-            height: 16px;
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 12px;
-            flex-shrink: 0;
+        .show-mobile {
+          display: block !important;
+        }
+      }
+
+      /* Small devices (large phones, tablets portrait - 481px to 768px) */
+      @media (min-width: 481px) and (max-width: 768px) {
+        .container {
+          padding: 12px;
         }
 
-        .path-tree-children {
-            margin-left: 20px;
-            display: none;
+        .header {
+          padding: 15px;
         }
 
-        .path-tree-children.expanded {
-            display: block;
+        .header img {
+          height: 60px !important;
+          left: 15px !important;
+          top: 15px !important;
         }
 
-        .path-tree-search {
-            width: 100%;
-            padding: 8px;
-            border: 1px solid #ddd;
-            border-radius: 4px;
-            margin-bottom: 8px;
+        .header h1 {
+          font-size: 1.8rem;
         }
 
-        .path-tree-label {
-            flex: 1;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            white-space: nowrap;
+        .section {
+          padding: 15px;
         }
+
+        .stats {
+          flex-direction: column;
+          gap: 10px;
+        }
+
+        .tab-navigation {
+          flex-wrap: wrap;
+        }
+
+        .tab-button {
+          flex: 1 1 calc(25% - 2px);
+          min-width: 100px;
+          padding: 12px 15px;
+          font-size: 13px;
+        }
+
+        .tab-button:first-child,
+        .tab-button:last-child {
+          border-radius: 0;
+        }
+
+        /* Two column grid for path list */
+        .path-list {
+          grid-template-columns: repeat(2, 1fr);
+        }
+
+        /* Table responsive for tablets */
+        .table-container {
+          overflow-x: auto;
+        }
+
+        table {
+          min-width: 600px;
+          font-size: 13px;
+        }
+
+        th,
+        td {
+          padding: 8px;
+        }
+
+        /* Show more table columns on tablet */
+        th:nth-child(4),
+        td:nth-child(4) {
+          display: table-cell;
+        }
+
+        /* Hide context and exclude MMSI on tablet */
+        th:nth-child(5),
+        td:nth-child(5),
+        th:nth-child(6),
+        td:nth-child(6) {
+          display: none;
+        }
+
+        button {
+          min-height: 44px;
+        }
+
+        input,
+        select,
+        textarea {
+          font-size: 16px;
+        }
+      }
+
+      /* Medium devices (tablets landscape, small laptops - 769px to 1024px) */
+      @media (min-width: 769px) and (max-width: 1024px) {
+        .container {
+          padding: 15px;
+        }
+
+        .header h1 {
+          font-size: 2.2rem;
+        }
+
+        .stats {
+          flex-wrap: wrap;
+          justify-content: center;
+          gap: 15px;
+        }
+
+        .stat-item {
+          flex: 1 1 auto;
+          min-width: 100px;
+        }
+
+        .path-list {
+          grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+        }
+
+        /* Table on medium screens */
+        .table-container {
+          overflow-x: auto;
+        }
+
+        table {
+          min-width: 700px;
+        }
+
+        /* Hide exclude MMSI on medium screens */
+        th:nth-child(6),
+        td:nth-child(6) {
+          display: none;
+        }
+      }
+
+      /* Large devices (desktops - 1025px to 1440px) */
+      @media (min-width: 1025px) and (max-width: 1440px) {
+        .container {
+          padding: 20px;
+        }
+      }
+
+      /* Extra large devices (large desktops, TVs - 1441px and up) */
+      @media (min-width: 1441px) {
+        .container {
+          max-width: 1600px;
+        }
+
+        .header h1 {
+          font-size: 3rem;
+        }
+
+        .section h2 {
+          font-size: 1.8rem;
+        }
+
+        .stat-value {
+          font-size: 2rem;
+        }
+
+        .path-list {
+          grid-template-columns: repeat(auto-fill, minmax(350px, 1fr));
+        }
+      }
+
+      /* Landscape orientation for phones */
+      @media (max-height: 500px) and (orientation: landscape) {
+        .header {
+          padding: 10px;
+        }
+
+        .header img {
+          height: 40px !important;
+        }
+
+        .header h1 {
+          font-size: 1.5rem;
+        }
+
+        .header p {
+          display: none;
+        }
+
+        .tab-navigation {
+          position: sticky;
+          top: 0;
+          z-index: 100;
+        }
+      }
+
+      /* High DPI / Retina display optimizations */
+      @media (-webkit-min-device-pixel-ratio: 2), (min-resolution: 192dpi) {
+        .header img {
+          image-rendering: -webkit-optimize-contrast;
+        }
+      }
+
+      /* Print styles */
+      @media print {
+        .tab-navigation,
+        button,
+        .header img {
+          display: none;
+        }
+
+        .tab-panel {
+          display: block !important;
+          page-break-inside: avoid;
+        }
+
+        .section {
+          box-shadow: none;
+          border: 1px solid #ddd;
+        }
+      }
+
+      /* Responsive modal styles */
+      .modal-responsive {
+        margin: 20px !important;
+        max-width: calc(100% - 40px) !important;
+        max-height: calc(100vh - 40px) !important;
+      }
+
+      @media (max-width: 480px) {
+        .modal-responsive,
+        #contextPreviewModal > div,
+        #analysisHistoryModal > div,
+        #analysisViewModal > div,
+        #thresholdModal > div {
+          margin: 0 !important;
+          max-width: 100% !important;
+          width: 100% !important;
+          max-height: 100vh !important;
+          height: 100vh !important;
+          border-radius: 0 !important;
+        }
+      }
+
+      @media (max-width: 768px) {
+        #contextPreviewModal > div,
+        #analysisHistoryModal > div,
+        #analysisViewModal > div,
+        #thresholdModal > div {
+          margin: 10px !important;
+          max-width: calc(100% - 20px) !important;
+          max-height: calc(100vh - 20px) !important;
+        }
+      }
+
+      /* Touch-friendly scrollbars */
+      @media (pointer: coarse) {
+        .table-container,
+        .path-tree-container,
+        .tab-navigation {
+          scrollbar-width: thin;
+        }
+
+        .table-container::-webkit-scrollbar,
+        .path-tree-container::-webkit-scrollbar,
+        .tab-navigation::-webkit-scrollbar {
+          height: 6px;
+          width: 6px;
+        }
+
+        .table-container::-webkit-scrollbar-thumb,
+        .path-tree-container::-webkit-scrollbar-thumb,
+        .tab-navigation::-webkit-scrollbar-thumb {
+          background: #ccc;
+          border-radius: 3px;
+        }
+      }
+
+      /* Reduce motion for accessibility */
+      @media (prefers-reduced-motion: reduce) {
+        *,
+        *::before,
+        *::after {
+          animation-duration: 0.01ms !important;
+          animation-iteration-count: 1 !important;
+          transition-duration: 0.01ms !important;
+        }
+      }
+
+      /* Hierarchical Path Tree Styles */
+      .path-tree-container {
+        border: 1px solid #ddd;
+        border-radius: 4px;
+        background: white;
+        max-height: 400px;
+        overflow-y: auto;
+        padding: 8px;
+      }
+
+      .path-tree-item {
+        padding: 4px 8px;
+        cursor: pointer;
+        user-select: none;
+        display: flex;
+        align-items: center;
+        gap: 4px;
+      }
+
+      .path-tree-item:hover {
+        background: #f0f8ff;
+      }
+
+      .path-tree-item.selected {
+        background: #d0e8ff;
+        font-weight: 500;
+      }
+
+      .path-tree-item.has-value {
+        color: #0066cc;
+      }
+
+      .path-tree-toggle {
+        width: 16px;
+        height: 16px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 12px;
+        flex-shrink: 0;
+      }
+
+      .path-tree-children {
+        margin-left: 20px;
+        display: none;
+      }
+
+      .path-tree-children.expanded {
+        display: block;
+      }
+
+      .path-tree-search {
+        width: 100%;
+        padding: 8px;
+        border: 1px solid #ddd;
+        border-radius: 4px;
+        margin-bottom: 8px;
+      }
+
+      .path-tree-label {
+        flex: 1;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
     </style>
-</head>
-<body>
+  </head>
+  <body>
     <div class="container">
-        <div class="header">
-            <img src="parquet.png" alt="Parquet" style="height: 80px; position: absolute; left: 20px; top: 20px; border-radius: 5px;">
-            <h1 style="margin: 0 0 10px 0;">
-                SignalK Parquet Data Store
-            </h1>
-            <p>Export, query, and explore your SignalK data archived as Parquet files</p>
+      <div class="header">
+        <img
+          src="parquet.png"
+          alt="Parquet"
+          style="
+            height: 80px;
+            position: absolute;
+            left: 20px;
+            top: 20px;
+            border-radius: 5px;
+          "
+        />
+        <h1 style="margin: 0 0 10px 0">SignalK Parquet Data Store</h1>
+        <p>
+          Export, query, and explore your SignalK data archived as Parquet files
+        </p>
+      </div>
+
+      <!-- Tab Navigation -->
+      <div class="tab-navigation">
+        <button class="tab-button active" onclick="showTab('pathConfig')">
+          ⚙️ Path Configuration
+        </button>
+        <button class="tab-button" onclick="showTab('commandManager')">
+          🎮 Regimen/Commands Manager
+        </button>
+        <button
+          class="tab-button"
+          onclick="showTab('liveConnections')"
+          style="display: none"
+        >
+          🔴 Live Connections
+        </button>
+        <button
+          id="queryDatabaseTab"
+          class="tab-button"
+          onclick="showTab('dataPaths')"
+        >
+          🗄️ Query Database
+        </button>
+        <button
+          class="tab-button"
+          onclick="showTab('aiAnalysis')"
+          style="display: none"
+        >
+          🧠 AI Analysis <small>(EXPERIMENTAL)</small>
+        </button>
+        <button
+          class="tab-button"
+          onclick="showTab('dataValidation')"
+          style="display: none"
+        >
+          🔍 Data Validation
+        </button>
+        <button class="tab-button" onclick="showTab('migration')">
+          📊 Status
+        </button>
+        <button class="tab-button" onclick="showTab('s3Config')">
+          ☁️ Cloud Status
+        </button>
+      </div>
+
+      <!-- Tab Content Panels -->
+      <div class="tab-content">
+        <!-- Path Configuration Tab -->
+        <div id="pathConfig" class="tab-panel active">
+          <div class="section">
+            <h2>⚙️ Path Configuration</h2>
+            <p>Manage which SignalK paths to collect data from:</p>
+
+            <!-- Home Port Configuration -->
+            <div
+              id="homePortConfig"
+              style="
+                margin: 15px 0 20px 0;
+                padding: 15px;
+                background: #e8f5e9;
+                border-radius: 8px;
+                border: 2px solid #4caf50;
+              "
+            >
+              <h3
+                style="
+                  margin: 0 0 10px 0;
+                  color: #2e7d32;
+                  display: flex;
+                  align-items: center;
+                  gap: 8px;
+                  cursor: pointer;
+                  user-select: none;
+                "
+                onclick="toggleHomePortCollapse()"
+              >
+                <span id="homePortToggle">▼</span>
+                🏠 Home Port Location
+                <span style="font-size: 0.8em; font-weight: normal; color: #666"
+                  >(Used for proximity-based thresholds)</span
+                >
+              </h3>
+
+              <div id="homePortDetails">
+                <div
+                  style="
+                    display: grid;
+                    grid-template-columns: 1fr 1fr auto;
+                    gap: 12px;
+                    align-items: end;
+                  "
+                >
+                  <div>
+                    <label
+                      for="homePortLat"
+                      style="
+                        display: block;
+                        margin-bottom: 5px;
+                        font-weight: 500;
+                        color: #333;
+                      "
+                      >Latitude:</label
+                    >
+                    <input
+                      type="number"
+                      id="homePortLat"
+                      step="0.000001"
+                      placeholder="e.g., 40.712800"
+                      style="
+                        width: 100%;
+                        padding: 8px;
+                        border: 1px solid #4caf50;
+                        border-radius: 4px;
+                      "
+                    />
+                  </div>
+                  <div>
+                    <label
+                      for="homePortLon"
+                      style="
+                        display: block;
+                        margin-bottom: 5px;
+                        font-weight: 500;
+                        color: #333;
+                      "
+                      >Longitude:</label
+                    >
+                    <input
+                      type="number"
+                      id="homePortLon"
+                      step="0.000001"
+                      placeholder="e.g., -74.006000"
+                      style="
+                        width: 100%;
+                        padding: 8px;
+                        border: 1px solid #4caf50;
+                        border-radius: 4px;
+                      "
+                    />
+                  </div>
+                  <div>
+                    <button
+                      onclick="setCurrentLocationAsHomePort()"
+                      style="
+                        background: #2196f3;
+                        padding: 8px 12px;
+                        white-space: nowrap;
+                      "
+                    >
+                      📍 Use Current Position
+                    </button>
+                  </div>
+                </div>
+
+                <div
+                  style="
+                    display: flex;
+                    gap: 10px;
+                    align-items: center;
+                    margin-top: 12px;
+                  "
+                >
+                  <button
+                    onclick="saveHomePort()"
+                    style="background: #4caf50; padding: 8px 16px"
+                  >
+                    💾 Save Home Port
+                  </button>
+                  <div id="homePortStatus" style="font-size: 0.9em"></div>
+                </div>
+              </div>
+            </div>
+
+            <button onclick="loadPathConfigurations()">🔄 Refresh Paths</button>
+            <button onclick="showAddPathForm()">➕ Add New Path</button>
+            <button id="toggleCommandsBtn" onclick="toggleCommandPaths()">
+              👁️ Show Commands
+            </button>
+
+            <!-- Add Path Form (hidden by default) -->
+            <div
+              id="addPathForm"
+              style="
+                display: none;
+                margin: 20px 0;
+                padding: 20px;
+                background: #f8f9fa;
+                border-radius: 5px;
+                min-height: 400px;
+                overflow: visible;
+              "
+            >
+              <h4>Add New Path Configuration</h4>
+              <div class="form-group">
+                <label for="pathSignalK">SignalK Path:</label>
+                <div
+                  style="
+                    margin-bottom: 8px;
+                    display: flex;
+                    align-items: center;
+                    gap: 15px;
+                  "
+                >
+                  <label
+                    style="
+                      display: flex;
+                      align-items: center;
+                      font-weight: normal;
+                      cursor: pointer;
+                      white-space: nowrap;
+                    "
+                  >
+                    <span style="margin-right: 5px">🏠 Self paths</span>
+                    <input
+                      type="radio"
+                      id="pathFilterSelf"
+                      name="pathFilter"
+                      value="self"
+                      checked
+                      onchange="updatePathFilter()"
+                    />
+                  </label>
+                  <label
+                    style="
+                      display: flex;
+                      align-items: center;
+                      font-weight: normal;
+                      cursor: pointer;
+                      white-space: nowrap;
+                    "
+                  >
+                    <span style="margin-right: 5px">🚢 Other vessel paths</span>
+                    <input
+                      type="radio"
+                      id="pathFilterOthers"
+                      name="pathFilter"
+                      value="others"
+                      onchange="updatePathFilter()"
+                    />
+                  </label>
+                </div>
+                <input
+                  type="text"
+                  id="pathSignalKSearch"
+                  class="path-tree-search"
+                  placeholder="🔍 Search paths..."
+                />
+                <div id="pathSignalKTree" class="path-tree-container"></div>
+                <input type="hidden" id="pathSignalK" />
+                <button
+                  type="button"
+                  onclick="showCustomPathInput('pathSignalK')"
+                  style="
+                    margin-top: 5px;
+                    padding: 6px 12px;
+                    background: #666;
+                    color: white;
+                    border: none;
+                    border-radius: 4px;
+                    font-size: 0.9em;
+                  "
+                >
+                  🖊️ Enter Custom Path
+                </button>
+                <input
+                  type="text"
+                  id="pathSignalKCustom"
+                  placeholder="Enter custom SignalK path (e.g., navigation.position)"
+                  style="
+                    width: 100%;
+                    padding: 8px;
+                    margin-top: 5px;
+                    border: 1px solid #ddd;
+                    border-radius: 4px;
+                    display: none;
+                  "
+                />
+              </div>
+              <div class="form-group">
+                <label
+                  for="pathEnabled"
+                  style="
+                    display: inline !important;
+                    margin-bottom: 0 !important;
+                  "
+                  >Always Enabled:</label
+                >
+                <input
+                  type="checkbox"
+                  id="pathEnabled"
+                  style="
+                    display: inline !important;
+                    width: auto !important;
+                    margin-left: 10px;
+                  "
+                />
+              </div>
+              <div class="form-group">
+                <label for="pathRegimen">Regimen Control:</label>
+                <div
+                  style="
+                    border: 1px solid #ddd;
+                    border-radius: 4px;
+                    padding: 10px;
+                    max-height: 150px;
+                    overflow-y: auto;
+                    background: white;
+                  "
+                >
+                  <div id="regimenCheckboxes">
+                    <!-- Regimen checkboxes will be populated here -->
+                  </div>
+                  <div
+                    style="
+                      margin-top: 10px;
+                      padding-top: 10px;
+                      border-top: 1px solid #eee;
+                    "
+                  >
+                    <label
+                      for="customRegimen"
+                      style="font-size: 0.9em; color: #666"
+                      >Custom Regimen:</label
+                    >
+                    <input
+                      type="text"
+                      id="customRegimen"
+                      placeholder="Enter custom regimen name"
+                      style="
+                        width: 100%;
+                        padding: 6px;
+                        margin-top: 5px;
+                        border: 1px solid #ddd;
+                        border-radius: 3px;
+                      "
+                    />
+                    <button
+                      type="button"
+                      onclick="addCustomRegimen()"
+                      style="
+                        margin-top: 5px;
+                        padding: 4px 8px;
+                        background: #28a745;
+                        color: white;
+                        border: none;
+                        border-radius: 3px;
+                        font-size: 0.8em;
+                      "
+                    >
+                      ➕ Add
+                    </button>
+                  </div>
+                </div>
+              </div>
+              <div class="form-group">
+                <label for="pathContext">Context:</label>
+                <input
+                  type="text"
+                  id="pathContext"
+                  placeholder="e.g., vessels.self or vessels.*"
+                  value="vessels.self"
+                />
+              </div>
+              <div class="form-group">
+                <label for="pathSource">Source Filter (optional):</label>
+                <input
+                  type="text"
+                  id="pathSource"
+                  placeholder="e.g., mqtt-weatherflow-udp"
+                />
+                <small style="color: #666; display: block; margin-top: 5px">
+                  Filter by specific data source. Leave empty to accept all
+                  sources.
+                </small>
+              </div>
+              <div class="form-group">
+                <label for="pathExcludeMMSI"
+                  >Exclude MMSI (for vessels.* context):</label
+                >
+                <input
+                  type="text"
+                  id="pathExcludeMMSI"
+                  placeholder="e.g., 123456789, 987654321 (comma-separated)"
+                />
+                <small style="color: #666; display: block; margin-top: 5px">
+                  Only applicable when context is "vessels.*". Leave empty to
+                  include all vessels.
+                </small>
+              </div>
+              <div
+                style="
+                  margin-top: 20px;
+                  padding-top: 15px;
+                  border-top: 1px solid #ddd;
+                  min-height: 60px;
+                  display: flex;
+                  gap: 10px;
+                  align-items: center;
+                "
+              >
+                <button onclick="addPathConfiguration()">✅ Add Path</button>
+                <button class="btn-secondary" onclick="hideAddPathForm()">
+                  ❌ Cancel
+                </button>
+              </div>
+            </div>
+
+            <div id="pathConfigContainer">
+              <div class="loading">Loading path configurations...</div>
+            </div>
+          </div>
         </div>
 
-        <!-- Tab Navigation -->
-        <div class="tab-navigation">
-            <button class="tab-button active" onclick="showTab('pathConfig')">⚙️ Path Configuration</button>
-            <button class="tab-button" onclick="showTab('commandManager')">🎮 Regimen/Commands Manager</button>
-            <button class="tab-button" onclick="showTab('liveConnections')" style="display: none;">🔴 Live Connections</button>
-            <button id="queryDatabaseTab" class="tab-button" onclick="showTab('dataPaths')">🗄️ Query Database</button>
-            <button class="tab-button" onclick="showTab('aiAnalysis')" style="display: none;">🧠 AI Analysis <small>(EXPERIMENTAL)</small></button>
-            <button class="tab-button" onclick="showTab('dataValidation')" style="display: none;">🔍 Data Validation</button>
-            <button class="tab-button" onclick="showTab('migration')">📊 Status</button>
-            <button class="tab-button" onclick="showTab('s3Config')">☁️ Cloud Status</button>
+        <!-- Command Manager Tab -->
+        <div id="commandManager" class="tab-panel">
+          <div class="section">
+            <h2>🎮 Regimen/Commands Manager</h2>
+            <p>Register and manage SignalK commands for remote control:</p>
+            <button onclick="showAddCommandForm()">➕ Add New Command</button>
+
+            <!-- Add Command Form (hidden by default) -->
+            <div
+              id="addCommandForm"
+              style="
+                display: none;
+                margin: 20px 0;
+                padding: 20px;
+                background: #f8f9fa;
+                border-radius: 5px;
+              "
+            >
+              <h4>Register New Command</h4>
+              <div class="form-group">
+                <label for="commandName">Command Name:</label>
+                <input
+                  type="text"
+                  id="commandName"
+                  placeholder="e.g., captureWeather, startLogging"
+                />
+              </div>
+              <div class="form-group">
+                <label for="commandDescription">Description (optional):</label>
+                <input
+                  type="text"
+                  id="commandDescription"
+                  placeholder="e.g., Start weather data capture"
+                />
+              </div>
+              <div class="form-group">
+                <label for="commandKeywords"
+                  >Keywords (for Claude context matching):</label
+                >
+                <input
+                  type="text"
+                  id="commandKeywords"
+                  placeholder="e.g., anchor, anchoring, drag, swing"
+                />
+                <small style="color: #666; font-size: 11px"
+                  >Separate multiple keywords with commas</small
+                >
+              </div>
+
+              <!-- Default State is now hardcoded to OFF on server side -->
+
+              <!-- Threshold Configuration -->
+              <div
+                style="
+                  margin-top: 20px;
+                  padding: 15px;
+                  background: #f0f8ff;
+                  border: 1px solid #b3d9ff;
+                  border-radius: 5px;
+                "
+              >
+                <h5 style="margin-bottom: 15px; color: #0066cc">
+                  🎯 Threshold-Based Activation
+                </h5>
+
+                <div id="addCommandThresholdsList">
+                  <!-- New thresholds will be populated here -->
+                </div>
+
+                <button
+                  type="button"
+                  id="addCommandThresholdButton"
+                  onclick="addNewCommandThreshold()"
+                  style="
+                    background: #4caf50;
+                    color: white;
+                    border: none;
+                    padding: 8px 12px;
+                    border-radius: 4px;
+                    margin-top: 10px;
+                  "
+                >
+                  ➕ Add Threshold
+                </button>
+
+                <!-- Threshold form replaced by unified modal -->
+              </div>
+
+              <div
+                style="
+                  margin-top: 20px;
+                  padding-top: 15px;
+                  border-top: 1px solid #ddd;
+                "
+              >
+                <button onclick="registerCommand()">✅ Register Command</button>
+                <button class="btn-secondary" onclick="hideAddCommandForm()">
+                  ❌ Cancel
+                </button>
+              </div>
+            </div>
+
+            <!-- Edit Command Form (hidden by default) -->
+            <div
+              id="editCommandForm"
+              style="
+                display: none;
+                margin: 20px 0;
+                padding: 20px;
+                background: #fff3cd;
+                border: 1px solid #ffeaa7;
+                border-radius: 5px;
+                width: 100%;
+                box-sizing: border-box;
+              "
+            >
+              <h4>Edit Command</h4>
+              <div class="form-group">
+                <label for="editCommandName">Command Name:</label>
+                <input
+                  type="text"
+                  id="editCommandName"
+                  readonly
+                  style="background: #f8f9fa"
+                />
+              </div>
+              <div class="form-group">
+                <label for="editCommandDescription">Description:</label>
+                <input
+                  type="text"
+                  id="editCommandDescription"
+                  placeholder="e.g., Start weather data capture"
+                />
+              </div>
+              <div class="form-group">
+                <label for="editCommandKeywords"
+                  >Keywords (for Claude context matching):</label
+                >
+                <input
+                  type="text"
+                  id="editCommandKeywords"
+                  placeholder="e.g., anchor, anchoring, drag, swing"
+                />
+                <small style="color: #666; font-size: 11px"
+                  >Separate multiple keywords with commas</small
+                >
+              </div>
+
+              <!-- Default State is now hardcoded to OFF on server side -->
+
+              <!-- Threshold Configuration -->
+              <div
+                style="
+                  margin-top: 20px;
+                  padding: 15px;
+                  background: #f0f8ff;
+                  border: 1px solid #b3d9ff;
+                  border-radius: 5px;
+                "
+              >
+                <h5 style="margin-bottom: 15px; color: #0066cc">
+                  🎯 Threshold-Based Activation
+                </h5>
+
+                <div id="thresholdsList">
+                  <!-- Existing thresholds will be populated here -->
+                </div>
+
+                <button
+                  type="button"
+                  id="editCommandAddThresholdButton"
+                  onclick="addNewThreshold()"
+                  style="
+                    background: #4caf50;
+                    color: white;
+                    border: none;
+                    padding: 8px 12px;
+                    border-radius: 4px;
+                    margin-top: 10px;
+                  "
+                >
+                  ➕ Add Threshold
+                </button>
+
+                <!-- Threshold form replaced by unified modal -->
+              </div>
+
+              <div
+                style="
+                  margin-top: 20px;
+                  padding-top: 15px;
+                  border-top: 1px solid #ddd;
+                  display: flex;
+                  flex-direction: column;
+                  gap: 10px;
+                "
+              >
+                <div style="display: flex; gap: 10px; align-items: center">
+                  <button
+                    id="updateCommandButton"
+                    onclick="updateCommand()"
+                    disabled
+                    style="opacity: 0.7"
+                  >
+                    ✅ Update Command
+                  </button>
+                  <button class="btn-secondary" onclick="hideEditCommandForm()">
+                    ❌ Cancel
+                  </button>
+                </div>
+                <div
+                  id="editCommandStatus"
+                  style="font-size: 0.85em; color: #0066cc; display: none"
+                ></div>
+              </div>
+            </div>
+
+            <div id="commandContainer">
+              <div class="loading">Loading commands...</div>
+            </div>
+
+            <!-- Command History -->
+            <div style="margin-top: 30px">
+              <h3>📋 Command History</h3>
+              <button onclick="loadCommandHistory()">🔄 Refresh History</button>
+              <div id="commandHistoryContainer" style="margin-top: 15px">
+                <div class="loading">Loading command history...</div>
+              </div>
+            </div>
+          </div>
         </div>
 
-        <!-- Tab Content Panels -->
-        <div class="tab-content">
-            <!-- Path Configuration Tab -->
-            <div id="pathConfig" class="tab-panel active">
-                <div class="section">
-                    <h2>⚙️ Path Configuration</h2>
-                <p>Manage which SignalK paths to collect data from:</p>
+        <!-- Live Connections Tab -->
+        <div id="liveConnections" class="tab-panel">
+          <div class="section" style="display: none">
+            <h2>🔴 Live Connections - DISABLED</h2>
+            <p>Streaming functionality has been disabled.</p>
 
-                <!-- Home Port Configuration -->
-                <div id="homePortConfig" style="margin: 15px 0 20px 0; padding: 15px; background: #e8f5e9; border-radius: 8px; border: 2px solid #4caf50;">
-                    <h3 style="margin: 0 0 10px 0; color: #2e7d32; display: flex; align-items: center; gap: 8px; cursor: pointer; user-select: none;" onclick="toggleHomePortCollapse()">
-                        <span id="homePortToggle">▼</span>
-                        🏠 Home Port Location
-                        <span style="font-size: 0.8em; font-weight: normal; color: #666;">(Used for proximity-based thresholds)</span>
-                    </h3>
-
-                    <div id="homePortDetails">
-                        <div style="display: grid; grid-template-columns: 1fr 1fr auto; gap: 12px; align-items: end;">
-                            <div>
-                                <label for="homePortLat" style="display: block; margin-bottom: 5px; font-weight: 500; color: #333;">Latitude:</label>
-                                <input type="number" id="homePortLat" step="0.000001" placeholder="e.g., 40.712800" style="width: 100%; padding: 8px; border: 1px solid #4caf50; border-radius: 4px;">
-                            </div>
-                            <div>
-                                <label for="homePortLon" style="display: block; margin-bottom: 5px; font-weight: 500; color: #333;">Longitude:</label>
-                                <input type="number" id="homePortLon" step="0.000001" placeholder="e.g., -74.006000" style="width: 100%; padding: 8px; border: 1px solid #4caf50; border-radius: 4px;">
-                            </div>
-                            <div>
-                                <button onclick="setCurrentLocationAsHomePort()" style="background: #2196f3; padding: 8px 12px; white-space: nowrap;">📍 Use Current Position</button>
-                            </div>
-                        </div>
-
-                        <div style="display: flex; gap: 10px; align-items: center; margin-top: 12px;">
-                            <button onclick="saveHomePort()" style="background: #4caf50; padding: 8px 16px;">💾 Save Home Port</button>
-                            <div id="homePortStatus" style="font-size: 0.9em;"></div>
-                        </div>
-                    </div>
-                </div>
-
-                <button onclick="loadPathConfigurations()">🔄 Refresh Paths</button>
-                <button onclick="showAddPathForm()">➕ Add New Path</button>
-                <button id="toggleCommandsBtn" onclick="toggleCommandPaths()">👁️ Show Commands</button>
-                
-                <!-- Add Path Form (hidden by default) -->
-                <div id="addPathForm" style="display: none; margin: 20px 0; padding: 20px; background: #f8f9fa; border-radius: 5px; min-height: 400px; overflow: visible;">
-                    <h4>Add New Path Configuration</h4>
-                    <div class="form-group">
-                        <label for="pathSignalK">SignalK Path:</label>
-                        <div style="margin-bottom: 8px; display: flex; align-items: center; gap: 15px;">
-                            <label style="display: flex; align-items: center; font-weight: normal; cursor: pointer; white-space: nowrap;">
-                                <span style="margin-right: 5px;">🏠 Self paths</span>
-                                <input type="radio" id="pathFilterSelf" name="pathFilter" value="self" checked onchange="updatePathFilter()">
-                            </label>
-                            <label style="display: flex; align-items: center; font-weight: normal; cursor: pointer; white-space: nowrap;">
-                                <span style="margin-right: 5px;">🚢 Other vessel paths</span>
-                                <input type="radio" id="pathFilterOthers" name="pathFilter" value="others" onchange="updatePathFilter()">
-                            </label>
-                        </div>
-                        <input type="text" id="pathSignalKSearch" class="path-tree-search" placeholder="🔍 Search paths...">
-                        <div id="pathSignalKTree" class="path-tree-container"></div>
-                        <input type="hidden" id="pathSignalK">
-                        <button type="button" onclick="showCustomPathInput('pathSignalK')" style="margin-top: 5px; padding: 6px 12px; background: #666; color: white; border: none; border-radius: 4px; font-size: 0.9em;">🖊️ Enter Custom Path</button>
-                        <input type="text" id="pathSignalKCustom" placeholder="Enter custom SignalK path (e.g., navigation.position)" style="width: 100%; padding: 8px; margin-top: 5px; border: 1px solid #ddd; border-radius: 4px; display: none;">
-                    </div>
-                    <div class="form-group">
-                        <label for="pathEnabled" style="display: inline !important; margin-bottom: 0 !important;">Always Enabled:</label>
-                        <input type="checkbox" id="pathEnabled" style="display: inline !important; width: auto !important; margin-left: 10px;">
-                    </div>
-                    <div class="form-group">
-                        <label for="pathRegimen">Regimen Control:</label>
-                        <div style="border: 1px solid #ddd; border-radius: 4px; padding: 10px; max-height: 150px; overflow-y: auto; background: white;">
-                            <div id="regimenCheckboxes">
-                                <!-- Regimen checkboxes will be populated here -->
-                            </div>
-                            <div style="margin-top: 10px; padding-top: 10px; border-top: 1px solid #eee;">
-                                <label for="customRegimen" style="font-size: 0.9em; color: #666;">Custom Regimen:</label>
-                                <input type="text" id="customRegimen" placeholder="Enter custom regimen name" style="width: 100%; padding: 6px; margin-top: 5px; border: 1px solid #ddd; border-radius: 3px;">
-                                <button type="button" onclick="addCustomRegimen()" style="margin-top: 5px; padding: 4px 8px; background: #28a745; color: white; border: none; border-radius: 3px; font-size: 0.8em;">➕ Add</button>
-                            </div>
-                        </div>
-                    </div>
-                    <div class="form-group">
-                        <label for="pathContext">Context:</label>
-                        <input type="text" id="pathContext" placeholder="e.g., vessels.self or vessels.*" value="vessels.self">
-                    </div>
-                    <div class="form-group">
-                        <label for="pathSource">Source Filter (optional):</label>
-                        <input type="text" id="pathSource" placeholder="e.g., mqtt-weatherflow-udp">
-                        <small style="color: #666; display: block; margin-top: 5px;">
-                            Filter by specific data source. Leave empty to accept all sources.
-                        </small>
-                    </div>
-                    <div class="form-group">
-                        <label for="pathExcludeMMSI">Exclude MMSI (for vessels.* context):</label>
-                        <input type="text" id="pathExcludeMMSI" placeholder="e.g., 123456789, 987654321 (comma-separated)">
-                        <small style="color: #666; display: block; margin-top: 5px;">
-                            Only applicable when context is "vessels.*". Leave empty to include all vessels.
-                        </small>
-                    </div>
-                    <div style="margin-top: 20px; padding-top: 15px; border-top: 1px solid #ddd; min-height: 60px; display: flex; gap: 10px; align-items: center;">
-                        <button onclick="addPathConfiguration()">✅ Add Path</button>
-                        <button class="btn-secondary" onclick="hideAddPathForm()">❌ Cancel</button>
-                    </div>
-                </div>
-                
-                    <div id="pathConfigContainer">
-                        <div class="loading">Loading path configurations...</div>
-                    </div>
-                </div>
+            <div style="margin-bottom: 20px">
+              <button onclick="loadStreams()">🔄 Refresh Streams</button>
+              <button onclick="showAddStreamForm()">
+                ➕ Create New Stream
+              </button>
             </div>
 
-            <!-- Command Manager Tab -->
-            <div id="commandManager" class="tab-panel">
-                <div class="section">
-                    <h2>🎮 Regimen/Commands Manager</h2>
-                    <p>Register and manage SignalK commands for remote control:</p>
-                    <button onclick="showAddCommandForm()">➕ Add New Command</button>
-                    
-                    <!-- Add Command Form (hidden by default) -->
-                    <div id="addCommandForm" style="display: none; margin: 20px 0; padding: 20px; background: #f8f9fa; border-radius: 5px;">
-                        <h4>Register New Command</h4>
-                        <div class="form-group">
-                            <label for="commandName">Command Name:</label>
-                            <input type="text" id="commandName" placeholder="e.g., captureWeather, startLogging">
-                        </div>
-                        <div class="form-group">
-                            <label for="commandDescription">Description (optional):</label>
-                            <input type="text" id="commandDescription" placeholder="e.g., Start weather data capture">
-                        </div>
-                        <div class="form-group">
-                            <label for="commandKeywords">Keywords (for Claude context matching):</label>
-                            <input type="text" id="commandKeywords" placeholder="e.g., anchor, anchoring, drag, swing">
-                            <small style="color: #666; font-size: 11px;">Separate multiple keywords with commas</small>
-                        </div>
+            <!-- Add Stream Form (hidden by default) -->
+            <div
+              id="addStreamForm"
+              style="
+                display: none;
+                margin: 20px 0;
+                padding: 20px;
+                background: #f8f9fa;
+                border-radius: 5px;
+              "
+            >
+              <h4>Create New Historical Stream</h4>
 
-                        <!-- Default State is now hardcoded to OFF on server side -->
+              <div class="form-group">
+                <label for="streamName">Stream Name:</label>
+                <input
+                  type="text"
+                  id="streamName"
+                  placeholder="e.g., Navigation History"
+                />
+              </div>
 
-                        <!-- Threshold Configuration -->
-                        <div style="margin-top: 20px; padding: 15px; background: #f0f8ff; border: 1px solid #b3d9ff; border-radius: 5px;">
-                            <h5 style="margin-bottom: 15px; color: #0066cc;">🎯 Threshold-Based Activation</h5>
-
-                            <div id="addCommandThresholdsList">
-                                <!-- New thresholds will be populated here -->
-                            </div>
-
-                            <button type="button" id="addCommandThresholdButton" onclick="addNewCommandThreshold()" style="background: #4caf50; color: white; border: none; padding: 8px 12px; border-radius: 4px; margin-top: 10px;">➕ Add Threshold</button>
-
-                            <!-- Threshold form replaced by unified modal -->
-                        </div>
-
-                        <div style="margin-top: 20px; padding-top: 15px; border-top: 1px solid #ddd;">
-                            <button onclick="registerCommand()">✅ Register Command</button>
-                            <button class="btn-secondary" onclick="hideAddCommandForm()">❌ Cancel</button>
-                        </div>
-                    </div>
-                    
-                    <!-- Edit Command Form (hidden by default) -->
-                    <div id="editCommandForm" style="display: none; margin: 20px 0; padding: 20px; background: #fff3cd; border: 1px solid #ffeaa7; border-radius: 5px; width: 100%; box-sizing: border-box;">
-                        <h4>Edit Command</h4>
-                        <div class="form-group">
-                            <label for="editCommandName">Command Name:</label>
-                            <input type="text" id="editCommandName" readonly style="background: #f8f9fa;">
-                        </div>
-                        <div class="form-group">
-                            <label for="editCommandDescription">Description:</label>
-                            <input type="text" id="editCommandDescription" placeholder="e.g., Start weather data capture">
-                        </div>
-                        <div class="form-group">
-                            <label for="editCommandKeywords">Keywords (for Claude context matching):</label>
-                            <input type="text" id="editCommandKeywords" placeholder="e.g., anchor, anchoring, drag, swing">
-                            <small style="color: #666; font-size: 11px;">Separate multiple keywords with commas</small>
-                        </div>
-
-                        <!-- Default State is now hardcoded to OFF on server side -->
-
-                        <!-- Threshold Configuration -->
-                        <div style="margin-top: 20px; padding: 15px; background: #f0f8ff; border: 1px solid #b3d9ff; border-radius: 5px;">
-                            <h5 style="margin-bottom: 15px; color: #0066cc;">🎯 Threshold-Based Activation</h5>
-
-                            <div id="thresholdsList">
-                                <!-- Existing thresholds will be populated here -->
-                            </div>
-
-                            <button type="button" id="editCommandAddThresholdButton" onclick="addNewThreshold()" style="background: #4caf50; color: white; border: none; padding: 8px 12px; border-radius: 4px; margin-top: 10px;">➕ Add Threshold</button>
-
-                            <!-- Threshold form replaced by unified modal -->
-                        </div>
-
-                        <div style="margin-top: 20px; padding-top: 15px; border-top: 1px solid #ddd; display: flex; flex-direction: column; gap: 10px;">
-                            <div style="display: flex; gap: 10px; align-items: center;">
-                                <button id="updateCommandButton" onclick="updateCommand()" disabled style="opacity: 0.7;">✅ Update Command</button>
-                                <button class="btn-secondary" onclick="hideEditCommandForm()">❌ Cancel</button>
-                            </div>
-                            <div id="editCommandStatus" style="font-size: 0.85em; color: #0066cc; display: none;"></div>
-                        </div>
-                    </div>
-                    
-                    <div id="commandContainer">
-                        <div class="loading">Loading commands...</div>
-                    </div>
-                    
-                    <!-- Command History -->
-                    <div style="margin-top: 30px;">
-                        <h3>📋 Command History</h3>
-                        <button onclick="loadCommandHistory()">🔄 Refresh History</button>
-                        <div id="commandHistoryContainer" style="margin-top: 15px;">
-                            <div class="loading">Loading command history...</div>
-                        </div>
-                    </div>
+              <div class="form-group">
+                <label for="streamPath">SignalK Path:</label>
+                <div style="display: flex; gap: 10px; align-items: center">
+                  <select id="streamPath" style="flex: 1">
+                    <option value="">Loading available paths...</option>
+                  </select>
+                  <button
+                    type="button"
+                    onclick="refreshSignalKPaths()"
+                    style="
+                      padding: 8px;
+                      background: #007bff;
+                      color: white;
+                      border: none;
+                      border-radius: 3px;
+                    "
+                    title="Refresh path list"
+                  >
+                    🔄
+                  </button>
                 </div>
+                <small style="color: #666; display: block; margin-top: 5px">
+                  Available paths from historical data. Click refresh if you
+                  don't see your path.
+                </small>
+              </div>
+
+              <div class="form-group">
+                <label for="streamTimeRange">Time Range:</label>
+                <select id="streamTimeRange">
+                  <option value="1h">Last 1 Hour</option>
+                  <option value="6h">Last 6 Hours</option>
+                  <option value="24h">Last 24 Hours</option>
+                  <option value="7d">Last 7 Days</option>
+                  <option value="30d">Last 30 Days</option>
+                  <option value="custom">Custom Range</option>
+                </select>
+              </div>
+
+              <div
+                class="form-group"
+                id="customTimeRange"
+                style="display: none"
+              >
+                <label>Custom Time Range:</label>
+                <div
+                  style="
+                    display: grid;
+                    grid-template-columns: 1fr 1fr;
+                    gap: 10px;
+                  "
+                >
+                  <input
+                    type="datetime-local"
+                    id="streamStartTime"
+                    placeholder="Start time"
+                  />
+                  <input
+                    type="datetime-local"
+                    id="streamEndTime"
+                    placeholder="End time"
+                  />
+                </div>
+              </div>
+
+              <div class="form-group">
+                <label for="streamResolution">Data Resolution:</label>
+                <select id="streamResolution">
+                  <option value="1000">1 second</option>
+                  <option value="5000">5 seconds</option>
+                  <option value="15000">15 seconds</option>
+                  <option value="30000" selected>30 seconds</option>
+                  <option value="60000">1 minute</option>
+                  <option value="300000">5 minutes</option>
+                </select>
+              </div>
+
+              <div class="form-group">
+                <label for="streamRate">Streaming Rate:</label>
+                <select id="streamRate">
+                  <option value="100">Fast (100ms intervals)</option>
+                  <option value="500" selected>Normal (500ms intervals)</option>
+                  <option value="1000">Slow (1 second intervals)</option>
+                  <option value="5000">Very Slow (5 second intervals)</option>
+                </select>
+              </div>
+
+              <div class="form-group">
+                <label for="streamAggregateMethod">Statistical Function:</label>
+                <select id="streamAggregateMethod">
+                  <option value="average" selected>
+                    Average - arithmetic mean of values
+                  </option>
+                  <option value="min">
+                    Minimum - lowest value in time window
+                  </option>
+                  <option value="max">
+                    Maximum - highest value in time window
+                  </option>
+                  <option value="first">
+                    First - earliest value in time window
+                  </option>
+                  <option value="last">
+                    Last - most recent value in time window
+                  </option>
+                  <option value="mid">Median - middle value when sorted</option>
+                  <option value="middle_index">
+                    Middle Index - middle value by position
+                  </option>
+                </select>
+                <small style="color: #666; display: block; margin-top: 5px">
+                  Statistical function applied to data within each time window
+                </small>
+              </div>
+
+              <div class="form-group">
+                <label for="streamWindowSize">Rolling Window Size:</label>
+                <select id="streamWindowSize">
+                  <option value="5">5 data points</option>
+                  <option value="10" selected>10 data points</option>
+                  <option value="20">20 data points</option>
+                  <option value="50">50 data points</option>
+                  <option value="100">100 data points</option>
+                </select>
+                <small style="color: #666; display: block; margin-top: 5px">
+                  Number of recent values used for real-time statistical
+                  calculations
+                </small>
+              </div>
+
+              <div class="form-group">
+                <label for="streamAutoStart">Auto-start stream:</label>
+                <input type="checkbox" id="streamAutoStart" checked />
+                <small style="color: #666; display: block; margin-top: 5px">
+                  Start streaming immediately after creation
+                </small>
+              </div>
+
+              <div
+                style="
+                  margin-top: 20px;
+                  padding-top: 15px;
+                  border-top: 1px solid #ddd;
+                "
+              >
+                <button onclick="createStream()">✅ Create Stream</button>
+                <button class="btn-secondary" onclick="hideAddStreamForm()">
+                  ❌ Cancel
+                </button>
+              </div>
             </div>
 
-            <!-- Live Connections Tab -->
-            <div id="liveConnections" class="tab-panel">
-                <div class="section" style="display: none;">
-                    <h2>🔴 Live Connections - DISABLED</h2>
-                    <p>Streaming functionality has been disabled.</p>
-                    
-                    <div style="margin-bottom: 20px;">
-                        <button onclick="loadStreams()">🔄 Refresh Streams</button>
-                        <button onclick="showAddStreamForm()">➕ Create New Stream</button>
-                    </div>
-
-                    <!-- Add Stream Form (hidden by default) -->
-                    <div id="addStreamForm" style="display: none; margin: 20px 0; padding: 20px; background: #f8f9fa; border-radius: 5px;">
-                        <h4>Create New Historical Stream</h4>
-                        
-                        <div class="form-group">
-                            <label for="streamName">Stream Name:</label>
-                            <input type="text" id="streamName" placeholder="e.g., Navigation History">
-                        </div>
-                        
-                        <div class="form-group">
-                            <label for="streamPath">SignalK Path:</label>
-                            <div style="display: flex; gap: 10px; align-items: center;">
-                                <select id="streamPath" style="flex: 1;">
-                                    <option value="">Loading available paths...</option>
-                                </select>
-                                <button type="button" onclick="refreshSignalKPaths()" style="padding: 8px; background: #007bff; color: white; border: none; border-radius: 3px;" title="Refresh path list">🔄</button>
-                            </div>
-                            <small style="color: #666; display: block; margin-top: 5px;">
-                                Available paths from historical data. Click refresh if you don't see your path.
-                            </small>
-                        </div>
-                        
-                        <div class="form-group">
-                            <label for="streamTimeRange">Time Range:</label>
-                            <select id="streamTimeRange">
-                                <option value="1h">Last 1 Hour</option>
-                                <option value="6h">Last 6 Hours</option>
-                                <option value="24h">Last 24 Hours</option>
-                                <option value="7d">Last 7 Days</option>
-                                <option value="30d">Last 30 Days</option>
-                                <option value="custom">Custom Range</option>
-                            </select>
-                        </div>
-                        
-                        <div class="form-group" id="customTimeRange" style="display: none;">
-                            <label>Custom Time Range:</label>
-                            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
-                                <input type="datetime-local" id="streamStartTime" placeholder="Start time">
-                                <input type="datetime-local" id="streamEndTime" placeholder="End time">
-                            </div>
-                        </div>
-                        
-                        <div class="form-group">
-                            <label for="streamResolution">Data Resolution:</label>
-                            <select id="streamResolution">
-                                <option value="1000">1 second</option>
-                                <option value="5000">5 seconds</option>
-                                <option value="15000">15 seconds</option>
-                                <option value="30000" selected>30 seconds</option>
-                                <option value="60000">1 minute</option>
-                                <option value="300000">5 minutes</option>
-                            </select>
-                        </div>
-                        
-                        <div class="form-group">
-                            <label for="streamRate">Streaming Rate:</label>
-                            <select id="streamRate">
-                                <option value="100">Fast (100ms intervals)</option>
-                                <option value="500" selected>Normal (500ms intervals)</option>
-                                <option value="1000">Slow (1 second intervals)</option>
-                                <option value="5000">Very Slow (5 second intervals)</option>
-                            </select>
-                        </div>
-                        
-                        <div class="form-group">
-                            <label for="streamAggregateMethod">Statistical Function:</label>
-                            <select id="streamAggregateMethod">
-                                <option value="average" selected>Average - arithmetic mean of values</option>
-                                <option value="min">Minimum - lowest value in time window</option>
-                                <option value="max">Maximum - highest value in time window</option>
-                                <option value="first">First - earliest value in time window</option>
-                                <option value="last">Last - most recent value in time window</option>
-                                <option value="mid">Median - middle value when sorted</option>
-                                <option value="middle_index">Middle Index - middle value by position</option>
-                            </select>
-                            <small style="color: #666; display: block; margin-top: 5px;">
-                                Statistical function applied to data within each time window
-                            </small>
-                        </div>
-                        
-                        <div class="form-group">
-                            <label for="streamWindowSize">Rolling Window Size:</label>
-                            <select id="streamWindowSize">
-                                <option value="5">5 data points</option>
-                                <option value="10" selected>10 data points</option>
-                                <option value="20">20 data points</option>
-                                <option value="50">50 data points</option>
-                                <option value="100">100 data points</option>
-                            </select>
-                            <small style="color: #666; display: block; margin-top: 5px;">
-                                Number of recent values used for real-time statistical calculations
-                            </small>
-                        </div>
-                        
-                        <div class="form-group">
-                            <label for="streamAutoStart">Auto-start stream:</label>
-                            <input type="checkbox" id="streamAutoStart" checked>
-                            <small style="color: #666; display: block; margin-top: 5px;">
-                                Start streaming immediately after creation
-                            </small>
-                        </div>
-                        
-                        <div style="margin-top: 20px; padding-top: 15px; border-top: 1px solid #ddd;">
-                            <button onclick="createStream()">✅ Create Stream</button>
-                            <button class="btn-secondary" onclick="hideAddStreamForm()">❌ Cancel</button>
-                        </div>
-                    </div>
-
-                    <!-- Active Streams Display -->
-                    <div id="streamsContainer">
-                        <div class="loading">Loading streams...</div>
-                    </div>
-                    
-                    <!-- Stream Statistics -->
-                    <div style="margin-top: 30px; padding-top: 20px; border-top: 1px solid #ddd;">
-                        <h3>📊 Stream Statistics</h3>
-                        <div id="streamStats" style="margin-top: 15px;">
-                            <div class="loading">Loading statistics...</div>
-                        </div>
-                    </div>
-
-                    <!-- Live Data Display -->
-                    <div style="margin-top: 30px; padding-top: 20px; border-top: 1px solid #ddd;">
-                        <h3>📡 Live Data Stream</h3>
-                        <p style="margin-bottom: 15px;">Real-time time-bucketed statistical streaming data (newest first, max 100 entries):</p>
-                        
-                        <!-- Data Interpretation Guide -->
-                        <div style="background: #f0f8ff; padding: 15px; border-radius: 5px; margin-bottom: 15px; font-size: 13px;">
-                            <strong>📊 How to Read This Data:</strong><br/>
-                            • <strong>📊 INITIAL</strong>: Full time window data (first load with many buckets)<br/>
-                            • <strong>📈 INCREMENTAL</strong>: New data points since last update (sliding window - fewer buckets)<br/>
-                            • <strong>Statistical Method</strong>: MAX, AVG, MIN, FIRST, LAST, MID applied to each time bucket<br/>
-                            • <strong>Buckets</strong>: Number of time intervals processed (e.g., 30-second time buckets)<br/>
-                            • <strong>Value</strong>: Result of statistical calculation for that time bucket<br/>
-                            • <strong>EMA/SMA</strong>: Moving averages (10-period) calculated for numeric values - EMA responds faster to changes<br/>
-                            • <strong>Time</strong>: Timestamp of the time bucket (not delivery time)
-                        </div>
-                        
-                        <div style="max-height: 400px; overflow-y: auto; border: 1px solid #ddd; border-radius: 5px;">
-                            <table id="liveDataTable" style="width: 100%; border-collapse: collapse; font-size: 12px;">
-                                <thead style="position: sticky; top: 0; background: #f8f9fa; z-index: 1;">
-                                    <tr>
-                                        <th style="padding: 8px; border-bottom: 1px solid #ddd; text-align: left;">Bucket Time</th>
-                                        <th style="padding: 8px; border-bottom: 1px solid #ddd; text-align: left;">Stream Type & Statistical Method</th>
-                                        <th style="padding: 8px; border-bottom: 1px solid #ddd; text-align: left;">Path</th>
-                                        <th style="padding: 8px; border-bottom: 1px solid #ddd; text-align: left;">Statistical Value</th>
-                                        <th style="padding: 8px; border-bottom: 1px solid #ddd; text-align: left;">EMA (10)</th>
-                                        <th style="padding: 8px; border-bottom: 1px solid #ddd; text-align: left;">SMA (10)</th>
-                                    </tr>
-                                </thead>
-                                <tbody id="liveDataBody">
-                                    <tr>
-                                        <td colspan="6" style="padding: 20px; text-align: center; color: #666;">
-                                            No data streaming yet. Start a stream to see live data.
-                                        </td>
-                                    </tr>
-                                </tbody>
-                            </table>
-                        </div>
-
-                        <div style="margin-top: 10px; font-size: 11px; color: #666;">
-                            <span id="liveDataCount">0</span> time-bucketed entries • 
-                            <button onclick="clearLiveData()" style="font-size: 11px; padding: 2px 8px;">🗑️ Clear</button>
-                            <button onclick="toggleLiveDataPause()" id="pauseDataBtn" style="font-size: 11px; padding: 2px 8px; margin-left: 5px;">⏸️ Pause</button>
-                            <button onclick="showDataSummary()" style="font-size: 11px; padding: 2px 8px; margin-left: 5px;">📊 Summary</button>
-                        </div>
-                        
-                        <!-- Data Summary Panel -->
-                        <div id="dataSummaryPanel" style="display: none; margin-top: 15px; padding: 15px; background: #f8f9fa; border-radius: 5px;">
-                            <h4>📊 Data Summary & Trends</h4>
-                            <div id="dataSummaryContent"></div>
-                        </div>
-                    </div>
-                </div>
+            <!-- Active Streams Display -->
+            <div id="streamsContainer">
+              <div class="loading">Loading streams...</div>
             </div>
 
-            <!-- AI Analysis Tab -->
-            <div id="aiAnalysis" class="tab-panel">
-                <div class="section">
-                    <h2>🧠 AI Analysis with Claude</h2><small>EXPERIMENTAL</small>
-                    <p>Analyze your maritime data using Claude AI for insights, patterns, and recommendations.</p>
-                    
-                    <!-- Connection Test -->
-                    <div style="margin-bottom: 20px;">
-                        <button onclick="testClaudeConnection()" id="testConnectionBtn">🔗 Test Claude Connection</button>
-                        <div id="claudeConnectionResult" style="margin-top: 10px;"></div>
-                    </div>
-
-                    <!-- Vessel Context Section -->
-                    <div style="margin-bottom: 30px; border: 2px solid #e3f2fd; border-radius: 8px; background: #fafbfc;">
-                        <div onclick="toggleVesselContext()" style="padding: 15px 20px; cursor: pointer; display: flex; align-items: center; justify-content: space-between; user-select: none;">
-                            <div>
-                                <h3 style="margin: 0;">⚓ Vessel Context Document</h3>
-                                <p style="margin: 5px 0 0 0; color: #555; font-size: 0.9em;">Click to expand - context automatically included with every AI analysis</p>
-                            </div>
-                            <span id="vesselContextToggleIcon" style="font-size: 1.2em; color: #667eea;">▶</span>
-                        </div>
-                        <div id="vesselContextContent" style="display: none; padding: 0 20px 20px 20px; border-top: 1px solid #e3f2fd;">
-                        
-                        <!-- Auto-extracted vessel info -->
-                        <div style="margin-bottom: 20px;">
-                            <h4 style="margin-bottom: 10px; display: flex; align-items: center; justify-content: space-between;">
-                                <span>📊 Auto-Extracted Vessel Information</span>
-                                <button onclick="refreshVesselInfo()" style="font-size: 0.9em; padding: 6px 12px;">🔄 Refresh from SignalK</button>
-                            </h4>
-                            <div id="autoVesselInfo" style="background: white; padding: 15px; border-radius: 5px; border: 1px solid #ddd;">
-                                <div style="color: #666; font-style: italic;">Loading vessel information...</div>
-                            </div>
-                        </div>
-
-                        <!-- Custom context -->
-                        <div style="margin-bottom: 20px;">
-                            <h4 style="margin-bottom: 10px;">✏️ Custom Context & Notes</h4>
-                            <p style="font-size: 0.9em; color: #666; margin-bottom: 10px;">Add any additional context about your vessel, operations, or specific information you want Claude to consider during analysis:</p>
-                            <textarea id="customVesselContext" 
-                                placeholder="e.g., 'This is a racing sailboat primarily used for coastal sailing. The vessel has recently had engine maintenance. We're particularly interested in wind performance analysis...'"
-                                style="width: 100%; min-height: 120px; padding: 12px; border: 1px solid #ddd; border-radius: 5px; resize: vertical; font-family: inherit;"></textarea>
-                        </div>
-
-                        <!-- Context preview and actions -->
-                        <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
-                            <button onclick="saveVesselContext()" style="background: #4CAF50; padding: 8px 16px;">💾 Save Context</button>
-                            <button onclick="previewClaudeContext()" style="background: #2196F3; padding: 8px 16px;">👁️ Preview Claude Context</button>
-                            <div id="vesselContextStatus" style="margin-left: 10px; font-size: 0.9em;"></div>
-                        </div>
-
-                        <!-- Context preview modal -->
-                        <div id="contextPreviewModal" class="modal-overlay" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 1000; overflow-y: auto;">
-                            <div class="modal-content" style="max-width: 800px; margin: 50px auto; background: white; border-radius: 10px; padding: 20px; max-height: 80vh; overflow-y: auto;">
-                                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
-                                    <h3>👁️ Claude Context Preview</h3>
-                                    <button onclick="closeContextPreview()" style="background: #f44336; color: white; padding: 5px 10px; border-radius: 3px;">&times;</button>
-                                </div>
-                                <p style="color: #666; margin-bottom: 15px;">This is the context that will be sent to Claude with every analysis:</p>
-                                <pre id="contextPreviewContent" style="background: #f8f9fa; padding: 15px; border-radius: 5px; border: 1px solid #ddd; white-space: pre-wrap; font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace; font-size: 0.9em; line-height: 1.4; max-height: 400px; overflow-y: auto;"></pre>
-                                <div style="margin-top: 15px; padding: 10px; background: #e8f5e8; border-radius: 5px; border-left: 4px solid #4CAF50;">
-                                    <small><strong>💡 Tip:</strong> A good vessel context helps Claude provide more accurate and relevant insights for your specific vessel and operations.</small>
-                                </div>
-                            </div>
-                        </div>
-
-                        </div>
-                    </div>
-                    
-                    <!-- Custom Analysis -->
-                    <div style="margin-bottom: 30px;">
-                        <h3>🎯 Custom Analysis</h3>
-                        <div style="margin-top: 15px;">
-                            <!-- Analysis Mode Toggle with Model Selector -->
-                            <div style="margin-bottom: 20px; padding: 15px; border: 2px solid #e3f2fd; border-radius: 8px; background: #f8f9ff;">
-                                <div style="margin-bottom: 10px;">
-                                    <label style="display: flex; align-items: center; justify-content: space-between; cursor: pointer; font-weight: bold;">
-                                        <span>🚀 Direct Database Access</span>
-                                        <input type="checkbox" id="enableDatabaseAccess" checked onchange="toggleAnalysisMode()" style="transform: scale(1.2);">
-                                    </label>
-                                </div>
-                                <div style="font-size: 0.9em; color: #555;">
-                                    <div id="legacyModeDesc" style="color: #666; display: none;">
-                                        <strong>Legacy:</strong> Pre-load data samples for analysis (faster, limited scope)
-                                    </div>
-                                    <div id="databaseModeDesc" style="color: #1976d2;">
-                                        <strong>Enhanced:</strong> Claude explores your database interactively (more powerful, complete historical access)
-                                    </div>
-                                </div>
-                                
-                                <!-- Claude Model Selection - moved here -->
-                                <div style="margin-top: 15px;">
-                                    <label for="claudeModelMain">Claude Model:</label>
-                                    <select id="claudeModelMain" style="width: 100%; padding: 8px; margin-top: 5px;">
-                                        <option value="claude-sonnet-4-20250514" selected>Claude Sonnet 4 - Latest Sonnet model (recommended)</option>
-                                        <option value="claude-opus-4-1-20250805">Claude Opus 4.1 - Most powerful model (premium)</option>
-                                        <option value="claude-opus-4-20250514">Claude Opus 4 - High performance model (premium)</option>
-                                    </select>
-                                    <p style="font-size: 0.9em; color: #666; margin: 5px 0 0 0;">Choose the Claude model for analysis. Sonnet provides the most detailed insights.</p>
-                                </div>
-                            </div>
-
-                            <!-- Collapsible Selection Options -->
-                            <div id="selectionOptionsSection" style="margin-bottom: 20px;">
-                                <div onclick="toggleSelectionOptions()" style="cursor: pointer; padding: 10px; background: #f8f9fa; border: 1px solid #dee2e6; border-radius: 5px; user-select: none;">
-                                    <span id="selectionToggleIcon" style="margin-right: 8px;">▶</span>
-                                    <strong>Selection Options</strong>
-                                    <span id="selectionToggleSubtext" style="font-size: 0.9em; color: #666; margin-left: 10px;">(Advanced options for legacy mode)</span>
-                                </div>
-                                <div id="selectionOptionsContainer" style="display: none; border: 1px solid #dee2e6; border-top: none; border-radius: 0 0 5px 5px; padding: 15px; background: #f9f9f9;">
-                                    <!-- Data Path Selection -->
-                                    <div style="margin-bottom: 15px;">
-                                        <label>Data Paths (select one or more):</label>
-                                        <div id="analysisDataPathContainer" style="max-height: 200px; overflow-y: auto; border: 1px solid #ddd; border-radius: 4px; padding: 10px; margin-top: 5px; background: white;">
-                                            <div style="color: #666; font-style: italic;">Loading available paths...</div>
-                                        </div>
-                                        <style>
-                                            .path-checkbox-row {
-                                                display: flex;
-                                                align-items: center;
-                                                padding: 8px 8px 8px 5px;
-                                                margin: 2px 0;
-                                                border-radius: 4px;
-                                            }
-                                            .path-checkbox-row:nth-child(odd) {
-                                                background-color: #f8f9fa;
-                                            }
-                                            .path-checkbox-row:nth-child(even) {
-                                                background-color: white;
-                                            }
-                                            .path-checkbox-row:hover {
-                                                background-color: #e3f2fd;
-                                            }
-                                            .path-info {
-                                                display: flex;
-                                                align-items: center;
-                                                flex-grow: 1;
-                                            }
-                                            .path-icon {
-                                                margin-right: 8px;
-                                                font-size: 16px;
-                                            }
-                                            .path-checkbox {
-                                                margin-left: auto;
-                                                width: 16px;
-                                                height: 16px;
-                                                flex-shrink: 0;
-                                            }
-                                        </style>
-                                        <div style="margin-top: 5px; font-size: 0.9em; color: #666; display: flex; justify-content: space-between; align-items: center;">
-                                            <span><span id="selectedPathCount">0</span> path(s) selected</span>
-                                            <div>
-                                                <button onclick="selectAllPaths()" style="font-size: 0.8em; padding: 2px 6px; margin-right: 5px;">Select All</button>
-                                                <button onclick="clearAllPaths()" style="font-size: 0.8em; padding: 2px 6px;">Clear All</button>
-                                            </div>
-                                        </div>
-                                    </div>
-                                    
-                                    <!-- Date Range Selection -->
-                                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-bottom: 15px;">
-                                        <div>
-                                            <label for="analysisStartDate">Start Date:</label>
-                                            <input type="datetime-local" id="analysisStartDate" style="width: 100%; padding: 8px; margin-top: 5px;">
-                                        </div>
-                                        <div>
-                                            <label for="analysisEndDate">End Date:</label>
-                                            <input type="datetime-local" id="analysisEndDate" style="width: 100%; padding: 8px; margin-top: 5px;">
-                                        </div>
-                                    </div>
-                                    
-                                    <!-- Aggregation Method -->
-                                    <div style="margin-bottom: 15px;">
-                                        <label for="aggregationMethod">Aggregation Method:</label>
-                                        <select id="aggregationMethod" style="width: 100%; padding: 8px; margin-top: 5px;">
-                                            <option value="average" selected>Average - Mean values over time buckets</option>
-                                            <option value="min">Min - Minimum values over time buckets</option>
-                                            <option value="max">Max - Maximum values over time buckets</option>
-                                            <option value="first">First - First value in each time bucket</option>
-                                            <option value="last">Last - Last value in each time bucket</option>
-                                            <option value="mid">Median - Middle values over time buckets</option>
-                                            <option value="multiple">Multiple - Get min, max, and average</option>
-                                        </select>
-                                    </div>
-                                    
-                                    <!-- Time Resolution -->
-                                    <div style="margin-bottom: 15px;">
-                                        <label for="resolution">Time Resolution:</label>
-                                        <select id="resolution" style="width: 100%; padding: 8px; margin-top: 5px;">
-                                            <option value="" selected>Auto - Automatically determine best resolution</option>
-                                            <option value="1m">1 minute - Fine-grained data</option>
-                                            <option value="5m">5 minutes - Detailed data</option>
-                                            <option value="15m">15 minutes - Regular sampling</option>
-                                            <option value="1h">1 hour - Hourly summaries</option>
-                                            <option value="1d">1 day - Daily summaries</option>
-                                        </select>
-                                    </div>
-                                    
-                                </div>
-                            </div>
-
-                            <div style="margin-bottom: 15px;">
-                                <label for="customPrompt">Custom Analysis Request (optional):</label>
-                                <textarea id="customPrompt" placeholder="What specific insights are you looking for? Leave blank for general analysis..." style="width: 100%; padding: 8px; margin-top: 5px; min-height: 180px; resize: vertical;"></textarea>
-                            </div>
-
-                            <button onclick="runCustomAnalysis()" style="padding: 12px 25px; margin-top: 15px;">🚀 Run Custom Analysis</button>
-                        </div>
-                    </div>
-                    
-                    <!-- Analysis Results -->
-                    <div id="analysisResults" style="display: none;">
-                        <h3>📊 Analysis Results</h3>
-                        <div id="analysisContent" style="background: #f8f9fa; padding: 20px; border-radius: 8px; margin-top: 15px;">
-                            <!-- Results will appear here -->
-                        </div>
-                        
-                        <!-- Follow-up Questions -->
-                        <div id="followUpSection" style="display: none; margin-top: 20px; padding: 15px; border: 2px solid #e8f4f8; border-radius: 8px; background: #f8fdff;">
-                            <h4 style="margin: 0 0 10px 0; color: #1976d2;">💬 Ask Follow-up Questions</h4>
-                            <p style="font-size: 0.9em; color: #666; margin: 0 0 15px 0;">Continue the conversation to explore your data deeper.</p>
-                            <div style="display: flex; gap: 10px; align-items: flex-end;">
-                                <div style="flex: 1;">
-                                    <textarea id="followUpQuestion" placeholder="Ask Claude to explore further... (e.g., 'Show me wind patterns during high waves' or 'What happened around 3 PM?')" style="width: 100%; padding: 8px; min-height: 40px; border: 1px solid #ddd; border-radius: 4px; resize: vertical;"></textarea>
-                                </div>
-                                <button id="askFollowUpBtn" onclick="askFollowUpQuestion()" style="padding: 8px 15px; background: #1976d2; color: white; border: none; border-radius: 4px; cursor: pointer; white-space: nowrap;">💬 Ask</button>
-                            </div>
-                        </div>
-                    </div>
-                    
-
-                    <!-- Analysis History -->
-                    <div style="margin-top: 30px;">
-                        <h3>📈 Analysis History</h3>
-                        <button onclick="openAnalysisHistoryModal()" id="loadHistoryBtn">📈 View Analysis History</button>
-                        <p style="font-size: 0.9em; color: #666; margin-top: 10px;">View and manage your previous Claude AI analyses.</p>
-                    </div>
-                </div>
+            <!-- Stream Statistics -->
+            <div
+              style="
+                margin-top: 30px;
+                padding-top: 20px;
+                border-top: 1px solid #ddd;
+              "
+            >
+              <h3>📊 Stream Statistics</h3>
+              <div id="streamStats" style="margin-top: 15px">
+                <div class="loading">Loading statistics...</div>
+              </div>
             </div>
 
-            <!-- Data Validation Tab -->
-            <div id="dataValidation" class="tab-panel">
-                <div class="section">
-                    <h2>🔍 Data Validation</h2>
-                    <p>Validate parquet file schemas against SignalK metadata and schema guidelines:</p>
-                    <div style="margin-bottom: 10px;">
-                        <button onclick="runDataValidation()" id="validateBtn">🔍 Run Schema Validation</button>
-                        <button onclick="repairSchemas()" id="repairBtn" style="margin-left: 10px;">🔧 Repair Schema Violations</button>
-                    </div>
-                    <div id="processTimer" style="background: rgb(227, 242, 253); border: 1px solid rgb(33, 150, 243); border-radius: 5px; padding: 10px; margin-bottom: 15px; text-align: center; font-family: monospace; display: none;">
-                        <strong id="processIcon">🔍 Validation Timer</strong><br>
-                        <span id="processStartTime">Process started: --:--:--</span><br>
-                        <span id="processElapsed">Elapsed: 0.0s</span><br>
-                        <span id="processProgress">Files processed: 0 of 0 (0%)</span>
-                    </div>
-                    <div id="validationStatus" style="margin-top: 10px;"></div>
+            <!-- Live Data Display -->
+            <div
+              style="
+                margin-top: 30px;
+                padding-top: 20px;
+                border-top: 1px solid #ddd;
+              "
+            >
+              <h3>📡 Live Data Stream</h3>
+              <p style="margin-bottom: 15px">
+                Real-time time-bucketed statistical streaming data (newest
+                first, max 100 entries):
+              </p>
 
-                    <div id="validationResults" style="margin-top: 15px; display: none;">
-                        <h3 id="validationSummaryHeader">Validation Summary</h3>
-                        <div id="validationSummary" style="margin-bottom: 15px; padding: 10px; background: #f8f9fa; border-radius: 5px;"></div>
+              <!-- Data Interpretation Guide -->
+              <div
+                style="
+                  background: #f0f8ff;
+                  padding: 15px;
+                  border-radius: 5px;
+                  margin-bottom: 15px;
+                  font-size: 13px;
+                "
+              >
+                <strong>📊 How to Read This Data:</strong><br />
+                • <strong>📊 INITIAL</strong>: Full time window data (first load
+                with many buckets)<br />
+                • <strong>📈 INCREMENTAL</strong>: New data points since last
+                update (sliding window - fewer buckets)<br />
+                • <strong>Statistical Method</strong>: MAX, AVG, MIN, FIRST,
+                LAST, MID applied to each time bucket<br />
+                • <strong>Buckets</strong>: Number of time intervals processed
+                (e.g., 30-second time buckets)<br />
+                • <strong>Value</strong>: Result of statistical calculation for
+                that time bucket<br />
+                • <strong>EMA/SMA</strong>: Moving averages (10-period)
+                calculated for numeric values - EMA responds faster to
+                changes<br />
+                • <strong>Time</strong>: Timestamp of the time bucket (not
+                delivery time)
+              </div>
 
-                        <h3 id="validationDetailsHeader">Schema Violations</h3>
-                        <div id="validationDetails" style="max-height: 400px; overflow-y: auto; border: 1px solid #ddd; padding: 10px; background: white; font-family: monospace; font-size: 12px;"></div>
-                    </div>
-                </div>
+              <div
+                style="
+                  max-height: 400px;
+                  overflow-y: auto;
+                  border: 1px solid #ddd;
+                  border-radius: 5px;
+                "
+              >
+                <table
+                  id="liveDataTable"
+                  style="
+                    width: 100%;
+                    border-collapse: collapse;
+                    font-size: 12px;
+                  "
+                >
+                  <thead
+                    style="
+                      position: sticky;
+                      top: 0;
+                      background: #f8f9fa;
+                      z-index: 1;
+                    "
+                  >
+                    <tr>
+                      <th
+                        style="
+                          padding: 8px;
+                          border-bottom: 1px solid #ddd;
+                          text-align: left;
+                        "
+                      >
+                        Bucket Time
+                      </th>
+                      <th
+                        style="
+                          padding: 8px;
+                          border-bottom: 1px solid #ddd;
+                          text-align: left;
+                        "
+                      >
+                        Stream Type & Statistical Method
+                      </th>
+                      <th
+                        style="
+                          padding: 8px;
+                          border-bottom: 1px solid #ddd;
+                          text-align: left;
+                        "
+                      >
+                        Path
+                      </th>
+                      <th
+                        style="
+                          padding: 8px;
+                          border-bottom: 1px solid #ddd;
+                          text-align: left;
+                        "
+                      >
+                        Statistical Value
+                      </th>
+                      <th
+                        style="
+                          padding: 8px;
+                          border-bottom: 1px solid #ddd;
+                          text-align: left;
+                        "
+                      >
+                        EMA (10)
+                      </th>
+                      <th
+                        style="
+                          padding: 8px;
+                          border-bottom: 1px solid #ddd;
+                          text-align: left;
+                        "
+                      >
+                        SMA (10)
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody id="liveDataBody">
+                    <tr>
+                      <td
+                        colspan="6"
+                        style="padding: 20px; text-align: center; color: #666"
+                      >
+                        No data streaming yet. Start a stream to see live data.
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+
+              <div style="margin-top: 10px; font-size: 11px; color: #666">
+                <span id="liveDataCount">0</span> time-bucketed entries •
+                <button
+                  onclick="clearLiveData()"
+                  style="font-size: 11px; padding: 2px 8px"
+                >
+                  🗑️ Clear
+                </button>
+                <button
+                  onclick="toggleLiveDataPause()"
+                  id="pauseDataBtn"
+                  style="font-size: 11px; padding: 2px 8px; margin-left: 5px"
+                >
+                  ⏸️ Pause
+                </button>
+                <button
+                  onclick="showDataSummary()"
+                  style="font-size: 11px; padding: 2px 8px; margin-left: 5px"
+                >
+                  📊 Summary
+                </button>
+              </div>
+
+              <!-- Data Summary Panel -->
+              <div
+                id="dataSummaryPanel"
+                style="
+                  display: none;
+                  margin-top: 15px;
+                  padding: 15px;
+                  background: #f8f9fa;
+                  border-radius: 5px;
+                "
+              >
+                <h4>📊 Data Summary & Trends</h4>
+                <div id="dataSummaryContent"></div>
+              </div>
             </div>
-
-            <!-- S3 Configuration Tab -->
-            <div id="s3Config" class="tab-panel">
-                <div class="section">
-                    <h2>☁️ Cloud Status</h2>
-            <p>Test your S3 connection and understand the Key Prefix functionality:</p>
-            <button onclick="testS3Connection()">🔗 Test S3 Connection</button>
-            <div id="s3TestResult" style="margin-top: 10px;"></div>
-            
-            <div style="margin-top: 15px; padding: 15px; background: #f8f9fa; border-radius: 5px;">
-                <h4>📋 S3 Key Prefix Explanation</h4>
-                <p><strong>S3 Key Prefix</strong> organizes your uploaded files in the S3 bucket with a directory structure:</p>
-                <ul style="margin: 10px 0; padding-left: 20px;">
-                    <li><strong>Without prefix:</strong> Files upload as <code>tier=raw/context=vessels__urn.../path=navigation__position/year=2025/day=193/file.parquet</code></li>
-                    <li><strong>With prefix "marine-data":</strong> Files upload as <code>marine-data/tier=raw/context=vessels__urn.../path=navigation__position/...</code></li>
-                    <li><strong>With prefix "boat-123/":</strong> Files upload as <code>boat-123/tier=raw/context=vessels__urn.../path=navigation__position/...</code></li>
-                </ul>
-                    <p>This allows organizing multiple vessels or data sources in the same S3 bucket.</p>
-                </div>
-
-                <!-- S3 Sync Section -->
-                <div style="margin-top: 25px; padding: 20px; background: #e8f5e9; border-radius: 8px; border: 2px solid #4CAF50;">
-                    <h3 style="margin-top: 0; color: #2E7D32;">🔄 S3 Sync Status</h3>
-                    <p style="color: #666; margin-bottom: 15px;">Compare local files with S3 and sync missing files.</p>
-
-                    <button onclick="compareS3Files()" style="background: #2196F3;">📊 Compare Local vs S3</button>
-                    <button onclick="syncToS3()" style="background: #4CAF50; margin-left: 10px;" id="syncToS3Btn" disabled>📤 Sync Missing to S3</button>
-
-                    <div id="s3CompareResult" style="margin-top: 15px;"></div>
-                </div>
-                </div>
-            </div>
-
-            <!-- Data Paths Tab -->
-            <div id="dataPaths" class="tab-panel">
-                <div class="section">
-                    <h2>🗄️ Query Database</h2>
-                <p>Available SignalK data paths with Parquet files:</p>
-                    <div id="availablePaths">
-                        <div class="loading">Loading available paths...</div>
-                    </div>
-
-                    <!-- Query Section for Data Paths -->
-                    <div style="margin-top: 30px; padding-top: 20px; border-top: 1px solid #ddd;">
-                        <h3>Query Data</h3>
-                        <div class="form-group">
-                            <label for="dataPathsQueryInput">DuckDB SQL Query:</label>
-                            <textarea id="dataPathsQueryInput" placeholder="SELECT * FROM read_parquet('path/to/file.parquet', union_by_name=true) LIMIT 10"></textarea>
-                        </div>
-                        <button onclick="executeDataPathsQuery()">▶️ Execute Query</button>
-                        <button class="btn-secondary" onclick="clearDataPathsQuery()">🗑️ Clear</button>
-
-                        <div id="dataPathsResultsContainer" class="results">
-                            <p>Run a query to see results here...</p>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Migration Tab -->
-            <div id="migration" class="tab-panel">
-                <div class="section">
-                    <h2>📊 Store Status & Migration</h2>
-                    <p>Parquet store overview, SQLite buffer status, and data migration tools.</p>
-
-                    <!-- Parquet Store Stats Section -->
-                    <div style="margin-bottom: 30px; padding: 20px; background: #e8f5e9; border-radius: 8px; border: 2px solid #4CAF50;">
-                        <h3 style="margin-top: 0; color: #2e7d32;">📊 Parquet Store</h3>
-                        <div id="storeStats">
-                            <p><span class="loading">Loading store stats...</span></p>
-                        </div>
-                        <div style="margin-top: 15px;">
-                            <button onclick="refreshStoreStats()" style="background: #4CAF50;">🔄 Refresh</button>
-                        </div>
-                    </div>
-
-                    <!-- Buffer Status Section -->
-                    <div style="margin-bottom: 30px; padding: 20px; background: #e3f2fd; border-radius: 8px; border: 2px solid #2196F3;">
-                        <h3 style="margin-top: 0; color: #1565C0;">💾 SQLite Buffer Status</h3>
-                        <div id="bufferStatus">
-                            <p><span class="loading">Loading buffer status...</span></p>
-                        </div>
-                        <div style="margin-top: 15px;">
-                            <button onclick="refreshBufferStatus()" style="background: #2196F3;">🔄 Refresh</button>
-                            <button onclick="forceBufferExport()" style="background: #4CAF50; margin-left: 10px;">📤 Force Export</button>
-                        </div>
-                    </div>
-
-                    <!-- Migration Section -->
-                    <div style="padding: 20px; background: #fff3e0; border-radius: 8px; border: 2px solid #FF9800;">
-                        <h3 style="margin-top: 0; color: #E65100;">📁 Migrate to Hive Partitioning</h3>
-                        <p style="color: #666; margin-bottom: 15px;">Convert existing flat-structure Parquet files to Hive-style partitioned structure for better query performance.</p>
-
-                        <input type="hidden" id="migrationTier" value="raw">
-
-                        <div class="form-group" style="display: flex; align-items: center; gap: 10px;">
-                            <input type="checkbox" id="migrationDeleteSource" style="width: auto;">
-                            <label for="migrationDeleteSource" style="margin: 0; font-weight: normal;">Delete source files after migration</label>
-                        </div>
-
-                        <div style="margin-top: 20px; display: flex; gap: 10px;">
-                            <button onclick="scanForMigration()" style="background: #FF9800;">🔍 Scan Files</button>
-                            <button onclick="startMigration()" style="background: #4CAF50;" id="startMigrationBtn" disabled>▶️ Start Migration</button>
-                            <button onclick="cancelMigration()" style="background: #f44336;" id="cancelMigrationBtn" disabled>❌ Cancel</button>
-                        </div>
-
-                        <!-- Scan Results -->
-                        <div id="migrationScanResults" style="margin-top: 20px; display: none; padding: 15px; background: white; border-radius: 5px; border: 1px solid #ddd;">
-                            <h4 style="margin-top: 0;">Scan Results</h4>
-                            <div id="migrationScanContent"></div>
-                        </div>
-
-                        <!-- Migration Progress -->
-                        <div id="migrationProgress" style="margin-top: 20px; display: none; padding: 15px; background: white; border-radius: 5px; border: 1px solid #ddd;">
-                            <h4 style="margin-top: 0;">Migration Progress</h4>
-                            <div style="background: #e0e0e0; border-radius: 5px; height: 20px; overflow: hidden; margin-bottom: 10px;">
-                                <div id="migrationProgressBar" style="background: linear-gradient(90deg, #4CAF50, #8BC34A); height: 100%; width: 0%; transition: width 0.3s;"></div>
-                            </div>
-                            <div id="migrationProgressText">0% complete</div>
-                            <div id="migrationCurrentFile" style="color: #666; font-size: 0.9em; margin-top: 5px;"></div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
+          </div>
         </div>
+
+        <!-- AI Analysis Tab -->
+        <div id="aiAnalysis" class="tab-panel">
+          <div class="section">
+            <h2>🧠 AI Analysis with Claude</h2>
+            <small>EXPERIMENTAL</small>
+            <p>
+              Analyze your maritime data using Claude AI for insights, patterns,
+              and recommendations.
+            </p>
+
+            <!-- Connection Test -->
+            <div style="margin-bottom: 20px">
+              <button onclick="testClaudeConnection()" id="testConnectionBtn">
+                🔗 Test Claude Connection
+              </button>
+              <div id="claudeConnectionResult" style="margin-top: 10px"></div>
+            </div>
+
+            <!-- Vessel Context Section -->
+            <div
+              style="
+                margin-bottom: 30px;
+                border: 2px solid #e3f2fd;
+                border-radius: 8px;
+                background: #fafbfc;
+              "
+            >
+              <div
+                onclick="toggleVesselContext()"
+                style="
+                  padding: 15px 20px;
+                  cursor: pointer;
+                  display: flex;
+                  align-items: center;
+                  justify-content: space-between;
+                  user-select: none;
+                "
+              >
+                <div>
+                  <h3 style="margin: 0">⚓ Vessel Context Document</h3>
+                  <p style="margin: 5px 0 0 0; color: #555; font-size: 0.9em">
+                    Click to expand - context automatically included with every
+                    AI analysis
+                  </p>
+                </div>
+                <span
+                  id="vesselContextToggleIcon"
+                  style="font-size: 1.2em; color: #667eea"
+                  >▶</span
+                >
+              </div>
+              <div
+                id="vesselContextContent"
+                style="
+                  display: none;
+                  padding: 0 20px 20px 20px;
+                  border-top: 1px solid #e3f2fd;
+                "
+              >
+                <!-- Auto-extracted vessel info -->
+                <div style="margin-bottom: 20px">
+                  <h4
+                    style="
+                      margin-bottom: 10px;
+                      display: flex;
+                      align-items: center;
+                      justify-content: space-between;
+                    "
+                  >
+                    <span>📊 Auto-Extracted Vessel Information</span>
+                    <button
+                      onclick="refreshVesselInfo()"
+                      style="font-size: 0.9em; padding: 6px 12px"
+                    >
+                      🔄 Refresh from SignalK
+                    </button>
+                  </h4>
+                  <div
+                    id="autoVesselInfo"
+                    style="
+                      background: white;
+                      padding: 15px;
+                      border-radius: 5px;
+                      border: 1px solid #ddd;
+                    "
+                  >
+                    <div style="color: #666; font-style: italic">
+                      Loading vessel information...
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Custom context -->
+                <div style="margin-bottom: 20px">
+                  <h4 style="margin-bottom: 10px">✏️ Custom Context & Notes</h4>
+                  <p style="font-size: 0.9em; color: #666; margin-bottom: 10px">
+                    Add any additional context about your vessel, operations, or
+                    specific information you want Claude to consider during
+                    analysis:
+                  </p>
+                  <textarea
+                    id="customVesselContext"
+                    placeholder="e.g., 'This is a racing sailboat primarily used for coastal sailing. The vessel has recently had engine maintenance. We're particularly interested in wind performance analysis...'"
+                    style="
+                      width: 100%;
+                      min-height: 120px;
+                      padding: 12px;
+                      border: 1px solid #ddd;
+                      border-radius: 5px;
+                      resize: vertical;
+                      font-family: inherit;
+                    "
+                  ></textarea>
+                </div>
+
+                <!-- Context preview and actions -->
+                <div
+                  style="
+                    display: flex;
+                    gap: 10px;
+                    align-items: center;
+                    flex-wrap: wrap;
+                  "
+                >
+                  <button
+                    onclick="saveVesselContext()"
+                    style="background: #4caf50; padding: 8px 16px"
+                  >
+                    💾 Save Context
+                  </button>
+                  <button
+                    onclick="previewClaudeContext()"
+                    style="background: #2196f3; padding: 8px 16px"
+                  >
+                    👁️ Preview Claude Context
+                  </button>
+                  <div
+                    id="vesselContextStatus"
+                    style="margin-left: 10px; font-size: 0.9em"
+                  ></div>
+                </div>
+
+                <!-- Context preview modal -->
+                <div
+                  id="contextPreviewModal"
+                  class="modal-overlay"
+                  style="
+                    display: none;
+                    position: fixed;
+                    top: 0;
+                    left: 0;
+                    width: 100%;
+                    height: 100%;
+                    background: rgba(0, 0, 0, 0.5);
+                    z-index: 1000;
+                    overflow-y: auto;
+                  "
+                >
+                  <div
+                    class="modal-content"
+                    style="
+                      max-width: 800px;
+                      margin: 50px auto;
+                      background: white;
+                      border-radius: 10px;
+                      padding: 20px;
+                      max-height: 80vh;
+                      overflow-y: auto;
+                    "
+                  >
+                    <div
+                      style="
+                        display: flex;
+                        justify-content: space-between;
+                        align-items: center;
+                        margin-bottom: 15px;
+                      "
+                    >
+                      <h3>👁️ Claude Context Preview</h3>
+                      <button
+                        onclick="closeContextPreview()"
+                        style="
+                          background: #f44336;
+                          color: white;
+                          padding: 5px 10px;
+                          border-radius: 3px;
+                        "
+                      >
+                        &times;
+                      </button>
+                    </div>
+                    <p style="color: #666; margin-bottom: 15px">
+                      This is the context that will be sent to Claude with every
+                      analysis:
+                    </p>
+                    <pre
+                      id="contextPreviewContent"
+                      style="
+                        background: #f8f9fa;
+                        padding: 15px;
+                        border-radius: 5px;
+                        border: 1px solid #ddd;
+                        white-space: pre-wrap;
+                        font-family:
+                          'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+                        font-size: 0.9em;
+                        line-height: 1.4;
+                        max-height: 400px;
+                        overflow-y: auto;
+                      "
+                    ></pre>
+                    <div
+                      style="
+                        margin-top: 15px;
+                        padding: 10px;
+                        background: #e8f5e8;
+                        border-radius: 5px;
+                        border-left: 4px solid #4caf50;
+                      "
+                    >
+                      <small
+                        ><strong>💡 Tip:</strong> A good vessel context helps
+                        Claude provide more accurate and relevant insights for
+                        your specific vessel and operations.</small
+                      >
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Custom Analysis -->
+            <div style="margin-bottom: 30px">
+              <h3>🎯 Custom Analysis</h3>
+              <div style="margin-top: 15px">
+                <!-- Analysis Mode Toggle with Model Selector -->
+                <div
+                  style="
+                    margin-bottom: 20px;
+                    padding: 15px;
+                    border: 2px solid #e3f2fd;
+                    border-radius: 8px;
+                    background: #f8f9ff;
+                  "
+                >
+                  <div style="margin-bottom: 10px">
+                    <label
+                      style="
+                        display: flex;
+                        align-items: center;
+                        justify-content: space-between;
+                        cursor: pointer;
+                        font-weight: bold;
+                      "
+                    >
+                      <span>🚀 Direct Database Access</span>
+                      <input
+                        type="checkbox"
+                        id="enableDatabaseAccess"
+                        checked
+                        onchange="toggleAnalysisMode()"
+                        style="transform: scale(1.2)"
+                      />
+                    </label>
+                  </div>
+                  <div style="font-size: 0.9em; color: #555">
+                    <div id="legacyModeDesc" style="color: #666; display: none">
+                      <strong>Legacy:</strong> Pre-load data samples for
+                      analysis (faster, limited scope)
+                    </div>
+                    <div id="databaseModeDesc" style="color: #1976d2">
+                      <strong>Enhanced:</strong> Claude explores your database
+                      interactively (more powerful, complete historical access)
+                    </div>
+                  </div>
+
+                  <!-- Claude Model Selection - moved here -->
+                  <div style="margin-top: 15px">
+                    <label for="claudeModelMain">Claude Model:</label>
+                    <select
+                      id="claudeModelMain"
+                      style="width: 100%; padding: 8px; margin-top: 5px"
+                    >
+                      <option value="claude-sonnet-4-20250514" selected>
+                        Claude Sonnet 4 - Latest Sonnet model (recommended)
+                      </option>
+                      <option value="claude-opus-4-1-20250805">
+                        Claude Opus 4.1 - Most powerful model (premium)
+                      </option>
+                      <option value="claude-opus-4-20250514">
+                        Claude Opus 4 - High performance model (premium)
+                      </option>
+                    </select>
+                    <p style="font-size: 0.9em; color: #666; margin: 5px 0 0 0">
+                      Choose the Claude model for analysis. Sonnet provides the
+                      most detailed insights.
+                    </p>
+                  </div>
+                </div>
+
+                <!-- Collapsible Selection Options -->
+                <div id="selectionOptionsSection" style="margin-bottom: 20px">
+                  <div
+                    onclick="toggleSelectionOptions()"
+                    style="
+                      cursor: pointer;
+                      padding: 10px;
+                      background: #f8f9fa;
+                      border: 1px solid #dee2e6;
+                      border-radius: 5px;
+                      user-select: none;
+                    "
+                  >
+                    <span id="selectionToggleIcon" style="margin-right: 8px"
+                      >▶</span
+                    >
+                    <strong>Selection Options</strong>
+                    <span
+                      id="selectionToggleSubtext"
+                      style="font-size: 0.9em; color: #666; margin-left: 10px"
+                      >(Advanced options for legacy mode)</span
+                    >
+                  </div>
+                  <div
+                    id="selectionOptionsContainer"
+                    style="
+                      display: none;
+                      border: 1px solid #dee2e6;
+                      border-top: none;
+                      border-radius: 0 0 5px 5px;
+                      padding: 15px;
+                      background: #f9f9f9;
+                    "
+                  >
+                    <!-- Data Path Selection -->
+                    <div style="margin-bottom: 15px">
+                      <label>Data Paths (select one or more):</label>
+                      <div
+                        id="analysisDataPathContainer"
+                        style="
+                          max-height: 200px;
+                          overflow-y: auto;
+                          border: 1px solid #ddd;
+                          border-radius: 4px;
+                          padding: 10px;
+                          margin-top: 5px;
+                          background: white;
+                        "
+                      >
+                        <div style="color: #666; font-style: italic">
+                          Loading available paths...
+                        </div>
+                      </div>
+                      <style>
+                        .path-checkbox-row {
+                          display: flex;
+                          align-items: center;
+                          padding: 8px 8px 8px 5px;
+                          margin: 2px 0;
+                          border-radius: 4px;
+                        }
+                        .path-checkbox-row:nth-child(odd) {
+                          background-color: #f8f9fa;
+                        }
+                        .path-checkbox-row:nth-child(even) {
+                          background-color: white;
+                        }
+                        .path-checkbox-row:hover {
+                          background-color: #e3f2fd;
+                        }
+                        .path-info {
+                          display: flex;
+                          align-items: center;
+                          flex-grow: 1;
+                        }
+                        .path-icon {
+                          margin-right: 8px;
+                          font-size: 16px;
+                        }
+                        .path-checkbox {
+                          margin-left: auto;
+                          width: 16px;
+                          height: 16px;
+                          flex-shrink: 0;
+                        }
+                      </style>
+                      <div
+                        style="
+                          margin-top: 5px;
+                          font-size: 0.9em;
+                          color: #666;
+                          display: flex;
+                          justify-content: space-between;
+                          align-items: center;
+                        "
+                      >
+                        <span
+                          ><span id="selectedPathCount">0</span> path(s)
+                          selected</span
+                        >
+                        <div>
+                          <button
+                            onclick="selectAllPaths()"
+                            style="
+                              font-size: 0.8em;
+                              padding: 2px 6px;
+                              margin-right: 5px;
+                            "
+                          >
+                            Select All
+                          </button>
+                          <button
+                            onclick="clearAllPaths()"
+                            style="font-size: 0.8em; padding: 2px 6px"
+                          >
+                            Clear All
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+
+                    <!-- Date Range Selection -->
+                    <div
+                      style="
+                        display: grid;
+                        grid-template-columns: 1fr 1fr;
+                        gap: 15px;
+                        margin-bottom: 15px;
+                      "
+                    >
+                      <div>
+                        <label for="analysisStartDate">Start Date:</label>
+                        <input
+                          type="datetime-local"
+                          id="analysisStartDate"
+                          style="width: 100%; padding: 8px; margin-top: 5px"
+                        />
+                      </div>
+                      <div>
+                        <label for="analysisEndDate">End Date:</label>
+                        <input
+                          type="datetime-local"
+                          id="analysisEndDate"
+                          style="width: 100%; padding: 8px; margin-top: 5px"
+                        />
+                      </div>
+                    </div>
+
+                    <!-- Aggregation Method -->
+                    <div style="margin-bottom: 15px">
+                      <label for="aggregationMethod">Aggregation Method:</label>
+                      <select
+                        id="aggregationMethod"
+                        style="width: 100%; padding: 8px; margin-top: 5px"
+                      >
+                        <option value="average" selected>
+                          Average - Mean values over time buckets
+                        </option>
+                        <option value="min">
+                          Min - Minimum values over time buckets
+                        </option>
+                        <option value="max">
+                          Max - Maximum values over time buckets
+                        </option>
+                        <option value="first">
+                          First - First value in each time bucket
+                        </option>
+                        <option value="last">
+                          Last - Last value in each time bucket
+                        </option>
+                        <option value="mid">
+                          Median - Middle values over time buckets
+                        </option>
+                        <option value="multiple">
+                          Multiple - Get min, max, and average
+                        </option>
+                      </select>
+                    </div>
+
+                    <!-- Time Resolution -->
+                    <div style="margin-bottom: 15px">
+                      <label for="resolution">Time Resolution:</label>
+                      <select
+                        id="resolution"
+                        style="width: 100%; padding: 8px; margin-top: 5px"
+                      >
+                        <option value="" selected>
+                          Auto - Automatically determine best resolution
+                        </option>
+                        <option value="1m">1 minute - Fine-grained data</option>
+                        <option value="5m">5 minutes - Detailed data</option>
+                        <option value="15m">
+                          15 minutes - Regular sampling
+                        </option>
+                        <option value="1h">1 hour - Hourly summaries</option>
+                        <option value="1d">1 day - Daily summaries</option>
+                      </select>
+                    </div>
+                  </div>
+                </div>
+
+                <div style="margin-bottom: 15px">
+                  <label for="customPrompt"
+                    >Custom Analysis Request (optional):</label
+                  >
+                  <textarea
+                    id="customPrompt"
+                    placeholder="What specific insights are you looking for? Leave blank for general analysis..."
+                    style="
+                      width: 100%;
+                      padding: 8px;
+                      margin-top: 5px;
+                      min-height: 180px;
+                      resize: vertical;
+                    "
+                  ></textarea>
+                </div>
+
+                <button
+                  onclick="runCustomAnalysis()"
+                  style="padding: 12px 25px; margin-top: 15px"
+                >
+                  🚀 Run Custom Analysis
+                </button>
+              </div>
+            </div>
+
+            <!-- Analysis Results -->
+            <div id="analysisResults" style="display: none">
+              <h3>📊 Analysis Results</h3>
+              <div
+                id="analysisContent"
+                style="
+                  background: #f8f9fa;
+                  padding: 20px;
+                  border-radius: 8px;
+                  margin-top: 15px;
+                "
+              >
+                <!-- Results will appear here -->
+              </div>
+
+              <!-- Follow-up Questions -->
+              <div
+                id="followUpSection"
+                style="
+                  display: none;
+                  margin-top: 20px;
+                  padding: 15px;
+                  border: 2px solid #e8f4f8;
+                  border-radius: 8px;
+                  background: #f8fdff;
+                "
+              >
+                <h4 style="margin: 0 0 10px 0; color: #1976d2">
+                  💬 Ask Follow-up Questions
+                </h4>
+                <p style="font-size: 0.9em; color: #666; margin: 0 0 15px 0">
+                  Continue the conversation to explore your data deeper.
+                </p>
+                <div style="display: flex; gap: 10px; align-items: flex-end">
+                  <div style="flex: 1">
+                    <textarea
+                      id="followUpQuestion"
+                      placeholder="Ask Claude to explore further... (e.g., 'Show me wind patterns during high waves' or 'What happened around 3 PM?')"
+                      style="
+                        width: 100%;
+                        padding: 8px;
+                        min-height: 40px;
+                        border: 1px solid #ddd;
+                        border-radius: 4px;
+                        resize: vertical;
+                      "
+                    ></textarea>
+                  </div>
+                  <button
+                    id="askFollowUpBtn"
+                    onclick="askFollowUpQuestion()"
+                    style="
+                      padding: 8px 15px;
+                      background: #1976d2;
+                      color: white;
+                      border: none;
+                      border-radius: 4px;
+                      cursor: pointer;
+                      white-space: nowrap;
+                    "
+                  >
+                    💬 Ask
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <!-- Analysis History -->
+            <div style="margin-top: 30px">
+              <h3>📈 Analysis History</h3>
+              <button onclick="openAnalysisHistoryModal()" id="loadHistoryBtn">
+                📈 View Analysis History
+              </button>
+              <p style="font-size: 0.9em; color: #666; margin-top: 10px">
+                View and manage your previous Claude AI analyses.
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <!-- Data Validation Tab -->
+        <div id="dataValidation" class="tab-panel">
+          <div class="section">
+            <h2>🔍 Data Validation</h2>
+            <p>
+              Validate parquet file schemas against SignalK metadata and schema
+              guidelines:
+            </p>
+            <div style="margin-bottom: 10px">
+              <button onclick="runDataValidation()" id="validateBtn">
+                🔍 Run Schema Validation
+              </button>
+              <button
+                onclick="repairSchemas()"
+                id="repairBtn"
+                style="margin-left: 10px"
+              >
+                🔧 Repair Schema Violations
+              </button>
+            </div>
+            <div
+              id="processTimer"
+              style="
+                background: rgb(227, 242, 253);
+                border: 1px solid rgb(33, 150, 243);
+                border-radius: 5px;
+                padding: 10px;
+                margin-bottom: 15px;
+                text-align: center;
+                font-family: monospace;
+                display: none;
+              "
+            >
+              <strong id="processIcon">🔍 Validation Timer</strong><br />
+              <span id="processStartTime">Process started: --:--:--</span><br />
+              <span id="processElapsed">Elapsed: 0.0s</span><br />
+              <span id="processProgress">Files processed: 0 of 0 (0%)</span>
+            </div>
+            <div id="validationStatus" style="margin-top: 10px"></div>
+
+            <div id="validationResults" style="margin-top: 15px; display: none">
+              <h3 id="validationSummaryHeader">Validation Summary</h3>
+              <div
+                id="validationSummary"
+                style="
+                  margin-bottom: 15px;
+                  padding: 10px;
+                  background: #f8f9fa;
+                  border-radius: 5px;
+                "
+              ></div>
+
+              <h3 id="validationDetailsHeader">Schema Violations</h3>
+              <div
+                id="validationDetails"
+                style="
+                  max-height: 400px;
+                  overflow-y: auto;
+                  border: 1px solid #ddd;
+                  padding: 10px;
+                  background: white;
+                  font-family: monospace;
+                  font-size: 12px;
+                "
+              ></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Cloud Configuration Tab -->
+        <div id="s3Config" class="tab-panel">
+          <div class="section">
+            <h2>☁️ Cloud Status</h2>
+            <p>
+              Test your cloud storage connection (Amazon S3 or Cloudflare R2)
+              and sync files:
+            </p>
+            <button onclick="testCloudConnection()">
+              🔗 Test Cloud Connection
+            </button>
+            <div id="cloudTestResult" style="margin-top: 10px"></div>
+
+            <div
+              style="
+                margin-top: 15px;
+                padding: 15px;
+                background: #f8f9fa;
+                border-radius: 5px;
+              "
+            >
+              <h4>📋 Key Prefix Explanation</h4>
+              <p>
+                <strong>Key Prefix</strong> organizes your uploaded files in the
+                bucket with a directory structure:
+              </p>
+              <ul style="margin: 10px 0; padding-left: 20px">
+                <li>
+                  <strong>Without prefix:</strong> Files upload as
+                  <code
+                    >tier=raw/context=vessels__urn.../path=navigation__position/year=2025/day=193/file.parquet</code
+                  >
+                </li>
+                <li>
+                  <strong>With prefix "marine-data":</strong> Files upload as
+                  <code
+                    >marine-data/tier=raw/context=vessels__urn.../path=navigation__position/...</code
+                  >
+                </li>
+                <li>
+                  <strong>With prefix "boat-123/":</strong> Files upload as
+                  <code
+                    >boat-123/tier=raw/context=vessels__urn.../path=navigation__position/...</code
+                  >
+                </li>
+              </ul>
+              <p>
+                This allows organizing multiple vessels or data sources in the
+                same bucket. Works identically for S3 and R2.
+              </p>
+            </div>
+
+            <!-- Cloud Sync Section -->
+            <div
+              style="
+                margin-top: 25px;
+                padding: 20px;
+                background: #e8f5e9;
+                border-radius: 8px;
+                border: 2px solid #4caf50;
+              "
+            >
+              <h3 style="margin-top: 0; color: #2e7d32">
+                🔄 Cloud Sync Status
+              </h3>
+              <p style="color: #666; margin-bottom: 15px">
+                Compare local files with cloud storage and sync missing files.
+              </p>
+
+              <button onclick="compareCloudFiles()" style="background: #2196f3">
+                📊 Compare Local vs Cloud
+              </button>
+              <button
+                onclick="syncToCloud()"
+                style="background: #4caf50; margin-left: 10px"
+                id="syncToCloudBtn"
+                disabled
+              >
+                📤 Sync Missing Files
+              </button>
+
+              <div id="cloudCompareResult" style="margin-top: 15px"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Data Paths Tab -->
+        <div id="dataPaths" class="tab-panel">
+          <div class="section">
+            <h2>🗄️ Query Database</h2>
+            <p>Available SignalK data paths with Parquet files:</p>
+            <div id="availablePaths">
+              <div class="loading">Loading available paths...</div>
+            </div>
+
+            <!-- Query Section for Data Paths -->
+            <div
+              style="
+                margin-top: 30px;
+                padding-top: 20px;
+                border-top: 1px solid #ddd;
+              "
+            >
+              <h3>Query Data</h3>
+              <div class="form-group">
+                <label for="dataPathsQueryInput">DuckDB SQL Query:</label>
+                <textarea
+                  id="dataPathsQueryInput"
+                  placeholder="SELECT * FROM read_parquet('path/to/file.parquet', union_by_name=true) LIMIT 10"
+                ></textarea>
+              </div>
+              <button onclick="executeDataPathsQuery()">
+                ▶️ Execute Query
+              </button>
+              <button class="btn-secondary" onclick="clearDataPathsQuery()">
+                🗑️ Clear
+              </button>
+
+              <div id="dataPathsResultsContainer" class="results">
+                <p>Run a query to see results here...</p>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Migration Tab -->
+        <div id="migration" class="tab-panel">
+          <div class="section">
+            <h2>📊 Store Status & Migration</h2>
+            <p>
+              Parquet store overview, SQLite buffer status, and data migration
+              tools.
+            </p>
+
+            <!-- Parquet Store Stats Section -->
+            <div
+              style="
+                margin-bottom: 30px;
+                padding: 20px;
+                background: #e8f5e9;
+                border-radius: 8px;
+                border: 2px solid #4caf50;
+              "
+            >
+              <h3 style="margin-top: 0; color: #2e7d32">📊 Parquet Store</h3>
+              <div id="storeStats">
+                <p><span class="loading">Loading store stats...</span></p>
+              </div>
+              <div style="margin-top: 15px">
+                <button
+                  onclick="refreshStoreStats()"
+                  style="background: #4caf50"
+                >
+                  🔄 Refresh
+                </button>
+              </div>
+            </div>
+
+            <!-- Buffer Status Section -->
+            <div
+              style="
+                margin-bottom: 30px;
+                padding: 20px;
+                background: #e3f2fd;
+                border-radius: 8px;
+                border: 2px solid #2196f3;
+              "
+            >
+              <h3 style="margin-top: 0; color: #1565c0">
+                💾 SQLite Buffer Status
+              </h3>
+              <div id="bufferStatus">
+                <p><span class="loading">Loading buffer status...</span></p>
+              </div>
+              <div style="margin-top: 15px">
+                <button
+                  onclick="refreshBufferStatus()"
+                  style="background: #2196f3"
+                >
+                  🔄 Refresh
+                </button>
+                <button
+                  onclick="forceBufferExport()"
+                  style="background: #4caf50; margin-left: 10px"
+                >
+                  📤 Force Export
+                </button>
+              </div>
+            </div>
+
+            <!-- Migration Section -->
+            <div
+              style="
+                padding: 20px;
+                background: #fff3e0;
+                border-radius: 8px;
+                border: 2px solid #ff9800;
+              "
+            >
+              <h3 style="margin-top: 0; color: #e65100">
+                📁 Migrate to Hive Partitioning
+              </h3>
+              <p style="color: #666; margin-bottom: 15px">
+                Convert existing flat-structure Parquet files to Hive-style
+                partitioned structure for better query performance.
+              </p>
+
+              <input type="hidden" id="migrationTier" value="raw" />
+
+              <div
+                class="form-group"
+                style="display: flex; align-items: center; gap: 10px"
+              >
+                <input
+                  type="checkbox"
+                  id="migrationDeleteSource"
+                  style="width: auto"
+                />
+                <label
+                  for="migrationDeleteSource"
+                  style="margin: 0; font-weight: normal"
+                  >Delete source files after migration</label
+                >
+              </div>
+
+              <div style="margin-top: 20px; display: flex; gap: 10px">
+                <button
+                  onclick="scanForMigration()"
+                  style="background: #ff9800"
+                >
+                  🔍 Scan Files
+                </button>
+                <button
+                  onclick="startMigration()"
+                  style="background: #4caf50"
+                  id="startMigrationBtn"
+                  disabled
+                >
+                  ▶️ Start Migration
+                </button>
+                <button
+                  onclick="cancelMigration()"
+                  style="background: #f44336"
+                  id="cancelMigrationBtn"
+                  disabled
+                >
+                  ❌ Cancel
+                </button>
+              </div>
+
+              <!-- Scan Results -->
+              <div
+                id="migrationScanResults"
+                style="
+                  margin-top: 20px;
+                  display: none;
+                  padding: 15px;
+                  background: white;
+                  border-radius: 5px;
+                  border: 1px solid #ddd;
+                "
+              >
+                <h4 style="margin-top: 0">Scan Results</h4>
+                <div id="migrationScanContent"></div>
+              </div>
+
+              <!-- Migration Progress -->
+              <div
+                id="migrationProgress"
+                style="
+                  margin-top: 20px;
+                  display: none;
+                  padding: 15px;
+                  background: white;
+                  border-radius: 5px;
+                  border: 1px solid #ddd;
+                "
+              >
+                <h4 style="margin-top: 0">Migration Progress</h4>
+                <div
+                  style="
+                    background: #e0e0e0;
+                    border-radius: 5px;
+                    height: 20px;
+                    overflow: hidden;
+                    margin-bottom: 10px;
+                  "
+                >
+                  <div
+                    id="migrationProgressBar"
+                    style="
+                      background: linear-gradient(90deg, #4caf50, #8bc34a);
+                      height: 100%;
+                      width: 0%;
+                      transition: width 0.3s;
+                    "
+                  ></div>
+                </div>
+                <div id="migrationProgressText">0% complete</div>
+                <div
+                  id="migrationCurrentFile"
+                  style="color: #666; font-size: 0.9em; margin-top: 5px"
+                ></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
 
     <script type="module" src="js/main.js"></script>
     <script src="js/migration.js"></script>
 
     <!-- Analysis History Modal -->
-    <div id="analysisHistoryModal" class="modal-overlay" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 1001; overflow-y: auto;">
-        <div class="modal-content" style="max-width: 900px; margin: 30px auto; background: white; border-radius: 10px; max-height: 90vh; overflow-y: auto;">
-            <div style="display: flex; justify-content: space-between; align-items: center; padding: 20px; border-bottom: 1px solid #ddd; position: sticky; top: 0; background: white; border-radius: 10px 10px 0 0;">
-                <h3 style="margin: 0;">📈 Analysis History</h3>
-                <button onclick="closeAnalysisHistoryModal()" style="background: #f44336; color: white; padding: 5px 10px; border-radius: 3px; font-size: 16px;">&times;</button>
-            </div>
-            <div id="analysisHistoryModalContent" style="padding: 20px;">
-                <!-- Analysis history content will be loaded here -->
-            </div>
+    <div
+      id="analysisHistoryModal"
+      class="modal-overlay"
+      style="
+        display: none;
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        background: rgba(0, 0, 0, 0.5);
+        z-index: 1001;
+        overflow-y: auto;
+      "
+    >
+      <div
+        class="modal-content"
+        style="
+          max-width: 900px;
+          margin: 30px auto;
+          background: white;
+          border-radius: 10px;
+          max-height: 90vh;
+          overflow-y: auto;
+        "
+      >
+        <div
+          style="
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 20px;
+            border-bottom: 1px solid #ddd;
+            position: sticky;
+            top: 0;
+            background: white;
+            border-radius: 10px 10px 0 0;
+          "
+        >
+          <h3 style="margin: 0">📈 Analysis History</h3>
+          <button
+            onclick="closeAnalysisHistoryModal()"
+            style="
+              background: #f44336;
+              color: white;
+              padding: 5px 10px;
+              border-radius: 3px;
+              font-size: 16px;
+            "
+          >
+            &times;
+          </button>
         </div>
+        <div id="analysisHistoryModalContent" style="padding: 20px">
+          <!-- Analysis history content will be loaded here -->
+        </div>
+      </div>
     </div>
 
     <!-- Individual Analysis View Modal -->
-    <div id="analysisViewModal" class="modal-overlay" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 1002; overflow-y: auto;">
-        <div class="modal-content" style="max-width: 1000px; margin: 20px auto; background: white; border-radius: 10px; max-height: 95vh; overflow-y: auto;">
-            <div style="display: flex; justify-content: space-between; align-items: center; padding: 20px; border-bottom: 1px solid #ddd; position: sticky; top: 0; background: white; border-radius: 10px 10px 0 0;">
-                <h3 style="margin: 0;" id="analysisViewTitle">🧠 Analysis Details</h3>
-                <button onclick="closeAnalysisViewModal()" style="background: #f44336; color: white; padding: 5px 10px; border-radius: 3px; font-size: 16px;">&times;</button>
-            </div>
-            <div id="analysisViewContent" style="padding: 20px;">
-                <!-- Individual analysis content will be loaded here -->
-            </div>
+    <div
+      id="analysisViewModal"
+      class="modal-overlay"
+      style="
+        display: none;
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        background: rgba(0, 0, 0, 0.5);
+        z-index: 1002;
+        overflow-y: auto;
+      "
+    >
+      <div
+        class="modal-content"
+        style="
+          max-width: 1000px;
+          margin: 20px auto;
+          background: white;
+          border-radius: 10px;
+          max-height: 95vh;
+          overflow-y: auto;
+        "
+      >
+        <div
+          style="
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 20px;
+            border-bottom: 1px solid #ddd;
+            position: sticky;
+            top: 0;
+            background: white;
+            border-radius: 10px 10px 0 0;
+          "
+        >
+          <h3 style="margin: 0" id="analysisViewTitle">🧠 Analysis Details</h3>
+          <button
+            onclick="closeAnalysisViewModal()"
+            style="
+              background: #f44336;
+              color: white;
+              padding: 5px 10px;
+              border-radius: 3px;
+              font-size: 16px;
+            "
+          >
+            &times;
+          </button>
         </div>
+        <div id="analysisViewContent" style="padding: 20px">
+          <!-- Individual analysis content will be loaded here -->
+        </div>
+      </div>
     </div>
 
     <!-- Unified Threshold Modal -->
-    <div id="thresholdModal" class="modal-overlay" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 10000; overflow-y: auto;">
-        <div class="modal-content" style="max-width: 800px; margin: 50px auto; background: white; border-radius: 10px; padding: 30px; box-shadow: 0 4px 20px rgba(0,0,0,0.3);">
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
-                <h3 id="thresholdModalTitle" style="margin: 0; color: #333;">Add Threshold</h3>
-                <button onclick="closeThresholdModal()" style="background: none; border: none; font-size: 24px; cursor: pointer; color: #666;">&times;</button>
-            </div>
-
-            <div class="form-group">
-                <label for="thresholdPath">SignalK Path to Monitor:</label>
-                <input type="text" id="thresholdPathSearch" class="path-tree-search" placeholder="🔍 Search paths...">
-                <div id="thresholdPathTree" class="path-tree-container"></div>
-                <input type="hidden" id="thresholdPath">
-                <button type="button" onclick="showCustomPathInput('thresholdPath')" style="margin-top: 5px; padding: 6px 12px; background: #666; color: white; border: none; border-radius: 4px; font-size: 0.9em;">🖊️ Enter Custom Path</button>
-                <input type="text" id="thresholdPathCustom" placeholder="Enter custom SignalK path (e.g., navigation.speedOverGround)" style="width: 100%; padding: 8px; margin-top: 5px; border: 1px solid #ddd; border-radius: 4px; display: none;">
-            </div>
-
-            <div style="display: flex; gap: 10px;">
-                <div class="form-group" style="flex: 1;">
-                    <label for="thresholdOperator">Condition:</label>
-                    <select id="thresholdOperator" onchange="toggleThresholdValueField()">
-                        <option value="gt">Greater than (&gt;)</option>
-                        <option value="lt">Less than (&lt;)</option>
-                        <option value="eq">Equal to (=)</option>
-                        <option value="ne">Not equal to (≠)</option>
-                        <option value="true">Is true</option>
-                        <option value="false">Is false</option>
-                    </select>
-                </div>
-
-                <div class="form-group" style="flex: 1;" id="thresholdValueGroup">
-                    <label for="thresholdValue">Value:</label>
-                    <input type="text" id="thresholdValue" placeholder="e.g., 5.0">
-                </div>
-            </div>
-
-            <div style="display: flex; gap: 10px;">
-                <div class="form-group" style="flex: 1;">
-                    <label for="thresholdAction">Action when condition met:</label>
-                    <select id="thresholdAction">
-                        <option value="true">Turn command ON</option>
-                        <option value="false">Turn command OFF</option>
-                    </select>
-                </div>
-
-                <div class="form-group" style="flex: 1;">
-                    <label for="thresholdHysteresis">Hysteresis (seconds):</label>
-                    <input type="number" id="thresholdHysteresis" placeholder="2.0" step="0.1">
-                    <small style="color: #666; font-size: 11px;">Prevent rapid switching</small>
-                </div>
-            </div>
-
-            <div style="margin-top: 20px; display: flex; gap: 10px; justify-content: flex-end;">
-                <button type="button" onclick="cancelThresholdModal()" style="background: #666; color: white; border: none; padding: 10px 20px; border-radius: 4px; cursor: pointer;">❌ Cancel</button>
-                <button type="button" id="thresholdModalSaveButton" onclick="saveThresholdModal()" style="background: #4caf50; color: white; border: none; padding: 10px 20px; border-radius: 4px; cursor: pointer;">✅ Add Threshold</button>
-            </div>
+    <div
+      id="thresholdModal"
+      class="modal-overlay"
+      style="
+        display: none;
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        background: rgba(0, 0, 0, 0.5);
+        z-index: 10000;
+        overflow-y: auto;
+      "
+    >
+      <div
+        class="modal-content"
+        style="
+          max-width: 800px;
+          margin: 50px auto;
+          background: white;
+          border-radius: 10px;
+          padding: 30px;
+          box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+        "
+      >
+        <div
+          style="
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+          "
+        >
+          <h3 id="thresholdModalTitle" style="margin: 0; color: #333">
+            Add Threshold
+          </h3>
+          <button
+            onclick="closeThresholdModal()"
+            style="
+              background: none;
+              border: none;
+              font-size: 24px;
+              cursor: pointer;
+              color: #666;
+            "
+          >
+            &times;
+          </button>
         </div>
-    </div>
 
-</body>
+        <div class="form-group">
+          <label for="thresholdPath">SignalK Path to Monitor:</label>
+          <input
+            type="text"
+            id="thresholdPathSearch"
+            class="path-tree-search"
+            placeholder="🔍 Search paths..."
+          />
+          <div id="thresholdPathTree" class="path-tree-container"></div>
+          <input type="hidden" id="thresholdPath" />
+          <button
+            type="button"
+            onclick="showCustomPathInput('thresholdPath')"
+            style="
+              margin-top: 5px;
+              padding: 6px 12px;
+              background: #666;
+              color: white;
+              border: none;
+              border-radius: 4px;
+              font-size: 0.9em;
+            "
+          >
+            🖊️ Enter Custom Path
+          </button>
+          <input
+            type="text"
+            id="thresholdPathCustom"
+            placeholder="Enter custom SignalK path (e.g., navigation.speedOverGround)"
+            style="
+              width: 100%;
+              padding: 8px;
+              margin-top: 5px;
+              border: 1px solid #ddd;
+              border-radius: 4px;
+              display: none;
+            "
+          />
+        </div>
+
+        <div style="display: flex; gap: 10px">
+          <div class="form-group" style="flex: 1">
+            <label for="thresholdOperator">Condition:</label>
+            <select
+              id="thresholdOperator"
+              onchange="toggleThresholdValueField()"
+            >
+              <option value="gt">Greater than (&gt;)</option>
+              <option value="lt">Less than (&lt;)</option>
+              <option value="eq">Equal to (=)</option>
+              <option value="ne">Not equal to (≠)</option>
+              <option value="true">Is true</option>
+              <option value="false">Is false</option>
+            </select>
+          </div>
+
+          <div class="form-group" style="flex: 1" id="thresholdValueGroup">
+            <label for="thresholdValue">Value:</label>
+            <input type="text" id="thresholdValue" placeholder="e.g., 5.0" />
+          </div>
+        </div>
+
+        <div style="display: flex; gap: 10px">
+          <div class="form-group" style="flex: 1">
+            <label for="thresholdAction">Action when condition met:</label>
+            <select id="thresholdAction">
+              <option value="true">Turn command ON</option>
+              <option value="false">Turn command OFF</option>
+            </select>
+          </div>
+
+          <div class="form-group" style="flex: 1">
+            <label for="thresholdHysteresis">Hysteresis (seconds):</label>
+            <input
+              type="number"
+              id="thresholdHysteresis"
+              placeholder="2.0"
+              step="0.1"
+            />
+            <small style="color: #666; font-size: 11px"
+              >Prevent rapid switching</small
+            >
+          </div>
+        </div>
+
+        <div
+          style="
+            margin-top: 20px;
+            display: flex;
+            gap: 10px;
+            justify-content: flex-end;
+          "
+        >
+          <button
+            type="button"
+            onclick="cancelThresholdModal()"
+            style="
+              background: #666;
+              color: white;
+              border: none;
+              padding: 10px 20px;
+              border-radius: 4px;
+              cursor: pointer;
+            "
+          >
+            ❌ Cancel
+          </button>
+          <button
+            type="button"
+            id="thresholdModalSaveButton"
+            onclick="saveThresholdModal()"
+            style="
+              background: #4caf50;
+              color: white;
+              border: none;
+              padding: 10px 20px;
+              border-radius: 4px;
+              cursor: pointer;
+            "
+          >
+            ✅ Add Threshold
+          </button>
+        </div>
+      </div>
+    </div>
+  </body>
 </html>
