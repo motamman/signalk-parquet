@@ -32,6 +32,8 @@ export class DuckDBPool {
   private static instance: DuckDBInstance | null = null;
   private static initialized: boolean = false;
   private static s3Initialized: boolean = false;
+  private static sqliteDbPath: string | null = null;
+  private static sqliteInitialized: boolean = false;
 
   /**
    * Initialize the DuckDB instance and load extensions
@@ -50,6 +52,7 @@ export class DuckDBPool {
     const setupConn = await this.instance.connect();
     await setupConn.runAndReadAll('INSTALL spatial;');
     await setupConn.runAndReadAll('LOAD spatial;');
+    // sqlite extension is auto-loaded by ATTACH ... (TYPE SQLITE) in getConnectionWithBuffer()
     this.initialized = true;
     // Connection closes automatically when no longer referenced
   }
@@ -72,6 +75,56 @@ export class DuckDBPool {
   }
 
   /**
+   * Store the SQLite buffer database path for federated queries.
+   * Call this after initialize() and after the SQLiteBuffer is created.
+   *
+   * @param dbPath Absolute path to the SQLite buffer.db file
+   */
+  static initializeSQLiteBuffer(dbPath: string): void {
+    this.sqliteDbPath = dbPath;
+    this.sqliteInitialized = true;
+  }
+
+  /**
+   * Check if the SQLite buffer path has been configured
+   */
+  static isSQLiteBufferInitialized(): boolean {
+    return this.sqliteInitialized && this.sqliteDbPath !== null;
+  }
+
+  /**
+   * Get the configured SQLite buffer path (or null)
+   */
+  static getSQLiteBufferPath(): string | null {
+    return this.sqliteDbPath;
+  }
+
+  /**
+   * Get a connection with the SQLite buffer ATTACHed as 'buffer' (READ_ONLY).
+   * Falls back to a plain connection if no buffer path is configured.
+   *
+   * @returns A DuckDB connection with buffer attached
+   */
+  static async getConnectionWithBuffer() {
+    const connection = await this.getConnection();
+
+    if (this.sqliteDbPath) {
+      try {
+        await connection.runAndReadAll(
+          `ATTACH '${this.sqliteDbPath.replace(/'/g, "''")}' AS buffer (TYPE SQLITE, READ_ONLY)`
+        );
+      } catch (err: unknown) {
+        // If already attached (e.g. connection reuse), ignore
+        if (!(err instanceof Error && err.message.includes('already exists'))) {
+          throw err;
+        }
+      }
+    }
+
+    return connection;
+  }
+
+  /**
    * Cleanup on plugin shutdown
    * Sets the instance to null to allow garbage collection
    */
@@ -81,6 +134,8 @@ export class DuckDBPool {
       this.instance = null;
       this.initialized = false;
       this.s3Initialized = false;
+      this.sqliteDbPath = null;
+      this.sqliteInitialized = false;
     }
   }
 

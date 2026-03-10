@@ -220,6 +220,12 @@ export default function (app: ServerAPI): SignalKPlugin {
     await DuckDBPool.initialize();
     app.debug('DuckDB connection pool initialized');
 
+    // Register SQLite buffer path with DuckDB for federated queries
+    if (state.sqliteBuffer) {
+      DuckDBPool.initializeSQLiteBuffer(state.sqliteBuffer.getDbPath());
+      app.debug('DuckDB SQLite buffer federation initialized');
+    }
+
     // Initialize S3 credentials in DuckDB if S3 provider is configured
     if (
       state.currentConfig.cloudUpload.provider === 's3' &&

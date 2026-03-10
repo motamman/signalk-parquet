@@ -27,6 +27,7 @@ export interface BufferRecord {
   exported: number;
   export_batch_id: string | null;
   created_at: string;
+  [key: string]: unknown; // Dynamic value_* columns
 }
 
 export interface BufferStats {
@@ -55,6 +56,7 @@ export class SQLiteBuffer {
   private markExportedStmt: Database.Statement;
   private cleanupStmt: Database.Statement;
   private getStatsStmt: Database.Statement;
+  private knownColumns: Set<string>;
 
   constructor(config: SQLiteBufferConfig) {
     this.dbPath = config.dbPath;
@@ -77,18 +79,17 @@ export class SQLiteBuffer {
     // Create schema
     this.createSchema();
 
+    // Discover existing columns (picks up any value_* columns from prior runs)
+    this.knownColumns = new Set<string>();
+    const tableInfo = this.db.pragma('table_info(buffer_records)') as Array<{
+      name: string;
+    }>;
+    for (const col of tableInfo) {
+      this.knownColumns.add(col.name);
+    }
+
     // Prepare statements for performance
-    this.insertStmt = this.db.prepare(`
-      INSERT INTO buffer_records (
-        context, path, received_timestamp, signalk_timestamp,
-        value, value_json, source, source_label, source_type,
-        source_pgn, source_src, meta, exported, export_batch_id, created_at
-      ) VALUES (
-        @context, @path, @received_timestamp, @signalk_timestamp,
-        @value, @value_json, @source, @source_label, @source_type,
-        @source_pgn, @source_src, @meta, 0, NULL, datetime('now')
-      )
-    `);
+    this.insertStmt = this.rebuildInsertStmt();
 
     this.getPendingStmt = this.db.prepare(`
       SELECT * FROM buffer_records
@@ -150,6 +151,60 @@ export class SQLiteBuffer {
       CREATE INDEX IF NOT EXISTS idx_buffer_received_timestamp
         ON buffer_records (received_timestamp);
     `);
+  }
+
+  /**
+   * Build the INSERT statement dynamically based on known columns.
+   * Called once at startup and again whenever a new value_* column is added.
+   */
+  private rebuildInsertStmt(): Database.Statement {
+    const baseCols = [
+      'context',
+      'path',
+      'received_timestamp',
+      'signalk_timestamp',
+      'value',
+      'value_json',
+      'source',
+      'source_label',
+      'source_type',
+      'source_pgn',
+      'source_src',
+      'meta',
+      'exported',
+      'export_batch_id',
+      'created_at',
+    ];
+
+    // Add any dynamic value_* columns
+    const dynamicCols = Array.from(this.knownColumns).filter(
+      c => c.startsWith('value_') && c !== 'value_json' && !baseCols.includes(c)
+    );
+
+    const allCols = [...baseCols, ...dynamicCols];
+    const placeholders = allCols.map(c => {
+      if (c === 'exported') return '0';
+      if (c === 'export_batch_id') return 'NULL';
+      if (c === 'created_at') return "datetime('now')";
+      return `@${c}`;
+    });
+
+    return this.db.prepare(
+      `INSERT INTO buffer_records (${allCols.join(', ')}) VALUES (${placeholders.join(', ')})`
+    );
+  }
+
+  /**
+   * Ensure a value_* column exists in the table.
+   * Adds it via ALTER TABLE if missing, then rebuilds the INSERT statement.
+   */
+  private ensureColumn(columnName: string): void {
+    if (this.knownColumns.has(columnName)) return;
+
+    // All value_* component columns are REAL (numeric)
+    this.db.exec(`ALTER TABLE buffer_records ADD COLUMN ${columnName} REAL`);
+    this.knownColumns.add(columnName);
+    this.insertStmt = this.rebuildInsertStmt();
   }
 
   /**
@@ -221,7 +276,7 @@ export class SQLiteBuffer {
         : String(record.meta)
       : null;
 
-    return {
+    const params: Record<string, unknown> = {
       context: record.context,
       path: record.path,
       received_timestamp: record.received_timestamp,
@@ -235,6 +290,29 @@ export class SQLiteBuffer {
       source_src: record.source_src || null,
       meta: metaStr,
     };
+
+    // Extract dynamic value_* component columns (e.g. value_latitude, value_longitude)
+    for (const key of Object.keys(record)) {
+      if (
+        key.startsWith('value_') &&
+        key !== 'value_json' &&
+        record[key] !== undefined &&
+        record[key] !== null
+      ) {
+        this.ensureColumn(key);
+        params[key] =
+          typeof record[key] === 'number' ? record[key] : Number(record[key]);
+      }
+    }
+
+    // Ensure all known dynamic columns have a value (NULL) so named params don't throw
+    for (const col of this.knownColumns) {
+      if (col.startsWith('value_') && col !== 'value_json' && !(col in params)) {
+        params[col] = null;
+      }
+    }
+
+    return params;
   }
 
   /**
@@ -308,7 +386,7 @@ export class SQLiteBuffer {
       }
     }
 
-    return {
+    const dataRecord: DataRecord = {
       received_timestamp: record.received_timestamp,
       signalk_timestamp: record.signalk_timestamp,
       context: record.context,
@@ -322,6 +400,21 @@ export class SQLiteBuffer {
       source_src: record.source_src || undefined,
       meta: meta as string | object | undefined,
     };
+
+    // Restore dynamic value_* columns from the record
+    const rec = record as Record<string, unknown>;
+    for (const key of Object.keys(rec)) {
+      if (
+        key.startsWith('value_') &&
+        key !== 'value_json' &&
+        rec[key] !== null &&
+        rec[key] !== undefined
+      ) {
+        dataRecord[key] = rec[key];
+      }
+    }
+
+    return dataRecord;
   }
 
   /**
