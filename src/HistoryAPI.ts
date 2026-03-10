@@ -972,15 +972,25 @@ export class HistoryAPI {
               );
             }
 
+            // Each source does its own aggregation into (timestamp, components..., priority).
+            // UNION ALL the results, then ROW_NUMBER to pick highest-priority source per bucket.
+            // Priority: buffer(3) > raw tier gap(2) > tier parquet(1).
             const objTsCol = getTierTimestampColumn(effectiveTier);
-
-            // Build federated FROM clause: parquet UNION ALL buffer (+ raw tier gap fix)
-            // All parts alias their timestamp to 'ts' for uniform outer query
             const componentCols = Array.from(componentSchema.components.values()).map(c => c.columnName).join(', ');
-            const buildObjFederatedFrom = (fc: string): string => {
-              const parts: string[] = [`SELECT ${objTsCol} AS ts, ${componentCols} FROM ${fc}`];
+            const objBucketExpr = (col: string) =>
+              `strftime(DATE_TRUNC('seconds', EPOCH_MS(CAST(FLOOR(EPOCH_MS(${col}::TIMESTAMP) / ${timeResolutionMillis}) * ${timeResolutionMillis} AS BIGINT))), '%Y-%m-%dT%H:%M:%SZ')`;
 
-              // Tier gap fix: UNION raw tier for today when using aggregated tiers
+            const buildObjQuery = (fc: string) => {
+              const subqueries: string[] = [];
+
+              // Source 1: tier parquet
+              subqueries.push(`
+                SELECT ${objBucketExpr(objTsCol)} as timestamp, ${componentSelects}, 1 as priority
+                FROM ${fc} AS source_data
+                WHERE ${objTsCol} >= '${fromIso}' AND ${objTsCol} < '${toIso}' AND (${componentWhereConditions})${spatialWhereClause}
+                GROUP BY timestamp`);
+
+              // Source 2: raw tier gap fix for today
               if (effectiveTier !== 'raw') {
                 const todayStart = this.getTodayUtcIso();
                 if (toIso > todayStart) {
@@ -993,11 +1003,16 @@ export class HistoryAPI {
                     '*.parquet'
                   );
                   const rawTsCol = getTierTimestampColumn('raw');
-                  parts.push(`SELECT ${rawTsCol} AS ts, ${componentCols} FROM ${buildFromClause(rawFilePath)} WHERE ${rawTsCol} >= '${fromIso > todayStart ? fromIso : todayStart}' AND ${rawTsCol} < '${toIso}'`);
+                  const rawFrom = fromIso > todayStart ? fromIso : todayStart;
+                  subqueries.push(`
+                SELECT ${objBucketExpr(rawTsCol)} as timestamp, ${componentSelects}, 2 as priority
+                FROM ${buildFromClause(rawFilePath)} AS source_data
+                WHERE ${rawTsCol} >= '${rawFrom}' AND ${rawTsCol} < '${toIso}' AND (${componentWhereConditions})
+                GROUP BY timestamp`);
                 }
               }
 
-              // UNION ALL buffer data if available
+              // Source 3: SQLite buffer
               if (hasBuffer) {
                 const bufferSubquery = buildBufferObjectSubquery(
                   context,
@@ -1006,32 +1021,26 @@ export class HistoryAPI {
                   toIso,
                   componentSchema.components
                 );
-                parts.push(`SELECT signalk_timestamp AS ts, ${componentCols} FROM ${bufferSubquery}`);
+                subqueries.push(`
+                SELECT ${objBucketExpr('signalk_timestamp')} as timestamp, ${componentSelects}, 3 as priority
+                FROM ${bufferSubquery} AS source_data
+                WHERE (${componentWhereConditions})
+                GROUP BY timestamp`);
               }
 
-              if (parts.length === 1) return fc;
-              return `(${parts.join('\n              UNION ALL\n              ')})`;
-            };
+              if (subqueries.length === 1) {
+                return `SELECT timestamp, ${componentCols} FROM (${subqueries[0]}) ORDER BY timestamp`;
+              }
 
-            const buildObjQuery = (fc: string) => {
-              const federatedFrom = buildObjFederatedFrom(fc);
-              const isFederated = federatedFrom !== fc;
-              const queryTsCol = isFederated ? 'ts' : objTsCol;
+              // Pick highest priority per timestamp bucket
+              const compNames = Array.from(componentSchema.components.keys()).join(', ');
               return `
-              SELECT
-                strftime(DATE_TRUNC('seconds',
-                  EPOCH_MS(CAST(FLOOR(EPOCH_MS(${queryTsCol}::TIMESTAMP) / ${timeResolutionMillis}) * ${timeResolutionMillis} AS BIGINT))
-                ), '%Y-%m-%dT%H:%M:%SZ') as timestamp,
-                ${componentSelects}
-              FROM ${federatedFrom} AS source_data
-              WHERE
-                ${queryTsCol} >= '${fromIso}'
-                AND
-                ${queryTsCol} < '${toIso}'
-                AND (${componentWhereConditions})${spatialWhereClause}
-              GROUP BY timestamp
-              ORDER BY timestamp
-              `;
+              SELECT timestamp, ${compNames} FROM (
+                SELECT timestamp, ${compNames},
+                  ROW_NUMBER() OVER (PARTITION BY timestamp ORDER BY priority DESC) as rn
+                FROM (${subqueries.join('\n              UNION ALL')})
+              ) WHERE rn = 1
+              ORDER BY timestamp`;
             };
 
             const result = await runQueryWithFallback(buildObjQuery);
@@ -1073,19 +1082,26 @@ export class HistoryAPI {
               `Path ${pathSpec.path}: value_json column ${hasValueJson ? 'exists' : 'does not exist'}`
             );
 
+            // Each source does its own aggregation into (timestamp, value, priority).
+            // UNION ALL the results, then ROW_NUMBER to pick highest-priority source per bucket.
+            // Priority: buffer(3) > raw tier gap(2) > aggregated/raw tier parquet(1).
             const tsCol = getTierTimestampColumn(effectiveTier);
-            const valueJsonSelect =
-              hasValueJson && effectiveTier === 'raw'
-                ? ', FIRST(value_json) as value_json'
-                : '';
             const whereClause = getTierWhereClause(effectiveTier, hasValueJson);
+            const bucketExpr = (col: string) =>
+              `strftime(DATE_TRUNC('seconds', EPOCH_MS(CAST(FLOOR(EPOCH_MS(${col}::TIMESTAMP) / ${timeResolutionMillis}) * ${timeResolutionMillis} AS BIGINT))), '%Y-%m-%dT%H:%M:%SZ')`;
 
-            // Build federated FROM clause: parquet UNION ALL buffer (+ raw tier gap fix)
-            // All parts alias their timestamp column to `ts` so the outer query is uniform
-            const buildScalarFederatedFrom = (fc: string): string => {
-              const parts: string[] = [`SELECT ${tsCol} AS ts, value, ${hasValueJson ? 'value_json' : "NULL::VARCHAR AS value_json"} FROM ${fc}`];
+            const buildScalarQuery = (fc: string) => {
+              const subqueries: string[] = [];
 
-              // Tier gap fix: UNION raw tier for today when using aggregated tiers
+              // Source 1: tier parquet (uses tier-native columns and aggregate)
+              const tierAggExpr = getTierAggregateExpression(pathSpec.aggregateMethod, pathSpec.path, effectiveTier, hasValueJson, app, context as string);
+              subqueries.push(`
+                SELECT ${bucketExpr(tsCol)} as timestamp, ${tierAggExpr} as value, 1 as priority
+                FROM ${fc} AS source_data
+                WHERE ${tsCol} >= '${fromIso}' AND ${tsCol} < '${toIso}' AND ${whereClause}
+                GROUP BY timestamp`);
+
+              // Source 2: raw tier gap fix for today (only when using aggregated tiers)
               if (effectiveTier !== 'raw') {
                 const todayStart = this.getTodayUtcIso();
                 if (toIso > todayStart) {
@@ -1098,11 +1114,18 @@ export class HistoryAPI {
                     '*.parquet'
                   );
                   const rawTsCol = getTierTimestampColumn('raw');
-                  parts.push(`SELECT ${rawTsCol} AS ts, value, ${hasValueJson ? 'value_json' : "NULL::VARCHAR AS value_json"} FROM ${buildFromClause(rawFilePath)} WHERE ${rawTsCol} >= '${fromIso > todayStart ? fromIso : todayStart}' AND ${rawTsCol} < '${toIso}'`);
+                  const rawFrom = fromIso > todayStart ? fromIso : todayStart;
+                  const rawAggExpr = getTierAggregateExpression(pathSpec.aggregateMethod, pathSpec.path, 'raw', hasValueJson, app, context as string);
+                  const rawWhereClause = getTierWhereClause('raw', hasValueJson);
+                  subqueries.push(`
+                SELECT ${bucketExpr(rawTsCol)} as timestamp, ${rawAggExpr} as value, 2 as priority
+                FROM ${buildFromClause(rawFilePath)} AS source_data
+                WHERE ${rawTsCol} >= '${rawFrom}' AND ${rawTsCol} < '${toIso}' AND ${rawWhereClause}
+                GROUP BY timestamp`);
                 }
               }
 
-              // UNION ALL buffer data if available
+              // Source 3: SQLite buffer (via DuckDB ATTACH)
               if (hasBuffer) {
                 const bufferSubquery = buildBufferScalarSubquery(
                   context,
@@ -1110,34 +1133,27 @@ export class HistoryAPI {
                   fromIso,
                   toIso
                 );
-                parts.push(`SELECT signalk_timestamp AS ts, value, value_json FROM ${bufferSubquery}`);
+                const bufferAggExpr = getTierAggregateExpression(pathSpec.aggregateMethod, pathSpec.path, 'raw', false, app, context as string);
+                subqueries.push(`
+                SELECT ${bucketExpr('signalk_timestamp')} as timestamp, ${bufferAggExpr} as value, 3 as priority
+                FROM ${bufferSubquery} AS source_data
+                WHERE value IS NOT NULL
+                GROUP BY timestamp`);
               }
 
-              if (parts.length === 1) return fc;
-              return `(${parts.join('\n              UNION ALL\n              ')})`;
-            };
+              if (subqueries.length === 1) {
+                // Single source — no priority logic needed
+                return `SELECT timestamp, value FROM (${subqueries[0]}) ORDER BY timestamp`;
+              }
 
-            const buildScalarQuery = (fc: string) => {
-              const federatedFrom = buildScalarFederatedFrom(fc);
-              // If federated (UNION ALL), all parts alias timestamp to 'ts'
-              // If not federated, buildScalarFederatedFrom returns fc directly, use original tsCol
-              const isFederated = federatedFrom !== fc;
-              const queryTsCol = isFederated ? 'ts' : tsCol;
+              // UNION ALL pre-aggregated results, pick highest priority per timestamp bucket
               return `
-              SELECT
-                strftime(DATE_TRUNC('seconds',
-                  EPOCH_MS(CAST(FLOOR(EPOCH_MS(${queryTsCol}::TIMESTAMP) / ${timeResolutionMillis}) * ${timeResolutionMillis} AS BIGINT))
-                ), '%Y-%m-%dT%H:%M:%SZ') as timestamp,
-                ${getTierAggregateExpression(pathSpec.aggregateMethod, pathSpec.path, effectiveTier, hasValueJson, app, context as string)} as value${valueJsonSelect}
-              FROM ${federatedFrom} AS source_data
-              WHERE
-                ${queryTsCol} >= '${fromIso}'
-                AND
-                ${queryTsCol} < '${toIso}'
-                AND ${whereClause}
-              GROUP BY timestamp
-              ORDER BY timestamp
-              `;
+              SELECT timestamp, value FROM (
+                SELECT timestamp, value,
+                  ROW_NUMBER() OVER (PARTITION BY timestamp ORDER BY priority DESC) as rn
+                FROM (${subqueries.join('\n              UNION ALL')})
+              ) WHERE rn = 1
+              ORDER BY timestamp`;
             };
 
             const result = await runQueryWithFallback(buildScalarQuery);
