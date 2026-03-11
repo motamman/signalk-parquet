@@ -514,9 +514,6 @@ export interface SQLiteBufferInterface {
   isOpen(): boolean;
   insert(record: DataRecord): void;
   insertBatch(records: DataRecord[]): void;
-  getPendingRecords(limit?: number): unknown[];
-  getPendingRecordsGrouped(limit?: number): Map<string, DataRecord[]>;
-  markAsExported(recordIds: number[], batchId: string): void;
   cleanup(): number;
   getStats(): {
     totalRecords: number;
@@ -528,14 +525,11 @@ export interface SQLiteBufferInterface {
     walSizeBytes: number;
   };
   getPendingCount(): number;
-  getRecordsForPath(
-    context: string,
-    signalkPath: string,
-    from?: string,
-    to?: string
-  ): DataRecord[];
+  getKnownPaths(): Set<string>;
+  hasTable(signalkPath: string): boolean;
   getDbPath(): string;
   close(): void;
+  checkpoint(): void;
   // Daily export methods
   getDatesWithUnexportedRecords(excludeToday?: boolean): string[];
   getPathsForDate(date: Date): Array<{ context: string; path: string }>;
@@ -543,7 +537,7 @@ export interface SQLiteBufferInterface {
     context: string,
     signalkPath: string,
     date: Date
-  ): { records: DataRecord[]; ids: number[] };
+  ): DataRecord[];
   markDateExported(
     context: string,
     signalkPath: string,

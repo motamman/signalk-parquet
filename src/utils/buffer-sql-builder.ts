@@ -1,15 +1,14 @@
 /**
  * SQL fragment builders for federating the SQLite buffer into DuckDB queries.
  *
- * These functions return SQL subquery strings whose output columns match
- * the parquet column schema, so they can be UNION ALL'd with read_parquet().
- *
- * The SQLite buffer stores context/path in dot notation (e.g. "vessels.urn:...",
- * "navigation.speedOverGround") — same as parquet, so no translation is needed.
+ * Per-path table architecture: each SignalK path has its own table in buffer.db.
+ * Table name: buffer_{path_with_dots_as_underscores}
+ * Scalar tables have a `value` column; object tables have flattened `value_*` columns.
  */
 
 import { Context, Path } from '@signalk/server-api';
 import { ComponentInfo } from './schema-cache';
+import { pathToTableName } from './sqlite-buffer';
 
 /**
  * Escape a string value for safe inclusion in SQL literals.
@@ -24,55 +23,78 @@ function escapeSql(value: string): string {
  *
  * Output columns: signalk_timestamp, value
  * Matches raw-tier parquet schema so it can be UNION ALL'd directly.
+ *
+ * Returns null if no buffer table exists for this path (caller should skip UNION ALL).
  */
 export function buildBufferScalarSubquery(
   context: Context | string,
   signalkPath: Path | string,
   fromIso: string,
-  toIso: string
-): string {
+  toIso: string,
+  knownBufferPaths?: Set<string>
+): string | null {
+  const pathStr = String(signalkPath);
+
+  // If we have the known paths set, check existence
+  if (knownBufferPaths && !knownBufferPaths.has(pathStr)) {
+    return null;
+  }
+
+  const tableName = pathToTableName(pathStr);
+
   return `(SELECT
     signalk_timestamp,
     TRY_CAST(value AS DOUBLE) AS value,
     NULL::VARCHAR AS value_json
-  FROM buffer.buffer_records
+  FROM buffer.${tableName}
   WHERE context = '${escapeSql(String(context))}'
-    AND path = '${escapeSql(String(signalkPath))}'
     AND received_timestamp >= '${escapeSql(fromIso)}'
     AND received_timestamp < '${escapeSql(toIso)}'
+    AND exported = 0
     AND value IS NOT NULL)`;
 }
 
 /**
  * Build a buffer subquery for an object path (e.g. navigation.position).
  *
- * Extracts each component from the value_json column using json_extract_string,
- * producing output columns that match the parquet component schema
- * (e.g. value_latitude, value_longitude).
+ * Per-path tables already have flattened value_* columns, so no json_extract needed.
+ *
+ * Returns null if no buffer table exists for this path (caller should skip UNION ALL).
  */
 export function buildBufferObjectSubquery(
   context: Context | string,
   signalkPath: Path | string,
   fromIso: string,
   toIso: string,
-  components: Map<string, ComponentInfo>
-): string {
+  components: Map<string, ComponentInfo>,
+  knownBufferPaths?: Set<string>
+): string | null {
+  const pathStr = String(signalkPath);
+
+  // If we have the known paths set, check existence
+  if (knownBufferPaths && !knownBufferPaths.has(pathStr)) {
+    return null;
+  }
+
+  const tableName = pathToTableName(pathStr);
+
   const componentSelects = Array.from(components.entries())
-    .map(([name, comp]) => {
+    .map(([_name, comp]) => {
+      // Columns are already flattened in per-path tables — just SELECT them directly
       if (comp.dataType === 'numeric') {
-        return `TRY_CAST(json_extract_string(value_json, '$.${escapeSql(name)}') AS DOUBLE) AS ${comp.columnName}`;
+        return `TRY_CAST(${comp.columnName} AS DOUBLE) AS ${comp.columnName}`;
       }
-      return `json_extract_string(value_json, '$.${escapeSql(name)}') AS ${comp.columnName}`;
+      return `CAST(${comp.columnName} AS VARCHAR) AS ${comp.columnName}`;
     })
     .join(',\n    ');
 
   return `(SELECT
     signalk_timestamp,
     ${componentSelects}
-  FROM buffer.buffer_records
+  FROM buffer.${tableName}
   WHERE context = '${escapeSql(String(context))}'
-    AND path = '${escapeSql(String(signalkPath))}'
     AND received_timestamp >= '${escapeSql(fromIso)}'
     AND received_timestamp < '${escapeSql(toIso)}'
+    AND exported = 0
     AND value_json IS NOT NULL)`;
 }

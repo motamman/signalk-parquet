@@ -123,12 +123,18 @@ function parseTimeRange(
  * History API Provider implementation
  */
 export class HistoryProvider implements HistoryApi {
+  private sqliteBuffer?: { getKnownPaths(): Set<string> };
+
   constructor(
     private selfId: string,
     private dataDir: string,
     private app: ServerAPI,
     private debug: (msg: string) => void
   ) {}
+
+  setSqliteBuffer(buffer: { getKnownPaths(): Set<string> }): void {
+    this.sqliteBuffer = buffer;
+  }
 
   /**
    * Get historical values for the specified query
@@ -250,6 +256,7 @@ export class HistoryProvider implements HistoryApi {
 
     // Use connection with buffer attached if available
     const hasBuffer = DuckDBPool.isSQLiteBufferInitialized();
+    const knownBufferPaths = hasBuffer && this.sqliteBuffer ? this.sqliteBuffer.getKnownPaths() : undefined;
     const connection = hasBuffer
       ? await DuckDBPool.getConnectionWithBuffer()
       : await DuckDBPool.getConnection();
@@ -294,13 +301,18 @@ export class HistoryProvider implements HistoryApi {
             pathSpec.path,
             fromIso,
             toIso,
-            componentSchema.components
+            componentSchema.components,
+            knownBufferPaths
           );
-          federatedFrom = `(
-            SELECT signalk_timestamp, ${componentCols} FROM ${parquetFrom}
-            UNION ALL
-            SELECT signalk_timestamp, ${componentCols} FROM ${bufferSubquery}
-          )`;
+          if (bufferSubquery) {
+            federatedFrom = `(
+              SELECT signalk_timestamp, ${componentCols} FROM ${parquetFrom}
+              UNION ALL
+              SELECT signalk_timestamp, ${componentCols} FROM ${bufferSubquery}
+            )`;
+          } else {
+            federatedFrom = parquetFrom;
+          }
         } else {
           federatedFrom = parquetFrom;
         }
@@ -362,13 +374,18 @@ export class HistoryProvider implements HistoryApi {
             context,
             pathSpec.path,
             fromIso,
-            toIso
+            toIso,
+            knownBufferPaths
           );
-          federatedFrom = `(
-            SELECT signalk_timestamp, value FROM ${parquetFrom}
-            UNION ALL
-            SELECT signalk_timestamp, value FROM ${bufferSubquery}
-          )`;
+          if (bufferSubquery) {
+            federatedFrom = `(
+              SELECT signalk_timestamp, value FROM ${parquetFrom}
+              UNION ALL
+              SELECT signalk_timestamp, value FROM ${bufferSubquery}
+            )`;
+          } else {
+            federatedFrom = parquetFrom;
+          }
         } else {
           federatedFrom = parquetFrom;
         }
@@ -465,9 +482,13 @@ export function registerHistoryApiProvider(
   app: ServerAPI,
   selfId: string,
   dataDir: string,
-  debug: (msg: string) => void
+  debug: (msg: string) => void,
+  sqliteBuffer?: { getKnownPaths(): Set<string> }
 ): void {
   const provider = new HistoryProvider(selfId, dataDir, app, debug);
+  if (sqliteBuffer) {
+    provider.setSqliteBuffer(sqliteBuffer);
+  }
 
   // Debug: Check if registerHistoryApiProvider exists on app
   console.log(

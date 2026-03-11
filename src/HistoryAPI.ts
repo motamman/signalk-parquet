@@ -862,6 +862,7 @@ export class HistoryAPI {
 
         // Get connection from pool with SQLite buffer attached (spatial extension already loaded)
         const hasBuffer = DuckDBPool.isSQLiteBufferInitialized();
+        const knownBufferPaths = hasBuffer && this.sqliteBuffer ? this.sqliteBuffer.getKnownPaths() : undefined;
         const connection = hasBuffer
           ? await DuckDBPool.getConnectionWithBuffer()
           : await DuckDBPool.getConnection();
@@ -1019,13 +1020,16 @@ export class HistoryAPI {
                   pathSpec.path,
                   fromIso,
                   toIso,
-                  componentSchema.components
+                  componentSchema.components,
+                  knownBufferPaths
                 );
-                subqueries.push(`
+                if (bufferSubquery) {
+                  subqueries.push(`
                 SELECT ${objBucketExpr('signalk_timestamp')} as timestamp, ${componentSelects}, 3 as priority
                 FROM ${bufferSubquery} AS source_data
                 WHERE (${componentWhereConditions})
                 GROUP BY timestamp`);
+                }
               }
 
               if (subqueries.length === 1) {
@@ -1131,14 +1135,17 @@ export class HistoryAPI {
                   context,
                   pathSpec.path,
                   fromIso,
-                  toIso
+                  toIso,
+                  knownBufferPaths
                 );
-                const bufferAggExpr = getTierAggregateExpression(pathSpec.aggregateMethod, pathSpec.path, 'raw', false, app, context as string);
-                subqueries.push(`
+                if (bufferSubquery) {
+                  const bufferAggExpr = getTierAggregateExpression(pathSpec.aggregateMethod, pathSpec.path, 'raw', false, app, context as string);
+                  subqueries.push(`
                 SELECT ${bucketExpr('signalk_timestamp')} as timestamp, ${bufferAggExpr} as value, 3 as priority
                 FROM ${bufferSubquery} AS source_data
                 WHERE value IS NOT NULL
                 GROUP BY timestamp`);
+                }
               }
 
               if (subqueries.length === 1) {
@@ -1187,30 +1194,34 @@ export class HistoryAPI {
             const fallbackToIso = to.toInstant().toString();
             const bufferConn = await DuckDBPool.getConnectionWithBuffer();
             try {
+              const fallbackKnownPaths = this.sqliteBuffer ? this.sqliteBuffer.getKnownPaths() : undefined;
               const bufferSubquery = buildBufferScalarSubquery(
                 context,
                 pathSpec.path,
                 fallbackFromIso,
-                fallbackToIso
+                fallbackToIso,
+                fallbackKnownPaths
               );
-              const bufferQuery = `
-                SELECT
-                  strftime(DATE_TRUNC('seconds',
-                    EPOCH_MS(CAST(FLOOR(EPOCH_MS(signalk_timestamp::TIMESTAMP) / ${timeResolutionMillis}) * ${timeResolutionMillis} AS BIGINT))
-                  ), '%Y-%m-%dT%H:%M:%SZ') as timestamp,
-                  AVG(TRY_CAST(value AS DOUBLE)) as value
-                FROM ${bufferSubquery} AS source_data
-                WHERE value IS NOT NULL
-                GROUP BY timestamp
-                ORDER BY timestamp
-              `;
-              const bufResult = await bufferConn.runAndReadAll(bufferQuery);
-              const bufRows = bufResult.getRowObjects();
-              allData[pathSpec.path] = bufRows.map((row: any) => [
-                row.timestamp as Timestamp,
-                row.value,
-              ]);
-              debug(`Buffer-only fallback: ${bufRows.length} rows for ${pathSpec.path}`);
+              if (bufferSubquery) {
+                const bufferQuery = `
+                  SELECT
+                    strftime(DATE_TRUNC('seconds',
+                      EPOCH_MS(CAST(FLOOR(EPOCH_MS(signalk_timestamp::TIMESTAMP) / ${timeResolutionMillis}) * ${timeResolutionMillis} AS BIGINT))
+                    ), '%Y-%m-%dT%H:%M:%SZ') as timestamp,
+                    AVG(TRY_CAST(value AS DOUBLE)) as value
+                  FROM ${bufferSubquery} AS source_data
+                  WHERE value IS NOT NULL
+                  GROUP BY timestamp
+                  ORDER BY timestamp
+                `;
+                const bufResult = await bufferConn.runAndReadAll(bufferQuery);
+                const bufRows = bufResult.getRowObjects();
+                allData[pathSpec.path] = bufRows.map((row: any) => [
+                  row.timestamp as Timestamp,
+                  row.value,
+                ]);
+                debug(`Buffer-only fallback: ${bufRows.length} rows for ${pathSpec.path}`);
+              }
             } finally {
               bufferConn.disconnectSync();
             }

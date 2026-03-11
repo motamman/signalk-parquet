@@ -501,7 +501,8 @@ export default function (app: ServerAPI): SignalKPlugin {
         app,
         app.selfId,
         state.currentConfig.outputDirectory,
-        app.debug
+        app.debug,
+        state.sqliteBuffer
       );
     } catch (error) {
       app.error(`Failed to register as History API provider: ${error}`);

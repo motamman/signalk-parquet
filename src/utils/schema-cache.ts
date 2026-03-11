@@ -207,7 +207,8 @@ function inferDataTypeCategory(duckdbType: string): ComponentInfo['dataType'] {
     typeUpper.includes('CHAR') ||
     typeUpper.includes('TEXT') ||
     typeUpper.includes('STRING') ||
-    typeUpper.includes('UTF8')
+    typeUpper.includes('UTF8') ||
+    typeUpper.includes('BYTE_ARRAY')
   ) {
     return 'string';
   }
