@@ -358,7 +358,9 @@ export class HivePathBuilder {
     const normalizedPrefix = keyPrefix.replace(/\/$/, '');
     const prefixPart = normalizedPrefix ? `${normalizedPrefix}/` : '';
 
-    return `s3://${bucket}/${prefixPart}tier=${tier}/context=${sanitizedContext}/path=${sanitizedPath}/{${dayPatterns}}/*.parquet`;
+    // Brace expansion for explicit day lists; plain path for wildcards
+    const daySegment = dayPatterns.includes('*') ? dayPatterns : `{${dayPatterns}}`;
+    return `s3://${bucket}/${prefixPart}tier=${tier}/context=${sanitizedContext}/path=${sanitizedPath}/${daySegment}/*.parquet`;
   }
 
   /**

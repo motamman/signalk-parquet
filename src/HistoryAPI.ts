@@ -530,12 +530,7 @@ export class HistoryAPI {
     return undefined;
   }
 
-  /**
-   * Get today's UTC midnight as ISO string for tier gap fix
-   */
-  private getTodayUtcIso(): string {
-    return new Date().toISOString().slice(0, 10) + 'T00:00:00Z';
-  }
+
 
   /**
    * Get timestamps where vessel position was within the spatial filter
@@ -874,7 +869,7 @@ export class HistoryAPI {
           const buildFromClause = (filePath: string): string => {
             const isS3 = filePath.startsWith('s3://');
             if (isS3) {
-              return `read_parquet('${filePath}', union_by_name=true)`;
+              return `read_parquet('${filePath}', union_by_name=true, filename=true)`;
             }
             // Local files: exclude processed, quarantine, failed, repaired directories
             return `(SELECT * FROM read_parquet('${filePath}', union_by_name=true, filename=true) WHERE filename NOT LIKE '%/processed/%' AND filename NOT LIKE '%/quarantine/%' AND filename NOT LIKE '%/failed/%' AND filename NOT LIKE '%/repaired/%')`;
@@ -991,29 +986,7 @@ export class HistoryAPI {
                 WHERE ${objTsCol} >= '${fromIso}' AND ${objTsCol} < '${toIso}' AND (${componentWhereConditions})${spatialWhereClause}
                 GROUP BY timestamp`);
 
-              // Source 2: raw tier gap fix for today
-              if (effectiveTier !== 'raw') {
-                const todayStart = this.getTodayUtcIso();
-                if (toIso > todayStart) {
-                  const rawFilePath = path.join(
-                    this.dataDir,
-                    'tier=raw',
-                    `context=${sanitizedContext}`,
-                    `path=${sanitizedSkPath}`,
-                    '**',
-                    '*.parquet'
-                  );
-                  const rawTsCol = getTierTimestampColumn('raw');
-                  const rawFrom = fromIso > todayStart ? fromIso : todayStart;
-                  subqueries.push(`
-                SELECT ${objBucketExpr(rawTsCol)} as timestamp, ${componentSelects}, 2 as priority
-                FROM ${buildFromClause(rawFilePath)} AS source_data
-                WHERE ${rawTsCol} >= '${rawFrom}' AND ${rawTsCol} < '${toIso}' AND (${componentWhereConditions})
-                GROUP BY timestamp`);
-                }
-              }
-
-              // Source 3: SQLite buffer
+              // Source 2: SQLite buffer (today's live data not yet exported)
               if (hasBuffer) {
                 const bufferSubquery = buildBufferObjectSubquery(
                   context,
@@ -1025,7 +998,7 @@ export class HistoryAPI {
                 );
                 if (bufferSubquery) {
                   subqueries.push(`
-                SELECT ${objBucketExpr('signalk_timestamp')} as timestamp, ${componentSelects}, 3 as priority
+                SELECT ${objBucketExpr('signalk_timestamp')} as timestamp, ${componentSelects}, 2 as priority
                 FROM ${bufferSubquery} AS source_data
                 WHERE (${componentWhereConditions})
                 GROUP BY timestamp`);
@@ -1105,31 +1078,7 @@ export class HistoryAPI {
                 WHERE ${tsCol} >= '${fromIso}' AND ${tsCol} < '${toIso}' AND ${whereClause}
                 GROUP BY timestamp`);
 
-              // Source 2: raw tier gap fix for today (only when using aggregated tiers)
-              if (effectiveTier !== 'raw') {
-                const todayStart = this.getTodayUtcIso();
-                if (toIso > todayStart) {
-                  const rawFilePath = path.join(
-                    this.dataDir,
-                    'tier=raw',
-                    `context=${sanitizedContext}`,
-                    `path=${sanitizedSkPath}`,
-                    '**',
-                    '*.parquet'
-                  );
-                  const rawTsCol = getTierTimestampColumn('raw');
-                  const rawFrom = fromIso > todayStart ? fromIso : todayStart;
-                  const rawAggExpr = getTierAggregateExpression(pathSpec.aggregateMethod, pathSpec.path, 'raw', hasValueJson, app, context as string);
-                  const rawWhereClause = getTierWhereClause('raw', hasValueJson);
-                  subqueries.push(`
-                SELECT ${bucketExpr(rawTsCol)} as timestamp, ${rawAggExpr} as value, 2 as priority
-                FROM ${buildFromClause(rawFilePath)} AS source_data
-                WHERE ${rawTsCol} >= '${rawFrom}' AND ${rawTsCol} < '${toIso}' AND ${rawWhereClause}
-                GROUP BY timestamp`);
-                }
-              }
-
-              // Source 3: SQLite buffer (via DuckDB ATTACH)
+              // Source 2: SQLite buffer (today's live data not yet exported)
               if (hasBuffer) {
                 const bufferSubquery = buildBufferScalarSubquery(
                   context,
@@ -1141,7 +1090,7 @@ export class HistoryAPI {
                 if (bufferSubquery) {
                   const bufferAggExpr = getTierAggregateExpression(pathSpec.aggregateMethod, pathSpec.path, 'raw', false, app, context as string);
                   subqueries.push(`
-                SELECT ${bucketExpr('signalk_timestamp')} as timestamp, ${bufferAggExpr} as value, 3 as priority
+                SELECT ${bucketExpr('signalk_timestamp')} as timestamp, ${bufferAggExpr} as value, 2 as priority
                 FROM ${bufferSubquery} AS source_data
                 WHERE value IS NOT NULL
                 GROUP BY timestamp`);

@@ -226,17 +226,19 @@ export default function (app: ServerAPI): SignalKPlugin {
       app.debug('DuckDB SQLite buffer federation initialized');
     }
 
-    // Initialize S3 credentials in DuckDB if S3 provider is configured
+    // Initialize S3 credentials in DuckDB if cloud provider is configured (S3 or R2)
     if (
-      state.currentConfig.cloudUpload.provider === 's3' &&
+      state.currentConfig.cloudUpload.provider !== 'none' &&
       state.currentConfig.cloudUpload.accessKeyId &&
       state.currentConfig.cloudUpload.secretAccessKey
     ) {
       try {
+        const isR2 = state.currentConfig.cloudUpload.provider === 'r2';
         await DuckDBPool.initializeS3({
           accessKeyId: state.currentConfig.cloudUpload.accessKeyId,
           secretAccessKey: state.currentConfig.cloudUpload.secretAccessKey,
-          region: state.currentConfig.cloudUpload.region || 'us-east-1',
+          region: isR2 ? 'auto' : (state.currentConfig.cloudUpload.region || 'us-east-1'),
+          endpoint: isR2 ? `${state.currentConfig.cloudUpload.accountId}.r2.cloudflarestorage.com` : undefined,
         });
         app.debug('DuckDB S3 credentials initialized for federated queries');
       } catch (error) {
@@ -457,15 +459,15 @@ export default function (app: ServerAPI): SignalKPlugin {
 
     // Register History API routes directly with the main app
     try {
-      // Build S3 query config if S3 is enabled
-      // S3 federated queries only work with S3 provider (not R2, for now)
+      // Build S3 query config if cloud provider is configured (S3 or R2)
+      const isR2 = state.currentConfig.cloudUpload.provider === 'r2';
       const s3QueryConfig =
-        state.currentConfig.cloudUpload.provider === 's3'
+        state.currentConfig.cloudUpload.provider !== 'none'
           ? {
               enabled: true,
               bucket: state.currentConfig.cloudUpload.bucket || '',
               keyPrefix: state.currentConfig.cloudUpload.keyPrefix || '',
-              region: state.currentConfig.cloudUpload.region || 'us-east-1',
+              region: isR2 ? 'auto' : (state.currentConfig.cloudUpload.region || 'us-east-1'),
             }
           : undefined;
 

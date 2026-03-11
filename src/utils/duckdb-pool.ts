@@ -26,6 +26,7 @@ export interface S3Config {
   accessKeyId: string;
   secretAccessKey: string;
   region: string;
+  endpoint?: string; // R2: '{accountId}.r2.cloudflarestorage.com'
 }
 
 export class DuckDBPool {
@@ -171,14 +172,16 @@ export class DuckDBPool {
       await connection.runAndReadAll('INSTALL httpfs;');
       await connection.runAndReadAll('LOAD httpfs;');
 
-      // Create S3 secret with credentials
-      // Use parameterized approach to avoid SQL injection
+      // Create S3 secret — R2 needs ENDPOINT and URL_STYLE 'path'
+      const endpointClause = config.endpoint
+        ? `,\n          ENDPOINT '${config.endpoint.replace(/'/g, "''")}',\n          URL_STYLE 'path'`
+        : '';
       const secretSql = `
         CREATE OR REPLACE SECRET s3_credentials (
           TYPE S3,
           KEY_ID '${config.accessKeyId.replace(/'/g, "''")}',
           SECRET '${config.secretAccessKey.replace(/'/g, "''")}',
-          REGION '${config.region.replace(/'/g, "''")}'
+          REGION '${config.region.replace(/'/g, "''")}'${endpointClause}
         )
       `;
       await connection.runAndReadAll(secretSql);
