@@ -308,7 +308,7 @@ export class ParquetExportService {
       // Export each context/path to its own file
       for (const { context, path: signalkPath } of pathsForDate) {
         try {
-          const { records, ids } = this.sqliteBuffer.getRecordsForPathAndDate(
+          const records = this.sqliteBuffer.getRecordsForPathAndDate(
             context,
             signalkPath,
             targetDate
@@ -331,10 +331,13 @@ export class ParquetExportService {
             filesCreated.push(filePath);
             recordsExported += records.length;
 
-            // Mark records as exported using the IDs we already have
-            if (ids.length > 0) {
-              this.sqliteBuffer.markAsExported(ids, batchId);
-            }
+            // Mark records as exported by date range
+            this.sqliteBuffer.markDateExported(
+              context,
+              signalkPath,
+              targetDate,
+              batchId
+            );
 
             this.app.debug(
               `[DailyExport] Exported ${records.length} records for ${context}:${signalkPath}`

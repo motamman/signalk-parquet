@@ -35,3 +35,4 @@ dist/
 *.tgz
 
 .vscode
+tests/*.py

@@ -30,7 +30,7 @@ import {
 } from './utils/schema-cache';
 import { ConcurrencyLimiter } from './utils/concurrency-limiter';
 import { CONCURRENCY } from './config/cache-defaults';
-import { SQLiteBufferInterface, DataRecord } from './types';
+import { SQLiteBufferInterface } from './types';
 import { HivePathBuilder, AggregationTier } from './utils/hive-path-builder';
 import {
   AutoDiscoveryService,
@@ -40,9 +40,12 @@ import {
   SpatialFilter,
   parseSpatialParams,
   buildSpatialSqlClause,
-  filterBufferRecordsSpatially,
   isPositionPath,
 } from './utils/spatial-queries';
+import {
+  buildBufferScalarSubquery,
+  buildBufferObjectSubquery,
+} from './utils/buffer-sql-builder';
 import {
   parseDurationToMillis,
   parseResolutionToMillis,
@@ -527,186 +530,7 @@ export class HistoryAPI {
     return undefined;
   }
 
-  /**
-   * Get today's UTC midnight as ISO string for tier gap fix
-   */
-  private getTodayUtcIso(): string {
-    return new Date().toISOString().slice(0, 10) + 'T00:00:00Z';
-  }
 
-  /**
-   * Query recent data from SQLite buffer
-   * With daily exports, data can sit in SQLite for up to 48 hours before export
-   * Returns records for a specific context and path
-   */
-  private getRecentBufferData(
-    context: Context,
-    signalkPath: Path,
-    from: ZonedDateTime,
-    to: ZonedDateTime,
-    debug: (k: string) => void
-  ): DataRecord[] {
-    if (!this.sqliteBuffer) {
-      return [];
-    }
-
-    // With daily exports, SQLite buffer holds up to 48 hours of data
-    // Query buffer for any data within retention period (not just export interval)
-    const bufferRetentionHours = 48;
-    const cutoffTime = new Date();
-    cutoffTime.setHours(cutoffTime.getHours() - bufferRetentionHours);
-
-    // Only query buffer if 'to' time is within buffer retention period
-    const toDate = new Date(to.toInstant().toString());
-    if (toDate < cutoffTime) {
-      debug(
-        `Query end time ${toDate.toISOString()} is before buffer cutoff ${cutoffTime.toISOString()}, skipping buffer query`
-      );
-      return [];
-    }
-
-    // Query from the requested time, buffer will return what it has
-    const fromDate = new Date(from.toInstant().toString());
-
-    debug(
-      `Querying SQLite buffer for recent data: ${context}:${signalkPath} from ${fromDate.toISOString()}`
-    );
-
-    try {
-      const records = this.sqliteBuffer.getRecordsForPath(
-        context,
-        signalkPath,
-        fromDate.toISOString(),
-        toDate.toISOString()
-      );
-      debug(`Found ${records.length} records in SQLite buffer`);
-      return records;
-    } catch (error) {
-      debug(`Error querying SQLite buffer: ${(error as Error).message}`);
-      return [];
-    }
-  }
-
-  /**
-   * Merge parquet results with buffer results, removing duplicates by timestamp.
-   * Buffer records are bucketed and aggregated to match the parquet resolution.
-   */
-  private mergeWithBufferData(
-    parquetData: Array<[Timestamp, unknown]>,
-    bufferRecords: DataRecord[],
-    debug: (k: string) => void,
-    timeResolutionMillis: number = 0,
-    aggregateMethod: string = 'average',
-    pathName: string = '',
-    isAngular: boolean = false
-  ): Array<[Timestamp, unknown]> {
-    if (bufferRecords.length === 0) {
-      return parquetData;
-    }
-
-    // Bucket and aggregate buffer records to match parquet resolution
-    const bufferData = this.bucketBufferRecords(
-      bufferRecords,
-      timeResolutionMillis,
-      aggregateMethod,
-      isAngular,
-      debug
-    );
-
-    // Create a map of parquet data by timestamp for deduplication
-    const resultMap = new Map<string, [Timestamp, unknown]>();
-
-    // Add parquet data first
-    for (const [timestamp, value] of parquetData) {
-      resultMap.set(timestamp, [timestamp, value]);
-    }
-
-    // Add buffer data (will overwrite parquet data if same timestamp)
-    for (const [timestamp, value] of bufferData) {
-      resultMap.set(timestamp, [timestamp, value]);
-    }
-
-    // Sort by timestamp and return
-    const merged = Array.from(resultMap.values()).sort((a, b) =>
-      a[0].localeCompare(b[0])
-    );
-
-    debug(
-      `Merged ${parquetData.length} parquet + ${bufferData.length} bucketed buffer (from ${bufferRecords.length} raw) = ${merged.length} total`
-    );
-    return merged;
-  }
-
-  /**
-   * Bucket and aggregate raw buffer records into time-aligned buckets
-   */
-  private bucketBufferRecords(
-    records: DataRecord[],
-    resolutionMs: number,
-    aggregateMethod: string,
-    isAngular: boolean,
-    debug: (k: string) => void
-  ): Array<[Timestamp, unknown]> {
-    // If no resolution or very small, just convert without bucketing
-    if (resolutionMs <= 1000) {
-      return records.map(record => {
-        const timestamp = record.signalk_timestamp as Timestamp;
-        const value = record.value_json
-          ? typeof record.value_json === 'string'
-            ? JSON.parse(record.value_json)
-            : record.value_json
-          : record.value;
-        return [timestamp, value];
-      });
-    }
-
-    // Group records into buckets by resolution
-    const buckets = new Map<number, DataRecord[]>();
-    for (const record of records) {
-      const epochMs = new Date(record.signalk_timestamp).getTime();
-      const bucketKey = Math.floor(epochMs / resolutionMs) * resolutionMs;
-      let bucket = buckets.get(bucketKey);
-      if (!bucket) {
-        bucket = [];
-        buckets.set(bucketKey, bucket);
-      }
-      bucket.push(record);
-    }
-
-    debug(
-      `Bucketed ${records.length} buffer records into ${buckets.size} buckets (resolution=${resolutionMs}ms)`
-    );
-
-    // Aggregate each bucket
-    const result: Array<[Timestamp, unknown]> = [];
-    const sortedKeys = Array.from(buckets.keys()).sort((a, b) => a - b);
-
-    for (const bucketKey of sortedKeys) {
-      const bucket = buckets.get(bucketKey)!;
-      const timestamp = new Date(bucketKey)
-        .toISOString()
-        .replace(/\.\d{3}Z$/, 'Z') as Timestamp;
-
-      // Check if first record has object values (e.g., position)
-      const firstRecord = bucket[0];
-      const firstValue = firstRecord.value_json
-        ? typeof firstRecord.value_json === 'string'
-          ? JSON.parse(firstRecord.value_json)
-          : firstRecord.value_json
-        : firstRecord.value;
-
-      if (typeof firstValue === 'object' && firstValue !== null) {
-        result.push([timestamp, aggregateObjectBucket(bucket)]);
-      } else {
-        result.push([
-          timestamp,
-          aggregateNumericBucket(bucket, aggregateMethod, isAngular),
-        ]);
-      }
-    }
-
-    return result;
-  }
 
   /**
    * Get timestamps where vessel position was within the spatial filter
@@ -1031,8 +855,12 @@ export class HistoryAPI {
         const fromIso = from.toInstant().toString();
         const toIso = to.toInstant().toString();
 
-        // Get connection from pool (spatial extension already loaded)
-        const connection = await DuckDBPool.getConnection();
+        // Get connection from pool with SQLite buffer attached (spatial extension already loaded)
+        const hasBuffer = DuckDBPool.isSQLiteBufferInitialized();
+        const knownBufferPaths = hasBuffer && this.sqliteBuffer ? this.sqliteBuffer.getKnownPaths() : undefined;
+        const connection = hasBuffer
+          ? await DuckDBPool.getConnectionWithBuffer()
+          : await DuckDBPool.getConnection();
 
         try {
           // Build FROM clause based on available sources
@@ -1041,7 +869,7 @@ export class HistoryAPI {
           const buildFromClause = (filePath: string): string => {
             const isS3 = filePath.startsWith('s3://');
             if (isS3) {
-              return `read_parquet('${filePath}', union_by_name=true)`;
+              return `read_parquet('${filePath}', union_by_name=true, filename=true)`;
             }
             // Local files: exclude processed, quarantine, failed, repaired directories
             return `(SELECT * FROM read_parquet('${filePath}', union_by_name=true, filename=true) WHERE filename NOT LIKE '%/processed/%' AND filename NOT LIKE '%/quarantine/%' AND filename NOT LIKE '%/failed/%' AND filename NOT LIKE '%/repaired/%')`;
@@ -1140,28 +968,63 @@ export class HistoryAPI {
               );
             }
 
+            // Each source does its own aggregation into (timestamp, components..., priority).
+            // UNION ALL the results, then ROW_NUMBER to pick highest-priority source per bucket.
+            // Priority: buffer(3) > raw tier gap(2) > tier parquet(1).
             const objTsCol = getTierTimestampColumn(effectiveTier);
-            const buildObjQuery = (fc: string) => `
-              SELECT
-                strftime(DATE_TRUNC('seconds',
-                  EPOCH_MS(CAST(FLOOR(EPOCH_MS(${objTsCol}::TIMESTAMP) / ${timeResolutionMillis}) * ${timeResolutionMillis} AS BIGINT))
-                ), '%Y-%m-%dT%H:%M:%SZ') as timestamp,
-                ${componentSelects}
-              FROM ${fc} AS source_data
-              WHERE
-                ${objTsCol} >= '${fromIso}'
-                AND
-                ${objTsCol} < '${toIso}'
-                AND (${componentWhereConditions})${spatialWhereClause}
-              GROUP BY timestamp
-              ORDER BY timestamp
-              `;
+            const componentCols = Array.from(componentSchema.components.values()).map(c => c.columnName).join(', ');
+            const objBucketExpr = (col: string) =>
+              `strftime(DATE_TRUNC('seconds', EPOCH_MS(CAST(FLOOR(EPOCH_MS(${col}::TIMESTAMP) / ${timeResolutionMillis}) * ${timeResolutionMillis} AS BIGINT))), '%Y-%m-%dT%H:%M:%SZ')`;
+
+            const buildObjQuery = (fc: string) => {
+              const subqueries: string[] = [];
+
+              // Source 1: tier parquet
+              subqueries.push(`
+                SELECT ${objBucketExpr(objTsCol)} as timestamp, ${componentSelects}, 1 as priority
+                FROM ${fc} AS source_data
+                WHERE ${objTsCol} >= '${fromIso}' AND ${objTsCol} < '${toIso}' AND (${componentWhereConditions})${spatialWhereClause}
+                GROUP BY timestamp`);
+
+              // Source 2: SQLite buffer (today's live data not yet exported)
+              if (hasBuffer) {
+                const bufferSubquery = buildBufferObjectSubquery(
+                  context,
+                  pathSpec.path,
+                  fromIso,
+                  toIso,
+                  componentSchema.components,
+                  knownBufferPaths
+                );
+                if (bufferSubquery) {
+                  subqueries.push(`
+                SELECT ${objBucketExpr('signalk_timestamp')} as timestamp, ${componentSelects}, 2 as priority
+                FROM ${bufferSubquery} AS source_data
+                WHERE (${componentWhereConditions})
+                GROUP BY timestamp`);
+                }
+              }
+
+              if (subqueries.length === 1) {
+                return `SELECT timestamp, ${componentCols} FROM (${subqueries[0]}) ORDER BY timestamp`;
+              }
+
+              // Pick highest priority per timestamp bucket
+              const compNames = Array.from(componentSchema.components.keys()).join(', ');
+              return `
+              SELECT timestamp, ${compNames} FROM (
+                SELECT timestamp, ${compNames},
+                  ROW_NUMBER() OVER (PARTITION BY timestamp ORDER BY priority DESC) as rn
+                FROM (${subqueries.join('\n              UNION ALL')})
+              ) WHERE rn = 1
+              ORDER BY timestamp`;
+            };
 
             const result = await runQueryWithFallback(buildObjQuery);
             const rows = result.getRowObjects();
 
             // Reconstruct objects from aggregated components
-            let pathData: Array<[Timestamp, unknown]> = rows.map((row: any) => {
+            const pathData: Array<[Timestamp, unknown]> = rows.map((row: any) => {
               const timestamp = row.timestamp as Timestamp;
               const reconstructedObject: any = {};
 
@@ -1176,110 +1039,10 @@ export class HistoryAPI {
               return [timestamp, reconstructedObject];
             });
 
-            // Tier gap fix: supplement with raw tier data for today
-            if (effectiveTier !== 'raw') {
-              const todayStart = this.getTodayUtcIso();
-              if (toIso > todayStart) {
-                try {
-                  const rawFilePath = path.join(
-                    this.dataDir,
-                    'tier=raw',
-                    `context=${sanitizedContext}`,
-                    `path=${sanitizedSkPath}`,
-                    '**',
-                    '*.parquet'
-                  );
-                  const rawFrom = fromIso > todayStart ? fromIso : todayStart;
-                  const rawObjTsCol = getTierTimestampColumn('raw');
-                  const rawObjQuery = `
-                    SELECT
-                      strftime(DATE_TRUNC('seconds',
-                        EPOCH_MS(CAST(FLOOR(EPOCH_MS(${rawObjTsCol}::TIMESTAMP) / ${timeResolutionMillis}) * ${timeResolutionMillis} AS BIGINT))
-                      ), '%Y-%m-%dT%H:%M:%SZ') as timestamp,
-                      ${componentSelects}
-                    FROM ${buildFromClause(rawFilePath)} AS source_data
-                    WHERE
-                      ${rawObjTsCol} >= '${rawFrom}'
-                      AND ${rawObjTsCol} < '${toIso}'
-                      AND (${componentWhereConditions})
-                    GROUP BY timestamp
-                    ORDER BY timestamp
-                  `;
-                  const rawResult = await connection.runAndReadAll(rawObjQuery);
-                  const rawRows = rawResult.getRowObjects();
-                  if (rawRows.length > 0) {
-                    const rawData: Array<[Timestamp, unknown]> = rawRows.map(
-                      (row: any) => {
-                        const timestamp = row.timestamp as Timestamp;
-                        const reconstructedObject: any = {};
-                        componentSchema.components.forEach(
-                          (comp, componentName) => {
-                            const value = (row as any)[componentName];
-                            if (value !== null && value !== undefined) {
-                              reconstructedObject[componentName] = value;
-                            }
-                          }
-                        );
-                        return [timestamp, reconstructedObject];
-                      }
-                    );
-                    // Merge: raw overwrites tier on timestamp collision
-                    const merged = new Map<string, [Timestamp, unknown]>();
-                    for (const entry of pathData) {
-                      merged.set(entry[0] as string, entry);
-                    }
-                    for (const entry of rawData) {
-                      merged.set(entry[0] as string, entry);
-                    }
-                    pathData = Array.from(merged.values()).sort((a, b) =>
-                      (a[0] as string).localeCompare(b[0] as string)
-                    );
-                    debug(
-                      `Tier gap fix: added ${rawRows.length} raw records for today (object path), merged total: ${pathData.length}`
-                    );
-                  }
-                } catch (err) {
-                  debug(
-                    `Raw tier supplement failed for object path (ok, buffer will cover): ${err}`
-                  );
-                }
-              }
-            }
-
-            // Merge with SQLite buffer data for recent records (federated query)
-            let bufferRecords = this.getRecentBufferData(
-              context,
-              pathSpec.path as Path,
-              from,
-              to,
-              debug
-            );
-
-            // Apply spatial filter to buffer records if this is a position path
-            if (applyPositionSpatialFilter && bufferRecords.length > 0) {
-              const originalCount = bufferRecords.length;
-              bufferRecords = filterBufferRecordsSpatially(
-                bufferRecords,
-                spatialFilter!
-              );
-              debug(
-                `Spatial filter on buffer: ${originalCount} -> ${bufferRecords.length} records`
-              );
-            }
-
-            allData[pathSpec.path] = this.mergeWithBufferData(
-              pathData,
-              bufferRecords,
-              debug,
-              timeResolutionMillis,
-              String(pathSpec.aggregateMethod || 'average'),
-              pathSpec.path,
-              false
-            );
+            allData[pathSpec.path] = pathData;
           } else {
-            // Scalar path - use original logic
+            // Scalar path
             // First, check if value_json column exists in the parquet files
-            // Use local path for schema check, fall back to assuming no value_json for S3-only queries
             let hasValueJson = false;
             if (localFilePath) {
               try {
@@ -1288,7 +1051,6 @@ export class HistoryAPI {
                   await connection.runAndReadAll(schemaQuery);
                 hasValueJson = schemaResult.getRowObjects().length > 0;
               } catch {
-                // Schema check failed, assume no value_json
                 hasValueJson = false;
               }
             }
@@ -1297,220 +1059,125 @@ export class HistoryAPI {
               `Path ${pathSpec.path}: value_json column ${hasValueJson ? 'exists' : 'does not exist'}`
             );
 
-            // Rebuild the query based on actual column availability and tier
+            // Each source does its own aggregation into (timestamp, value, priority).
+            // UNION ALL the results, then ROW_NUMBER to pick highest-priority source per bucket.
+            // Priority: buffer(3) > raw tier gap(2) > aggregated/raw tier parquet(1).
             const tsCol = getTierTimestampColumn(effectiveTier);
-            const valueJsonSelect =
-              hasValueJson && effectiveTier === 'raw'
-                ? ', FIRST(value_json) as value_json'
-                : '';
             const whereClause = getTierWhereClause(effectiveTier, hasValueJson);
+            const bucketExpr = (col: string) =>
+              `strftime(DATE_TRUNC('seconds', EPOCH_MS(CAST(FLOOR(EPOCH_MS(${col}::TIMESTAMP) / ${timeResolutionMillis}) * ${timeResolutionMillis} AS BIGINT))), '%Y-%m-%dT%H:%M:%SZ')`;
 
-            const buildScalarQuery = (fc: string) => `
-              SELECT
-                strftime(DATE_TRUNC('seconds',
-                  EPOCH_MS(CAST(FLOOR(EPOCH_MS(${tsCol}::TIMESTAMP) / ${timeResolutionMillis}) * ${timeResolutionMillis} AS BIGINT))
-                ), '%Y-%m-%dT%H:%M:%SZ') as timestamp,
-                ${getTierAggregateExpression(pathSpec.aggregateMethod, pathSpec.path, effectiveTier, hasValueJson, app, context as string)} as value${valueJsonSelect}
-              FROM ${fc} AS source_data
-              WHERE
-                ${tsCol} >= '${fromIso}'
-                AND
-                ${tsCol} < '${toIso}'
-                AND ${whereClause}
-              GROUP BY timestamp
-              ORDER BY timestamp
-              `;
+            const buildScalarQuery = (fc: string) => {
+              const subqueries: string[] = [];
+
+              // Source 1: tier parquet (uses tier-native columns and aggregate)
+              const tierAggExpr = getTierAggregateExpression(pathSpec.aggregateMethod, pathSpec.path, effectiveTier, hasValueJson, app, context as string);
+              subqueries.push(`
+                SELECT ${bucketExpr(tsCol)} as timestamp, ${tierAggExpr} as value, 1 as priority
+                FROM ${fc} AS source_data
+                WHERE ${tsCol} >= '${fromIso}' AND ${tsCol} < '${toIso}' AND ${whereClause}
+                GROUP BY timestamp`);
+
+              // Source 2: SQLite buffer (today's live data not yet exported)
+              if (hasBuffer) {
+                const bufferSubquery = buildBufferScalarSubquery(
+                  context,
+                  pathSpec.path,
+                  fromIso,
+                  toIso,
+                  knownBufferPaths
+                );
+                if (bufferSubquery) {
+                  const bufferAggExpr = getTierAggregateExpression(pathSpec.aggregateMethod, pathSpec.path, 'raw', false, app, context as string);
+                  subqueries.push(`
+                SELECT ${bucketExpr('signalk_timestamp')} as timestamp, ${bufferAggExpr} as value, 2 as priority
+                FROM ${bufferSubquery} AS source_data
+                WHERE value IS NOT NULL
+                GROUP BY timestamp`);
+                }
+              }
+
+              if (subqueries.length === 1) {
+                // Single source — no priority logic needed
+                return `SELECT timestamp, value FROM (${subqueries[0]}) ORDER BY timestamp`;
+              }
+
+              // UNION ALL pre-aggregated results, pick highest priority per timestamp bucket
+              return `
+              SELECT timestamp, value FROM (
+                SELECT timestamp, value,
+                  ROW_NUMBER() OVER (PARTITION BY timestamp ORDER BY priority DESC) as rn
+                FROM (${subqueries.join('\n              UNION ALL')})
+              ) WHERE rn = 1
+              ORDER BY timestamp`;
+            };
 
             const result = await runQueryWithFallback(buildScalarQuery);
             const rows = result.getRowObjects();
 
-            // Convert rows to the expected format using bucketed timestamps
-            let pathData: Array<[Timestamp, unknown]> = rows.map((row: any) => {
+            const pathData: Array<[Timestamp, unknown]> = rows.map((row: any) => {
               const rowData = row as {
                 timestamp: Timestamp;
                 value: unknown;
                 value_json?: string;
               };
               const { timestamp } = rowData;
-              // Handle both JSON values (like position objects) and simple values
               const value = rowData.value_json
                 ? JSON.parse(String(rowData.value_json))
                 : rowData.value;
-
               return [timestamp, value];
             });
 
-            // Tier gap fix: supplement with raw tier data for today
-            if (effectiveTier !== 'raw') {
-              const todayStart = this.getTodayUtcIso();
-              if (toIso > todayStart) {
-                try {
-                  const rawFilePath = path.join(
-                    this.dataDir,
-                    'tier=raw',
-                    `context=${sanitizedContext}`,
-                    `path=${sanitizedSkPath}`,
-                    '**',
-                    '*.parquet'
-                  );
-                  const rawFrom = fromIso > todayStart ? fromIso : todayStart;
-                  const rawTsCol = getTierTimestampColumn('raw');
-
-                  // Check if raw files have value_json
-                  let rawHasValueJson = false;
-                  try {
-                    const rawSchemaQuery = `SELECT * FROM parquet_schema('${rawFilePath}') WHERE name = 'value_json'`;
-                    const rawSchemaResult =
-                      await connection.runAndReadAll(rawSchemaQuery);
-                    rawHasValueJson =
-                      rawSchemaResult.getRowObjects().length > 0;
-                  } catch {
-                    rawHasValueJson = false;
-                  }
-
-                  const rawValueJsonSelect = rawHasValueJson
-                    ? ', FIRST(value_json) as value_json'
-                    : '';
-                  const rawWhereClause = getTierWhereClause(
-                    'raw',
-                    rawHasValueJson
-                  );
-
-                  const rawScalarQuery = `
-                    SELECT
-                      strftime(DATE_TRUNC('seconds',
-                        EPOCH_MS(CAST(FLOOR(EPOCH_MS(${rawTsCol}::TIMESTAMP) / ${timeResolutionMillis}) * ${timeResolutionMillis} AS BIGINT))
-                      ), '%Y-%m-%dT%H:%M:%SZ') as timestamp,
-                      ${getTierAggregateExpression(pathSpec.aggregateMethod, pathSpec.path, 'raw', rawHasValueJson, app, context as string)} as value${rawValueJsonSelect}
-                    FROM ${buildFromClause(rawFilePath)} AS source_data
-                    WHERE
-                      ${rawTsCol} >= '${rawFrom}'
-                      AND ${rawTsCol} < '${toIso}'
-                      AND ${rawWhereClause}
-                    GROUP BY timestamp
-                    ORDER BY timestamp
-                  `;
-                  const rawResult =
-                    await connection.runAndReadAll(rawScalarQuery);
-                  const rawRows = rawResult.getRowObjects();
-                  if (rawRows.length > 0) {
-                    const rawData: Array<[Timestamp, unknown]> = rawRows.map(
-                      (row: any) => {
-                        const rowData = row as {
-                          timestamp: Timestamp;
-                          value: unknown;
-                          value_json?: string;
-                        };
-                        const value = rowData.value_json
-                          ? JSON.parse(String(rowData.value_json))
-                          : rowData.value;
-                        return [rowData.timestamp, value];
-                      }
-                    );
-                    // Merge: raw overwrites tier on timestamp collision
-                    const merged = new Map<string, [Timestamp, unknown]>();
-                    for (const entry of pathData) {
-                      merged.set(entry[0] as string, entry);
-                    }
-                    for (const entry of rawData) {
-                      merged.set(entry[0] as string, entry);
-                    }
-                    pathData = Array.from(merged.values()).sort((a, b) =>
-                      (a[0] as string).localeCompare(b[0] as string)
-                    );
-                    debug(
-                      `Tier gap fix: added ${rawRows.length} raw records for today (scalar path), merged total: ${pathData.length}`
-                    );
-                  }
-                } catch (err) {
-                  debug(
-                    `Raw tier supplement failed for scalar path (ok, buffer will cover): ${err}`
-                  );
-                }
-              }
-            }
-
-            // Merge with SQLite buffer data for recent records (federated query)
-            let bufferRecords = this.getRecentBufferData(
-              context,
-              pathSpec.path as Path,
-              from,
-              to,
-              debug
-            );
-
-            // Apply spatial filter to buffer records if this is a position path
-            // (rare for scalar paths, but handle value_json position data)
-            if (
-              spatialFilter &&
-              isPositionPath(pathSpec.path) &&
-              bufferRecords.length > 0
-            ) {
-              const originalCount = bufferRecords.length;
-              bufferRecords = filterBufferRecordsSpatially(
-                bufferRecords,
-                spatialFilter
-              );
-              debug(
-                `Spatial filter on scalar buffer: ${originalCount} -> ${bufferRecords.length} records`
-              );
-            }
-
-            allData[pathSpec.path] = this.mergeWithBufferData(
-              pathData,
-              bufferRecords,
-              debug,
-              timeResolutionMillis,
-              String(pathSpec.aggregateMethod || 'average'),
-              pathSpec.path,
-              isAngularPath(pathSpec.path, app, context as string)
-            );
+            allData[pathSpec.path] = pathData;
           }
         } finally {
           connection.disconnectSync();
         }
       } catch (error) {
-        console.error(
-          `[HistoryAPI] Error querying path ${pathSpec.path}:`,
-          error
-        );
         debug(`Error querying path ${pathSpec.path}: ${error}`);
 
-        // Even if parquet query fails, try to get buffer data
-        let bufferRecords = this.getRecentBufferData(
-          context,
-          pathSpec.path as Path,
-          from,
-          to,
-          debug
-        );
-
-        // Apply spatial filter if this is a position path
-        if (
-          spatialFilter &&
-          isPositionPath(pathSpec.path) &&
-          bufferRecords.length > 0
-        ) {
-          const originalCount = bufferRecords.length;
-          bufferRecords = filterBufferRecordsSpatially(
-            bufferRecords,
-            spatialFilter
-          );
-          debug(
-            `Spatial filter on fallback buffer: ${originalCount} -> ${bufferRecords.length} records`
-          );
-        }
-
-        if (bufferRecords.length > 0) {
-          allData[pathSpec.path] = this.mergeWithBufferData(
-            [],
-            bufferRecords,
-            debug,
-            timeResolutionMillis,
-            String(pathSpec.aggregateMethod || 'average'),
-            pathSpec.path,
-            isAngularPath(pathSpec.path, app, context as string)
-          );
+        // Fallback: if parquet failed but buffer is available, query buffer only
+        if (DuckDBPool.isSQLiteBufferInitialized()) {
+          try {
+            const fallbackFromIso = from.toInstant().toString();
+            const fallbackToIso = to.toInstant().toString();
+            const bufferConn = await DuckDBPool.getConnectionWithBuffer();
+            try {
+              const fallbackKnownPaths = this.sqliteBuffer ? this.sqliteBuffer.getKnownPaths() : undefined;
+              const bufferSubquery = buildBufferScalarSubquery(
+                context,
+                pathSpec.path,
+                fallbackFromIso,
+                fallbackToIso,
+                fallbackKnownPaths
+              );
+              if (bufferSubquery) {
+                const bufferQuery = `
+                  SELECT
+                    strftime(DATE_TRUNC('seconds',
+                      EPOCH_MS(CAST(FLOOR(EPOCH_MS(signalk_timestamp::TIMESTAMP) / ${timeResolutionMillis}) * ${timeResolutionMillis} AS BIGINT))
+                    ), '%Y-%m-%dT%H:%M:%SZ') as timestamp,
+                    AVG(TRY_CAST(value AS DOUBLE)) as value
+                  FROM ${bufferSubquery} AS source_data
+                  WHERE value IS NOT NULL
+                  GROUP BY timestamp
+                  ORDER BY timestamp
+                `;
+                const bufResult = await bufferConn.runAndReadAll(bufferQuery);
+                const bufRows = bufResult.getRowObjects();
+                allData[pathSpec.path] = bufRows.map((row: any) => [
+                  row.timestamp as Timestamp,
+                  row.value,
+                ]);
+                debug(`Buffer-only fallback: ${bufRows.length} rows for ${pathSpec.path}`);
+              }
+            } finally {
+              bufferConn.disconnectSync();
+            }
+          } catch (bufErr) {
+            debug(`Buffer-only fallback also failed for ${pathSpec.path}: ${bufErr}`);
+            allData[pathSpec.path] = [];
+          }
         } else {
           allData[pathSpec.path] = [];
         }
@@ -2048,85 +1715,6 @@ function getTierWhereClause(tier: string, hasValueJson: boolean): string {
       : 'value IS NOT NULL';
   }
   return 'value_avg IS NOT NULL';
-}
-
-/**
- * Aggregate numeric values in a buffer bucket according to the requested method
- */
-function aggregateNumericBucket(
-  records: DataRecord[],
-  method: string,
-  isAngular: boolean
-): number | null {
-  const values: number[] = [];
-  for (const r of records) {
-    const v = typeof r.value === 'number' ? r.value : parseFloat(r.value);
-    if (!isNaN(v)) values.push(v);
-  }
-  if (values.length === 0) return null;
-
-  switch (method) {
-    case 'min':
-      return Math.min(...values);
-    case 'max':
-      return Math.max(...values);
-    case 'first':
-      return values[0];
-    case 'last':
-      return values[values.length - 1];
-    case 'average':
-    default:
-      if (isAngular) {
-        let sinSum = 0;
-        let cosSum = 0;
-        for (const v of values) {
-          sinSum += Math.sin(v);
-          cosSum += Math.cos(v);
-        }
-        return Math.atan2(sinSum / values.length, cosSum / values.length);
-      }
-      return values.reduce((sum, v) => sum + v, 0) / values.length;
-  }
-}
-
-/**
- * Aggregate object values (e.g., position {latitude, longitude}) in a buffer bucket
- */
-function aggregateObjectBucket(
-  records: DataRecord[]
-): Record<string, unknown> | null {
-  // Parse all values
-  const objects: Record<string, unknown>[] = [];
-  for (const r of records) {
-    const val = r.value_json
-      ? typeof r.value_json === 'string'
-        ? JSON.parse(r.value_json)
-        : r.value_json
-      : r.value;
-    if (typeof val === 'object' && val !== null) {
-      objects.push(val as Record<string, unknown>);
-    }
-  }
-  if (objects.length === 0) return null;
-
-  // Average each numeric component
-  const result: Record<string, unknown> = {};
-  const keys = Object.keys(objects[0]);
-  for (const key of keys) {
-    const numericVals: number[] = [];
-    for (const obj of objects) {
-      const v = obj[key];
-      if (typeof v === 'number') numericVals.push(v);
-    }
-    if (numericVals.length > 0) {
-      result[key] =
-        numericVals.reduce((sum, v) => sum + v, 0) / numericVals.length;
-    } else {
-      // Non-numeric: take first value
-      result[key] = objects[0][key];
-    }
-  }
-  return result;
 }
 
 function getAggregateExpression(

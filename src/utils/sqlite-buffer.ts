@@ -1,8 +1,9 @@
 /**
  * SQLite Write-Ahead Buffer for crash-safe data ingestion
  *
- * Replaces the in-memory LRU cache with a WAL-mode SQLite database
- * that provides crash recovery and durability guarantees.
+ * Per-path table architecture: each SignalK path gets its own table in buffer.db.
+ * Scalar paths have a `value` column; object paths have `value_json` + flattened `value_*` columns.
+ * This eliminates column pollution from ALTER TABLE ADD COLUMN on a shared table.
  */
 
 import Database = require('better-sqlite3');
@@ -13,7 +14,6 @@ import { DataRecord } from '../types';
 export interface BufferRecord {
   id: number;
   context: string;
-  path: string;
   received_timestamp: string;
   signalk_timestamp: string;
   value: number | string | boolean | null;
@@ -27,6 +27,7 @@ export interface BufferRecord {
   exported: number;
   export_batch_id: string | null;
   created_at: string;
+  [key: string]: unknown; // Dynamic value_* columns
 }
 
 export interface BufferStats {
@@ -45,20 +46,30 @@ export interface SQLiteBufferConfig {
   retentionHours?: number;
 }
 
+interface TableInfo {
+  tableName: string;
+  isObject: boolean;
+  columns: Set<string>;
+  insertStmt: Database.Statement;
+}
+
+/**
+ * Convert a SignalK path to a SQLite table name.
+ * Dots become underscores, any non-alphanumeric/underscore chars are stripped,
+ * prefixed with `buffer_`.
+ */
+export function pathToTableName(signalkPath: string): string {
+  return `buffer_${signalkPath.replace(/\./g, '_').replace(/[^a-zA-Z0-9_]/g, '_')}`;
+}
+
 export class SQLiteBuffer {
   private db: Database.Database;
   private readonly dbPath: string;
-  private readonly maxBatchSize: number;
   private readonly retentionHours: number;
-  private insertStmt: Database.Statement;
-  private getPendingStmt: Database.Statement;
-  private markExportedStmt: Database.Statement;
-  private cleanupStmt: Database.Statement;
-  private getStatsStmt: Database.Statement;
+  private tableMap: Map<string, TableInfo>; // keyed by SignalK path
 
   constructor(config: SQLiteBufferConfig) {
     this.dbPath = config.dbPath;
-    this.maxBatchSize = config.maxBatchSize || 10000;
     this.retentionHours = config.retentionHours || 24;
 
     // Ensure directory exists
@@ -69,87 +80,384 @@ export class SQLiteBuffer {
 
     // Configure for performance and crash safety
     this.db.pragma('journal_mode = WAL');
-    this.db.pragma('synchronous = NORMAL'); // Good balance of safety and performance
+    this.db.pragma('synchronous = NORMAL');
     this.db.pragma('cache_size = -64000'); // 64MB cache
     this.db.pragma('temp_store = MEMORY');
     this.db.pragma('mmap_size = 268435456'); // 256MB memory-mapped I/O
 
-    // Create schema
-    this.createSchema();
+    // Create metadata table
+    this.createMetadataSchema();
 
-    // Prepare statements for performance
-    this.insertStmt = this.db.prepare(`
-      INSERT INTO buffer_records (
-        context, path, received_timestamp, signalk_timestamp,
-        value, value_json, source, source_label, source_type,
-        source_pgn, source_src, meta, exported, export_batch_id, created_at
-      ) VALUES (
-        @context, @path, @received_timestamp, @signalk_timestamp,
-        @value, @value_json, @source, @source_label, @source_type,
-        @source_pgn, @source_src, @meta, 0, NULL, datetime('now')
-      )
-    `);
+    // Migrate from old single-table layout if needed
+    this.migrateFromLegacy();
 
-    this.getPendingStmt = this.db.prepare(`
-      SELECT * FROM buffer_records
-      WHERE exported = 0
-      ORDER BY created_at ASC
-      LIMIT ?
-    `);
+    // Rebuild tableMap from buffer_tables metadata
+    this.tableMap = new Map();
+    this.loadExistingTables();
+  }
 
-    this.markExportedStmt = this.db.prepare(`
-      UPDATE buffer_records
-      SET exported = 1, export_batch_id = ?
-      WHERE id IN (SELECT value FROM json_each(?))
-    `);
-
-    this.cleanupStmt = this.db.prepare(`
-      DELETE FROM buffer_records
-      WHERE exported = 1
-        AND created_at < datetime('now', '-' || ? || ' hours')
-    `);
-
-    this.getStatsStmt = this.db.prepare(`
-      SELECT
-        COUNT(*) as totalRecords,
-        SUM(CASE WHEN exported = 0 THEN 1 ELSE 0 END) as pendingRecords,
-        SUM(CASE WHEN exported = 1 THEN 1 ELSE 0 END) as exportedRecords,
-        MIN(CASE WHEN exported = 0 THEN received_timestamp END) as oldestPendingTimestamp,
-        MAX(received_timestamp) as newestRecordTimestamp
-      FROM buffer_records
+  private createMetadataSchema(): void {
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS buffer_tables (
+        path TEXT PRIMARY KEY,
+        table_name TEXT NOT NULL,
+        is_object INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
     `);
   }
 
-  private createSchema(): void {
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS buffer_records (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        context TEXT NOT NULL,
-        path TEXT NOT NULL,
-        received_timestamp TEXT NOT NULL,
-        signalk_timestamp TEXT NOT NULL,
-        value TEXT,
-        value_json TEXT,
-        source TEXT,
-        source_label TEXT,
-        source_type TEXT,
-        source_pgn INTEGER,
-        source_src TEXT,
-        meta TEXT,
-        exported INTEGER NOT NULL DEFAULT 0,
-        export_batch_id TEXT,
-        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  /**
+   * Migrate from the legacy single buffer_records table to per-path tables.
+   * Runs once automatically if buffer_records exists but buffer_tables is empty.
+   */
+  private migrateFromLegacy(): void {
+    // Check if old table exists
+    const oldTableExists = this.db
+      .prepare(
+        `SELECT name FROM sqlite_master WHERE type='table' AND name='buffer_records'`
+      )
+      .get();
+
+    if (!oldTableExists) return;
+
+    // Check if we already migrated (buffer_tables has entries)
+    const tableCount = (
+      this.db.prepare(`SELECT COUNT(*) as cnt FROM buffer_tables`).get() as {
+        cnt: number;
+      }
+    ).cnt;
+
+    if (tableCount > 0) {
+      // Already migrated — drop legacy table if it still exists
+      this.db.exec(`DROP TABLE IF EXISTS buffer_records`);
+      return;
+    }
+
+    // Get all columns from the old table
+    const oldColumns = (
+      this.db.pragma('table_info(buffer_records)') as Array<{
+        name: string;
+        type: string;
+      }>
+    ).map(c => c.name);
+
+    // Discover all dynamic value_* columns (beyond base schema)
+    const dynamicValueCols = oldColumns.filter(
+      c => c.startsWith('value_') && c !== 'value_json'
+    );
+
+    // Get distinct paths
+    const paths = (
+      this.db
+        .prepare(`SELECT DISTINCT path FROM buffer_records ORDER BY path`)
+        .all() as Array<{ path: string }>
+    ).map(r => r.path);
+
+    if (paths.length === 0) {
+      // No data — just drop the old table
+      this.db.exec(`DROP TABLE IF EXISTS buffer_records`);
+      return;
+    }
+
+    const migrate = this.db.transaction(() => {
+      for (const signalkPath of paths) {
+        // Determine if this path is an object path
+        const hasJson = (
+          this.db
+            .prepare(
+              `SELECT COUNT(*) as cnt FROM buffer_records WHERE path = ? AND value_json IS NOT NULL`
+            )
+            .get(signalkPath) as { cnt: number }
+        ).cnt;
+
+        const isObject = hasJson > 0;
+
+        // For object paths, discover which value_* columns have data for this path
+        const pathValueCols: string[] = [];
+        if (isObject && dynamicValueCols.length > 0) {
+          // Check which dynamic columns have non-NULL data for this path
+          for (const col of dynamicValueCols) {
+            const hasData = (
+              this.db
+                .prepare(
+                  `SELECT COUNT(*) as cnt FROM buffer_records WHERE path = ? AND ${col} IS NOT NULL`
+                )
+                .get(signalkPath) as { cnt: number }
+            ).cnt;
+            if (hasData > 0) {
+              pathValueCols.push(col);
+            }
+          }
+        }
+
+        const tableName = pathToTableName(signalkPath);
+
+        // Build CREATE TABLE
+        const columns: string[] = [
+          'id INTEGER PRIMARY KEY AUTOINCREMENT',
+          'context TEXT NOT NULL',
+          'received_timestamp TEXT NOT NULL',
+          'signalk_timestamp TEXT NOT NULL',
+        ];
+
+        if (isObject) {
+          columns.push('value_json TEXT');
+          for (const col of pathValueCols) {
+            columns.push(`${col} REAL`);
+          }
+        } else {
+          columns.push('value TEXT');
+        }
+
+        columns.push(
+          'source TEXT',
+          'source_label TEXT',
+          'source_type TEXT',
+          'source_pgn INTEGER',
+          'source_src TEXT',
+          'meta TEXT',
+          'exported INTEGER NOT NULL DEFAULT 0',
+          'export_batch_id TEXT',
+          `created_at TEXT NOT NULL DEFAULT (datetime('now'))`
+        );
+
+        this.db.exec(`CREATE TABLE ${tableName} (${columns.join(', ')})`);
+        this.db.exec(
+          `CREATE INDEX idx_${tableName}_ctx_exp ON ${tableName} (context, exported)`
+        );
+        this.db.exec(
+          `CREATE INDEX idx_${tableName}_received ON ${tableName} (received_timestamp)`
+        );
+
+        // Copy data
+        const selectCols = [
+          'context',
+          'received_timestamp',
+          'signalk_timestamp',
+        ];
+        if (isObject) {
+          selectCols.push('value_json');
+          selectCols.push(...pathValueCols);
+        } else {
+          selectCols.push('value');
+        }
+        selectCols.push(
+          'source',
+          'source_label',
+          'source_type',
+          'source_pgn',
+          'source_src',
+          'meta',
+          'exported',
+          'export_batch_id',
+          'created_at'
+        );
+
+        this.db.exec(
+          `INSERT INTO ${tableName} (${selectCols.join(', ')}) SELECT ${selectCols.join(', ')} FROM buffer_records WHERE path = '${signalkPath.replace(/'/g, "''")}'`
+        );
+
+        // Register in metadata
+        this.db
+          .prepare(
+            `INSERT INTO buffer_tables (path, table_name, is_object) VALUES (?, ?, ?)`
+          )
+          .run(signalkPath, tableName, isObject ? 1 : 0);
+      }
+
+      // Drop legacy table
+      this.db.exec(`DROP TABLE buffer_records`);
+    });
+
+    migrate();
+  }
+
+  /**
+   * Load existing per-path tables from buffer_tables metadata and prepare INSERT statements.
+   */
+  private loadExistingTables(): void {
+    const rows = this.db
+      .prepare(`SELECT path, table_name, is_object FROM buffer_tables`)
+      .all() as Array<{ path: string; table_name: string; is_object: number }>;
+
+    for (const row of rows) {
+      const columns = new Set<string>();
+      const tableInfo = this.db.pragma(
+        `table_info(${row.table_name})`
+      ) as Array<{ name: string }>;
+      for (const col of tableInfo) {
+        columns.add(col.name);
+      }
+
+      const insertStmt = this.buildInsertStmt(
+        row.table_name,
+        columns,
+        row.is_object === 1
       );
 
-      CREATE INDEX IF NOT EXISTS idx_buffer_context_path_exported
-        ON buffer_records (context, path, exported);
+      this.tableMap.set(row.path, {
+        tableName: row.table_name,
+        isObject: row.is_object === 1,
+        columns,
+        insertStmt,
+      });
+    }
+  }
 
-      CREATE INDEX IF NOT EXISTS idx_buffer_exported_created
-        ON buffer_records (exported, created_at);
+  /**
+   * Build an INSERT statement for a per-path table.
+   */
+  private buildInsertStmt(
+    tableName: string,
+    columns: Set<string>,
+    isObject: boolean
+  ): Database.Statement {
+    const insertCols: string[] = [];
+    const placeholders: string[] = [];
 
-      CREATE INDEX IF NOT EXISTS idx_buffer_received_timestamp
-        ON buffer_records (received_timestamp);
-    `);
+    // Order: context, received_timestamp, signalk_timestamp, value/value_json+value_*, source*, meta, exported, export_batch_id, created_at
+    const orderedCols = ['context', 'received_timestamp', 'signalk_timestamp'];
+
+    if (isObject) {
+      orderedCols.push('value_json');
+      // Add any dynamic value_* columns
+      for (const col of columns) {
+        if (col.startsWith('value_') && col !== 'value_json') {
+          orderedCols.push(col);
+        }
+      }
+    } else {
+      orderedCols.push('value');
+    }
+
+    orderedCols.push(
+      'source',
+      'source_label',
+      'source_type',
+      'source_pgn',
+      'source_src',
+      'meta'
+    );
+
+    for (const col of orderedCols) {
+      if (columns.has(col)) {
+        insertCols.push(col);
+        placeholders.push(`@${col}`);
+      }
+    }
+
+    // Automatic columns
+    insertCols.push('exported', 'export_batch_id', 'created_at');
+    placeholders.push('0', 'NULL', "datetime('now')");
+
+    return this.db.prepare(
+      `INSERT INTO ${tableName} (${insertCols.join(', ')}) VALUES (${placeholders.join(', ')})`
+    );
+  }
+
+  /**
+   * Ensure a per-path table exists. Creates it on first insert for a new path.
+   */
+  private ensureTable(signalkPath: string, record: DataRecord): TableInfo {
+    const existing = this.tableMap.get(signalkPath);
+    if (existing) return existing;
+
+    const tableName = pathToTableName(signalkPath);
+
+    // Detect object vs scalar from the record
+    const valueKeys = Object.keys(record).filter(
+      k =>
+        k.startsWith('value_') &&
+        k !== 'value_json' &&
+        record[k] !== undefined &&
+        record[k] !== null
+    );
+    const isObject =
+      valueKeys.length > 0 ||
+      (record.value_json !== undefined && record.value_json !== null);
+
+    const columnDefs: string[] = [
+      'id INTEGER PRIMARY KEY AUTOINCREMENT',
+      'context TEXT NOT NULL',
+      'received_timestamp TEXT NOT NULL',
+      'signalk_timestamp TEXT NOT NULL',
+    ];
+
+    if (isObject) {
+      columnDefs.push('value_json TEXT');
+      for (const key of valueKeys) {
+        const val = record[key];
+        const colType = typeof val === 'number' ? 'REAL' : 'TEXT';
+        columnDefs.push(`${key} ${colType}`);
+      }
+    } else {
+      columnDefs.push('value TEXT');
+    }
+
+    columnDefs.push(
+      'source TEXT',
+      'source_label TEXT',
+      'source_type TEXT',
+      'source_pgn INTEGER',
+      'source_src TEXT',
+      'meta TEXT',
+      'exported INTEGER NOT NULL DEFAULT 0',
+      'export_batch_id TEXT',
+      `created_at TEXT NOT NULL DEFAULT (datetime('now'))`
+    );
+
+    this.db.exec(`CREATE TABLE ${tableName} (${columnDefs.join(', ')})`);
+    this.db.exec(
+      `CREATE INDEX idx_${tableName}_ctx_exp ON ${tableName} (context, exported)`
+    );
+    this.db.exec(
+      `CREATE INDEX idx_${tableName}_received ON ${tableName} (received_timestamp)`
+    );
+
+    // Register in metadata
+    this.db
+      .prepare(
+        `INSERT INTO buffer_tables (path, table_name, is_object) VALUES (?, ?, ?)`
+      )
+      .run(signalkPath, tableName, isObject ? 1 : 0);
+
+    const columns = new Set<string>();
+    const tableInfoRows = this.db.pragma(`table_info(${tableName})`) as Array<{
+      name: string;
+    }>;
+    for (const col of tableInfoRows) {
+      columns.add(col.name);
+    }
+
+    const insertStmt = this.buildInsertStmt(tableName, columns, isObject);
+
+    const info: TableInfo = { tableName, isObject, columns, insertStmt };
+    this.tableMap.set(signalkPath, info);
+    return info;
+  }
+
+  /**
+   * Ensure a dynamic value_* column exists on a per-path table.
+   * Only affects the single table for that path.
+   */
+  private ensureColumn(
+    tableInfo: TableInfo,
+    columnName: string,
+    value: unknown
+  ): void {
+    if (tableInfo.columns.has(columnName)) return;
+
+    const colType = typeof value === 'number' ? 'REAL' : 'TEXT';
+    this.db.exec(
+      `ALTER TABLE ${tableInfo.tableName} ADD COLUMN ${columnName} ${colType}`
+    );
+    tableInfo.columns.add(columnName);
+    tableInfo.insertStmt = this.buildInsertStmt(
+      tableInfo.tableName,
+      tableInfo.columns,
+      tableInfo.isObject
+    );
   }
 
   /**
@@ -166,8 +474,9 @@ export class SQLiteBuffer {
     if (!this.db.open) {
       throw new Error('SQLite buffer is closed');
     }
-    const params = this.prepareRecord(record);
-    this.insertStmt.run(params);
+    const tableInfo = this.ensureTable(record.path, record);
+    const params = this.prepareRecord(record, tableInfo);
+    tableInfo.insertStmt.run(params);
   }
 
   /**
@@ -178,95 +487,112 @@ export class SQLiteBuffer {
 
     const insertMany = this.db.transaction((recs: DataRecord[]) => {
       for (const record of recs) {
-        const params = this.prepareRecord(record);
-        this.insertStmt.run(params);
+        const tableInfo = this.ensureTable(record.path, record);
+        const params = this.prepareRecord(record, tableInfo);
+        tableInfo.insertStmt.run(params);
       }
     });
 
     insertMany(records);
   }
 
-  private prepareRecord(record: DataRecord): Record<string, unknown> {
-    // Serialize value based on type
-    let valueStr: string | null = null;
-    let valueJson: string | null = null;
+  private prepareRecord(
+    record: DataRecord,
+    tableInfo: TableInfo
+  ): Record<string, unknown> {
+    const params: Record<string, unknown> = {
+      context: record.context,
+      received_timestamp: record.received_timestamp,
+      signalk_timestamp: record.signalk_timestamp,
+    };
 
-    if (record.value !== null && record.value !== undefined) {
-      if (typeof record.value === 'object') {
+    if (tableInfo.isObject) {
+      // Object path: value_json + flattened value_* columns
+      let valueJson: string | null = null;
+      if (
+        record.value !== null &&
+        record.value !== undefined &&
+        typeof record.value === 'object'
+      ) {
         valueJson = JSON.stringify(record.value);
-      } else {
+      }
+      if (record.value_json !== undefined && record.value_json !== null) {
+        valueJson =
+          typeof record.value_json === 'string'
+            ? record.value_json
+            : JSON.stringify(record.value_json);
+      }
+      params.value_json = valueJson;
+
+      // Extract dynamic value_* columns
+      for (const key of Object.keys(record)) {
+        if (
+          key.startsWith('value_') &&
+          key !== 'value_json' &&
+          record[key] !== undefined &&
+          record[key] !== null
+        ) {
+          this.ensureColumn(tableInfo, key, record[key]);
+          const val = record[key];
+          if (typeof val === 'number') {
+            params[key] = val;
+          } else if (typeof val === 'boolean') {
+            params[key] = val ? 1 : 0;
+          } else {
+            params[key] = String(val);
+          }
+        }
+      }
+
+      // NULL-fill any known value_* columns not in this record
+      for (const col of tableInfo.columns) {
+        if (
+          col.startsWith('value_') &&
+          col !== 'value_json' &&
+          !(col in params)
+        ) {
+          params[col] = null;
+        }
+      }
+    } else {
+      // Scalar path: value column
+      let valueStr: string | null = null;
+      if (record.value !== null && record.value !== undefined) {
         valueStr = String(record.value);
       }
+      params.value = valueStr;
     }
 
-    // Handle value_json if present
-    if (record.value_json !== undefined && record.value_json !== null) {
-      valueJson =
-        typeof record.value_json === 'string'
-          ? record.value_json
-          : JSON.stringify(record.value_json);
-    }
-
-    // Serialize source if object
-    const sourceStr = record.source
+    // Serialize source
+    params.source = record.source
       ? typeof record.source === 'object'
         ? JSON.stringify(record.source)
         : String(record.source)
       : null;
 
-    // Serialize meta if object
-    const metaStr = record.meta
+    params.source_label = record.source_label || null;
+    params.source_type = record.source_type || null;
+    params.source_pgn = record.source_pgn || null;
+    params.source_src = record.source_src || null;
+
+    // Serialize meta
+    params.meta = record.meta
       ? typeof record.meta === 'object'
         ? JSON.stringify(record.meta)
         : String(record.meta)
       : null;
 
-    return {
-      context: record.context,
-      path: record.path,
-      received_timestamp: record.received_timestamp,
-      signalk_timestamp: record.signalk_timestamp,
-      value: valueStr,
-      value_json: valueJson,
-      source: sourceStr,
-      source_label: record.source_label || null,
-      source_type: record.source_type || null,
-      source_pgn: record.source_pgn || null,
-      source_src: record.source_src || null,
-      meta: metaStr,
-    };
+    return params;
   }
 
   /**
-   * Get pending records that need to be exported to Parquet
+   * Convert a BufferRecord back to a DataRecord.
+   * Path must be passed in since per-path tables have no path column.
    */
-  getPendingRecords(limit?: number): BufferRecord[] {
-    const actualLimit = limit || this.maxBatchSize;
-    return this.getPendingStmt.all(actualLimit) as BufferRecord[];
-  }
-
-  /**
-   * Get pending records grouped by context and path
-   */
-  getPendingRecordsGrouped(limit?: number): Map<string, DataRecord[]> {
-    const records = this.getPendingRecords(limit);
-    const grouped = new Map<string, DataRecord[]>();
-
-    for (const record of records) {
-      const key = `${record.context}:${record.path}`;
-      if (!grouped.has(key)) {
-        grouped.set(key, []);
-      }
-      grouped.get(key)!.push(this.bufferRecordToDataRecord(record));
-    }
-
-    return grouped;
-  }
-
-  /**
-   * Convert a BufferRecord back to a DataRecord
-   */
-  private bufferRecordToDataRecord(record: BufferRecord): DataRecord {
+  private bufferRecordToDataRecord(
+    record: BufferRecord,
+    signalkPath: string
+  ): DataRecord {
     let value: unknown = record.value;
     let valueJson: unknown = undefined;
 
@@ -280,7 +606,7 @@ export class SQLiteBuffer {
     }
 
     // Parse numeric values
-    if (value !== null && !isNaN(Number(value))) {
+    if (value !== null && value !== undefined && !isNaN(Number(value))) {
       value = Number(value);
     } else if (value === 'true') {
       value = true;
@@ -308,11 +634,11 @@ export class SQLiteBuffer {
       }
     }
 
-    return {
+    const dataRecord: DataRecord = {
       received_timestamp: record.received_timestamp,
       signalk_timestamp: record.signalk_timestamp,
       context: record.context,
-      path: record.path,
+      path: signalkPath,
       value: value,
       value_json: valueJson as string | object | undefined,
       source: source as string | object | undefined,
@@ -322,63 +648,115 @@ export class SQLiteBuffer {
       source_src: record.source_src || undefined,
       meta: meta as string | object | undefined,
     };
+
+    // Restore dynamic value_* columns from the record
+    const rec = record as Record<string, unknown>;
+    for (const key of Object.keys(rec)) {
+      if (
+        key.startsWith('value_') &&
+        key !== 'value_json' &&
+        rec[key] !== null &&
+        rec[key] !== undefined
+      ) {
+        dataRecord[key] = rec[key];
+      }
+    }
+
+    return dataRecord;
   }
 
   /**
-   * Mark records as exported with a batch ID
-   */
-  markAsExported(recordIds: number[], batchId: string): void {
-    if (recordIds.length === 0) return;
-    this.markExportedStmt.run(batchId, JSON.stringify(recordIds));
-  }
-
-  /**
-   * Clean up old exported records
+   * Clean up old exported records from all per-path tables
    */
   cleanup(): number {
-    const result = this.cleanupStmt.run(this.retentionHours);
-    return result.changes;
+    let totalCleaned = 0;
+    for (const [, info] of this.tableMap) {
+      const result = this.db
+        .prepare(
+          `DELETE FROM ${info.tableName} WHERE exported = 1 AND created_at < datetime('now', '-' || ? || ' hours')`
+        )
+        .run(this.retentionHours);
+      totalCleaned += result.changes;
+    }
+    return totalCleaned;
   }
 
   /**
-   * Get buffer statistics
+   * Get buffer statistics aggregated across all per-path tables
    */
   getStats(): BufferStats {
-    const row = this.getStatsStmt.get() as {
-      totalRecords: number;
-      pendingRecords: number;
-      exportedRecords: number;
-      oldestPendingTimestamp: string | null;
-      newestRecordTimestamp: string | null;
-    };
+    let totalRecords = 0;
+    let pendingRecords = 0;
+    let exportedRecords = 0;
+    let oldestPendingTimestamp: string | null = null;
+    let newestRecordTimestamp: string | null = null;
+
+    for (const [, info] of this.tableMap) {
+      const row = this.db
+        .prepare(
+          `
+        SELECT
+          COUNT(*) as totalRecords,
+          SUM(CASE WHEN exported = 0 THEN 1 ELSE 0 END) as pendingRecords,
+          SUM(CASE WHEN exported = 1 THEN 1 ELSE 0 END) as exportedRecords,
+          MIN(CASE WHEN exported = 0 THEN received_timestamp END) as oldestPendingTimestamp,
+          MAX(received_timestamp) as newestRecordTimestamp
+        FROM ${info.tableName}
+      `
+        )
+        .get() as {
+        totalRecords: number;
+        pendingRecords: number;
+        exportedRecords: number;
+        oldestPendingTimestamp: string | null;
+        newestRecordTimestamp: string | null;
+      };
+
+      totalRecords += row.totalRecords || 0;
+      pendingRecords += row.pendingRecords || 0;
+      exportedRecords += row.exportedRecords || 0;
+
+      if (row.oldestPendingTimestamp) {
+        if (
+          !oldestPendingTimestamp ||
+          row.oldestPendingTimestamp < oldestPendingTimestamp
+        ) {
+          oldestPendingTimestamp = row.oldestPendingTimestamp;
+        }
+      }
+      if (row.newestRecordTimestamp) {
+        if (
+          !newestRecordTimestamp ||
+          row.newestRecordTimestamp > newestRecordTimestamp
+        ) {
+          newestRecordTimestamp = row.newestRecordTimestamp;
+        }
+      }
+    }
 
     // Get file sizes
     let dbSizeBytes = 0;
     let walSizeBytes = 0;
-
     try {
-      const dbStats = fs.statSync(this.dbPath);
-      dbSizeBytes = dbStats.size;
+      dbSizeBytes = fs.statSync(this.dbPath).size;
     } catch {
       // File may not exist yet
     }
-
     try {
       const walPath = this.dbPath + '-wal';
       if (fs.existsSync(walPath)) {
-        const walStats = fs.statSync(walPath);
-        walSizeBytes = walStats.size;
+        walSizeBytes = fs.statSync(walPath).size;
       }
     } catch {
       // WAL file may not exist
     }
 
     return {
-      totalRecords: row.totalRecords || 0,
-      pendingRecords: row.pendingRecords || 0,
-      exportedRecords: row.exportedRecords || 0,
-      oldestPendingTimestamp: row.oldestPendingTimestamp,
-      newestRecordTimestamp: row.newestRecordTimestamp,
+      totalRecords,
+      pendingRecords,
+      exportedRecords,
+      oldestPendingTimestamp,
+      newestRecordTimestamp,
       dbSizeBytes,
       walSizeBytes,
     };
@@ -391,47 +769,16 @@ export class SQLiteBuffer {
     if (!this.db.open) {
       return 0;
     }
-    const row = this.db
-      .prepare(
-        'SELECT COUNT(*) as count FROM buffer_records WHERE exported = 0'
-      )
-      .get() as { count: number };
-    return row.count;
-  }
-
-  /**
-   * Get records for a specific context and path (for federated queries)
-   */
-  getRecordsForPath(
-    context: string,
-    signalkPath: string,
-    from?: string,
-    to?: string
-  ): DataRecord[] {
-    if (!this.db.open) {
-      return []; // Return empty array if database is closed
+    let total = 0;
+    for (const [, info] of this.tableMap) {
+      const row = this.db
+        .prepare(
+          `SELECT COUNT(*) as count FROM ${info.tableName} WHERE exported = 0`
+        )
+        .get() as { count: number };
+      total += row.count;
     }
-    let query = `
-      SELECT * FROM buffer_records
-      WHERE context = ? AND path = ?
-    `;
-    const params: (string | number)[] = [context, signalkPath];
-
-    if (from) {
-      query += ` AND received_timestamp >= ?`;
-      params.push(from);
-    }
-
-    if (to) {
-      query += ` AND received_timestamp <= ?`;
-      params.push(to);
-    }
-
-    query += ` ORDER BY received_timestamp ASC`;
-
-    const stmt = this.db.prepare(query);
-    const records = stmt.all(...params) as BufferRecord[];
-    return records.map(r => this.bufferRecordToDataRecord(r));
+    return total;
   }
 
   /**
@@ -442,106 +789,121 @@ export class SQLiteBuffer {
   }
 
   /**
-   * Get distinct dates that have unexported records, excluding today
-   * Used at startup to catch up on missed exports without creating partial day files
-   *
-   * @param excludeToday If true (default), excludes today's date to avoid partial exports
+   * Get distinct dates that have unexported records, excluding today.
+   * Scans all per-path tables.
    */
   getDatesWithUnexportedRecords(excludeToday: boolean = true): string[] {
     if (!this.db.open) {
       return [];
     }
 
-    let query = `
-      SELECT DISTINCT date(received_timestamp) as record_date
-      FROM buffer_records
-      WHERE exported = 0
-    `;
+    const allDates = new Set<string>();
+    for (const [, info] of this.tableMap) {
+      let query = `
+        SELECT DISTINCT date(received_timestamp) as record_date
+        FROM ${info.tableName}
+        WHERE exported = 0
+      `;
+      if (excludeToday) {
+        query += ` AND date(received_timestamp) < date('now')`;
+      }
 
-    if (excludeToday) {
-      query += ` AND date(received_timestamp) < date('now')`;
+      const rows = this.db.prepare(query).all() as Array<{
+        record_date: string;
+      }>;
+      for (const r of rows) {
+        allDates.add(r.record_date);
+      }
     }
 
-    query += ` ORDER BY record_date ASC`;
-
-    const stmt = this.db.prepare(query);
-    const rows = stmt.all() as Array<{ record_date: string }>;
-    return rows.map(r => r.record_date);
+    return Array.from(allDates).sort();
   }
 
   /**
-   * Get distinct context/path combinations for a specific date (UTC)
-   * Used for daily export to determine which paths have data for a given day
+   * Get distinct context/path combinations for a specific date (UTC).
+   * Scans all per-path tables.
    */
   getPathsForDate(date: Date): Array<{ context: string; path: string }> {
     if (!this.db.open) {
       return [];
     }
 
-    const dateStr = date.toISOString().slice(0, 10); // YYYY-MM-DD
+    const dateStr = date.toISOString().slice(0, 10);
     const startOfDay = `${dateStr}T00:00:00.000Z`;
     const endOfDay = `${dateStr}T23:59:59.999Z`;
 
-    const stmt = this.db.prepare(`
-      SELECT DISTINCT context, path
-      FROM buffer_records
-      WHERE received_timestamp >= ? AND received_timestamp <= ?
-        AND exported = 0
-      ORDER BY context, path
-    `);
+    const results: Array<{ context: string; path: string }> = [];
 
-    return stmt.all(startOfDay, endOfDay) as Array<{
-      context: string;
-      path: string;
-    }>;
+    for (const [signalkPath, info] of this.tableMap) {
+      const rows = this.db
+        .prepare(
+          `
+        SELECT DISTINCT context
+        FROM ${info.tableName}
+        WHERE received_timestamp >= ? AND received_timestamp <= ?
+          AND exported = 0
+      `
+        )
+        .all(startOfDay, endOfDay) as Array<{ context: string }>;
+
+      for (const row of rows) {
+        results.push({ context: row.context, path: signalkPath });
+      }
+    }
+
+    return results.sort((a, b) =>
+      a.context < b.context
+        ? -1
+        : a.context > b.context
+          ? 1
+          : a.path < b.path
+            ? -1
+            : a.path > b.path
+              ? 1
+              : 0
+    );
   }
 
   /**
-   * Get all records for a specific context, path, and date (UTC)
-   * Returns records with their IDs for marking as exported
+   * Get all records for a specific context, path, and date (UTC).
+   * Returns just DataRecord[] — no IDs needed since markDateExported() handles marking.
    */
   getRecordsForPathAndDate(
     context: string,
     signalkPath: string,
     date: Date
-  ): { records: DataRecord[]; ids: number[] } {
+  ): DataRecord[] {
     if (!this.db.open) {
-      return { records: [], ids: [] };
+      return [];
     }
 
-    const dateStr = date.toISOString().slice(0, 10); // YYYY-MM-DD
+    const tableInfo = this.tableMap.get(signalkPath);
+    if (!tableInfo) return [];
+
+    const dateStr = date.toISOString().slice(0, 10);
     const startOfDay = `${dateStr}T00:00:00.000Z`;
     const endOfDay = `${dateStr}T23:59:59.999Z`;
 
-    const stmt = this.db.prepare(`
-      SELECT * FROM buffer_records
-      WHERE context = ? AND path = ?
+    const bufferRecords = this.db
+      .prepare(
+        `
+      SELECT * FROM ${tableInfo.tableName}
+      WHERE context = ?
         AND received_timestamp >= ? AND received_timestamp <= ?
         AND exported = 0
       ORDER BY received_timestamp ASC
-    `);
+    `
+      )
+      .all(context, startOfDay, endOfDay) as BufferRecord[];
 
-    const bufferRecords = stmt.all(
-      context,
-      signalkPath,
-      startOfDay,
-      endOfDay
-    ) as BufferRecord[];
-
-    const records: DataRecord[] = [];
-    const ids: number[] = [];
-
-    for (const record of bufferRecords) {
-      records.push(this.bufferRecordToDataRecord(record));
-      ids.push(record.id);
-    }
-
-    return { records, ids };
+    return bufferRecords.map(r =>
+      this.bufferRecordToDataRecord(r, signalkPath)
+    );
   }
 
   /**
-   * Mark records for a specific date as exported
-   * Used after successful daily export
+   * Mark records for a specific date as exported.
+   * Queries the specific path's table.
    */
   markDateExported(
     context: string,
@@ -549,23 +911,41 @@ export class SQLiteBuffer {
     date: Date,
     batchId: string
   ): void {
-    if (!this.db.open) {
-      return;
-    }
+    if (!this.db.open) return;
 
-    const dateStr = date.toISOString().slice(0, 10); // YYYY-MM-DD
+    const tableInfo = this.tableMap.get(signalkPath);
+    if (!tableInfo) return;
+
+    const dateStr = date.toISOString().slice(0, 10);
     const startOfDay = `${dateStr}T00:00:00.000Z`;
     const endOfDay = `${dateStr}T23:59:59.999Z`;
 
-    const stmt = this.db.prepare(`
-      UPDATE buffer_records
+    this.db
+      .prepare(
+        `
+      UPDATE ${tableInfo.tableName}
       SET exported = 1, export_batch_id = ?
-      WHERE context = ? AND path = ?
+      WHERE context = ?
         AND received_timestamp >= ? AND received_timestamp <= ?
         AND exported = 0
-    `);
+    `
+      )
+      .run(batchId, context, startOfDay, endOfDay);
+  }
 
-    stmt.run(batchId, context, signalkPath, startOfDay, endOfDay);
+  /**
+   * Get the set of known SignalK paths that have buffer tables.
+   * Used by SQL builders to check if a buffer table exists for federation.
+   */
+  getKnownPaths(): Set<string> {
+    return new Set(this.tableMap.keys());
+  }
+
+  /**
+   * Check if a buffer table exists for a given SignalK path.
+   */
+  hasTable(signalkPath: string): boolean {
+    return this.tableMap.has(signalkPath);
   }
 
   /**
@@ -579,7 +959,6 @@ export class SQLiteBuffer {
    * Close the database connection
    */
   close(): void {
-    // Checkpoint WAL before closing
     try {
       this.checkpoint();
     } catch {

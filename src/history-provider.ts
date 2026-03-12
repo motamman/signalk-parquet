@@ -28,6 +28,10 @@ import { DuckDBPool } from './utils/duckdb-pool';
 import { getPathComponentSchema } from './utils/schema-cache';
 import { HivePathBuilder } from './utils/hive-path-builder';
 import { isAngularPath } from './utils/angular-paths';
+import {
+  buildBufferScalarSubquery,
+  buildBufferObjectSubquery,
+} from './utils/buffer-sql-builder';
 
 /**
  * Convert Temporal.Instant or ISO string to ZonedDateTime (UTC)
@@ -119,12 +123,18 @@ function parseTimeRange(
  * History API Provider implementation
  */
 export class HistoryProvider implements HistoryApi {
+  private sqliteBuffer?: { getKnownPaths(): Set<string> };
+
   constructor(
     private selfId: string,
     private dataDir: string,
     private app: ServerAPI,
     private debug: (msg: string) => void
   ) {}
+
+  setSqliteBuffer(buffer: { getKnownPaths(): Set<string> }): void {
+    this.sqliteBuffer = buffer;
+  }
 
   /**
    * Get historical values for the specified query
@@ -244,7 +254,12 @@ export class HistoryProvider implements HistoryApi {
     );
     console.log(`[HistoryProvider] Querying Hive path: ${filePath}`);
 
-    const connection = await DuckDBPool.getConnection();
+    // Use connection with buffer attached if available
+    const hasBuffer = DuckDBPool.isSQLiteBufferInitialized();
+    const knownBufferPaths = hasBuffer && this.sqliteBuffer ? this.sqliteBuffer.getKnownPaths() : undefined;
+    const connection = hasBuffer
+      ? await DuckDBPool.getConnectionWithBuffer()
+      : await DuckDBPool.getConnection();
 
     try {
       // Check if this is an object path (has value_* columns)
@@ -255,6 +270,9 @@ export class HistoryProvider implements HistoryApi {
       );
 
       const aggFunc = this.getAggregateFunction(pathSpec.aggregate);
+
+      // Build parquet FROM clause with filename filtering
+      const parquetFrom = `(SELECT * FROM read_parquet('${filePath}', union_by_name=true, filename=true) WHERE filename NOT LIKE '%/processed/%' AND filename NOT LIKE '%/quarantine/%' AND filename NOT LIKE '%/failed/%' AND filename NOT LIKE '%/repaired/%')`;
 
       if (componentSchema && componentSchema.components.size > 0) {
         // Object path - aggregate each component
@@ -273,21 +291,43 @@ export class HistoryProvider implements HistoryApi {
           .map(comp => `${comp.columnName} IS NOT NULL`)
           .join(' OR ');
 
+        const componentCols = Array.from(componentSchema.components.values()).map(c => c.columnName).join(', ');
+
+        // Build federated FROM: parquet UNION ALL buffer
+        let federatedFrom: string;
+        if (hasBuffer) {
+          const bufferSubquery = buildBufferObjectSubquery(
+            context,
+            pathSpec.path,
+            fromIso,
+            toIso,
+            componentSchema.components,
+            knownBufferPaths
+          );
+          if (bufferSubquery) {
+            federatedFrom = `(
+              SELECT signalk_timestamp, ${componentCols} FROM ${parquetFrom}
+              UNION ALL
+              SELECT signalk_timestamp, ${componentCols} FROM ${bufferSubquery}
+            )`;
+          } else {
+            federatedFrom = parquetFrom;
+          }
+        } else {
+          federatedFrom = parquetFrom;
+        }
+
         const query = `
           SELECT
             strftime(DATE_TRUNC('seconds',
               EPOCH_MS(CAST(FLOOR(EPOCH_MS(signalk_timestamp::TIMESTAMP) / ${resolutionMs}) * ${resolutionMs} AS BIGINT))
             ), '%Y-%m-%dT%H:%M:%SZ') as timestamp,
             ${componentSelects}
-          FROM read_parquet('${filePath}', union_by_name=true, filename=true)
+          FROM ${federatedFrom} AS source_data
           WHERE
             signalk_timestamp >= '${fromIso}'
             AND signalk_timestamp < '${toIso}'
             AND (${componentWhereConditions})
-            AND filename NOT LIKE '%/processed/%'
-            AND filename NOT LIKE '%/quarantine/%'
-            AND filename NOT LIKE '%/failed/%'
-            AND filename NOT LIKE '%/repaired/%'
           GROUP BY timestamp
           ORDER BY timestamp
         `;
@@ -327,21 +367,40 @@ export class HistoryProvider implements HistoryApi {
             ? 'ATAN2(AVG(SIN(TRY_CAST(value AS DOUBLE))), AVG(COS(TRY_CAST(value AS DOUBLE))))'
             : `${aggFunc}(TRY_CAST(value AS DOUBLE))`;
 
+        // Build federated FROM: parquet UNION ALL buffer
+        let federatedFrom: string;
+        if (hasBuffer) {
+          const bufferSubquery = buildBufferScalarSubquery(
+            context,
+            pathSpec.path,
+            fromIso,
+            toIso,
+            knownBufferPaths
+          );
+          if (bufferSubquery) {
+            federatedFrom = `(
+              SELECT signalk_timestamp, value FROM ${parquetFrom}
+              UNION ALL
+              SELECT signalk_timestamp, value FROM ${bufferSubquery}
+            )`;
+          } else {
+            federatedFrom = parquetFrom;
+          }
+        } else {
+          federatedFrom = parquetFrom;
+        }
+
         const query = `
           SELECT
             strftime(DATE_TRUNC('seconds',
               EPOCH_MS(CAST(FLOOR(EPOCH_MS(signalk_timestamp::TIMESTAMP) / ${resolutionMs}) * ${resolutionMs} AS BIGINT))
             ), '%Y-%m-%dT%H:%M:%SZ') as timestamp,
             ${valueExpression} as value
-          FROM read_parquet('${filePath}', union_by_name=true, filename=true)
+          FROM ${federatedFrom} AS source_data
           WHERE
             signalk_timestamp >= '${fromIso}'
             AND signalk_timestamp < '${toIso}'
             AND value IS NOT NULL
-            AND filename NOT LIKE '%/processed/%'
-            AND filename NOT LIKE '%/quarantine/%'
-            AND filename NOT LIKE '%/failed/%'
-            AND filename NOT LIKE '%/repaired/%'
           GROUP BY timestamp
           ORDER BY timestamp
         `;
@@ -423,9 +482,13 @@ export function registerHistoryApiProvider(
   app: ServerAPI,
   selfId: string,
   dataDir: string,
-  debug: (msg: string) => void
+  debug: (msg: string) => void,
+  sqliteBuffer?: { getKnownPaths(): Set<string> }
 ): void {
   const provider = new HistoryProvider(selfId, dataDir, app, debug);
+  if (sqliteBuffer) {
+    provider.setSqliteBuffer(sqliteBuffer);
+  }
 
   // Debug: Check if registerHistoryApiProvider exists on app
   console.log(
