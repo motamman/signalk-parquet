@@ -359,7 +359,9 @@ export class HivePathBuilder {
     const prefixPart = normalizedPrefix ? `${normalizedPrefix}/` : '';
 
     // Brace expansion for explicit day lists; plain path for wildcards
-    const daySegment = dayPatterns.includes('*') ? dayPatterns : `{${dayPatterns}}`;
+    const daySegment = dayPatterns.includes('*')
+      ? dayPatterns
+      : `{${dayPatterns}}`;
     return `s3://${bucket}/${prefixPart}tier=${tier}/context=${sanitizedContext}/path=${sanitizedPath}/${daySegment}/*.parquet`;
   }
 
