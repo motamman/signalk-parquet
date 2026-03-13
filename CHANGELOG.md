@@ -1,5 +1,71 @@
 # Changelog
 
+## [0.7.7-beta.1] - 2026-03-13
+
+### Added
+
+- **Cloudflare R2 Cloud Provider** — Full support for Cloudflare R2 as an alternative to Amazon S3
+  - New `provider` field in cloud config: `'none' | 's3' | 'r2'`
+  - R2 uses `accountId` instead of `region`, with automatic endpoint and URL style configuration
+  - DuckDB S3 secret extended with conditional `ENDPOINT` and `URL_STYLE 'path'` for R2 compatibility
+  - Backward-compatible auto-migration from old `s3Upload` config format to new `cloudUpload`
+
+- **Per-Path SQLite Buffer Tables** — Each SignalK path now gets its own buffer table (`buffer_navigation_position`, `buffer_electrical_batteries_512_voltage`, etc.)
+  - Eliminates column pollution from `ALTER TABLE` — each path has exactly the columns it needs
+  - New `buffer_tables` metadata table tracks path → table name mapping
+  - Automatic one-time migration from legacy `buffer_records` table on startup: discovers all paths and dynamic `value_*` columns, creates per-path tables, migrates data atomically, drops old table
+  - New `pathToTableName()` exported function for table name resolution
+  - New `getKnownPaths()` returns `Set<string>` of all paths with buffer data
+
+- **SQLite Buffer Federation in DuckDB Queries** — Buffer data is now included directly in DuckDB queries via `ATTACH` and UNION
+  - New `src/utils/buffer-sql-builder.ts` with `buildBufferScalarSubquery()` and `buildBufferObjectSubquery()` functions
+  - Builder functions return `null` when no table exists for a path, allowing graceful fallback to parquet-only queries
+  - Callers pass `knownBufferPaths: Set<string>` for table existence checks without hitting the database
+
+- **Three-Tier Query Federation with Priority Handling** — Queries now resolve data from multiple sources with deduplication
+  - Priority 3 (highest): SQLite buffer (real-time data, not yet exported)
+  - Priority 2: Raw tier parquet (fills the "tier gap" for today's data when using aggregated tiers)
+  - Priority 1: Aggregated tier parquet (5s/60s/1h historical data)
+  - Uses `ROW_NUMBER() OVER (PARTITION BY timestamp ORDER BY priority DESC)` to pick highest-priority source per time bucket
+  - Fixes the "tier gap" for today: when querying aggregated tiers (60s, 5s, 1h), today's data only exists in raw tier + buffer — query now automatically includes raw tier for today's timestamps
+
+- **Comprehensive Test Suite for SQLite Buffer** — New `tests/test-sqlite-buffer.js` (1608 lines) covering per-path tables, migration, federation, and edge cases
+
+### Changed
+
+- **S3 Terminology → Cloud** — All S3-specific naming generalized to support multiple cloud providers
+  - Types: `S3UploadConfig` → `CloudUploadConfig`, `S3TestApiResponse` → `CloudTestApiResponse`
+  - State: `s3Client` → `cloudClient`
+  - Methods: `initializeS3()` → `initializeCloudSDK()`, `createS3Client()` → `createCloudClient()`
+  - API endpoints: `/api/test-s3` → `/api/test-cloud`, `/api/s3/compare` → `/api/cloud/compare`
+  - UI: `testS3Connection()` → `testCloudConnection()`, displays provider label (S3 or R2)
+
+- **Export Service Simplified** — Daily export now uses per-path table API
+  - `getRecordsForPathAndDate(context, path, date)` returns `DataRecord[]` (no IDs)
+  - `markDateExported(context, path, date, batchId)` replaces `markAsExported(ids)`
+  - Export status UI enhanced with colored status badges
+
+- **Cloud Upload Days Check** — Reduced cloud upload lookback from 30 days to 7 days
+
+- **README Comprehensive Update** — Fixed stale documentation, added missing features, removed unimplemented sections
+  - Fixed resolution parameter incorrectly documented as "milliseconds" (is seconds)
+  - Updated PluginConfig, PluginState, PathConfig, CloudUploadConfig code samples to match current types
+  - Added aggregated tier schema (bucket_time, value_avg, value_min, value_max, sample_count, sin/cos)
+  - Added per-path buffer architecture, three-tier query hierarchy, R2 support
+  - Added missing API endpoints: validation, repair, vector-averaging migration, aggregation, cloud sync
+  - Expanded project structure with services/, utils/ detail
+  - Removed unimplemented `convertUnits` section and `units` response extension
+  - Removed stale `timing` field from cloud upload config
+  - Moved beta.3 consolidation warning and legacy flat structure to Legacy Notes section
+
+### Removed
+
+- **Legacy Buffer Methods** — `getPendingRecords()`, `getPendingRecordsGrouped()`, `getPendingRecordsGroupedWithIds()`, `markAsExported(ids)` replaced by per-path date-based API
+- **Upload Timing Config** — Removed `timing: 'realtime' | 'consolidation'` from cloud upload; uploads now always run as part of the daily export pipeline
+- **Legacy Test Scripts** — Removed `aggregate-all-dates.py`, `convert-recovered.py` and related Python helpers, replaced by built-in migration and aggregation services
+
+---
+
 ## [0.7.6-beta.8] - 2026-03-07
 
 ### Changed
