@@ -6,10 +6,19 @@
  * This eliminates column pollution from ALTER TABLE ADD COLUMN on a shared table.
  */
 
-import { DatabaseSync, StatementSync } from 'node:sqlite';
 import * as path from 'path';
 import * as fs from 'fs-extra';
 import { DataRecord } from '../types';
+
+// Lazy-loaded: node:sqlite requires Node 22.5+
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+let DatabaseSync: typeof import('node:sqlite').DatabaseSync;
+type StatementSync = import('node:sqlite').StatementSync;
+try {
+  ({ DatabaseSync } = require('node:sqlite'));
+} catch {
+  // node:sqlite not available — SQLiteBuffer constructor will throw a clear error
+}
 
 export interface BufferRecord {
   id: number;
@@ -63,13 +72,19 @@ export function pathToTableName(signalkPath: string): string {
 }
 
 export class SQLiteBuffer {
-  private db: DatabaseSync;
+  private db: InstanceType<typeof DatabaseSync>;
   private _open: boolean;
   private readonly dbPath: string;
   private readonly retentionHours: number;
   private tableMap: Map<string, TableInfo>; // keyed by SignalK path
 
   constructor(config: SQLiteBufferConfig) {
+    if (!DatabaseSync) {
+      throw new Error(
+        'node:sqlite is not available (requires Node.js 22.5+). SQLite buffer disabled — falling back to in-memory LRU.'
+      );
+    }
+
     this.dbPath = config.dbPath;
     this.retentionHours = config.retentionHours || 24;
 

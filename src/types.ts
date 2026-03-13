@@ -612,6 +612,7 @@ export interface PluginState {
   currentProcess?: ProcessState;
   // SQLite buffer and export service (new)
   sqliteBuffer?: SQLiteBufferInterface;
+  sqliteBufferError?: string;
   exportService?: ParquetExportServiceInterface;
   // Auto-discovery service
   // eslint-disable-next-line @typescript-eslint/no-explicit-any

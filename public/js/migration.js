@@ -25,12 +25,22 @@ async function refreshBufferStatus() {
     }
 
     if (!data.enabled) {
-      container.innerHTML = `
-        <p style="color: #666;">
-          <strong>SQLite Buffer:</strong> Not enabled<br>
-          <small>The plugin is using the in-memory buffer. Enable SQLite buffer in plugin settings for crash-safe data ingestion.</small>
-        </p>
-      `;
+      if (data.error) {
+        container.innerHTML = `
+          <p style="color: #c00;">
+            <strong>SQLite Buffer:</strong> Failed to initialize<br>
+            <small style="color: #c00;">${data.error}</small><br>
+            <small style="color: #666;">The plugin is using the in-memory LRU buffer. Data is NOT crash-safe.</small>
+          </p>
+        `;
+      } else {
+        container.innerHTML = `
+          <p style="color: #666;">
+            <strong>SQLite Buffer:</strong> Not enabled<br>
+            <small>The plugin is using the in-memory buffer. Enable SQLite buffer in plugin settings for crash-safe data ingestion.</small>
+          </p>
+        `;
+      }
       return;
     }
 

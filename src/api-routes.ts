@@ -4036,6 +4036,7 @@ export function registerApiRoutes(
           success: true,
           enabled: false,
           message: 'SQLite buffer is not enabled',
+          error: state.sqliteBufferError || undefined,
         });
       }
 

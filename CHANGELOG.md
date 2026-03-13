@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.7.8-beta.1] - 2026-03-13
+
+### Changed
+
+- **SQLite Buffer: better-sqlite3 → node:sqlite** — Replaced `better-sqlite3` native addon with Node.js built-in `node:sqlite` (available since Node 22.5)
+  - Eliminates the `prebuild-install` postinstall script that SignalK 2 blocks during plugin installation, which silently prevented the SQLite buffer from loading
+  - Zero native dependencies — no binary downloads, no platform-specific builds
+  - API-compatible: synchronous `.prepare()/.run()/.get()/.all()/.exec()` interface unchanged
+  - Transactions rewritten from `.transaction()` wrapper to manual `BEGIN`/`COMMIT`/`ROLLBACK`
+  - Open-state tracking via `_open` flag (node:sqlite's `.open()` is a method, not a property)
+  - Minimal type declarations added in `src/types/node-sqlite.d.ts`
+- **Node.js minimum version bumped to 22.5.0** (was 18.0.0) — required for `node:sqlite`
+- **Removed `better-sqlite3` and `@types/better-sqlite3`** from dependencies
+
+---
+
 ## [0.7.7-beta.1] - 2026-03-13
 
 ### Added
