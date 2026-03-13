@@ -15,13 +15,15 @@ A comprehensive SignalK plugin and webapp that saves SignalK data directly to Pa
   - Replaces in-memory buffers with persistent SQLite database
   - Automatic recovery after power loss or crashes
   - 48-hour retention for federated queries
+  - Per-path tables (`buffer_navigation_position`, etc.) for partition-aligned access
+  - `buffer_tables` metadata table tracks path→table mapping
 - **🆕 Hive-Partitioned Storage**: Efficient file organization for query performance
   - Structure: `tier=raw/context={ctx}/path={path}/year={year}/day={day}/`
   - Aggregation tiers: `raw`, `5s`, `60s`, `1h`
   - Automatic partition pruning for time-range queries
-- **🆕 S3 Federated Querying**: Query historical data directly from S3 using DuckDB's native S3 support
+- **🆕 Cloud Federated Querying**: Query historical data directly from S3 or Cloudflare R2 using DuckDB's native support
+  - Three-tier query hierarchy: local parquet → cloud supplement → SQLite buffer
   - Automatic partition pruning reduces data transfer by 70-90%
-  - Hybrid local+S3 queries for data spanning retention boundary
   - Predicate pushdown filters data at source before transfer
 - **🆕 Auto-Discovery**: Automatically configure paths when first queried
   - On-demand path configuration when History API queries unconfigured paths
@@ -89,7 +91,7 @@ The validation system checks each Parquet file for:
 
 ### User Interface & Integration
 - **Responsive Web Interface**: Complete web-based management interface
-- **S3 Integration**: Upload files to Amazon S3 with configurable timing and conflict resolution
+- **Cloud Storage Integration**: Upload files to Amazon S3 or Cloudflare R2 as part of the daily export pipeline
 - **Context Support**: Support for multiple vessel contexts with exclusion controls
 
 ### Regimen System (Advanced)
@@ -133,33 +135,6 @@ npm run build
 # Restart SignalK
 sudo systemctl restart signalk
 ```
-
-## ⚠️ IMPORTANT IF UPGRADING FROM 0.5.0-beta.3: Consolidation Bug Fix 
-
-**THIS FIXES A RECURSIVE BUG THAT WAS CREATING NESTED PROCESSED DIRECTORIES AND REPEATEDLY PROCESSING THE SAME FILES. THIS SHOULD FIX THAT PROBLEM BUT ANY `processed` FOLDERS NESTED INSIDE A `processed` FOLDER SHOULD BE MANUALLY DELETED.**
-
-### Cleaning Up Nested Processed Directories
-
-No action is likely needed if upgrading from 0.5.0-beta.4 or better. If you're upgrading from a previous version, you may have nested processed directories that need cleanup:
-
-```bash
-# Check for nested processed directories
-find data -name "*processed*" -type d | head -20
-
-# See the deepest nesting levels
-find data -name "*processed*" -type d | awk -F'/' '{print NF-1, $0}' | sort -nr | head -5
-
-# Count files in nested processed directories
-find data -path "*/processed/processed/*" -type f | wc -l
-
-# Remove ALL nested processed directories (RECOMMENDED)
-find data -name "processed" -type d -exec rm -rf {} +
-
-# Verify cleanup completed
-find data -path "*/processed/processed/*" -type f | wc -l  # Should show 0
-```
-
-**Note**: The processed directories contain legacy files from the old consolidation system. The new daily export pipeline no longer uses this directory.
 
 ### Development Setup
 
@@ -230,19 +205,19 @@ When enabled, Auto-Discovery will automatically add path configurations when:
 
 Auto-discovered paths are marked with the `autoDiscovered: true` flag and have auto-generated human-readable names prefixed with `[Auto]`.
 
-### S3 Upload Configuration
+### Cloud Upload Configuration
 
-Configure S3 upload settings in the plugin configuration:
+Configure cloud storage upload in the plugin configuration. Uploads run as part of the daily export pipeline.
 
 | Setting | Description | Default |
 |---------|-------------|---------|
-| **Enable S3 Upload** | Enable uploading to Amazon S3 | `false` |
-| **Upload Timing** | When to upload (realtime/daily) | `consolidation` |
-| **S3 Bucket** | Name of S3 bucket | - |
-| **AWS Region** | AWS region for S3 bucket | `us-east-1` |
-| **Key Prefix** | S3 object key prefix | - |
-| **Access Key ID** | AWS credentials (optional) | - |
-| **Secret Access Key** | AWS credentials (optional) | - |
+| **Provider** | Cloud provider: `none`, `s3`, or `r2` | `none` |
+| **Bucket** | Bucket name | - |
+| **Region** | AWS region (S3 only) | `us-east-1` |
+| **Account ID** | Cloudflare account ID (R2 only) | - |
+| **Key Prefix** | Object key prefix | - |
+| **Access Key ID** | Cloud credentials | - |
+| **Secret Access Key** | Cloud credentials | - |
 | **Delete After Upload** | Delete local files after upload | `false` |
 
 ## Path Configuration
@@ -350,17 +325,39 @@ interface PluginConfig {
   outputDirectory: string;
   filenamePrefix: string;
   fileFormat: 'json' | 'csv' | 'parquet';
-  paths: PathConfig[];
-  s3Upload: S3UploadConfig;
+  retentionDays: number;
+  vesselMMSI: string;
+  cloudUpload: CloudUploadConfig;
+  enableStreaming?: boolean;
+  useSqliteBuffer?: boolean;
+  exportBatchSize?: number;
+  bufferRetentionHours?: number;
+  useHivePartitioning?: boolean;
+  dailyExportHour?: number;
+  autoDiscovery?: AutoDiscoveryConfig;
+  enableRawSql?: boolean;
+}
+
+interface CloudUploadConfig {
+  provider: 'none' | 's3' | 'r2';
+  bucket?: string;
+  region?: string;       // S3 only
+  accountId?: string;    // R2 only (Cloudflare account ID)
+  keyPrefix?: string;
+  accessKeyId?: string;
+  secretAccessKey?: string;
+  deleteAfterUpload?: boolean;
 }
 
 interface PathConfig {
   path: string;
-  enabled: boolean;
+  name?: string;
+  enabled?: boolean;
   regimen?: string;
   source?: string;
-  context: string;
+  context?: string;
   excludeMMSI?: string[];
+  autoDiscovered?: boolean;
 }
 
 interface DataRecord {
@@ -381,12 +378,15 @@ The plugin maintains typed state:
 ```typescript
 interface PluginState {
   unsubscribes: Array<() => void>;
-  dataBuffers: Map<string, DataRecord[]>;
+  dataBuffers: LRUCache<string, DataRecord[]>;
   activeRegimens: Set<string>;
   subscribedPaths: Set<string>;
   parquetWriter?: ParquetWriter;
-  s3Client?: any;
+  cloudClient?: any;
   currentConfig?: PluginConfig;
+  sqliteBuffer?: SQLiteBufferInterface;
+  exportService?: ParquetExportServiceInterface;
+  commandState: CommandRegistrationState;
 }
 ```
 
@@ -441,18 +441,7 @@ output_directory/
 - `year=` - Year (e.g., `2025`)
 - `day=` - Day of year, zero-padded (e.g., `197`)
 
-**Legacy Flat Structure (deprecated):**
-```
-output_directory/
-├── vessels/
-│   └── self/
-│       ├── navigation/
-│       │   └── position/
-│       │       └── signalk_data_20250716T120000.parquet
-└── processed/
-```
-
-Use the Migration API to convert legacy files to Hive partitioning.
+> **Legacy flat structure**: If you have data from pre-Hive versions, use the Migration API to convert to Hive partitioning. See [Data Migration](#data-migration).
 
 ## Data Migration
 
@@ -521,6 +510,22 @@ Each record contains:
 | `source_pgn` | number | PGN number (if applicable) |
 | `meta` | string | Metadata information |
 
+#### Aggregated Tier Schema (5s, 60s, 1h)
+
+Aggregated tiers use a different schema optimized for statistical queries:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `bucket_time` | TIMESTAMP | Start of the aggregation time bucket |
+| `context` | UTF8 | SignalK context |
+| `path` | UTF8 | SignalK path |
+| `value_avg` | DOUBLE | Average value in bucket |
+| `value_min` | DOUBLE | Minimum value (NULL for angular paths) |
+| `value_max` | DOUBLE | Maximum value (NULL for angular paths) |
+| `sample_count` | INT64 | Number of raw samples aggregated |
+| `value_sin_avg` | DOUBLE | Average of sin(value) — angular paths only, for lossless re-aggregation |
+| `value_cos_avg` | DOUBLE | Average of cos(value) — angular paths only, for lossless re-aggregation |
+
 #### Smart Data Types
 
 The plugin now intelligently detects and preserves native data types:
@@ -542,7 +547,7 @@ This provides better compression, faster queries, and proper type safety for dat
 - **Data Exploration**: Browse available data paths
 - **SQL Queries**: Execute DuckDB queries against Parquet files
 - **History API**: Query historical data using SignalK History API endpoints
-- **S3 Status**: Test S3 connectivity and configuration
+- **Cloud Status**: Test cloud storage connectivity and configuration
 - **Responsive Design**: Works on desktop and mobile
 - **MMSI Filtering**: Exclude specific vessels from wildcard contexts
 
@@ -555,8 +560,10 @@ This provides better compression, faster queries, and proper type safety for dat
 | `/api/sample/:path` | GET | Sample data from a path |
 | `/api/query` | POST | Execute SQL query (⚠️ disabled by default, requires `SIGNALK_PARQUET_RAW_SQL=true`) |
 | `/api/config/paths` | GET/POST/PUT/DELETE | Manage path configurations |
-| `/api/test-s3` | POST | Test S3 connection |
+| `/api/test-cloud` | POST | Test cloud storage connection |
 | `/api/health` | GET | Health check |
+| `/api/version` | GET | Plugin version |
+| `/api/store/stats` | GET | Data store statistics |
 | **SignalK History API** | | |
 | `/signalk/v1/history/values` | GET | SignalK History API - Get historical values |
 | `/signalk/v1/history/contexts` | GET | SignalK History API - Get available contexts |
@@ -572,6 +579,25 @@ This provides better compression, faster queries, and proper type safety for dat
 | `/api/buffer/stats` | GET | Get SQLite buffer statistics |
 | `/api/buffer/export` | POST | Force immediate export of pending records |
 | `/api/buffer/health` | GET | Get buffer health status |
+| **Validation & Repair API** | | |
+| `/api/validate-schemas` | POST | Scan and validate Parquet schemas |
+| `/api/validate-schemas/progress/:jobId` | GET | Get validation progress |
+| `/api/validate-schemas/cancel/:jobId` | POST | Cancel validation job |
+| `/api/repair-schemas` | POST | Repair schema violations |
+| `/api/repair-schemas/progress/:jobId` | GET | Get repair progress |
+| `/api/repair-schemas/cancel/:jobId` | POST | Cancel repair job |
+| **Vector Averaging Migration** | | |
+| `/api/migrate/vector-averaging` | POST | Migrate to vector averaging aggregation |
+| `/api/migrate/vector-averaging/:jobId` | GET | Get migration progress |
+| `/api/migrate/vector-averaging/cancel/:jobId` | POST | Cancel migration |
+| **Aggregation API** | | |
+| `/api/aggregate` | POST | Trigger aggregation for all tiers |
+| `/api/aggregate/:sourceTier/:targetTier` | POST | Aggregate specific tier pair |
+| **Cloud Sync API** | | |
+| `/api/cloud/compare` | POST | Compare local vs cloud data |
+| `/api/cloud/compare/:jobId` | GET | Get comparison progress |
+| `/api/cloud/sync` | POST | Sync data to cloud |
+| `/api/cloud/sync/:jobId` | GET | Get sync progress |
 
 ## DuckDB Integration
 
@@ -798,7 +824,6 @@ curl "http://localhost:3000/signalk/v1/history/values?duration=1h&paths=environm
 |-----------|-------------|---------|----------|
 | `paths` ⚠️ | Extended smoothing syntax: `path:method:smoothing:param` (returns raw AND smoothed) | Extended format | `navigation.speedOverGround:average:sma:5` |
 | `includeMovingAverages` ⚠️ | Include EMA/SMA calculations | `true` or `1` | `includeMovingAverages=true` |
-| `convertUnits` ⚠️ | Convert to preferred units (requires signalk-units-preference plugin) | `true` or `1` | `convertUnits=true` |
 | `bbox` ⚠️ | Bounding box filter: `west,south,east,north` | Coordinates | `bbox=-74.5,40.2,-73.8,40.9` |
 | `radius` ⚠️ | Radius filter: `lon,lat,meters` (GeoJSON convention) | Coordinates + meters | `radius=-73.981,40.646,100` |
 
@@ -894,37 +919,6 @@ curl "http://localhost:3000/signalk/v1/history/paths?duration=24h"
 curl "http://localhost:3000/signalk/v1/history/paths"
 ```
 
-#### Unit Conversion (NEW in v0.6.0)
-
-**Convert to user's preferred units:**
-```bash
-# Speed in knots (if configured in signalk-units-preference)
-curl "http://localhost:3000/signalk/v1/history/values?duration=2d&paths=navigation.speedOverGround&convertUnits=true"
-
-# Wind speed in preferred units (knots, km/h, or mph)
-curl "http://localhost:3000/signalk/v1/history/values?duration=1h&paths=environment.wind.speedApparent&convertUnits=true"
-
-# Temperature in preferred units (°C or °F)
-curl "http://localhost:3000/signalk/v1/history/values?duration=24h&paths=environment.outside.temperature&convertUnits=true"
-```
-
-**Response includes conversion metadata:**
-```json
-{
-  "values": [{"path": "navigation.speedOverGround", "method": "average"}],
-  "data": [["2025-10-20T16:12:14Z", 5.2]],
-  "units": {
-    "converted": true,
-    "conversions": [{
-      "path": "navigation.speedOverGround",
-      "baseUnit": "m/s",
-      "targetUnit": "knots",
-      "symbol": "kn"
-    }]
-  }
-}
-```
-
 #### Duration Formats
 - `30s` - 30 seconds
 - `15m` - 15 minutes
@@ -962,24 +956,27 @@ curl "http://localhost:3000/signalk/v1/history/values?duration=7d&paths=environm
 - For **non-position paths** (e.g., `environment.wind.speedApparent`): First queries position data to find timestamps when vessel was within the spatial filter, then returns only data from those times
 - Spatial correlation always uses `navigation.position` for location lookup
 
-#### S3 Federated Querying
+#### Query Data Hierarchy
 
-Query historical data directly from S3 without downloading files first. The query source is auto-determined based on the `retentionDays` config boundary:
-- Data within retention period → queries local files
-- Data older than retention → queries S3
-- Query spanning boundary → queries both with UNION
+Queries resolve data from a three-tier hierarchy, selected automatically based on date ranges:
 
-**Data Transfer Optimization:**
-DuckDB's native S3 support provides:
+1. **Local tiered Parquet** — Primary source. Uses aggregation tiers (`raw`, `5s`, `60s`, `1h`) based on query resolution. Data available from first export through yesterday.
+2. **Cloud supplement (S3/R2)** — For dates before local data starts (older than `retentionDays`). DuckDB queries cloud storage directly without downloading files first.
+3. **SQLite buffer** — Today's live data, not yet exported to Parquet. Bucketed to match the query resolution.
+
+For queries spanning multiple sources, results are combined with UNION.
+
+**Cloud Query Optimization:**
+DuckDB's native cloud storage support provides:
 - **Partition pruning**: Hive structure (`year=/day=`) allows skipping irrelevant files
 - **Predicate pushdown**: WHERE clauses filter at Parquet level before transfer
 - **Projection pushdown**: Only SELECT columns are transferred
 - **Combined effect**: 70-99% reduction vs downloading full files
 
-**Requirements:**
-- S3 must be enabled in plugin configuration
-- Valid AWS credentials configured
-- Data must be uploaded to S3 using Hive partition structure
+**Requirements for cloud queries:**
+- Cloud upload must be configured (`provider: 's3'` or `'r2'`)
+- Valid credentials configured
+- Data must be uploaded using Hive partition structure
 
 ### Timestamp Handling
 
@@ -1017,11 +1014,11 @@ The History API automatically aligns data from different paths using time bucket
 **Key Features:**
 - **Smart Type Handling**: Automatically handles numeric values (wind speed) and JSON objects (position)
 - **Robust Aggregation**: Uses proper SQL type casting to prevent type errors
-- **Configurable Resolution**: Time bucket size in milliseconds (default: auto-calculated based on time range)
+- **Configurable Resolution**: Time bucket size in seconds (default: auto-calculated based on time range)
 - **Multiple Aggregation Methods**: `average` for numeric data, `first` for complex objects
 
 **Parameters:**
-- `resolution` - Time bucket size in milliseconds (default: auto-calculated)
+- `resolution` - Time bucket size in seconds (default: auto-calculated)
 - **Aggregation methods**: `average`, `min`, `max`, `first`, `last`, `mid`, `middle_index`
 
 **Aggregation Methods:**
@@ -1117,7 +1114,6 @@ When using extension parameters, the response may include additional non-standar
 
 | Field | Added by | Description |
 |-------|----------|-------------|
-| `units` | `convertUnits=true` | Unit conversion metadata (baseUnit, targetUnit, symbol) |
 | `meta.autoConfigured` | Auto-discovery | Indicates paths were auto-configured for recording |
 
 These fields are extensions and may not be present in responses from other SignalK history providers.
@@ -1243,31 +1239,28 @@ Point 5: Value=5.5, EMA=5.42,  SMA=5.5  // Rolling 10-point SMA window
 - 📊 **History API**: Add `includeMovingAverages=true` to include EMA/SMA calculations
 
 
-## S3 Integration
+## Cloud Storage (S3 / Cloudflare R2)
 
-### Upload Timing
+### Configuration
 
-**Real-time Upload**: Files are uploaded immediately after creation
+Set `provider` to `s3` or `r2` in the cloud upload configuration. Cloud uploads run automatically as part of the daily export pipeline — after Parquet files are created, they are uploaded to the configured cloud provider.
+
 ```json
 {
-  "s3Upload": {
-    "enabled": true,
-    "timing": "realtime"
+  "cloudUpload": {
+    "provider": "s3",
+    "bucket": "my-marine-data",
+    "region": "us-east-1",
+    "keyPrefix": "marine-data/",
+    "accessKeyId": "...",
+    "secretAccessKey": "..."
   }
 }
 ```
 
-**Daily Upload**: Files are uploaded after the daily export
-```json
-{
-  "s3Upload": {
-    "enabled": true,
-    "timing": "consolidation"
-  }
-}
-```
+For Cloudflare R2, use `provider: "r2"` and supply `accountId` instead of `region`.
 
-### S3 Key Structure
+### Cloud Key Structure
 
 With prefix `marine-data/` and Hive partitioning:
 ```
@@ -1300,23 +1293,41 @@ The plugin uses a simplified daily export pipeline:
 ```
 signalk-parquet/
 ├── src/
-│   ├── index.ts              # Main plugin entry point and lifecycle (~340 lines)
-│   ├── commands.ts           # Command management system (~400 lines)
-│   ├── data-handler.ts       # Data processing, subscriptions, S3 (~650 lines)
-│   ├── api-routes.ts         # Web API endpoints (~600 lines)
-│   ├── types.ts              # TypeScript interfaces (~360 lines)
-│   ├── parquet-writer.ts     # File writing logic
-│   ├── HistoryAPI.ts         # SignalK History API implementation
-│   ├── HistoryAPI-types.ts   # History API type definitions
+│   ├── index.ts                # Main plugin entry point and lifecycle
+│   ├── commands.ts             # Command management system
+│   ├── data-handler.ts         # Data processing, subscriptions, cloud upload
+│   ├── api-routes.ts           # Web API endpoints
+│   ├── types.ts                # TypeScript interfaces
+│   ├── parquet-writer.ts       # File writing logic
+│   ├── HistoryAPI.ts           # SignalK History API implementation
+│   ├── HistoryAPI-types.ts     # History API type definitions
+│   ├── history-provider.ts     # SignalK HistoryApi provider (v2)
+│   ├── historical-streaming.ts # WebSocket historical data streaming (not yet functional)
+│   ├── services/
+│   │   ├── aggregation-service.ts  # Tier aggregation (raw→5s→60s→1h)
+│   │   └── parquet-export-service.ts # Daily export pipeline
 │   └── utils/
-│       └── path-helpers.ts   # Path utility functions
-├── dist/                     # Compiled JavaScript
+│       ├── sqlite-buffer.ts    # Per-path SQLite buffer
+│       ├── buffer-sql-builder.ts # SQL generation for buffer queries
+│       ├── duckdb-pool.ts      # DuckDB connection pooling
+│       ├── hive-path-builder.ts # Hive partition path generation
+│       ├── angular-paths.ts    # Angular path detection (units=rad)
+│       ├── duration-parser.ts  # ISO 8601 and shorthand duration parsing
+│       ├── spatial-queries.ts  # Geographic/spatial query support
+│       ├── lru-cache.ts        # LRU cache implementation
+│       ├── path-helpers.ts     # Path utility functions
+│       ├── path-discovery.ts   # Path auto-discovery
+│       ├── context-discovery.ts # Context auto-discovery
+│       ├── type-detector.ts    # Smart data type detection
+│       ├── schema-cache.ts     # Parquet schema caching
+│       └── ...                 # Additional utilities
+├── dist/                       # Compiled JavaScript
 ├── public/
-│   ├── index.html           # Web interface
-│   └── parquet.png          # Plugin icon
-├── tsconfig.json            # TypeScript configuration
-├── package.json             # Dependencies and scripts
-└── README.md               # This file
+│   ├── index.html             # Web interface
+│   └── parquet.png            # Plugin icon
+├── tsconfig.json              # TypeScript configuration
+├── package.json               # Dependencies and scripts
+└── README.md                  # This file
 ```
 
 ### Code Architecture
@@ -1325,10 +1336,12 @@ The plugin uses a modular TypeScript architecture for maintainability:
 
 - **`index.ts`**: Plugin lifecycle, configuration, and initialization
 - **`commands.ts`**: SignalK command registration, execution, and management
-- **`data-handler.ts`**: Data subscriptions, buffering, and S3 operations
+- **`data-handler.ts`**: Data subscriptions, buffering, and cloud upload operations
 - **`api-routes.ts`**: REST API endpoints for web interface
+- **`historical-streaming.ts`**: WebSocket historical streaming (not yet functional)
 - **`types.ts`**: Comprehensive TypeScript type definitions
-- **`utils/`**: Utility functions and helpers
+- **`services/`**: Aggregation and export pipeline services
+- **`utils/`**: SQLite buffer, DuckDB pool, spatial queries, path helpers, and more
 
 ### Adding New Features
 
@@ -1368,9 +1381,9 @@ npm run build
 - Check that `@duckdb/node-api` is installed
 - Verify Node.js version compatibility (>=16.0.0)
 
-**S3 Upload Failures**
-- Verify AWS credentials and permissions
-- Check S3 bucket exists and is accessible
+**Cloud Upload Failures**
+- Verify cloud credentials and permissions
+- Check bucket exists and is accessible
 - Test connection using web interface
 
 **No Data Collection**
@@ -1422,7 +1435,7 @@ Comprehensive testing procedures are documented in `TESTING.md`. The testing gui
 - Data collection validation
 - Regimen control testing
 - File output verification
-- S3 integration testing
+- Cloud storage integration testing
 - API endpoint testing
 - Performance testing
 - Error handling validation
@@ -1443,6 +1456,37 @@ curl http://localhost:3000/plugins/signalk-parquet/api/paths
 curl "http://localhost:3000/signalk/v1/history/contexts"
 ```
 
+## Legacy Notes
+
+### Upgrading from 0.5.0-beta.3: Consolidation Bug Fix
+
+If upgrading from versions prior to 0.5.0-beta.4, you may have nested `processed` directories from a recursive consolidation bug:
+
+```bash
+# Check for nested processed directories
+find data -name "*processed*" -type d | head -20
+
+# Remove ALL nested processed directories (RECOMMENDED)
+find data -name "processed" -type d -exec rm -rf {} +
+```
+
+The `processed` directories contain legacy files from the old consolidation system. The new daily export pipeline no longer uses this directory.
+
+### Legacy Flat File Structure
+
+Pre-Hive versions stored data in a flat directory structure:
+```
+output_directory/
+├── vessels/
+│   └── self/
+│       ├── navigation/
+│       │   └── position/
+│       │       └── signalk_data_20250716T120000.parquet
+└── processed/
+```
+
+Use the Migration API to convert legacy files to Hive partitioning.
+
 ## TODO
 
 - [x] Implement daily export pipeline (replaced consolidation)
@@ -1456,6 +1500,7 @@ curl "http://localhost:3000/signalk/v1/history/contexts"
 - [ ] Incorporate user preferences from units-preference in the regimen filter system
 - [ ] Expose recorded spatial event via api endpoint (geojson)
 - [ ] Add Grafana integration
+- [ ] Dedicated WebSocket endpoint for historical data streaming (current delta interceptor approach doesn't work — needs a separate `ws://` endpoint that streams historical data on demand)
 
 ## Contributing
 
