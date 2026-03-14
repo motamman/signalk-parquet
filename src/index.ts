@@ -5,7 +5,7 @@ import { ParquetWriter } from './parquet-writer';
 import { registerHistoryApiRoute } from './HistoryAPI';
 import { registerApiRoutes } from './api-routes';
 import { CACHE_SIZE } from './config/cache-defaults';
-import { HistoricalStreamingService } from './historical-streaming';
+// import { HistoricalStreamingService } from './historical-streaming';
 import { SignalKPlugin, PluginConfig, PluginState, PathConfig } from './types';
 import { Context, SourceRef, Timestamp, Path } from '@signalk/server-api';
 import {
@@ -512,15 +512,17 @@ export default function (app: ServerAPI): SignalKPlugin {
       app.error(`Failed to register as History API provider: ${error}`);
     }
 
-    // Initialize historical streaming service (for history API endpoints)
-    try {
-      state.historicalStreamingService = new HistoricalStreamingService(
-        app,
-        state.currentConfig.outputDirectory
-      );
-    } catch (error) {
-      app.error(`Failed to initialize historical streaming service: ${error}`);
-    }
+    // Historical streaming service disabled — all routes are commented out
+    // and the timeout accumulation bug causes unbounded memory growth.
+    // See devdocs/SQLITE_NODE_SQLITE_MIGRATION.md for context.
+    // try {
+    //   state.historicalStreamingService = new HistoricalStreamingService(
+    //     app,
+    //     state.currentConfig.outputDirectory
+    //   );
+    // } catch (error) {
+    //   app.error(`Failed to initialize historical streaming service: ${error}`);
+    // }
 
     // Initialize runtime streaming service if enabled in configuration
     // if (state.currentConfig.enableStreaming) {
@@ -1018,9 +1020,9 @@ export async function initializeStreamingService(
       };
     }
 
-    // Reuse the existing historical streaming service instead of creating a new one
-    state.streamingService = state.historicalStreamingService;
-    state.streamingEnabled = true;
+    // Historical streaming disabled — see comment at init above
+    // state.streamingService = state.historicalStreamingService;
+    // state.streamingEnabled = true;
 
     // Restore any previous subscriptions if available
     // The historical streaming service will automatically handle incoming subscriptions
