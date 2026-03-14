@@ -859,7 +859,7 @@ async function uploadMissingFiles(
   return uploaded;
 }
 
-// Upload all hive-partitioned parquet files to cloud (3-day lookback)
+// Upload all hive-partitioned parquet files to cloud (7-day lookback)
 export async function uploadAllConsolidatedFilesToS3(
   config: PluginConfig,
   state: PluginState,
@@ -872,16 +872,7 @@ export async function uploadAllConsolidatedFilesToS3(
     const daysToCheck = 7;
     const today = new Date();
 
-    // List existing cloud keys once
-    app.debug(`[StartupSync] Listing existing ${target.label} objects...`);
-    const existingKeys = await listCloudKeys(
-      target.client,
-      target.bucket,
-      target.keyPrefix || undefined
-    );
-    app.debug(`[StartupSync] Found ${existingKeys.size} existing ${target.label} objects`);
-
-    // Gather local files for the lookback window
+    // Gather local files for the lookback window first (fast, local I/O)
     const allLocalFiles: string[] = [];
     for (let daysAgo = 1; daysAgo <= daysToCheck; daysAgo++) {
       const targetDate = new Date(today);
@@ -902,21 +893,70 @@ export async function uploadAllConsolidatedFilesToS3(
     }
 
     app.debug(`[StartupSync] Found ${allLocalFiles.length} local files in last ${daysToCheck} days`);
+    if (allLocalFiles.length === 0) return;
 
-    const uploaded = await uploadMissingFiles(
-      allLocalFiles,
-      existingKeys,
-      target,
-      config,
-      app
-    );
+    // List only raw-tier prefixes in R2 to find which context/path/year/day combos are synced
+    const prefixSet = new Set<string>();
+    const basePrefix = target.keyPrefix
+      ? (target.keyPrefix.endsWith('/') ? target.keyPrefix : `${target.keyPrefix}/`)
+      : '';
+    for (const file of allLocalFiles) {
+      const rel = path.relative(config.outputDirectory, file);
+      if (!rel.startsWith('tier=raw')) continue;
+      const dirPart = path.dirname(rel);
+      prefixSet.add(`${basePrefix}${dirPart}/`);
+    }
+
+    app.debug(`[StartupSync] Listing ${target.label} objects for ${prefixSet.size} raw-tier prefixes...`);
+
+    // Build set of synced directories (context/path/year/day) from raw tier
+    // e.g. "context=X/path=Y/year=2026/day=073"
+    const syncedDirs = new Set<string>();
+    for (const prefix of prefixSet) {
+      const keys = await listCloudKeys(target.client, target.bucket, prefix);
+      if (keys.size > 0) {
+        // Extract context/path/year/day from the prefix (strip basePrefix and tier=raw/)
+        const withoutBase = prefix.startsWith(basePrefix)
+          ? prefix.slice(basePrefix.length)
+          : prefix;
+        // withoutBase = "tier=raw/context=X/path=Y/year=YYYY/day=DDD/"
+        const withoutTier = withoutBase.replace(/^tier=[^/]+\//, '');
+        syncedDirs.add(withoutTier);
+      }
+    }
+    app.debug(`[StartupSync] Found ${syncedDirs.size} synced directories in ${target.label}`);
+
+    // Filter local files: skip any file whose context/path/year/day is already synced
+    const excludedDirs = ['/processed/', '/repaired/', '/failed/', '/quarantine/'];
+    const filesToUpload = allLocalFiles.filter(f => {
+      if (excludedDirs.some(dir => f.includes(dir))) return false;
+      const rel = path.relative(config.outputDirectory, f);
+      // Strip tier segment to get context/path/year/day/
+      const withoutTier = rel.replace(/^tier=[^/]+\//, '');
+      const dirPart = path.dirname(withoutTier) + '/';
+      return !syncedDirs.has(dirPart);
+    });
+
+    if (filesToUpload.length === 0) {
+      app.debug(`[StartupSync] All files already synced`);
+      return;
+    }
+
+    app.debug(`[CloudSync] ${filesToUpload.length} files to upload (3 concurrent)`);
+    let uploaded = 0;
+    for (let i = 0; i < filesToUpload.length; i += 3) {
+      const batch = filesToUpload.slice(i, i + 3);
+      const results = await Promise.all(
+        batch.map(f => putToCloud(f, target, config))
+      );
+      uploaded += results.filter(Boolean).length;
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
 
     if (uploaded > 0) {
       app.debug(
         `[StartupSync] Uploaded ${uploaded} files to ${target.label}`
       );
-    } else {
-      app.debug(`[StartupSync] All files already synced`);
     }
   } catch (error) {
     app.error(`[StartupSync] Failed: ${(error as Error).message}`);

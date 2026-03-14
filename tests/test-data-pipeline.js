@@ -52,9 +52,9 @@ async function checkSQLiteBuffer() {
 
   let Database;
   try {
-    Database = require('better-sqlite3');
+    ({ DatabaseSync: Database } = require('node:sqlite'));
   } catch (e) {
-    log('  ✗ better-sqlite3 not available: ' + e.message, colors.red);
+    log('  ✗ node:sqlite not available: ' + e.message, colors.red);
     return null;
   }
 
@@ -63,7 +63,7 @@ async function checkSQLiteBuffer() {
     return null;
   }
 
-  const db = new Database(BUFFER_DB, { readonly: true });
+  const db = new Database(BUFFER_DB, { readOnly: true });
   const stats = {};
 
   try {

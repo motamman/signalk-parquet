@@ -14,7 +14,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const Database = require('better-sqlite3');
+const { DatabaseSync: Database } = require('node:sqlite');
 const WebSocket = require('ws');
 const { SQLiteBuffer, pathToTableName } = require('../dist/utils/sqlite-buffer');
 const { buildBufferScalarSubquery, buildBufferObjectSubquery } = require('../dist/utils/buffer-sql-builder');
@@ -153,21 +153,21 @@ function makeRecordLikeProduction(skPath, rawValue, opts = {}) {
 }
 
 function getTableColumns(dbPath, tableName) {
-  const db = new Database(dbPath, { readonly: true });
-  const cols = db.pragma(`table_info(${tableName})`).map(c => c.name);
+  const db = new Database(dbPath, { readOnly: true });
+  const cols = db.prepare(`PRAGMA table_info(${tableName})`).all().map(c => c.name);
   db.close();
   return cols;
 }
 
 function tableExists(dbPath, tableName) {
-  const db = new Database(dbPath, { readonly: true });
+  const db = new Database(dbPath, { readOnly: true });
   const row = db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name=?`).get(tableName);
   db.close();
   return !!row;
 }
 
 function countRows(dbPath, tableName) {
-  const db = new Database(dbPath, { readonly: true });
+  const db = new Database(dbPath, { readOnly: true });
   const row = db.prepare(`SELECT COUNT(*) as cnt FROM ${tableName}`).get();
   db.close();
   return row.cnt;
@@ -211,7 +211,7 @@ console.log(`${C.cyan}╚══════════════════�
     assertTrue(!cols.includes('value_json'), 'scalar table has no value_json column');
 
     // Verify raw row
-    const db = new Database(dbPath, { readonly: true });
+    const db = new Database(dbPath, { readOnly: true });
     const row = db.prepare(`SELECT value FROM ${tableName}`).get();
     db.close();
     assertEqual(row.value, '5.2', 'raw value stored as string "5.2"');
@@ -663,7 +663,7 @@ console.log(`${C.cyan}╚══════════════════�
   try {
     // Create old-style single-table database manually
     const rawDb = new Database(dbPath);
-    rawDb.pragma('journal_mode = WAL');
+    rawDb.exec('PRAGMA journal_mode = WAL');
     rawDb.exec(`
       CREATE TABLE buffer_records (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -780,7 +780,7 @@ console.log(`${C.cyan}╚══════════════════�
     assertEqual(row.value_name, 'Sailing', 'value_name is string "Sailing"');
 
     // Verify column types via pragma
-    const tableInfoRows = db.pragma(`table_info(${tableName})`);
+    const tableInfoRows = db.prepare(`PRAGMA table_info(${tableName})`).all();
     const idCol = tableInfoRows.find(c => c.name === 'value_id');
     const nameCol = tableInfoRows.find(c => c.name === 'value_name');
     assertEqual(idCol.type, 'REAL', 'value_id column type is REAL');
@@ -1101,7 +1101,7 @@ async function runLiveTest() {
     assertTrue(!cols.includes('value_json'), `${s.path}: scalar table has NO value_json`);
 
     // Read actual stored value and verify context
-    const rawDb = new Database(dbPath, { readonly: true });
+    const rawDb = new Database(dbPath, { readOnly: true });
     const row = rawDb.prepare(`SELECT value, context FROM ${tableName} LIMIT 1`).get();
     rawDb.close();
     assertTrue(row && row.value !== null, `${s.path}: stored value is not null (got ${JSON.stringify(row && row.value)})`);
@@ -1126,7 +1126,7 @@ async function runLiveTest() {
     }
 
     // Verify actual data was stored
-    const rawDb = new Database(dbPath, { readonly: true });
+    const rawDb = new Database(dbPath, { readOnly: true });
     const row = rawDb.prepare(`SELECT * FROM ${tableName} LIMIT 1`).get();
     rawDb.close();
 
@@ -1166,7 +1166,7 @@ async function runLiveTest() {
     assertTrue(posCols.includes('value_longitude'), 'navigation.position: has value_longitude');
     assertTrue(!posCols.includes('value'), 'navigation.position: NO plain value column');
 
-    const rawDb = new Database(dbPath, { readonly: true });
+    const rawDb = new Database(dbPath, { readOnly: true });
     const posRow = rawDb.prepare(`SELECT * FROM ${posTable} LIMIT 1`).get();
     rawDb.close();
 

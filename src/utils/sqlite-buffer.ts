@@ -6,10 +6,19 @@
  * This eliminates column pollution from ALTER TABLE ADD COLUMN on a shared table.
  */
 
-import Database = require('better-sqlite3');
 import * as path from 'path';
 import * as fs from 'fs-extra';
 import { DataRecord } from '../types';
+
+// Lazy-loaded: node:sqlite requires Node 22.5+
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+let DatabaseSync: typeof import('node:sqlite').DatabaseSync;
+type StatementSync = import('node:sqlite').StatementSync;
+try {
+  ({ DatabaseSync } = require('node:sqlite'));
+} catch {
+  // node:sqlite not available — SQLiteBuffer constructor will throw a clear error
+}
 
 export interface BufferRecord {
   id: number;
@@ -50,7 +59,7 @@ interface TableInfo {
   tableName: string;
   isObject: boolean;
   columns: Set<string>;
-  insertStmt: Database.Statement;
+  insertStmt: StatementSync;
 }
 
 /**
@@ -63,12 +72,19 @@ export function pathToTableName(signalkPath: string): string {
 }
 
 export class SQLiteBuffer {
-  private db: Database.Database;
+  private db: InstanceType<typeof DatabaseSync>;
+  private _open: boolean;
   private readonly dbPath: string;
   private readonly retentionHours: number;
   private tableMap: Map<string, TableInfo>; // keyed by SignalK path
 
   constructor(config: SQLiteBufferConfig) {
+    if (!DatabaseSync) {
+      throw new Error(
+        'node:sqlite is not available (requires Node.js 22.5+). SQLite buffer disabled — falling back to in-memory LRU.'
+      );
+    }
+
     this.dbPath = config.dbPath;
     this.retentionHours = config.retentionHours || 24;
 
@@ -76,14 +92,15 @@ export class SQLiteBuffer {
     fs.ensureDirSync(path.dirname(this.dbPath));
 
     // Open database with WAL mode for crash safety and better concurrency
-    this.db = new Database(this.dbPath);
+    this.db = new DatabaseSync(this.dbPath);
+    this._open = true;
 
     // Configure for performance and crash safety
-    this.db.pragma('journal_mode = WAL');
-    this.db.pragma('synchronous = NORMAL');
-    this.db.pragma('cache_size = -64000'); // 64MB cache
-    this.db.pragma('temp_store = MEMORY');
-    this.db.pragma('mmap_size = 268435456'); // 256MB memory-mapped I/O
+    this.db.exec('PRAGMA journal_mode = WAL');
+    this.db.exec('PRAGMA synchronous = NORMAL');
+    this.db.exec('PRAGMA cache_size = -64000'); // 64MB cache
+    this.db.exec('PRAGMA temp_store = MEMORY');
+    this.db.exec('PRAGMA mmap_size = 268435456'); // 256MB memory-mapped I/O
 
     // Create metadata table
     this.createMetadataSchema();
@@ -136,7 +153,7 @@ export class SQLiteBuffer {
 
     // Get all columns from the old table
     const oldColumns = (
-      this.db.pragma('table_info(buffer_records)') as Array<{
+      this.db.prepare('PRAGMA table_info(buffer_records)').all() as Array<{
         name: string;
         type: string;
       }>
@@ -160,7 +177,8 @@ export class SQLiteBuffer {
       return;
     }
 
-    const migrate = this.db.transaction(() => {
+    this.db.exec('BEGIN');
+    try {
       for (const signalkPath of paths) {
         // Determine if this path is an object path
         const hasJson = (
@@ -268,9 +286,11 @@ export class SQLiteBuffer {
 
       // Drop legacy table
       this.db.exec(`DROP TABLE buffer_records`);
-    });
-
-    migrate();
+      this.db.exec('COMMIT');
+    } catch (e) {
+      this.db.exec('ROLLBACK');
+      throw e;
+    }
   }
 
   /**
@@ -283,9 +303,9 @@ export class SQLiteBuffer {
 
     for (const row of rows) {
       const columns = new Set<string>();
-      const tableInfo = this.db.pragma(
-        `table_info(${row.table_name})`
-      ) as Array<{ name: string }>;
+      const tableInfo = this.db
+        .prepare(`PRAGMA table_info(${row.table_name})`)
+        .all() as Array<{ name: string }>;
       for (const col of tableInfo) {
         columns.add(col.name);
       }
@@ -312,7 +332,7 @@ export class SQLiteBuffer {
     tableName: string,
     columns: Set<string>,
     isObject: boolean
-  ): Database.Statement {
+  ): StatementSync {
     const insertCols: string[] = [];
     const placeholders: string[] = [];
 
@@ -423,9 +443,9 @@ export class SQLiteBuffer {
       .run(signalkPath, tableName, isObject ? 1 : 0);
 
     const columns = new Set<string>();
-    const tableInfoRows = this.db.pragma(`table_info(${tableName})`) as Array<{
-      name: string;
-    }>;
+    const tableInfoRows = this.db
+      .prepare(`PRAGMA table_info(${tableName})`)
+      .all() as Array<{ name: string }>;
     for (const col of tableInfoRows) {
       columns.add(col.name);
     }
@@ -464,14 +484,14 @@ export class SQLiteBuffer {
    * Check if the database connection is open
    */
   isOpen(): boolean {
-    return this.db.open;
+    return this._open;
   }
 
   /**
    * Insert a single record into the buffer
    */
   insert(record: DataRecord): void {
-    if (!this.db.open) {
+    if (!this._open) {
       throw new Error('SQLite buffer is closed');
     }
     const tableInfo = this.ensureTable(record.path, record);
@@ -485,15 +505,18 @@ export class SQLiteBuffer {
   insertBatch(records: DataRecord[]): void {
     if (records.length === 0) return;
 
-    const insertMany = this.db.transaction((recs: DataRecord[]) => {
-      for (const record of recs) {
+    this.db.exec('BEGIN');
+    try {
+      for (const record of records) {
         const tableInfo = this.ensureTable(record.path, record);
         const params = this.prepareRecord(record, tableInfo);
         tableInfo.insertStmt.run(params);
       }
-    });
-
-    insertMany(records);
+      this.db.exec('COMMIT');
+    } catch (e) {
+      this.db.exec('ROLLBACK');
+      throw e;
+    }
   }
 
   private prepareRecord(
@@ -766,7 +789,7 @@ export class SQLiteBuffer {
    * Get count of pending records (faster than full stats)
    */
   getPendingCount(): number {
-    if (!this.db.open) {
+    if (!this._open) {
       return 0;
     }
     let total = 0;
@@ -785,7 +808,7 @@ export class SQLiteBuffer {
    * Checkpoint WAL file (useful before backup or to reduce WAL size)
    */
   checkpoint(): void {
-    this.db.pragma('wal_checkpoint(TRUNCATE)');
+    this.db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
   }
 
   /**
@@ -793,7 +816,7 @@ export class SQLiteBuffer {
    * Scans all per-path tables.
    */
   getDatesWithUnexportedRecords(excludeToday: boolean = true): string[] {
-    if (!this.db.open) {
+    if (!this._open) {
       return [];
     }
 
@@ -824,7 +847,7 @@ export class SQLiteBuffer {
    * Scans all per-path tables.
    */
   getPathsForDate(date: Date): Array<{ context: string; path: string }> {
-    if (!this.db.open) {
+    if (!this._open) {
       return [];
     }
 
@@ -873,7 +896,7 @@ export class SQLiteBuffer {
     signalkPath: string,
     date: Date
   ): DataRecord[] {
-    if (!this.db.open) {
+    if (!this._open) {
       return [];
     }
 
@@ -911,7 +934,7 @@ export class SQLiteBuffer {
     date: Date,
     batchId: string
   ): void {
-    if (!this.db.open) return;
+    if (!this._open) return;
 
     const tableInfo = this.tableMap.get(signalkPath);
     if (!tableInfo) return;
@@ -965,5 +988,6 @@ export class SQLiteBuffer {
       // Ignore checkpoint errors during shutdown
     }
     this.db.close();
+    this._open = false;
   }
 }

@@ -114,8 +114,8 @@ The validation system checks each Parquet file for:
 ## Requirements
 
 ### Core Requirements
-- SignalK Server v1.x or v2.x
-- Node.js 18+ (included with SignalK)
+- SignalK Server v2.13+
+- Node.js 22.5+ (required for `node:sqlite` — the built-in SQLite module used for crash-safe buffering; on Node < 22.5 the buffer falls back to in-memory LRU)
 
 ## Installation
 
@@ -1379,7 +1379,7 @@ npm run build
 
 **DuckDB Not Available**
 - Check that `@duckdb/node-api` is installed
-- Verify Node.js version compatibility (>=16.0.0)
+- Verify Node.js version compatibility (>=22.5.0)
 
 **Cloud Upload Failures**
 - Verify cloud credentials and permissions

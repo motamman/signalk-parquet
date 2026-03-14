@@ -5,7 +5,7 @@ import { ParquetWriter } from './parquet-writer';
 import { registerHistoryApiRoute } from './HistoryAPI';
 import { registerApiRoutes } from './api-routes';
 import { CACHE_SIZE } from './config/cache-defaults';
-import { HistoricalStreamingService } from './historical-streaming';
+// import { HistoricalStreamingService } from './historical-streaming';
 import { SignalKPlugin, PluginConfig, PluginState, PathConfig } from './types';
 import { Context, SourceRef, Timestamp, Path } from '@signalk/server-api';
 import {
@@ -176,32 +176,34 @@ export default function (app: ServerAPI): SignalKPlugin {
 
         app.debug(`[SQLite] Buffer initialized successfully at ${dbPath}`);
       } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        app.error(`[SQLite] Failed to initialize SQLite buffer: ${msg}`);
         app.error(
-          `[SQLite] CRITICAL: Failed to initialize SQLite buffer at ${dbPath}: ${error}`
+          `[SQLite] Falling back to in-memory LRU buffer (data is NOT crash-safe)`
         );
-        app.error(
-          `[SQLite] Data recording will NOT work. Fix the configuration and restart.`
-        );
-        throw error; // Fail loudly - don't continue with broken state
+        state.sqliteBuffer = undefined;
+        state.sqliteBufferError = msg;
       }
 
-      // Initialize export service
-      state.exportService = new ParquetExportService(
-        state.sqliteBuffer as SQLiteBuffer,
-        state.parquetWriter,
-        {
-          outputDirectory: state.currentConfig.outputDirectory,
-          filenamePrefix: state.currentConfig.filenamePrefix,
-          useHivePartitioning: state.currentConfig.useHivePartitioning!,
-          s3Upload: {
-            enabled: state.currentConfig.cloudUpload.provider !== 'none',
+      // Initialize export service (requires working SQLite buffer)
+      if (state.sqliteBuffer) {
+        state.exportService = new ParquetExportService(
+          state.sqliteBuffer as SQLiteBuffer,
+          state.parquetWriter,
+          {
+            outputDirectory: state.currentConfig.outputDirectory,
+            filenamePrefix: state.currentConfig.filenamePrefix,
+            useHivePartitioning: state.currentConfig.useHivePartitioning!,
+            s3Upload: {
+              enabled: state.currentConfig.cloudUpload.provider !== 'none',
+            },
+            dailyExportHour: state.currentConfig.dailyExportHour ?? 4,
           },
-          dailyExportHour: state.currentConfig.dailyExportHour ?? 4,
-        },
-        app
-      );
-      state.exportService.start();
-      app.debug('Parquet export service started');
+          app
+        );
+        state.exportService.start();
+        app.debug('Parquet export service started');
+      }
     }
 
     // Initialize cloud client if enabled (S3 or R2)
@@ -510,15 +512,17 @@ export default function (app: ServerAPI): SignalKPlugin {
       app.error(`Failed to register as History API provider: ${error}`);
     }
 
-    // Initialize historical streaming service (for history API endpoints)
-    try {
-      state.historicalStreamingService = new HistoricalStreamingService(
-        app,
-        state.currentConfig.outputDirectory
-      );
-    } catch (error) {
-      app.error(`Failed to initialize historical streaming service: ${error}`);
-    }
+    // Historical streaming service disabled — all routes are commented out
+    // and the timeout accumulation bug causes unbounded memory growth.
+    // See devdocs/SQLITE_NODE_SQLITE_MIGRATION.md for context.
+    // try {
+    //   state.historicalStreamingService = new HistoricalStreamingService(
+    //     app,
+    //     state.currentConfig.outputDirectory
+    //   );
+    // } catch (error) {
+    //   app.error(`Failed to initialize historical streaming service: ${error}`);
+    // }
 
     // Initialize runtime streaming service if enabled in configuration
     // if (state.currentConfig.enableStreaming) {
@@ -1016,9 +1020,9 @@ export async function initializeStreamingService(
       };
     }
 
-    // Reuse the existing historical streaming service instead of creating a new one
-    state.streamingService = state.historicalStreamingService;
-    state.streamingEnabled = true;
+    // Historical streaming disabled — see comment at init above
+    // state.streamingService = state.historicalStreamingService;
+    // state.streamingEnabled = true;
 
     // Restore any previous subscriptions if available
     // The historical streaming service will automatically handle incoming subscriptions
