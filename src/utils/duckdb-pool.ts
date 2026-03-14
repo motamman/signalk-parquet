@@ -51,6 +51,8 @@ export class DuckDBPool {
 
     // Load spatial extension once for all future connections
     const setupConn = await this.instance.connect();
+    // Cap DuckDB memory to prevent OOM when combined with Node's heap
+    await setupConn.runAndReadAll("SET memory_limit = '512MB';");
     await setupConn.runAndReadAll('INSTALL spatial;');
     await setupConn.runAndReadAll('LOAD spatial;');
     // sqlite extension is auto-loaded by ATTACH ... (TYPE SQLITE) in getConnectionWithBuffer()
