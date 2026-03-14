@@ -1,6 +1,6 @@
 # <img src="public/parquet.png" alt="SignalK Parquet Data Store" width="72" height="72" style="vertical-align: middle; margin-right: 20px;"> SignalK Parquet Data Store
 
-A comprehensive SignalK plugin and webapp that saves SignalK data directly to Parquet files with manual and automated regimen-based archiving and advanced querying features, including a REST API built on the SignalK History API and spatial geographic analysis capabilities. 
+Vessel data Parquet file archive with automated value and geospatial triggers. History API compliant with cloud backups and queries.
 
 ## Features
 

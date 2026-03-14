@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.7.9] - 2026-03-14
+
+### Changed
+
+- **DuckDB Memory Cap** — Set `memory_limit = '512MB'` to prevent OOM when DuckDB's allocator combines with Node.js heap on memory-constrained devices (Raspberry Pi)
+- **Historical Streaming Service disabled** — Disabled WebSocket-based historical streaming to prevent unbounded memory growth on long-running instances
+- **R2 Startup Sync optimized** — Scoped cloud sync prefix listing to raw-tier directories only
+  - Lists only raw-tier prefixes in R2 (~1,400 vs 124K full bucket listing)
+  - If raw tier exists for a context/path/year/day, assumes all aggregated tiers are already synced
+  - Uploads all tiers for any missing directory
+- **Cloud upload lookback extended** — Reduced lookback window from 30 days to 7 days for uploading hive-partitioned Parquet files to cloud storage
+
+---
+
 ## [0.7.8-beta.2] - 2026-03-14
 
 ### Changed
