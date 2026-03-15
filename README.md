@@ -6,7 +6,6 @@ Vessel data Parquet file archive with automated value and geospatial triggers. H
 
 ### Core Data Management
 - **Smart Data Types**: Intelligent Parquet schema detection preserves native data types (DOUBLE, BOOLEAN) instead of forcing everything to strings
-- **Multiple File Formats**: Support for Parquet, JSON, and CSV output formats (querying in parquet only)
 - **Daily Export Pipeline**: Simplified daily export creates consolidated Parquet files directly
   - Data accumulates in SQLite buffer throughout the day
   - Single export at configurable hour (default: 4 AM UTC)
