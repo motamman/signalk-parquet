@@ -132,8 +132,8 @@ export function parseSpatialParams(
  */
 export function buildSpatialSqlClause(
   filter: SpatialFilter,
-  latColumn: string = 'value_latitude',
-  lonColumn: string = 'value_longitude'
+  latColumn: string = 'TRY_CAST(value_latitude AS DOUBLE)',
+  lonColumn: string = 'TRY_CAST(value_longitude AS DOUBLE)'
 ): string {
   const { bbox } = filter;
 

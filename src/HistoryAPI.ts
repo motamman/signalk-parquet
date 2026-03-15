@@ -582,8 +582,8 @@ export class HistoryAPI {
           WHERE
             ${spatialTsCol} >= '${fromIso}'
             AND ${spatialTsCol} < '${toIso}'
-            AND value_latitude IS NOT NULL
-            AND value_longitude IS NOT NULL
+            AND TRY_CAST(value_latitude AS DOUBLE) IS NOT NULL
+            AND TRY_CAST(value_longitude AS DOUBLE) IS NOT NULL
             AND ${spatialWhereClause}
             AND filename NOT LIKE '%/processed/%'
             AND filename NOT LIKE '%/quarantine/%'
@@ -774,7 +774,7 @@ export class HistoryAPI {
           timeResolutionMillis,
           spatialFilter,
           positionPath,
-          tier,
+          undefined, // Force raw tier — position is an object path, aggregated tiers lack value_latitude/value_longitude
           querySource,
           debug
         );
@@ -927,6 +927,20 @@ export class HistoryAPI {
 
           if (componentSchema && componentSchema.components.size > 0) {
             // Object path with multiple components - aggregate each component separately
+            // Aggregated tiers (5s/60s/1h) collapse object paths into scalar value_avg,
+            // so always query raw tier for object paths
+            if (effectiveTier !== 'raw') {
+              debug(`Path ${pathSpec.path}: Object path — overriding tier=${effectiveTier} to raw`);
+              localFilePath = path.join(
+                this.dataDir,
+                'tier=raw',
+                `context=${sanitizedContext}`,
+                `path=${sanitizedSkPath}`,
+                '**',
+                '*.parquet'
+              );
+              fromClause = buildFromClause(localFilePath);
+            }
             debug(
               `Path ${pathSpec.path}: Object path with ${componentSchema.components.size} components`
             );
@@ -941,7 +955,11 @@ export class HistoryAPI {
                   pathSpec.aggregateMethod,
                   comp.dataType
                 );
-                return `${aggFunc}(${comp.columnName}) as ${comp.name}`;
+                // TRY_CAST handles mixed-type parquet files (some store lat/lon as VARCHAR)
+                const colExpr = comp.dataType === 'numeric'
+                  ? `TRY_CAST(${comp.columnName} AS DOUBLE)`
+                  : comp.columnName;
+                return `${aggFunc}(${colExpr}) as ${comp.name}`;
               })
               .join(',\n              ');
 
@@ -971,7 +989,7 @@ export class HistoryAPI {
             // Each source does its own aggregation into (timestamp, components..., priority).
             // UNION ALL the results, then ROW_NUMBER to pick highest-priority source per bucket.
             // Priority: buffer(3) > raw tier gap(2) > tier parquet(1).
-            const objTsCol = getTierTimestampColumn(effectiveTier);
+            const objTsCol = getTierTimestampColumn('raw');
             const componentCols = Array.from(componentSchema.components.values()).map(c => c.columnName).join(', ');
             const objBucketExpr = (col: string) =>
               `strftime(DATE_TRUNC('seconds', EPOCH_MS(CAST(FLOOR(EPOCH_MS(${col}::TIMESTAMP) / ${timeResolutionMillis}) * ${timeResolutionMillis} AS BIGINT))), '%Y-%m-%dT%H:%M:%SZ')`;

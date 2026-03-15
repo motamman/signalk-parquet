@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.7.10] - 2026-03-15
+
+### Fixed
+
+- **History Provider: `value_age` binder error** — Parquet files for `navigation.position` include a `value_age` column (GPS fix staleness) that the buffer table lacks. The buffer SQL builder now outputs `NULL::DOUBLE` for any component column missing from the buffer table, preventing DuckDB's "column cannot be referenced before it is defined" error
+- **History Provider: `AVG(VARCHAR)` on position data** — Some parquet files store `value_latitude`/`value_longitude` as VARCHAR. With `union_by_name=true`, DuckDB unifies to VARCHAR, breaking `AVG()`. Object path component aggregation now wraps numeric columns with `TRY_CAST(... AS DOUBLE)` before aggregating
+- **Schema cache: excluded `value_age`** — GPS fix age is metadata, not a position component to aggregate. Added to the exclusion list alongside `value_json`, `value_units`, `value_description`
+
+### Added
+
+- **`getTableColumns()` on SQLiteBuffer** — Exposes the column set for a given path's buffer table, enabling the buffer SQL builder to detect and handle missing columns dynamically
+
+---
+
 ## [0.7.9] - 2026-03-14
 
 ### Changed
