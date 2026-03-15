@@ -16,23 +16,23 @@ Vessel data Parquet file archive with automated value and geospatial triggers. H
   - 48-hour retention for federated queries
   - Per-path tables (`buffer_navigation_position`, etc.) for partition-aligned access
   - `buffer_tables` metadata table tracks path→table mapping
-- **🆕 Hive-Partitioned Storage**: Efficient file organization for query performance
+- **NEW Hive-Partitioned Storage**: Efficient file organization for query performance
   - Structure: `tier=raw/context={ctx}/path={path}/year={year}/day={day}/`
   - Aggregation tiers: `raw`, `5s`, `60s`, `1h`
   - Automatic partition pruning for time-range queries
-- **🆕 Cloud Federated Querying**: Query historical data directly from S3 or Cloudflare R2 using DuckDB's native support
+- **NEW Cloud Federated Querying**: Query historical data directly from S3 or Cloudflare R2 using DuckDB's native support
   - Three-tier query hierarchy: local parquet → cloud supplement → SQLite buffer
   - Automatic partition pruning reduces data transfer by 70-90%
   - Predicate pushdown filters data at source before transfer
-- **🆕 Auto-Discovery**: Automatically configure paths when first queried
+- **NEW Auto-Discovery**: Automatically configure paths when first queried
   - On-demand path configuration when History API queries unconfigured paths
   - Include/exclude glob patterns for fine-grained control
   - Optional live data requirement before configuration
-- **🆕 Vector Averaging**: Correct aggregation of angular data (headings, bearings, wind angles)
+- **NEW Vector Averaging**: Correct aggregation of angular data (headings, bearings, wind angles)
   - Automatic detection of angular paths via SignalK metadata (`units === 'rad'`)
   - Uses `atan2(mean(sin), mean(cos))` instead of arithmetic mean
   - Lossless re-aggregation across tiers via stored sin/cos averages
-- **🆕 Buffer Bucketing**: SQLite buffer data bucketed to match Parquet query resolution
+- **NEW Buffer Bucketing**: SQLite buffer data bucketed to match Parquet query resolution
   - Prevents raw per-second records from flooding bucketed query results
   - Supports all aggregate methods including vector averaging for angular paths
 
@@ -71,12 +71,12 @@ The validation system checks each Parquet file for:
   - Forward and backward time querying support
 - **Time Alignment**: Automatic alignment of data from different sensors using time bucketing
 - **DuckDB Integration**: Direct SQL querying of Parquet files with type-safe operations
-- **🌍 Spatial Analysis**: Advanced geographic analysis with DuckDB spatial extension
+- **Spatial Analysis**: Advanced geographic analysis with DuckDB spatial extension
   - **Track Analysis**: Calculate vessel tracks, distances, and movement patterns
   - **Proximity Detection**: Multi-vessel distance calculations and collision risk analysis
   - **Geographic Visualization**: Generate movement boundaries, centroids, and spatial statistics
   - **Route Planning**: Historical track analysis for route optimization and performance analysis
-  - **🆕 Spatial Correlation**: Filter any sensor data by vessel location
+  - **NEW Spatial Correlation**: Filter any sensor data by vessel location
     - Query "wind data when vessel was within this area"
     - Bounding box (`bbox`) and radius filters work on all paths
     - Automatically correlates timestamps with position data
