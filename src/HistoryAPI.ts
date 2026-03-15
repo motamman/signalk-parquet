@@ -566,7 +566,10 @@ export class HistoryAPI {
     const toIso = to.toInstant().toString();
 
     try {
-      const connection = await DuckDBPool.getConnection();
+      const hasBuffer = DuckDBPool.isSQLiteBufferInitialized();
+      const connection = hasBuffer
+        ? await DuckDBPool.getConnectionWithBuffer()
+        : await DuckDBPool.getConnection();
       try {
         // Bucket-lookup approach: instead of scanning all raw position data,
         // bucket by time resolution, grab FIRST lat/lon per bucket, then filter by bbox/radius.
@@ -575,16 +578,38 @@ export class HistoryAPI {
           EPOCH_MS(CAST(FLOOR(EPOCH_MS(signalk_timestamp::TIMESTAMP) / ${timeResolutionMillis}) * ${timeResolutionMillis} AS BIGINT))
         ), '%Y-%m-%dT%H:%M:%SZ')`;
 
+        // Build FROM: parquet UNION ALL buffer
+        const parquetFrom = `SELECT signalk_timestamp, value_latitude, value_longitude FROM (
+          SELECT * FROM read_parquet('${localFilePath}', union_by_name=true, filename=true)
+          WHERE filename NOT LIKE '%/processed/%'
+          AND filename NOT LIKE '%/quarantine/%'
+          AND filename NOT LIKE '%/failed/%'
+          AND filename NOT LIKE '%/repaired/%')`;
+
+        let fromSource = `(${parquetFrom})`;
+        if (hasBuffer && this.sqliteBuffer) {
+          const knownPaths = this.sqliteBuffer.getKnownPaths();
+          const bufferTableCols = this.sqliteBuffer.getTableColumns(positionPath);
+          const bufferSubquery = buildBufferObjectSubquery(
+            context, positionPath, fromIso, toIso,
+            new Map([
+              ['latitude', { name: 'latitude', columnName: 'value_latitude', dataType: 'numeric' as const }],
+              ['longitude', { name: 'longitude', columnName: 'value_longitude', dataType: 'numeric' as const }],
+            ]),
+            knownPaths,
+            bufferTableCols
+          );
+          if (bufferSubquery) {
+            fromSource = `(${parquetFrom} UNION ALL SELECT signalk_timestamp, TRY_CAST(value_latitude AS DOUBLE) as value_latitude, TRY_CAST(value_longitude AS DOUBLE) as value_longitude FROM ${bufferSubquery})`;
+          }
+        }
+
         const query = `
           SELECT
             ${bucketExpr} as timestamp,
             FIRST(TRY_CAST(value_latitude AS DOUBLE)) as lat,
             FIRST(TRY_CAST(value_longitude AS DOUBLE)) as lon
-          FROM (SELECT * FROM read_parquet('${localFilePath}', union_by_name=true, filename=true)
-            WHERE filename NOT LIKE '%/processed/%'
-            AND filename NOT LIKE '%/quarantine/%'
-            AND filename NOT LIKE '%/failed/%'
-            AND filename NOT LIKE '%/repaired/%')
+          FROM ${fromSource}
           WHERE
             signalk_timestamp >= '${fromIso}'
             AND signalk_timestamp < '${toIso}'
@@ -841,22 +866,47 @@ export class HistoryAPI {
         const toIso = to.toInstant().toString();
 
         try {
-          const connection = await DuckDBPool.getConnection();
+          const hasBuffer = DuckDBPool.isSQLiteBufferInitialized();
+          const connection = hasBuffer
+            ? await DuckDBPool.getConnectionWithBuffer()
+            : await DuckDBPool.getConnection();
           try {
             const bucketExpr = `strftime(DATE_TRUNC('seconds',
               EPOCH_MS(CAST(FLOOR(EPOCH_MS(signalk_timestamp::TIMESTAMP) / ${timeResolutionMillis}) * ${timeResolutionMillis} AS BIGINT))
             ), '%Y-%m-%dT%H:%M:%SZ')`;
+
+            // Build FROM: parquet UNION ALL buffer (for today's unexported data)
+            const parquetFrom = `SELECT signalk_timestamp, value_latitude, value_longitude FROM (
+              SELECT * FROM read_parquet('${posFilePath}', union_by_name=true, filename=true)
+              WHERE filename NOT LIKE '%/processed/%'
+              AND filename NOT LIKE '%/quarantine/%'
+              AND filename NOT LIKE '%/failed/%'
+              AND filename NOT LIKE '%/repaired/%')`;
+
+            let fromSource = `(${parquetFrom})`;
+            if (hasBuffer && this.sqliteBuffer) {
+              const posPathSpec = pathSpecs.find(ps => isPositionPath(ps.path))!;
+              const bufferTableCols = this.sqliteBuffer.getTableColumns(posPathSpec.path);
+              const bufferSubquery = buildBufferObjectSubquery(
+                context, posPathSpec.path, fromIso, toIso,
+                new Map([
+                  ['latitude', { name: 'latitude', columnName: 'value_latitude', dataType: 'numeric' as const }],
+                  ['longitude', { name: 'longitude', columnName: 'value_longitude', dataType: 'numeric' as const }],
+                ]),
+                this.sqliteBuffer.getKnownPaths(),
+                bufferTableCols
+              );
+              if (bufferSubquery) {
+                fromSource = `(${parquetFrom} UNION ALL SELECT signalk_timestamp, TRY_CAST(value_latitude AS DOUBLE) as value_latitude, TRY_CAST(value_longitude AS DOUBLE) as value_longitude FROM ${bufferSubquery})`;
+              }
+            }
 
             const query = `
               SELECT
                 ${bucketExpr} as timestamp,
                 FIRST(TRY_CAST(value_latitude AS DOUBLE)) as lat,
                 FIRST(TRY_CAST(value_longitude AS DOUBLE)) as lon
-              FROM (SELECT * FROM read_parquet('${posFilePath}', union_by_name=true, filename=true)
-                WHERE filename NOT LIKE '%/processed/%'
-                AND filename NOT LIKE '%/quarantine/%'
-                AND filename NOT LIKE '%/failed/%'
-                AND filename NOT LIKE '%/repaired/%')
+              FROM ${fromSource}
               WHERE
                 signalk_timestamp >= '${fromIso}'
                 AND signalk_timestamp < '${toIso}'
