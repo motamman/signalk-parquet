@@ -138,7 +138,9 @@ export async function getAvailableContextsForTimeRange(
 function dateToYearDay(d: Date): { year: number; day: number } {
   const year = d.getUTCFullYear();
   const start = new Date(Date.UTC(year, 0, 0)); // day 0 — same as HivePathBuilder
-  const day = Math.floor((d.getTime() - start.getTime()) / (24 * 60 * 60 * 1000));
+  const day = Math.floor(
+    (d.getTime() - start.getTime()) / (24 * 60 * 60 * 1000)
+  );
   return { year, day };
 }
 
@@ -263,7 +265,7 @@ export async function getContextsInSpatialFilter(
     const rows = result.getRowObjects();
 
     const contexts = rows
-      .map((row) => {
+      .map(row => {
         const sanitized = row.context as string;
         return hiveBuilder.unsanitizeContext(sanitized);
       })
