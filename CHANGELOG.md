@@ -6,7 +6,17 @@
 
 - **History Provider: `value_age` binder error** — Parquet files for `navigation.position` include a `value_age` column (GPS fix staleness) that the buffer table lacks. The buffer SQL builder now outputs `NULL::DOUBLE` for any component column missing from the buffer table, preventing DuckDB's "column cannot be referenced before it is defined" error
 - **History Provider: `AVG(VARCHAR)` on position data** — Some parquet files store `value_latitude`/`value_longitude` as VARCHAR. With `union_by_name=true`, DuckDB unifies to VARCHAR, breaking `AVG()`. Object path component aggregation now wraps numeric columns with `TRY_CAST(... AS DOUBLE)` before aggregating
+- **Object paths forced to raw tier** — Aggregated tiers (5s/60s/1h) collapse object paths into scalar `value_avg`, losing `value_latitude`/`value_longitude`. Object path queries now override to `tier=raw` with correct timestamp column, S3 supplement, and fallback clause
+- **Spatial filter on buffer source** — Buffer subquery for position paths was missing the spatial WHERE clause, allowing unfiltered data (e.g. Brooklyn) to appear in results for a distant bbox
+- **Spatial correlation with empty results** — When no position timestamps matched the spatial filter, the correlation was skipped entirely and all scalar data returned unfiltered. Now correctly returns empty data
+- **Spatial `ST_Point(VARCHAR)` error** — `buildSpatialSqlClause` defaults updated to `TRY_CAST(value_latitude/longitude AS DOUBLE)` and `getSpatialTimestamps` NULL checks similarly wrapped
+- **S3 fallback using wrong tier** — When S3 hybrid query failed for object paths, the fallback `localFromClause` still pointed to the original aggregated tier. Now updated alongside the raw tier override
 - **Schema cache: excluded `value_age`** — GPS fix age is metadata, not a position component to aggregate. Added to the exclusion list alongside `value_json`, `value_units`, `value_description`
+
+### Changed
+
+- **Fast spatial position queries (100x speedup)** — Spatial queries with `navigation.position` no longer do full raw tier scans. Instead, position is bucketed with `FIRST(lat/lon)` per time bucket and filtered by bbox/radius in JS. Reduces 1-month spatial queries from ~80s to ~850ms
+- **Single-scan spatial correlation** — When position is a requested path, its results provide correlation timestamps for other paths, eliminating the separate position scan
 
 ### Added
 

@@ -42,6 +42,7 @@ import {
   buildSpatialSqlClause,
   isPositionPath,
 } from './utils/spatial-queries';
+import { calculateDistance } from './utils/geo-calculator';
 import {
   buildBufferScalarSubquery,
   buildBufferObjectSubquery,
@@ -543,19 +544,18 @@ export class HistoryAPI {
     timeResolutionMillis: number,
     spatialFilter: SpatialFilter,
     positionPath: string,
-    tier: AggregationTier | undefined,
-    querySource: QuerySource,
+    _tier: AggregationTier | undefined,
+    _querySource: QuerySource,
     debug: (k: string) => void
   ): Promise<Set<string>> {
     const timestamps = new Set<string>();
-    const effectiveTier = tier || 'raw';
 
-    // Build file path for position data
+    // Build file path for raw position data
     const sanitizedContext = this.hivePathBuilder.sanitizeContext(context);
     const sanitizedPath = this.hivePathBuilder.sanitizePath(positionPath);
     const localFilePath = path.join(
       this.dataDir,
-      `tier=${effectiveTier}`,
+      'tier=raw',
       `context=${sanitizedContext}`,
       `path=${sanitizedPath}`,
       '**',
@@ -568,36 +568,70 @@ export class HistoryAPI {
     try {
       const connection = await DuckDBPool.getConnection();
       try {
-        // Build spatial WHERE clause
-        const spatialWhereClause = buildSpatialSqlClause(spatialFilter);
+        // Bucket-lookup approach: instead of scanning all raw position data,
+        // bucket by time resolution, grab FIRST lat/lon per bucket, then filter by bbox/radius.
+        // This reads far less data than a full scan with spatial SQL.
+        const bucketExpr = `strftime(DATE_TRUNC('seconds',
+          EPOCH_MS(CAST(FLOOR(EPOCH_MS(signalk_timestamp::TIMESTAMP) / ${timeResolutionMillis}) * ${timeResolutionMillis} AS BIGINT))
+        ), '%Y-%m-%dT%H:%M:%SZ')`;
 
-        // Query position data with spatial filter to get valid timestamps
-        const spatialTsCol = getTierTimestampColumn(effectiveTier);
         const query = `
-          SELECT DISTINCT
-            strftime(DATE_TRUNC('seconds',
-              EPOCH_MS(CAST(FLOOR(EPOCH_MS(${spatialTsCol}::TIMESTAMP) / ${timeResolutionMillis}) * ${timeResolutionMillis} AS BIGINT))
-            ), '%Y-%m-%dT%H:%M:%SZ') as timestamp
-          FROM read_parquet('${localFilePath}', union_by_name=true, filename=true)
-          WHERE
-            ${spatialTsCol} >= '${fromIso}'
-            AND ${spatialTsCol} < '${toIso}'
-            AND TRY_CAST(value_latitude AS DOUBLE) IS NOT NULL
-            AND TRY_CAST(value_longitude AS DOUBLE) IS NOT NULL
-            AND ${spatialWhereClause}
-            AND filename NOT LIKE '%/processed/%'
+          SELECT
+            ${bucketExpr} as timestamp,
+            FIRST(TRY_CAST(value_latitude AS DOUBLE)) as lat,
+            FIRST(TRY_CAST(value_longitude AS DOUBLE)) as lon
+          FROM (SELECT * FROM read_parquet('${localFilePath}', union_by_name=true, filename=true)
+            WHERE filename NOT LIKE '%/processed/%'
             AND filename NOT LIKE '%/quarantine/%'
             AND filename NOT LIKE '%/failed/%'
-            AND filename NOT LIKE '%/repaired/%'
+            AND filename NOT LIKE '%/repaired/%')
+          WHERE
+            signalk_timestamp >= '${fromIso}'
+            AND signalk_timestamp < '${toIso}'
+            AND TRY_CAST(value_latitude AS DOUBLE) IS NOT NULL
+            AND TRY_CAST(value_longitude AS DOUBLE) IS NOT NULL
+          GROUP BY timestamp
           ORDER BY timestamp
         `;
 
         const result = await connection.runAndReadAll(query);
-        const rows = result.getRowObjects();
+        const rows = result.getRowObjects() as Array<{ timestamp: string; lat: number; lon: number }>;
 
+        // Filter buckets by spatial filter in JS
+        const { bbox } = spatialFilter;
         for (const row of rows) {
-          timestamps.add((row as { timestamp: string }).timestamp);
+          if (row.lat === null || row.lon === null) continue;
+
+          // Lat check
+          if (row.lat < bbox.south || row.lat > bbox.north) continue;
+
+          // Lon check (handles 180° meridian crossing)
+          if (bbox.west <= bbox.east) {
+            if (row.lon < bbox.west || row.lon > bbox.east) continue;
+          } else {
+            if (row.lon < bbox.west && row.lon > bbox.east) continue;
+          }
+
+          // Precise radius check if applicable
+          if (
+            spatialFilter.type === 'radius' &&
+            spatialFilter.centerLat !== undefined &&
+            spatialFilter.centerLon !== undefined &&
+            spatialFilter.radiusMeters !== undefined
+          ) {
+            const dist = calculateDistance(
+              row.lat, row.lon,
+              spatialFilter.centerLat, spatialFilter.centerLon
+            );
+            if (dist > spatialFilter.radiusMeters) continue;
+          }
+
+          timestamps.add(row.timestamp);
         }
+
+        debug(
+          `[Spatial Correlation] Bucketed ${rows.length} positions, ${timestamps.size} within spatial filter`
+        );
       } finally {
         connection.disconnectSync();
       }
@@ -759,11 +793,13 @@ export class HistoryAPI {
     // If spatial filter is set, get valid timestamps from position data
     // This allows filtering non-position paths by "when vessel was in this area"
     let spatialTimestamps: Set<string> | null = null;
+    const hasPositionPath = spatialFilter && pathSpecs.some(ps => isPositionPath(ps.path));
     if (spatialFilter) {
       const hasNonPositionPaths = pathSpecs.some(
         ps => !isPositionPath(ps.path)
       );
-      if (hasNonPositionPaths) {
+      if (hasNonPositionPaths && !hasPositionPath) {
+        // Position not in requested paths — need a separate scan for correlation
         debug(
           `[Spatial Correlation] Querying ${positionPath} for valid timestamps within spatial filter`
         );
@@ -782,6 +818,113 @@ export class HistoryAPI {
           `[Spatial Correlation] Found ${spatialTimestamps.size} valid timestamps`
         );
       }
+
+      if (hasPositionPath) {
+        // Position IS in requested paths — use fast bucket+FIRST query for both
+        // position results AND spatial correlation timestamps (one query, no full raw scan)
+        const posPathSpec = pathSpecs.find(ps => isPositionPath(ps.path))!;
+        debug(
+          `[Spatial] Fast bucket query for ${posPathSpec.path} (FIRST lat/lon per bucket + JS filter)`
+        );
+
+        const sanitizedCtx = this.hivePathBuilder.sanitizeContext(context);
+        const sanitizedPos = this.hivePathBuilder.sanitizePath(posPathSpec.path);
+        const posFilePath = path.join(
+          this.dataDir,
+          'tier=raw',
+          `context=${sanitizedCtx}`,
+          `path=${sanitizedPos}`,
+          '**',
+          '*.parquet'
+        );
+        const fromIso = from.toInstant().toString();
+        const toIso = to.toInstant().toString();
+
+        try {
+          const connection = await DuckDBPool.getConnection();
+          try {
+            const bucketExpr = `strftime(DATE_TRUNC('seconds',
+              EPOCH_MS(CAST(FLOOR(EPOCH_MS(signalk_timestamp::TIMESTAMP) / ${timeResolutionMillis}) * ${timeResolutionMillis} AS BIGINT))
+            ), '%Y-%m-%dT%H:%M:%SZ')`;
+
+            const query = `
+              SELECT
+                ${bucketExpr} as timestamp,
+                FIRST(TRY_CAST(value_latitude AS DOUBLE)) as lat,
+                FIRST(TRY_CAST(value_longitude AS DOUBLE)) as lon
+              FROM (SELECT * FROM read_parquet('${posFilePath}', union_by_name=true, filename=true)
+                WHERE filename NOT LIKE '%/processed/%'
+                AND filename NOT LIKE '%/quarantine/%'
+                AND filename NOT LIKE '%/failed/%'
+                AND filename NOT LIKE '%/repaired/%')
+              WHERE
+                signalk_timestamp >= '${fromIso}'
+                AND signalk_timestamp < '${toIso}'
+                AND TRY_CAST(value_latitude AS DOUBLE) IS NOT NULL
+                AND TRY_CAST(value_longitude AS DOUBLE) IS NOT NULL
+              GROUP BY timestamp
+              ORDER BY timestamp
+            `;
+
+            const result = await connection.runAndReadAll(query);
+            const rows = result.getRowObjects() as Array<{ timestamp: string; lat: number; lon: number }>;
+
+            // Filter by spatial and build position results + timestamps
+            const posData: Array<[Timestamp, unknown]> = [];
+            spatialTimestamps = new Set<string>();
+            const { bbox } = spatialFilter;
+
+            for (const row of rows) {
+              if (row.lat === null || row.lon === null) continue;
+
+              let inArea = true;
+
+              // Lat check
+              if (row.lat < bbox.south || row.lat > bbox.north) inArea = false;
+
+              // Lon check
+              if (inArea) {
+                if (bbox.west <= bbox.east) {
+                  if (row.lon < bbox.west || row.lon > bbox.east) inArea = false;
+                } else {
+                  if (row.lon < bbox.west && row.lon > bbox.east) inArea = false;
+                }
+              }
+
+              // Precise radius check
+              if (
+                inArea &&
+                spatialFilter.type === 'radius' &&
+                spatialFilter.centerLat !== undefined &&
+                spatialFilter.centerLon !== undefined &&
+                spatialFilter.radiusMeters !== undefined
+              ) {
+                const dist = calculateDistance(
+                  row.lat, row.lon,
+                  spatialFilter.centerLat, spatialFilter.centerLon
+                );
+                if (dist > spatialFilter.radiusMeters) inArea = false;
+              }
+
+              if (inArea) {
+                spatialTimestamps.add(row.timestamp);
+                posData.push([row.timestamp as Timestamp, { latitude: row.lat, longitude: row.lon }]);
+              }
+            }
+
+            allData[posPathSpec.path] = posData;
+            debug(
+              `[Spatial] Bucketed ${rows.length} positions, ${posData.length} within filter`
+            );
+          } finally {
+            connection.disconnectSync();
+          }
+        } catch (error) {
+          debug(`[Spatial] Error in fast position query: ${error}`);
+          allData[posPathSpec.path] = [];
+          spatialTimestamps = new Set<string>();
+        }
+      }
     }
 
     // Process each path and collect data with concurrency limiting
@@ -789,6 +932,11 @@ export class HistoryAPI {
     const limiter = new ConcurrencyLimiter(CONCURRENCY.MAX_QUERIES);
     await limiter.map(pathSpecs, async pathSpec => {
       try {
+        // Skip position if already handled by fast spatial bucket query
+        if (hasPositionPath && isPositionPath(pathSpec.path) && allData[pathSpec.path]) {
+          return;
+        }
+
         // Build file patterns based on query source
         let localFilePath: string | null = null;
         let s3FilePath: string | null = null;
@@ -877,7 +1025,7 @@ export class HistoryAPI {
 
           // Build FROM clause: local-only by default, hybrid only if S3 has data
           let fromClause: string;
-          const localFromClause = localFilePath
+          let localFromClause = localFilePath
             ? buildFromClause(localFilePath)
             : null;
 
@@ -939,7 +1087,40 @@ export class HistoryAPI {
                 '**',
                 '*.parquet'
               );
-              fromClause = buildFromClause(localFilePath);
+              // Rebuild S3 path with raw tier too
+              let rawS3FilePath: string | null = null;
+              if (this.s3Config?.enabled) {
+                const rawEarliestDate = this.hivePathBuilder.findEarliestDate(
+                  this.dataDir, 'raw', sanitizedContext, sanitizedSkPath
+                );
+                if (rawEarliestDate && fromDate < rawEarliestDate) {
+                  const s3ToDate = new Date(rawEarliestDate.getTime() - 86400000);
+                  if (fromDate <= s3ToDate) {
+                    rawS3FilePath = this.hivePathBuilder.buildS3Glob(
+                      this.s3Config.bucket, this.s3Config.keyPrefix || '',
+                      'raw', context, pathSpec.path, fromDate, s3ToDate
+                    );
+                  }
+                } else if (!rawEarliestDate) {
+                  rawS3FilePath = this.hivePathBuilder.buildS3Glob(
+                    this.s3Config.bucket, this.s3Config.keyPrefix || '',
+                    'raw', context, pathSpec.path, fromDate, toDate
+                  );
+                }
+              }
+              // Rebuild fromClause with raw tier local + S3
+              const rawLocalFrom = buildFromClause(localFilePath);
+              localFromClause = rawLocalFrom; // Update fallback for S3 failure
+              if (rawS3FilePath) {
+                fromClause = `(
+                  SELECT * FROM ${rawLocalFrom}
+                  UNION ALL
+                  SELECT * FROM ${buildFromClause(rawS3FilePath)}
+                )`;
+                debug(`Hybrid query (raw tier): combining local and S3 sources`);
+              } else {
+                fromClause = rawLocalFrom;
+              }
             }
             debug(
               `Path ${pathSpec.path}: Object path with ${componentSchema.components.size} components`
@@ -1020,7 +1201,7 @@ export class HistoryAPI {
                   subqueries.push(`
                 SELECT ${objBucketExpr('signalk_timestamp')} as timestamp, ${componentSelects}, 2 as priority
                 FROM ${bufferSubquery} AS source_data
-                WHERE (${componentWhereConditions})
+                WHERE (${componentWhereConditions})${spatialWhereClause}
                 GROUP BY timestamp`);
                 }
               }
@@ -1206,16 +1387,24 @@ export class HistoryAPI {
 
     // Apply spatial timestamp filtering to non-position paths
     // This filters data to only include times when vessel was within spatial filter
-    if (spatialTimestamps && spatialTimestamps.size > 0) {
+    if (spatialTimestamps !== null) {
       for (const pathSpec of pathSpecs) {
         if (!isPositionPath(pathSpec.path) && allData[pathSpec.path]) {
-          const originalCount = allData[pathSpec.path].length;
-          allData[pathSpec.path] = allData[pathSpec.path].filter(
-            ([timestamp]) => spatialTimestamps!.has(timestamp)
-          );
-          debug(
-            `[Spatial Correlation] Filtered ${pathSpec.path}: ${originalCount} -> ${allData[pathSpec.path].length} records`
-          );
+          if (spatialTimestamps.size === 0) {
+            // No position data in area — return empty for all correlated paths
+            allData[pathSpec.path] = [];
+            debug(
+              `[Spatial Correlation] No matching positions — cleared ${pathSpec.path}`
+            );
+          } else {
+            const originalCount = allData[pathSpec.path].length;
+            allData[pathSpec.path] = allData[pathSpec.path].filter(
+              ([timestamp]) => spatialTimestamps!.has(timestamp)
+            );
+            debug(
+              `[Spatial Correlation] Filtered ${pathSpec.path}: ${originalCount} -> ${allData[pathSpec.path].length} records`
+            );
+          }
         }
       }
     }
