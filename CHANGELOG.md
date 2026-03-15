@@ -17,6 +17,7 @@
 
 - **Fast spatial position queries (100x speedup)** — Spatial queries with `navigation.position` no longer do full raw tier scans. Instead, position is bucketed with `FIRST(lat/lon)` per time bucket and filtered by bbox/radius in JS. Reduces 1-month spatial queries from ~80s to ~850ms
 - **Single-scan spatial correlation** — When position is a requested path, its results provide correlation timestamps for other paths, eliminating the separate position scan
+- **Buffer federation in spatial queries** — Fast bucket query and `getSpatialTimestamps` now include SQLite buffer data via UNION ALL, so today's unexported position data is included in spatial filtering
 
 ### Added
 
