@@ -526,6 +526,7 @@ export interface SQLiteBufferInterface {
   };
   getPendingCount(): number;
   getKnownPaths(): Set<string>;
+  getTableColumns(signalkPath: string): Set<string> | undefined;
   hasTable(signalkPath: string): boolean;
   getDbPath(): string;
   close(): void;

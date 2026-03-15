@@ -123,7 +123,7 @@ function parseTimeRange(
  * History API Provider implementation
  */
 export class HistoryProvider implements HistoryApi {
-  private sqliteBuffer?: { getKnownPaths(): Set<string> };
+  private sqliteBuffer?: { getKnownPaths(): Set<string>; getTableColumns(path: string): Set<string> | undefined };
 
   constructor(
     private selfId: string,
@@ -132,7 +132,7 @@ export class HistoryProvider implements HistoryApi {
     private debug: (msg: string) => void
   ) {}
 
-  setSqliteBuffer(buffer: { getKnownPaths(): Set<string> }): void {
+  setSqliteBuffer(buffer: { getKnownPaths(): Set<string>; getTableColumns(path: string): Set<string> | undefined }): void {
     this.sqliteBuffer = buffer;
   }
 
@@ -281,7 +281,11 @@ export class HistoryProvider implements HistoryApi {
         )
           .map(([name, comp]) => {
             const compAggFunc = comp.dataType === 'numeric' ? aggFunc : 'FIRST';
-            return `${compAggFunc}(${comp.columnName}) as ${name}`;
+            // TRY_CAST handles mixed-type parquet files (some store lat/lon as VARCHAR)
+            const colExpr = comp.dataType === 'numeric'
+              ? `TRY_CAST(${comp.columnName} AS DOUBLE)`
+              : comp.columnName;
+            return `${compAggFunc}(${colExpr}) as ${name}`;
           })
           .join(', ');
 
@@ -296,13 +300,15 @@ export class HistoryProvider implements HistoryApi {
         // Build federated FROM: parquet UNION ALL buffer
         let federatedFrom: string;
         if (hasBuffer) {
+          const bufferTableCols = this.sqliteBuffer?.getTableColumns(pathSpec.path as string);
           const bufferSubquery = buildBufferObjectSubquery(
             context,
             pathSpec.path,
             fromIso,
             toIso,
             componentSchema.components,
-            knownBufferPaths
+            knownBufferPaths,
+            bufferTableCols
           );
           if (bufferSubquery) {
             federatedFrom = `(
@@ -483,7 +489,7 @@ export function registerHistoryApiProvider(
   selfId: string,
   dataDir: string,
   debug: (msg: string) => void,
-  sqliteBuffer?: { getKnownPaths(): Set<string> }
+  sqliteBuffer?: { getKnownPaths(): Set<string>; getTableColumns(path: string): Set<string> | undefined }
 ): void {
   const provider = new HistoryProvider(selfId, dataDir, app, debug);
   if (sqliteBuffer) {

@@ -67,7 +67,8 @@ export function buildBufferObjectSubquery(
   fromIso: string,
   toIso: string,
   components: Map<string, ComponentInfo>,
-  knownBufferPaths?: Set<string>
+  knownBufferPaths?: Set<string>,
+  bufferTableColumns?: Set<string>
 ): string | null {
   const pathStr = String(signalkPath);
 
@@ -80,6 +81,10 @@ export function buildBufferObjectSubquery(
 
   const componentSelects = Array.from(components.entries())
     .map(([_name, comp]) => {
+      // If we know the buffer table's columns, output NULL for missing ones
+      if (bufferTableColumns && !bufferTableColumns.has(comp.columnName)) {
+        return `NULL::DOUBLE AS ${comp.columnName}`;
+      }
       // Columns are already flattened in per-path tables — just SELECT them directly
       if (comp.dataType === 'numeric') {
         return `TRY_CAST(${comp.columnName} AS DOUBLE) AS ${comp.columnName}`;

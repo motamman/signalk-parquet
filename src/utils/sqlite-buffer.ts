@@ -972,6 +972,15 @@ export class SQLiteBuffer {
   }
 
   /**
+   * Get the set of columns for a given path's buffer table.
+   * Returns undefined if no table exists for this path.
+   */
+  getTableColumns(signalkPath: string): Set<string> | undefined {
+    const info = this.tableMap.get(signalkPath);
+    return info?.columns;
+  }
+
+  /**
    * Get the database path
    */
   getDbPath(): string {

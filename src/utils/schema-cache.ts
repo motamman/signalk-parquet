@@ -109,7 +109,7 @@ export async function getPathComponentSchema(
             SELECT name, type
             FROM parquet_schema('${filePath.replace(/'/g, "''")}')
             WHERE name LIKE 'value_%'
-              AND name NOT IN ('value_json', 'value_units', 'value_description')
+              AND name NOT IN ('value_json', 'value_units', 'value_description', 'value_age')
           `;
 
           const result = await connection.runAndReadAll(schemaQuery);

@@ -988,13 +988,15 @@ export class HistoryAPI {
 
               // Source 2: SQLite buffer (today's live data not yet exported)
               if (hasBuffer) {
+                const bufferTableCols = this.sqliteBuffer?.getTableColumns(pathSpec.path);
                 const bufferSubquery = buildBufferObjectSubquery(
                   context,
                   pathSpec.path,
                   fromIso,
                   toIso,
                   componentSchema.components,
-                  knownBufferPaths
+                  knownBufferPaths,
+                  bufferTableCols
                 );
                 if (bufferSubquery) {
                   subqueries.push(`
