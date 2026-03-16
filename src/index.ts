@@ -81,8 +81,8 @@ export default function (app: ServerAPI): SignalKPlugin {
       (app.getSelfPath('name') as any) ||
       'unknown_vessel';
 
-    // Use SignalK's main data directory (go up from plugin-config-data/<plugin-name>)
-    const signalkDataDir = path.resolve(app.getDataDirPath(), '..', '..');
+    // Use SignalK's main config directory (~/.signalk/)
+    const signalkDataDir = (app as any).config.configPath;
     const defaultOutputDir = path.join(signalkDataDir, 'signalk-parquet-data');
 
     state.currentConfig = {
