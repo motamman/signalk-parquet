@@ -22,7 +22,10 @@ import {
   getCachedContexts,
   setCachedContexts,
 } from './utils/path-cache';
-import { getAvailableContextsForTimeRange } from './utils/context-discovery';
+import {
+  getAvailableContextsForTimeRange,
+  getContextsInSpatialFilter,
+} from './utils/context-discovery';
 import {
   getPathComponentSchema,
   PathComponentSchema,
@@ -226,6 +229,41 @@ export function registerHistoryApiRoute(
       res.status(500).json({ error: (error as Error).message });
     }
   });
+  router.get(
+    '/api/history/contexts/spatial',
+    async (req: Request, res: Response) => {
+      try {
+        const { from, to } = getRequestParams(
+          req as FromToContextRequest,
+          selfId
+        );
+
+        const spatialFilter = parseSpatialParams(
+          req.query.bbox as string | undefined,
+          req.query.radius as string | undefined
+        );
+
+        if (!spatialFilter) {
+          res.status(400).json({
+            error:
+              'bbox (west,south,east,north) or radius (lon,lat,meters) is required',
+          });
+          return;
+        }
+
+        const contexts = await getContextsInSpatialFilter(
+          dataDir,
+          from,
+          to,
+          spatialFilter
+        );
+        res.json(contexts);
+      } catch (error) {
+        debug(`Error in /api/history/contexts/spatial: ${error}`);
+        res.status(500).json({ error: (error as Error).message });
+      }
+    }
+  );
   router.get('/api/history/paths', async (req: Request, res: Response) => {
     try {
       // Check if time range parameters are provided
