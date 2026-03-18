@@ -62,7 +62,7 @@ The validation system checks each Parquet file for:
 ### Advanced Querying
 - **SignalK History API Compliance**: Full compliance with SignalK History API specifications
   - **Standard Time Parameters**: All 5 standard query patterns supported
-  - **Time-Filtered Discovery**: Paths and contexts filtered by time range
+  - **Time-Filtered Discovery**: Paths and contexts filtered by time range using hive partition directory names (no file scanning)
   - **Optional Analytics**: Moving averages (EMA/SMA) available on demand
 - **🌍 ISO 8601 Timestamps**: All timestamps returned in server local time with offset (e.g., `2025-10-20T12:34:04-04:00`)
 - **Flexible Time Querying**: Multiple ways to specify time ranges
@@ -80,6 +80,9 @@ The validation system checks each Parquet file for:
     - Query "wind data when vessel was within this area"
     - Bounding box (`bbox`) and radius filters work on all paths
     - Automatically correlates timestamps with position data
+  - **NEW Spatial Context Discovery**: Find vessels by geographic area
+    - `GET /api/history/contexts/spatial?bbox=...` or `radius=...`
+    - Single DuckDB query on `navigation__position` files with hive partition pruning
 
 ### Management & Control
 - **Command Management**: Register, execute, and manage SignalK commands with automatic path configuration
@@ -566,6 +569,7 @@ This provides better compression, faster queries, and proper type safety for dat
 | **SignalK History API** | | |
 | `/signalk/v1/history/values` | GET | SignalK History API - Get historical values |
 | `/signalk/v1/history/contexts` | GET | SignalK History API - Get available contexts |
+| `/api/history/contexts/spatial` | GET | Get contexts with position data in bbox or radius |
 | `/signalk/v1/history/paths` | GET | SignalK History API - Get available paths |
 | `/signalk/v2/api/history/*` | GET | SignalK v2 API - handled by registered HistoryApi provider (spec-compliant) |
 | **Migration API** | | |
@@ -906,6 +910,16 @@ curl "http://localhost:3000/signalk/v1/history/contexts?duration=1h"
 **Get contexts for specific time range:**
 ```bash
 curl "http://localhost:3000/signalk/v1/history/contexts?from=2025-01-01T00:00:00Z&to=2025-01-07T00:00:00Z"
+```
+
+**Get vessels in a bounding box:**
+```bash
+curl "http://localhost:3000/api/history/contexts/spatial?duration=7d&bbox=-74.1,40.5,-73.8,40.8"
+```
+
+**Get vessels within radius (lon,lat,meters):**
+```bash
+curl "http://localhost:3000/api/history/contexts/spatial?duration=24h&radius=-74.01,40.66,5000"
 ```
 
 **Get available paths with recent data:**

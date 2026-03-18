@@ -1,5 +1,31 @@
 # Changelog
 
+## [0.7.15] - 2026-03-17
+
+### Added
+
+- **Spatial Context Discovery Endpoint** — New `GET /api/history/contexts/spatial` returns vessel contexts with position data inside a bounding box or radius for a given time range
+  - `bbox=west,south,east,north` — bounding box filter
+  - `radius=lon,lat,meters` — radius filter with precise `ST_Distance_Spheroid` check
+  - Single DuckDB query on `navigation__position` files only, with `hive_partitioning=true` for automatic partition pruning
+  - Reuses existing `parseSpatialParams()` and `buildSpatialSqlClause()` from spatial-queries.ts
+
+### Changed
+
+- **Context Discovery Rewritten for Hive Partitions** — `getAvailableContextsForTimeRange()` no longer scans 237K parquet files via DuckDB
+  - Reads `context=*` directory names under `tier=raw/` and unsanitizes via `HivePathBuilder.unsanitizeContext()`
+  - Time-range filtering checks `year=YYYY/day=DDD` subdirectory names with numeric comparison (no SQL)
+  - Pure filesystem ops — sub-second even with 2700+ contexts
+  - Context list cached with 2-minute TTL
+- **Plugin Base Directory Resolution** — Replaced fragile `path.resolve(getDataDirPath(), '..', '..')` with `app.config.configPath` (the property SignalK server uses internally)
+
+### Fixed
+
+- **Context Discovery Returned Empty** — Legacy code scanned `dataDir/vessels/` flat layout which no longer exists; all data is in hive-partitioned `tier=raw/context=*` directories
+- **Day-of-Year Off-by-One** — `dateToYearDay()` used `Date.UTC(year, 0, 1)` but `HivePathBuilder.getDayOfYear()` uses `Date.UTC(year, 0, 0)`; now aligned
+
+---
+
 ## [0.7.10] - 2026-03-15
 
 ### Fixed
