@@ -1599,8 +1599,83 @@ export function saveAsRoute() {
     setToolbarStatus('Need at least 2 points for a route.');
     return;
   }
+  state._routeCoords = null;
+  state._routeHiResCoords = null;
+  const cb = document.getElementById('me-route-hires');
+  if (cb) cb.checked = false;
+  const statusEl = document.getElementById('me-route-hires-status');
+  if (statusEl) statusEl.textContent = '';
   document.getElementById('me-route-modal').style.display = 'flex';
   updateRoutePreview();
+}
+
+export async function toggleRouteHiRes() {
+  const cb = document.getElementById('me-route-hires');
+  const statusEl = document.getElementById('me-route-hires-status');
+
+  if (!cb.checked) {
+    state._routeCoords = null;
+    updateRoutePreview();
+    if (statusEl) statusEl.textContent = '';
+    return;
+  }
+
+  // Already fetched?
+  if (state._routeHiResCoords) {
+    state._routeCoords = state._routeHiResCoords;
+    updateRoutePreview();
+    return;
+  }
+
+  if (statusEl) statusEl.textContent = 'Fetching high-resolution track...';
+
+  const { from, to } = getQueryTimeRange();
+  const ctx = state.context === 'self' ? '' : state.context;
+  let spatialParam = '';
+  if (state.areaType === 'bbox') {
+    const g = state.areaGeometry;
+    spatialParam = `&bbox=${g.west},${g.south},${g.east},${g.north}`;
+  } else if (state.areaType === 'radius') {
+    const g = state.areaGeometry;
+    spatialParam = `&radius=${g.lon},${g.lat},${g.radius}`;
+  }
+
+  try {
+    const url =
+      `/signalk/v1/history/values?context=${ctx}` +
+      `&from=${from}&to=${to}` +
+      `&paths=navigation.position` +
+      `&resolution=5` +
+      spatialParam;
+    const resp = await fetch(url);
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const data = await resp.json();
+    const result = Array.isArray(data) ? data[0] : data;
+
+    const hiResCoords = [];
+    if (result && result.data) {
+      result.data.forEach((row) => {
+        const posVal = row[1];
+        if (!posVal) return;
+        let lat, lon;
+        if (typeof posVal === 'object' && posVal.latitude !== undefined) {
+          lat = posVal.latitude; lon = posVal.longitude;
+        } else if (Array.isArray(posVal)) {
+          lon = posVal[0]; lat = posVal[1];
+        } else return;
+        if (lat && lon) hiResCoords.push([lon, lat]);
+      });
+    }
+
+    state._routeHiResCoords = hiResCoords;
+    state._routeCoords = hiResCoords;
+    if (statusEl) statusEl.textContent = `${hiResCoords.length} high-res points loaded.`;
+    updateRoutePreview();
+  } catch (err) {
+    console.error('High-res fetch failed:', err);
+    if (statusEl) statusEl.textContent = 'Failed to load high-res data.';
+    cb.checked = false;
+  }
 }
 
 export function closeRouteModal() {
@@ -1609,7 +1684,7 @@ export function closeRouteModal() {
 
 export function updateRoutePreview() {
   const threshold = parseFloat(document.getElementById('me-route-tolerance').value) || 15;
-  const coords = state.dataPoints.map((pt) => [pt.lon, pt.lat]);
+  const coords = state._routeCoords || state.dataPoints.map((pt) => [pt.lon, pt.lat]);
   const simplified = simplifyTrack(coords, threshold);
   const dist = trackDistanceMeters(simplified);
   document.getElementById('me-route-preview').textContent =
@@ -1623,7 +1698,7 @@ export function confirmSaveRoute() {
   const desc = document.getElementById('me-route-desc').value.trim();
   const threshold = parseFloat(document.getElementById('me-route-tolerance').value) || 15;
 
-  const coords = state.dataPoints.map((pt) => [pt.lon, pt.lat]);
+  const coords = state._routeCoords || state.dataPoints.map((pt) => [pt.lon, pt.lat]);
   const simplified = simplifyTrack(coords, threshold);
   const dist = trackDistanceMeters(simplified);
 

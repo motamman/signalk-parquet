@@ -3582,6 +3582,13 @@
                 <input type="text" id="me-route-desc" placeholder="Description" />
               </div>
               <div class="form-group">
+                <label style="display: inline; font-weight: normal; cursor: pointer;">
+                  <input type="checkbox" id="me-route-hires" style="width: auto;" onchange="meToggleRouteHiRes()" />
+                  High-resolution track (better turns, slower)
+                </label>
+                <div id="me-route-hires-status" style="font-size: 11px; color: #666; margin: 4px 0;"></div>
+              </div>
+              <div class="form-group">
                 <label>
                   Turn detail: <span id="me-route-tolerance-val">15°</span>
                 </label>

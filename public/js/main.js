@@ -215,6 +215,7 @@ registerGlobals({
   meSaveAsWaypoint: MapExplorer.saveAsWaypoint,
   meSaveAsTrack: MapExplorer.saveAsTrack,
   meSaveAsRoute: MapExplorer.saveAsRoute,
+  meToggleRouteHiRes: MapExplorer.toggleRouteHiRes,
   meCloseRouteModal: MapExplorer.closeRouteModal,
   meUpdateRoutePreview: MapExplorer.updateRoutePreview,
   meConfirmSaveRoute: MapExplorer.confirmSaveRoute,
