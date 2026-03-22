@@ -981,6 +981,17 @@
       }
 
       /* ========== Map Explorer Styles ========== */
+      .me-layout {
+        display: flex;
+        gap: 12px;
+        margin-bottom: 10px;
+      }
+
+      .me-layout-map {
+        flex: 1;
+        min-width: 0;
+      }
+
       .me-map-container {
         height: 450px;
         width: 100%;
@@ -1068,8 +1079,11 @@
       }
 
       .me-query-panel {
+        flex: 0 0 340px;
         padding: 12px;
         background: #fafafa;
+        overflow-y: auto;
+        max-height: 520px;
         border: 1px solid #e0e0e0;
         border-radius: 8px;
         margin-bottom: 10px;
@@ -1082,8 +1096,8 @@
       }
 
       .me-query-grid {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+        display: flex;
+        flex-direction: column;
         gap: 12px;
       }
 
@@ -1376,12 +1390,17 @@
       }
 
       @media (max-width: 600px) {
-        .me-map-container {
-          height: 300px;
+        .me-layout {
+          flex-direction: column;
         }
 
-        .me-query-grid {
-          grid-template-columns: 1fr;
+        .me-query-panel {
+          flex: none;
+          max-height: none;
+        }
+
+        .me-map-container {
+          height: 300px;
         }
 
         .me-toolbar {
@@ -3274,19 +3293,30 @@
                 ⚓ OpenSeaMap
               </button>
               <span id="me-status" class="me-status-text"></span>
+              <div id="me-export-btns" class="me-export" style="display: none; margin-left: auto;">
+                <button onclick="meExportCSV()" class="me-btn-sm">📄 CSV</button>
+                <button onclick="meExportGeoJSON()" class="me-btn-sm">🌍 GeoJSON</button>
+                <button onclick="meExportKML()" class="me-btn-sm">📍 KML</button>
+                <span style="border-left: 1px solid #ccc; margin: 0 4px"></span>
+                <button onclick="meSaveAsWaypoint()" class="me-btn-sm">📌 Waypoint</button>
+                <button onclick="meSaveAsTrack()" class="me-btn-sm">🛤️ Track</button>
+                <button onclick="meSaveAsRoute()" class="me-btn-sm">🧭 Route</button>
+              </div>
             </div>
 
-            <!-- Map -->
-            <div id="me-map" class="me-map-container"></div>
+            <!-- Map + Query Config side by side -->
+            <div class="me-layout">
+              <!-- Left: Map -->
+              <div class="me-layout-map">
+                <div id="me-map" class="me-map-container"></div>
+                <!-- Legend -->
+                <div id="me-legend" class="me-legend"></div>
+                <!-- Summary Bar -->
+                <div id="me-summary" class="me-summary"></div>
+              </div>
 
-            <!-- Legend -->
-            <div id="me-legend" class="me-legend"></div>
-
-            <!-- Summary Bar -->
-            <div id="me-summary" class="me-summary"></div>
-
-            <!-- Query Configuration -->
-            <div class="me-query-panel">
+              <!-- Right: Query Configuration -->
+              <div class="me-query-panel">
               <h3>Query Configuration</h3>
               <div class="me-query-grid">
                 <!-- Time Range -->
@@ -3403,6 +3433,7 @@
                 ▶ Run Query
               </button>
             </div>
+            </div><!-- /me-layout -->
 
             <!-- Loading -->
             <div id="me-loading" class="me-loading" style="display: none">
@@ -3460,68 +3491,23 @@
                     style="width: 100%"
                   />
                   <div class="me-playback-controls">
-                    <button
-                      id="me-reverse-btn"
-                      onclick="meTogglePlayReverse()"
-                      class="me-btn-sm"
-                    >
-                      ⏪
-                    </button>
-                    <button
-                      onclick="meSkipPlayback(-10)"
-                      class="me-btn-sm"
-                    >
-                      -10
-                    </button>
-                    <button
-                      id="me-play-btn"
-                      onclick="meTogglePlayback()"
-                      class="me-btn-sm"
-                      style="min-width: 60px"
-                    >
-                      Play
-                    </button>
-                    <button
-                      onclick="meSkipPlayback(10)"
-                      class="me-btn-sm"
-                    >
-                      +10
-                    </button>
-                    <select
-                      onchange="meSetPlaySpeed(this.value)"
-                      style="width: auto; padding: 4px"
-                    >
+                    <button onclick="meSkipPlayback(-Infinity)" class="me-btn-sm" title="First">|&#9664;</button>
+                    <button onclick="meSkipPlayback(-10)" class="me-btn-sm" title="Back 10">&#9664;&#9664;</button>
+                    <button onclick="meSkipPlayback(-1)" class="me-btn-sm" title="Back 1">&#9664;</button>
+                    <button id="me-play-btn" onclick="meTogglePlayback()" class="me-btn-sm" style="min-width: 50px" title="Play/Pause">&#9654;</button>
+                    <button onclick="meSkipPlayback(1)" class="me-btn-sm" title="Forward 1">&#9654;</button>
+                    <button onclick="meSkipPlayback(10)" class="me-btn-sm" title="Forward 10">&#9654;&#9654;</button>
+                    <button onclick="meSkipPlayback(Infinity)" class="me-btn-sm" title="Last">&#9654;|</button>
+                    <select onchange="meSetPlaySpeed(this.value)" style="width: auto; padding: 4px">
                       <option value="1">1x</option>
                       <option value="2">2x</option>
-                      <option value="5">5x</option>
+                      <option value="5" selected>5x</option>
                       <option value="10">10x</option>
                     </select>
                   </div>
                 </div>
               </div>
 
-              <!-- Export + Save as SignalK Resources -->
-              <div class="me-export">
-                <button onclick="meExportCSV()" class="me-btn-sm">
-                  📄 CSV
-                </button>
-                <button onclick="meExportGeoJSON()" class="me-btn-sm">
-                  🌍 GeoJSON
-                </button>
-                <button onclick="meExportKML()" class="me-btn-sm">
-                  📍 KML
-                </button>
-                <span style="border-left: 1px solid #ccc; margin: 0 6px"></span>
-                <button onclick="meSaveAsWaypoint()" class="me-btn-sm">
-                  📌 Save Waypoint
-                </button>
-                <button onclick="meSaveAsTrack()" class="me-btn-sm">
-                  🛤️ Save Track
-                </button>
-                <button onclick="meSaveAsRoute()" class="me-btn-sm">
-                  🧭 Save Route
-                </button>
-              </div>
             </div>
           </div>
 

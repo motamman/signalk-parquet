@@ -117,6 +117,7 @@ export function initMapExplorer() {
   state._pathsStale = true;
   loadSavedAreas();
   loadAvailablePaths();
+  updateQueryPanelState();
 
   setTimeout(() => state.map.invalidateSize(), 200);
 }
@@ -212,6 +213,7 @@ function finalizeBbox(corner1, corner2) {
   };
 
   drawAreaOnMap();
+  updateQueryPanelState();
 }
 
 // =============================================================================
@@ -261,6 +263,7 @@ function finalizeRadius(center, radius) {
   };
 
   drawAreaOnMap();
+  updateQueryPanelState();
 }
 
 // =============================================================================
@@ -307,6 +310,18 @@ function clearAreaLayer() {
   state.handles = [];
 }
 
+function updateQueryPanelState() {
+  const panel = document.querySelector('.me-query-panel');
+  if (!panel) return;
+  if (state.areaGeometry) {
+    panel.style.opacity = '1';
+    panel.style.pointerEvents = 'auto';
+  } else {
+    panel.style.opacity = '0.4';
+    panel.style.pointerEvents = 'none';
+  }
+}
+
 function clearDrawing() {
   clearAreaLayer();
   if (state.drawPreview) {
@@ -319,6 +334,7 @@ function clearDrawing() {
   state.drawStartLatLng = null;
   document.getElementById('me-map').style.cursor = '';
   setToolbarStatus('');
+  updateQueryPanelState();
 }
 
 function makeHandle(latlng, index) {
@@ -709,6 +725,8 @@ export async function executeMapQuery() {
   state.mode = STATES.LOADING;
   document.getElementById('me-loading').style.display = 'block';
   document.getElementById('me-results-panel').style.display = 'none';
+  const exportBtns = document.getElementById('me-export-btns');
+  if (exportBtns) exportBtns.style.display = 'none';
 
   const { from, to } = getQueryTimeRange();
   const ctx = state.context === 'self' ? '' : state.context;
@@ -753,8 +771,15 @@ export async function executeMapQuery() {
     renderLegend();
     renderSummary();
 
+    // Auto-select first data point so detail/sparklines are visible immediately
+    if (state.dataPoints.length > 0) {
+      selectPoint(0);
+    }
+
     document.getElementById('me-loading').style.display = 'none';
     document.getElementById('me-results-panel').style.display = 'block';
+    const exportBtns2 = document.getElementById('me-export-btns');
+    if (exportBtns2) exportBtns2.style.display = 'flex';
   } catch (err) {
     console.error('Map query failed:', err);
     document.getElementById('me-loading').style.display = 'none';
@@ -949,6 +974,11 @@ function renderMapResults() {
 
     state.markerLayers.push(marker);
   });
+
+  // Bring selected marker to front
+  if (state.selectedIndex >= 0 && state.markerLayers[state.selectedIndex]) {
+    state.markerLayers[state.selectedIndex].bringToFront();
+  }
 
   // Fit bounds to track
   if (state.trackLayer) {
@@ -1155,7 +1185,7 @@ export function togglePlayback() {
 function startPlayback() {
   if (state.dataPoints.length === 0) return;
   state.playing = true;
-  document.getElementById('me-play-btn').textContent = 'Pause';
+  document.getElementById('me-play-btn').textContent = '\u23F8';
 
   if (state.selectedIndex < 0) state.selectedIndex = 0;
 
@@ -1178,7 +1208,7 @@ function stopPlayback() {
   if (state.playInterval) clearInterval(state.playInterval);
   state.playInterval = null;
   const btn = document.getElementById('me-play-btn');
-  if (btn) btn.textContent = 'Play';
+  if (btn) btn.textContent = '\u25B6';
 }
 
 export function togglePlayReverse() {
@@ -1192,10 +1222,15 @@ export function togglePlayReverse() {
 }
 
 export function skipPlayback(delta) {
-  const next = Math.max(
-    0,
-    Math.min(state.dataPoints.length - 1, state.selectedIndex + delta)
-  );
+  if (state.dataPoints.length === 0) return;
+  let next;
+  if (delta === -Infinity) {
+    next = 0;
+  } else if (delta === Infinity) {
+    next = state.dataPoints.length - 1;
+  } else {
+    next = Math.max(0, Math.min(state.dataPoints.length - 1, state.selectedIndex + delta));
+  }
   selectPoint(next);
 }
 
@@ -1702,6 +1737,7 @@ export function loadArea(id) {
   state.areaType = area.type;
   state.areaGeometry = { ...area.geometry };
   drawAreaOnMap();
+  updateQueryPanelState();
 
   // Fit to area
   if (state.areaLayer) {
