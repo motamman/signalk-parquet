@@ -367,6 +367,9 @@ function extractPathsFromSignalK(obj, filterType = 'self') {
         }
         // Always recurse to find nested paths
         extractRecursive(obj[key], currentPath);
+      } else if (typeof obj[key] === 'string' || typeof obj[key] === 'number' || typeof obj[key] === 'boolean') {
+        // Root-level scalar property (e.g., name, mmsi, uuid)
+        selfPaths.add(currentPath);
       }
     }
   }
@@ -409,6 +412,8 @@ function extractPathsFromSignalK(obj, filterType = 'self') {
               }
               // Always recurse to find nested paths
               extractOtherVessel(obj[key], currentPath);
+            } else if (typeof obj[key] === 'string' || typeof obj[key] === 'number' || typeof obj[key] === 'boolean') {
+              tempPaths.add(currentPath);
             }
           }
         };

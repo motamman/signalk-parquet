@@ -3,9 +3,15 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="referrer" content="origin" />
     <title>SignalK Parquet Data Interface</title>
     <link rel="icon" type="image/png" href="parquet.png" />
     <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+    <link
+      rel="stylesheet"
+      href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <style>
       * {
         margin: 0;
@@ -973,6 +979,420 @@
         text-overflow: ellipsis;
         white-space: nowrap;
       }
+
+      /* ========== Map Explorer Styles ========== */
+      .me-map-container {
+        height: 450px;
+        width: 100%;
+        border-radius: 8px;
+        border: 2px solid #ddd;
+        margin-bottom: 10px;
+        z-index: 1;
+      }
+
+      .me-toolbar {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        align-items: center;
+        margin-bottom: 10px;
+        padding: 8px;
+        background: #f8f9fa;
+        border-radius: 6px;
+      }
+
+      .me-toolbar button {
+        padding: 6px 12px;
+        font-size: 13px;
+        margin: 0;
+      }
+
+      .me-toolbar button.me-active {
+        background: #9c27b0;
+      }
+
+      .me-status-text {
+        color: #666;
+        font-size: 13px;
+        margin-left: 8px;
+      }
+
+      .me-legend {
+        display: flex;
+        gap: 8px;
+        overflow-x: auto;
+        padding: 6px 0;
+        margin-bottom: 6px;
+      }
+
+      .me-legend-chip {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        padding: 4px 10px;
+        background: #f0f0f0;
+        border-radius: 16px;
+        font-size: 12px;
+        cursor: pointer;
+        white-space: nowrap;
+        border: 2px solid transparent;
+        user-select: none;
+      }
+
+      .me-legend-chip.me-hidden {
+        opacity: 0.4;
+        text-decoration: line-through;
+      }
+
+      .me-legend-chip.me-active-series {
+        border-color: #333;
+      }
+
+      .me-color-dot {
+        display: inline-block;
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        flex-shrink: 0;
+      }
+
+      .me-summary {
+        padding: 6px 10px;
+        background: #e8eaf6;
+        border-radius: 4px;
+        font-size: 12px;
+        color: #333;
+        margin-bottom: 10px;
+        overflow-x: auto;
+        white-space: nowrap;
+      }
+
+      .me-query-panel {
+        padding: 12px;
+        background: #fafafa;
+        border: 1px solid #e0e0e0;
+        border-radius: 8px;
+        margin-bottom: 10px;
+      }
+
+      .me-query-panel h3 {
+        margin: 0 0 10px;
+        font-size: 1.1rem;
+        color: #555;
+      }
+
+      .me-query-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+        gap: 12px;
+      }
+
+      .me-query-col label {
+        font-size: 13px;
+        margin-bottom: 4px;
+      }
+
+      .me-query-col select,
+      .me-query-col input {
+        font-size: 13px;
+        padding: 6px 8px;
+      }
+
+      .me-btn-group {
+        display: flex;
+        gap: 4px;
+        flex-wrap: wrap;
+      }
+
+      .me-btn-group button {
+        padding: 4px 10px;
+        font-size: 12px;
+        margin: 0;
+        background: #e0e0e0;
+        color: #333;
+      }
+
+      .me-btn-group button.me-active {
+        background: #667eea;
+        color: white;
+      }
+
+      .me-btn-group button:hover {
+        background: #bbb;
+      }
+
+      .me-btn-group button.me-active:hover {
+        background: #5a6fd8;
+      }
+
+      .me-date-range-picker {
+        display: flex;
+        align-items: center;
+        border: 1px solid #ccc;
+        border-radius: 4px;
+        overflow: hidden;
+        background: white;
+      }
+
+      .me-date-range-picker input[type="date"] {
+        border: none;
+        outline: none;
+        padding: 5px 6px;
+        font-size: 13px;
+        flex: 1;
+        min-width: 0;
+        background: transparent;
+      }
+
+      .me-date-sep {
+        color: #999;
+        font-size: 14px;
+        padding: 0 2px;
+        user-select: none;
+      }
+
+      .me-path-chips {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px;
+        margin-bottom: 4px;
+      }
+
+      .me-path-chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        background: #667eea;
+        color: white;
+        padding: 2px 8px;
+        border-radius: 12px;
+        font-size: 12px;
+      }
+
+      .me-path-chip button {
+        background: none;
+        border: none;
+        color: white;
+        cursor: pointer;
+        font-size: 14px;
+        padding: 0 2px;
+        line-height: 1;
+      }
+
+      .me-path-filter {
+        width: 100%;
+        box-sizing: border-box;
+        margin-bottom: 4px;
+      }
+
+      .me-path-list {
+        max-height: 160px;
+        overflow-y: auto;
+        border: 1px solid #ddd;
+        border-radius: 4px;
+        background: white;
+      }
+
+      .me-path-row {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 3px 8px;
+        font-size: 12px;
+        cursor: pointer;
+        font-weight: normal;
+      }
+
+      .me-path-row:hover {
+        background: #f0f0f0;
+      }
+
+      .me-path-row input[type="checkbox"] {
+        width: auto;
+        margin: 0;
+      }
+
+      .me-path-disabled {
+        opacity: 0.4;
+        cursor: default;
+      }
+
+      .me-loading {
+        text-align: center;
+        padding: 20px;
+      }
+
+      .me-results-panel {
+        margin-top: 10px;
+      }
+
+      .me-results-tabs {
+        display: flex;
+        gap: 4px;
+        margin-bottom: 8px;
+      }
+
+      .me-results-tab-btn {
+        padding: 6px 14px;
+        font-size: 13px;
+        margin: 0;
+        background: #e0e0e0;
+        color: #333;
+      }
+
+      .me-results-tab-btn.me-active {
+        background: #667eea;
+        color: white;
+      }
+
+      .me-all-points {
+        max-height: 350px;
+        overflow: auto;
+      }
+
+      .me-table-scroll {
+        overflow-x: auto;
+      }
+
+      .me-table-scroll table {
+        font-size: 13px;
+      }
+
+      .me-table-scroll thead {
+        position: sticky;
+        top: 0;
+        z-index: 1;
+      }
+
+      .me-selected-row {
+        background: #fff9c4 !important;
+      }
+
+      .me-table-scroll tr {
+        cursor: pointer;
+      }
+
+      .me-detail-header {
+        padding: 8px 0;
+        border-bottom: 1px solid #eee;
+        margin-bottom: 8px;
+      }
+
+      .me-detail-value-row {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 2px 0;
+        font-size: 14px;
+      }
+
+      .me-sparkline {
+        height: 80px;
+        margin-bottom: 6px;
+      }
+
+      .me-playback {
+        padding: 8px 0;
+        border-top: 1px solid #eee;
+        margin-top: 8px;
+      }
+
+      .me-playback-controls {
+        display: flex;
+        gap: 6px;
+        align-items: center;
+        margin-top: 6px;
+      }
+
+      .me-btn-sm {
+        padding: 4px 10px !important;
+        font-size: 12px !important;
+        margin: 0 !important;
+      }
+
+      .me-btn-danger {
+        background: #e53935 !important;
+      }
+
+      .me-export {
+        display: flex;
+        gap: 6px;
+        padding: 10px 0;
+        border-top: 1px solid #eee;
+        margin-top: 10px;
+      }
+
+      .me-modal-overlay {
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        background: rgba(0, 0, 0, 0.5);
+        z-index: 10000;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+
+      .me-modal {
+        background: white;
+        border-radius: 10px;
+        padding: 24px;
+        max-width: 500px;
+        width: 90%;
+        max-height: 80vh;
+        overflow-y: auto;
+      }
+
+      .me-saved-item {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 10px;
+        border-bottom: 1px solid #eee;
+        gap: 10px;
+      }
+
+      .me-badge {
+        display: inline-block;
+        padding: 1px 8px;
+        border-radius: 10px;
+        font-size: 11px;
+        color: white;
+        margin-left: 6px;
+      }
+
+      .me-badge-bbox {
+        background: #7b1fa2;
+      }
+
+      .me-badge-radius {
+        background: #0288d1;
+      }
+
+      .me-handle {
+        cursor: grab;
+      }
+
+      @media (max-width: 600px) {
+        .me-map-container {
+          height: 300px;
+        }
+
+        .me-query-grid {
+          grid-template-columns: 1fr;
+        }
+
+        .me-toolbar {
+          flex-direction: column;
+          align-items: flex-start;
+        }
+
+        .me-summary {
+          font-size: 11px;
+        }
+      }
     </style>
   </head>
   <body>
@@ -1030,6 +1450,9 @@
           style="display: none"
         >
           🔍 Data Validation
+        </button>
+        <button class="tab-button" onclick="showTab('mapExplorer')">
+          🗺️ Map Explorer
         </button>
         <button class="tab-button" onclick="showTab('migration')">
           📊 Status
@@ -2818,6 +3241,378 @@
 
               <div id="dataPathsResultsContainer" class="results">
                 <p>Run a query to see results here...</p>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Map Explorer Tab -->
+        <div id="mapExplorer" class="tab-panel">
+          <div class="section">
+            <h2>🗺️ Map Explorer</h2>
+            <p>
+              Spatial querying and visualization of historical SignalK data.
+              Draw a search area, configure your query, and explore results on
+              the map.
+            </p>
+
+            <!-- Toolbar -->
+            <div class="me-toolbar">
+              <button onclick="meStartBboxDraw()" title="Draw bounding box">
+                ◻ Draw Bbox
+              </button>
+              <button onclick="meStartRadiusDraw()" title="Draw radius circle">
+                ◯ Draw Radius
+              </button>
+              <button onclick="meShowSavedAreasModal()">📁 Saved Areas</button>
+              <button onclick="meShowSaveAreaDialog()">💾 Save Area</button>
+              <button
+                id="me-osm-toggle"
+                onclick="meToggleOpenSeaMap()"
+                title="Toggle OpenSeaMap nautical overlay"
+              >
+                ⚓ OpenSeaMap
+              </button>
+              <span id="me-status" class="me-status-text"></span>
+            </div>
+
+            <!-- Map -->
+            <div id="me-map" class="me-map-container"></div>
+
+            <!-- Legend -->
+            <div id="me-legend" class="me-legend"></div>
+
+            <!-- Summary Bar -->
+            <div id="me-summary" class="me-summary"></div>
+
+            <!-- Query Configuration -->
+            <div class="me-query-panel">
+              <h3>Query Configuration</h3>
+              <div class="me-query-grid">
+                <!-- Time Range -->
+                <div class="me-query-col">
+                  <label>Time Range</label>
+                  <div id="me-time-toggle" class="me-btn-group">
+                    <button
+                      class="me-active"
+                      data-mode="lookback"
+                      onclick="meSetTimeMode('lookback')"
+                    >
+                      Lookback
+                    </button>
+                    <button
+                      data-mode="range"
+                      onclick="meSetTimeMode('range')"
+                    >
+                      Date Range
+                    </button>
+                  </div>
+                  <div
+                    id="me-lookback-btns"
+                    class="me-btn-group"
+                    style="margin-top: 6px"
+                  >
+                    <button data-days="1" onclick="meSetLookback(1)">1d</button>
+                    <button data-days="3" onclick="meSetLookback(3)">3d</button>
+                    <button
+                      data-days="7"
+                      onclick="meSetLookback(7)"
+                      class="me-active"
+                    >
+                      7d
+                    </button>
+                    <button data-days="14" onclick="meSetLookback(14)">
+                      14d
+                    </button>
+                    <button data-days="30" onclick="meSetLookback(30)">
+                      30d
+                    </button>
+                  </div>
+                  <div id="me-date-range" style="display: none; margin-top: 6px;">
+                    <div class="me-date-range-picker">
+                      <input type="date" id="me-from" onchange="meOnDateRangeChange()" />
+                      <span class="me-date-sep">&ndash;</span>
+                      <input type="date" id="me-to" onchange="meOnDateRangeChange()" />
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Context -->
+                <div class="me-query-col">
+                  <label>Context</label>
+                  <div>
+                    <label style="display: inline; font-weight: normal">
+                      <input
+                        type="checkbox"
+                        id="me-lookup-contexts"
+                        onchange="meLookupContexts()"
+                        style="width: auto"
+                      />
+                      Look up other vessels
+                    </label>
+                  </div>
+                  <div id="me-context-select" style="display: none">
+                    <div id="me-context-count" style="font-size: 11px; color: #666; margin-bottom: 2px;"></div>
+                    <select
+                      id="me-context-dropdown"
+                      onchange="meOnContextChange()"
+                    >
+                      <option value="self">Self</option>
+                    </select>
+                  </div>
+                </div>
+
+                <!-- Paths -->
+                <div class="me-query-col" id="me-path-selector">
+                  <label>Paths (up to 3)</label>
+                  <div class="me-path-chips"></div>
+                  <input
+                    type="text"
+                    class="me-path-filter"
+                    placeholder="Filter paths..."
+                    oninput="meSetPathFilter(this.value)"
+                  />
+                  <div class="me-path-list"></div>
+                </div>
+
+                <!-- Aggregation + Smoothing -->
+                <div class="me-query-col">
+                  <label>Aggregation</label>
+                  <select id="me-aggregation">
+                    <option value="average">Average</option>
+                    <option value="min">Min</option>
+                    <option value="max">Max</option>
+                  </select>
+                  <label style="margin-top: 8px">Smoothing</label>
+                  <select id="me-smoothing" onchange="meShowSmoothingParam()">
+                    <option value="none">None</option>
+                    <option value="sma">SMA</option>
+                    <option value="ema">EMA</option>
+                  </select>
+                  <div id="me-smooth-param-group" style="display: none">
+                    <label id="me-smooth-param-label">Window size:</label>
+                    <input type="number" id="me-smooth-param" value="5" />
+                  </div>
+                </div>
+              </div>
+
+              <button
+                onclick="meExecuteMapQuery()"
+                style="margin-top: 12px; background: #4caf50"
+              >
+                ▶ Run Query
+              </button>
+            </div>
+
+            <!-- Loading -->
+            <div id="me-loading" class="me-loading" style="display: none">
+              <span class="loading">Loading results...</span>
+            </div>
+
+            <!-- Results Panel -->
+            <div
+              id="me-results-panel"
+              class="me-results-panel"
+              style="display: none"
+            >
+              <!-- Results Tab Buttons -->
+              <div class="me-results-tabs">
+                <button
+                  class="me-results-tab-btn me-active"
+                  data-tab="allpoints"
+                  onclick="meShowResultsTab('allpoints')"
+                >
+                  All Points
+                </button>
+                <button
+                  class="me-results-tab-btn"
+                  data-tab="detail"
+                  onclick="meShowResultsTab('detail')"
+                >
+                  Detail
+                </button>
+              </div>
+
+              <!-- All Points Table -->
+              <div id="me-all-points" class="me-all-points">
+                <div class="me-table-scroll">
+                  <table>
+                    <thead id="me-table-head"></thead>
+                    <tbody id="me-table-body"></tbody>
+                  </table>
+                </div>
+              </div>
+
+              <!-- Detail Panel -->
+              <div id="me-detail" style="display: none">
+                <div id="me-detail-content">
+                  <p>Click a point to see details.</p>
+                </div>
+                <!-- Playback Controls -->
+                <div class="me-playback">
+                  <input
+                    type="range"
+                    id="me-playback-slider"
+                    min="0"
+                    max="0"
+                    value="0"
+                    oninput="meOnPlaybackSliderChange(this.value)"
+                    style="width: 100%"
+                  />
+                  <div class="me-playback-controls">
+                    <button
+                      id="me-reverse-btn"
+                      onclick="meTogglePlayReverse()"
+                      class="me-btn-sm"
+                    >
+                      ⏪
+                    </button>
+                    <button
+                      onclick="meSkipPlayback(-10)"
+                      class="me-btn-sm"
+                    >
+                      -10
+                    </button>
+                    <button
+                      id="me-play-btn"
+                      onclick="meTogglePlayback()"
+                      class="me-btn-sm"
+                      style="min-width: 60px"
+                    >
+                      Play
+                    </button>
+                    <button
+                      onclick="meSkipPlayback(10)"
+                      class="me-btn-sm"
+                    >
+                      +10
+                    </button>
+                    <select
+                      onchange="meSetPlaySpeed(this.value)"
+                      style="width: auto; padding: 4px"
+                    >
+                      <option value="1">1x</option>
+                      <option value="2">2x</option>
+                      <option value="5">5x</option>
+                      <option value="10">10x</option>
+                    </select>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Export + Save as SignalK Resources -->
+              <div class="me-export">
+                <button onclick="meExportCSV()" class="me-btn-sm">
+                  📄 CSV
+                </button>
+                <button onclick="meExportGeoJSON()" class="me-btn-sm">
+                  🌍 GeoJSON
+                </button>
+                <button onclick="meExportKML()" class="me-btn-sm">
+                  📍 KML
+                </button>
+                <span style="border-left: 1px solid #ccc; margin: 0 6px"></span>
+                <button onclick="meSaveAsWaypoint()" class="me-btn-sm">
+                  📌 Save Waypoint
+                </button>
+                <button onclick="meSaveAsTrack()" class="me-btn-sm">
+                  🛤️ Save Track
+                </button>
+                <button onclick="meSaveAsRoute()" class="me-btn-sm">
+                  🧭 Save Route
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Save Area Modal -->
+          <div id="me-save-modal" class="me-modal-overlay" style="display: none">
+            <div class="me-modal">
+              <h3>Save Search Area</h3>
+              <div class="form-group">
+                <label for="me-save-name">Name</label>
+                <input type="text" id="me-save-name" placeholder="Area name" />
+              </div>
+              <div class="form-group">
+                <label for="me-save-desc">Description (optional)</label>
+                <input type="text" id="me-save-desc" placeholder="Description" />
+              </div>
+              <div>
+                <button onclick="meSaveArea()" style="background: #4caf50">
+                  Save
+                </button>
+                <button onclick="meCloseSaveModal()" class="btn-secondary">
+                  Cancel
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Saved Areas Modal -->
+          <div
+            id="me-saved-modal"
+            class="me-modal-overlay"
+            style="display: none"
+          >
+            <div class="me-modal">
+              <div
+                style="
+                  display: flex;
+                  justify-content: space-between;
+                  align-items: center;
+                "
+              >
+                <h3>Saved Areas</h3>
+                <button
+                  onclick="meCloseSavedModal()"
+                  class="me-btn-sm btn-secondary"
+                >
+                  Close
+                </button>
+              </div>
+              <div id="me-saved-list"></div>
+            </div>
+          </div>
+        </div>
+
+          <!-- Route Save Modal -->
+          <div
+            id="me-route-modal"
+            class="me-modal-overlay"
+            style="display: none"
+          >
+            <div class="me-modal">
+              <h3>Save as Route</h3>
+              <div class="form-group">
+                <label for="me-route-name">Route name</label>
+                <input type="text" id="me-route-name" placeholder="Route name" />
+              </div>
+              <div class="form-group">
+                <label for="me-route-desc">Description (optional)</label>
+                <input type="text" id="me-route-desc" placeholder="Description" />
+              </div>
+              <div class="form-group">
+                <label>
+                  Detail level: <span id="me-route-tolerance-val">50m</span>
+                </label>
+                <input
+                  type="range"
+                  id="me-route-tolerance"
+                  min="5"
+                  max="500"
+                  value="50"
+                  oninput="meUpdateRoutePreview()"
+                  style="width: 100%"
+                />
+                <small id="me-route-preview" style="color: #666"></small>
+              </div>
+              <div>
+                <button onclick="meConfirmSaveRoute()" style="background: #4caf50">
+                  Save Route
+                </button>
+                <button onclick="meCloseRouteModal()" class="btn-secondary">
+                  Cancel
+                </button>
               </div>
             </div>
           </div>

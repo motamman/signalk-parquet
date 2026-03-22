@@ -7,6 +7,7 @@ import * as CommandManager from './commandManager.js';
 import * as LiveConnections from './liveConnections.js';
 import * as Analysis from './analysis.js';
 import * as HomePort from './homePort.js';
+import * as MapExplorer from './mapExplorer.js';
 import { getPluginPath } from './utils.js';
 
 function registerGlobals(mapping) {
@@ -44,6 +45,10 @@ function showTab(tabId) {
 
   if (tabId === 'liveConnections') {
     LiveConnections.loadStreams();
+  }
+
+  if (tabId === 'mapExplorer') {
+    MapExplorer.initMapExplorer();
   }
 
   if (tabId === 'migration') {
@@ -173,6 +178,45 @@ registerGlobals({
   loadAvailableDataPaths: Analysis.loadAvailableDataPaths,
   loadDataPathsForAnalysis: Analysis.loadDataPathsForAnalysis,
   askFollowUpQuestion: Analysis.askFollowUpQuestion,
+  // Map Explorer
+  meInitMapExplorer: MapExplorer.initMapExplorer,
+  meStartBboxDraw: MapExplorer.startBboxDraw,
+  meStartRadiusDraw: MapExplorer.startRadiusDraw,
+  meToggleOpenSeaMap: MapExplorer.toggleOpenSeaMap,
+  meSetTimeMode: MapExplorer.setTimeMode,
+  meSetLookback: MapExplorer.setLookback,
+  meLookupContexts: MapExplorer.lookupContexts,
+  meOnContextChange: MapExplorer.onContextChange,
+  meLoadAvailablePaths: MapExplorer.loadAvailablePaths,
+  meOnDateRangeChange: MapExplorer.onDateRangeChange,
+  meTogglePathSelection: MapExplorer.togglePathSelection,
+  meRemoveSelectedPath: MapExplorer.removeSelectedPath,
+  meSetPathFilter: MapExplorer.setPathFilter,
+  meExecuteMapQuery: MapExplorer.executeMapQuery,
+  meSelectPoint: MapExplorer.selectPoint,
+  meOnPlaybackSliderChange: MapExplorer.onPlaybackSliderChange,
+  meTogglePlayback: MapExplorer.togglePlayback,
+  meTogglePlayReverse: MapExplorer.togglePlayReverse,
+  meSkipPlayback: MapExplorer.skipPlayback,
+  meSetPlaySpeed: MapExplorer.setPlaySpeed,
+  meExportCSV: MapExplorer.exportCSV,
+  meExportGeoJSON: MapExplorer.exportGeoJSON,
+  meExportKML: MapExplorer.exportKML,
+  meShowSaveAreaDialog: MapExplorer.showSaveAreaDialog,
+  meCloseSaveModal: MapExplorer.closeSaveModal,
+  meSaveArea: MapExplorer.saveArea,
+  meShowSavedAreasModal: MapExplorer.showSavedAreasModal,
+  meCloseSavedModal: MapExplorer.closeSavedModal,
+  meLoadArea: MapExplorer.loadArea,
+  meDeleteArea: MapExplorer.deleteArea,
+  meShowSmoothingParam: MapExplorer.showSmoothingParam,
+  meShowResultsTab: MapExplorer.showResultsTab,
+  meSaveAsWaypoint: MapExplorer.saveAsWaypoint,
+  meSaveAsTrack: MapExplorer.saveAsTrack,
+  meSaveAsRoute: MapExplorer.saveAsRoute,
+  meCloseRouteModal: MapExplorer.closeRouteModal,
+  meUpdateRoutePreview: MapExplorer.updateRoutePreview,
+  meConfirmSaveRoute: MapExplorer.confirmSaveRoute,
 });
 
 // Check if raw SQL queries are enabled and show/hide Query Database tab
