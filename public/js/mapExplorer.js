@@ -798,10 +798,6 @@ export async function executeMapQuery() {
   const { from, to } = getQueryTimeRange();
   const ctx = state.context === 'self' ? '' : state.context;
 
-  // Auto-resolution: ~500 points
-  const msRange = new Date(to).getTime() - new Date(from).getTime();
-  const resolution = Math.max(1, Math.round(msRange / 500 / 1000));
-
   // Always include navigation.position for track
   const allPaths = ['navigation.position', ...paths.filter((p) => !p.startsWith('navigation.position'))];
 
@@ -818,7 +814,6 @@ export async function executeMapQuery() {
     `/signalk/v1/history/values?context=${ctx}` +
     `&from=${from}&to=${to}` +
     `&paths=${allPaths.join(',')}` +
-    `&resolution=${resolution}` +
     spatialParam;
 
   try {
@@ -1613,35 +1608,35 @@ export function closeRouteModal() {
 }
 
 export function updateRoutePreview() {
-  const tolerance = parseFloat(document.getElementById('me-route-tolerance').value) || 50;
+  const threshold = parseFloat(document.getElementById('me-route-tolerance').value) || 15;
   const coords = state.dataPoints.map((pt) => [pt.lon, pt.lat]);
-  const simplified = simplifyPath(coords, tolerance);
-  const dist = calculatePathDistance(simplified);
+  const simplified = simplifyTrack(coords, threshold);
+  const dist = trackDistanceMeters(simplified);
   document.getElementById('me-route-preview').textContent =
-    `${coords.length} points simplified to ${simplified.length} waypoints (${(dist / 1000).toFixed(1)} km)`;
-  document.getElementById('me-route-tolerance-val').textContent = `${tolerance}m`;
+    `${coords.length} points \u2192 ${simplified.length} waypoints \u2022 ${metersToNM(dist).toFixed(1)} NM`;
+  document.getElementById('me-route-tolerance-val').textContent = `${threshold}\u00B0`;
 }
 
 export function confirmSaveRoute() {
   const name = document.getElementById('me-route-name').value.trim();
   if (!name) return;
   const desc = document.getElementById('me-route-desc').value.trim();
-  const tolerance = parseFloat(document.getElementById('me-route-tolerance').value) || 50;
+  const threshold = parseFloat(document.getElementById('me-route-tolerance').value) || 15;
 
   const coords = state.dataPoints.map((pt) => [pt.lon, pt.lat]);
-  const simplified = simplifyPath(coords, tolerance);
-  const dist = calculatePathDistance(simplified);
+  const simplified = simplifyTrack(coords, threshold);
+  const dist = trackDistanceMeters(simplified);
 
   const id = crypto.randomUUID();
   const data = {
     name,
     description: desc,
-    distance: dist,
+    distance: Math.round(dist),
     feature: {
       type: 'Feature',
       geometry: { type: 'LineString', coordinates: simplified },
       properties: {
-        coordinatesMeta: simplified.map(() => ({ name: '' })),
+        coordinatesMeta: simplified.map((_, i) => ({ name: `WPT ${i + 1}` })),
       },
       id: '',
     },
@@ -1653,7 +1648,7 @@ export function confirmSaveRoute() {
     body: JSON.stringify(data),
   })
     .then((r) => {
-      if (r.ok) setToolbarStatus(`Route "${name}" saved (${simplified.length} waypoints).`);
+      if (r.ok) setToolbarStatus(`Route "${name}" saved (${simplified.length} waypoints, ${metersToNM(dist).toFixed(1)} NM).`);
       else setToolbarStatus('Failed to save route.');
       closeRouteModal();
     })
@@ -1663,50 +1658,57 @@ export function confirmSaveRoute() {
     });
 }
 
-// Ramer-Douglas-Peucker path simplification
-function simplifyPath(coords, tolerance) {
-  if (coords.length <= 2) return coords;
+// Course-delta track simplification for marine route creation.
+// Preserves waypoints at turns while removing redundant straight-line points.
+// Unlike Ramer-Douglas-Peucker, this never cuts corners through dangerous waters.
+//
+// coords: [[lon, lat], ...], headingThresholdDeg: degrees, maxLegMeters: meters
+function simplifyTrack(coords, headingThresholdDeg, maxLegMeters = 3704) {
+  if (coords.length <= 2) return coords.slice();
 
-  // Convert tolerance from meters to approx degrees
-  const tolDeg = tolerance / 111320;
+  const result = [coords[0]];
+  let lastKeptIndex = 0;
+  let prevBearing = bearing(coords[0][1], coords[0][0], coords[1][1], coords[1][0]);
 
-  function perpDist(pt, lineStart, lineEnd) {
-    const dx = lineEnd[0] - lineStart[0];
-    const dy = lineEnd[1] - lineStart[1];
-    const lenSq = dx * dx + dy * dy;
-    if (lenSq === 0) return Math.sqrt((pt[0] - lineStart[0]) ** 2 + (pt[1] - lineStart[1]) ** 2);
-    const t = Math.max(0, Math.min(1, ((pt[0] - lineStart[0]) * dx + (pt[1] - lineStart[1]) * dy) / lenSq));
-    const projX = lineStart[0] + t * dx;
-    const projY = lineStart[1] + t * dy;
-    return Math.sqrt((pt[0] - projX) ** 2 + (pt[1] - projY) ** 2);
+  for (let i = 1; i < coords.length - 1; i++) {
+    const b = bearing(coords[i][1], coords[i][0], coords[i + 1][1], coords[i + 1][0]);
+    let delta = Math.abs(b - prevBearing);
+    if (delta > 180) delta = 360 - delta;
+
+    const legDist = haversine(
+      coords[lastKeptIndex][1], coords[lastKeptIndex][0],
+      coords[i][1], coords[i][0]
+    );
+
+    if (delta >= headingThresholdDeg || legDist >= maxLegMeters) {
+      result.push(coords[i]);
+      lastKeptIndex = i;
+    }
+    prevBearing = b;
   }
 
-  function rdp(pts, tol) {
-    if (pts.length <= 2) return pts;
-    let maxDist = 0, maxIdx = 0;
-    for (let i = 1; i < pts.length - 1; i++) {
-      const d = perpDist(pts[i], pts[0], pts[pts.length - 1]);
-      if (d > maxDist) { maxDist = d; maxIdx = i; }
-    }
-    if (maxDist > tol) {
-      const left = rdp(pts.slice(0, maxIdx + 1), tol);
-      const right = rdp(pts.slice(maxIdx), tol);
-      return left.slice(0, -1).concat(right);
-    }
-    return [pts[0], pts[pts.length - 1]];
-  }
-
-  return rdp(coords, tolDeg);
+  result.push(coords[coords.length - 1]);
+  return result;
 }
 
-// Calculate path distance in meters using Haversine
-function calculatePathDistance(coords) {
+function bearing(lat1, lon1, lat2, lon2) {
+  const toRad = Math.PI / 180;
+  const dLon = (lon2 - lon1) * toRad;
+  const y = Math.sin(dLon) * Math.cos(lat2 * toRad);
+  const x = Math.cos(lat1 * toRad) * Math.sin(lat2 * toRad) -
+    Math.sin(lat1 * toRad) * Math.cos(lat2 * toRad) * Math.cos(dLon);
+  return ((Math.atan2(y, x) * 180 / Math.PI) + 360) % 360;
+}
+
+function trackDistanceMeters(coords) {
   let total = 0;
   for (let i = 1; i < coords.length; i++) {
     total += haversine(coords[i - 1][1], coords[i - 1][0], coords[i][1], coords[i][0]);
   }
   return total;
 }
+
+function metersToNM(m) { return m / 1852; }
 
 function haversine(lat1, lon1, lat2, lon2) {
   const R = 6371000;
