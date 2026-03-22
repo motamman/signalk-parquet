@@ -367,92 +367,120 @@ export function updateDataSubscriptions(
     contextGroups.get(context)!.push(pathConfig);
   });
 
+  // Context filter helper — reused for both normal and root-level paths
+  function passesContextFilter(
+    normalizedDelta: NormalizedDelta,
+    pathConfig: PathConfig
+  ): boolean {
+    // Filter by source if specified
+    if (pathConfig.source && pathConfig.source.trim() !== '') {
+      if (normalizedDelta.$source !== pathConfig.source.trim()) return false;
+    }
+
+    // Filter by context
+    const targetContext = pathConfig.context || 'vessels.self';
+    if (targetContext === 'vessels.*') {
+      if (!normalizedDelta.context.startsWith('vessels.')) return false;
+    } else if (targetContext === 'vessels.self') {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const selfContext = app.selfContext;
+      const selfVessel = (app.getSelfPath('') as any) || {};
+      const selfMMSI = selfVessel.mmsi;
+      const selfUuid = app.getSelfPath('uuid') as any;
+
+      const isSelfVessel =
+        normalizedDelta.context === 'vessels.self' ||
+        normalizedDelta.context === selfContext ||
+        (selfMMSI && normalizedDelta.context.includes(selfMMSI)) ||
+        (selfUuid && normalizedDelta.context.includes(selfUuid));
+
+      if (!isSelfVessel) return false;
+    } else {
+      if (normalizedDelta.context !== targetContext) return false;
+    }
+
+    // MMSI exclusion filtering
+    if (pathConfig.excludeMMSI && pathConfig.excludeMMSI.length > 0) {
+      if (
+        pathConfig.excludeMMSI.some(mmsi =>
+          normalizedDelta.context.includes(mmsi)
+        )
+      )
+        return false;
+    }
+
+    // Skip meta deltas
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    if ((normalizedDelta as any).isMeta) return false;
+
+    return true;
+  }
+
   // Use app.streambundle approach as recommended by SignalK developer
   // This avoids server arbitration and provides true source filtering
   contextGroups.forEach((pathConfigs, context) => {
-    pathConfigs.forEach((pathConfig: PathConfig) => {
-      // Show MMSI exclusion config for troubleshooting
-      if (pathConfig.excludeMMSI && pathConfig.excludeMMSI.length > 0) {
-      }
+    // Root-level paths (no dots, e.g., "name", "mmsi") arrive on the root bus ("")
+    // as part of a bundled object update, not as individual path deltas
+    const rootPaths = pathConfigs.filter(
+      (pc: PathConfig) => !pc.path.includes('.')
+    );
+    const normalPaths = pathConfigs.filter(
+      (pc: PathConfig) => pc.path.includes('.')
+    );
 
-      // Create individual stream for each path (developer's recommended approach)
+    // Subscribe to root bus for root-level paths
+    if (rootPaths.length > 0) {
+      const rootPathMap = new Map<string, PathConfig>();
+      rootPaths.forEach((pc: PathConfig) => rootPathMap.set(pc.path, pc));
+
+      const rootStream = app.streambundle
+        .getBus('' as Path)
+        .filter((normalizedDelta: NormalizedDelta) => {
+          if (
+            !normalizedDelta.value ||
+            typeof normalizedDelta.value !== 'object'
+          )
+            return false;
+          const valueObj = normalizedDelta.value as Record<string, unknown>;
+          return rootPaths.some(
+            (pc: PathConfig) => valueObj[pc.path] !== undefined
+          );
+        })
+        .debounceImmediate(5000) // Root properties are static, debounce aggressively
+        .onValue((normalizedDelta: NormalizedDelta) => {
+          const valueObj = normalizedDelta.value as Record<string, unknown>;
+          for (const [pathName, pathConfig] of rootPathMap) {
+            if (valueObj[pathName] === undefined) continue;
+            if (!passesContextFilter(normalizedDelta, pathConfig)) continue;
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const syntheticDelta = {
+              ...normalizedDelta,
+              path: pathName,
+              value: valueObj[pathName],
+            } as any as NormalizedDelta;
+            handleStreamData(syntheticDelta, pathConfig, config, state, app);
+          }
+        });
+
+      state.streamSubscriptions = state.streamSubscriptions || [];
+      state.streamSubscriptions.push(rootStream);
+      rootPaths.forEach((pc: PathConfig) =>
+        state.subscribedPaths.add(pc.path)
+      );
+    }
+
+    // Normal dotted paths — individual stream per path
+    normalPaths.forEach((pathConfig: PathConfig) => {
       const stream = app.streambundle
         .getBus(pathConfig.path as Path)
-        .filter((normalizedDelta: NormalizedDelta) => {
-          // Filter by source if specified
-          if (pathConfig.source && pathConfig.source.trim() !== '') {
-            const expectedSource = pathConfig.source.trim();
-            const actualSource = normalizedDelta.$source;
-
-            if (actualSource !== expectedSource) {
-              return false;
-            }
-          }
-
-          // Filter by context
-          const targetContext = pathConfig.context || 'vessels.self';
-          if (targetContext === 'vessels.*') {
-            // For wildcard, accept any vessel context
-            if (!normalizedDelta.context.startsWith('vessels.')) {
-              return false;
-            }
-          } else if (targetContext === 'vessels.self') {
-            // For vessels.self, check if this is the server's own vessel
-            // Cast to any for compatibility with different @signalk/server-api versions
-            const selfContext = app.selfContext;
-            const selfVessel = (app.getSelfPath('') as any) || {};
-            const selfMMSI = selfVessel.mmsi;
-            const selfUuid = app.getSelfPath('uuid') as any;
-
-            // Check if the context matches the server's self vessel
-            let isSelfVessel = false;
-
-            if (normalizedDelta.context === 'vessels.self') {
-              isSelfVessel = true;
-            } else if (normalizedDelta.context === selfContext) {
-              isSelfVessel = true;
-            } else if (selfMMSI && normalizedDelta.context.includes(selfMMSI)) {
-              isSelfVessel = true;
-            } else if (selfUuid && normalizedDelta.context.includes(selfUuid)) {
-              isSelfVessel = true;
-            }
-
-            if (!isSelfVessel) {
-              return false;
-            }
-          } else {
-            // For specific context, match exactly
-            if (normalizedDelta.context !== targetContext) {
-              return false;
-            }
-          }
-
-          // MMSI exclusion filtering
-          if (pathConfig.excludeMMSI && pathConfig.excludeMMSI.length > 0) {
-            const contextHasExcludedMMSI = pathConfig.excludeMMSI.some(mmsi =>
-              normalizedDelta.context.includes(mmsi)
-            );
-            if (contextHasExcludedMMSI) {
-              return false;
-            }
-          }
-
-          // Skip meta deltas in filter - they contain metadata, not actual data values
-          // This must be done BEFORE debounce, otherwise meta deltas consume the debounce
-          // window and value deltas get dropped
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          if ((normalizedDelta as any).isMeta) {
-            return false;
-          }
-
-          return true;
-        })
-        .debounceImmediate(1000) // Built-in debouncing as recommended
+        .filter((normalizedDelta: NormalizedDelta) =>
+          passesContextFilter(normalizedDelta, pathConfig)
+        )
+        .debounceImmediate(1000)
         .onValue((normalizedDelta: NormalizedDelta) => {
           handleStreamData(normalizedDelta, pathConfig, config, state, app);
         });
 
-      // Store stream reference for cleanup (instead of unsubscribe functions)
       state.streamSubscriptions = state.streamSubscriptions || [];
       state.streamSubscriptions.push(stream);
       state.subscribedPaths.add(pathConfig.path);

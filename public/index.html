@@ -1221,9 +1221,11 @@
         background: #f0f0f0;
       }
 
-      .me-path-row input[type="checkbox"] {
+      .me-path-row input[type="checkbox"],
+      .me-path-row input[type="radio"] {
         width: auto;
         margin: 0;
+        flex-shrink: 0;
       }
 
       .me-path-disabled {
@@ -3383,12 +3385,14 @@
                   </div>
                   <div id="me-context-select" style="display: none">
                     <div id="me-context-count" style="font-size: 11px; color: #666; margin-bottom: 2px;"></div>
-                    <select
-                      id="me-context-dropdown"
-                      onchange="meOnContextChange()"
-                    >
-                      <option value="self">Self</option>
-                    </select>
+                    <input
+                      type="text"
+                      id="me-context-filter"
+                      class="me-path-filter"
+                      placeholder="Filter vessels..."
+                      oninput="meFilterContexts(this.value)"
+                    />
+                    <div id="me-context-list" class="me-path-list" style="max-height: 140px;"></div>
                   </div>
                 </div>
 

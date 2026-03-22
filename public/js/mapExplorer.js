@@ -53,6 +53,7 @@ let state = {
   availablePaths: [],
   pathMeta: {},              // { 'nav.speedOverGround': { formula, symbol, displayFormat } }
   availableContexts: [],
+  vesselNames: new Map(),
   // Results
   results: null,
   trackLayer: null,
@@ -526,12 +527,82 @@ export function setLookback(days) {
   }
 }
 
-function contextDisplayName(ctx) {
+function contextDisplayName(ctx, vesselNames) {
   if (ctx === 'self' || ctx === 'vessels.self') return 'Self';
   const mmsiMatch = ctx.match(/mmsi:(\d+)/);
-  if (mmsiMatch) return `MMSI ${mmsiMatch[1]}`;
+  const mmsi = mmsiMatch ? mmsiMatch[1] : null;
+  const name = vesselNames ? vesselNames.get(ctx) : null;
+  if (name && mmsi) return `${name} (${mmsi})`;
+  if (name) return name;
+  if (mmsi) return `MMSI ${mmsi}`;
   const lastDot = ctx.lastIndexOf('.');
   return lastDot >= 0 ? ctx.substring(lastDot + 1) : ctx;
+}
+
+async function fetchVesselNames(contexts, from, to) {
+  const names = new Map();
+  // Batch in groups of 10 to avoid overwhelming the server
+  const ctxList = (Array.isArray(contexts) ? contexts : [])
+    .map((c) => c.context || c)
+    .filter((ctx) => ctx !== 'self' && ctx !== 'vessels.self');
+
+  for (let i = 0; i < ctxList.length; i += 10) {
+    const batch = ctxList.slice(i, i + 10);
+    await Promise.all(batch.map(async (ctx) => {
+      try {
+        const url = `/signalk/v1/history/values?context=${encodeURIComponent(ctx)}&paths=name&from=${from}&to=${to}&resolution=86400`;
+        const resp = await fetch(url);
+        if (!resp.ok) return;
+        const data = await resp.json();
+        const result = Array.isArray(data) ? data[0] : data;
+        if (result && result.data && result.data.length > 0) {
+          const lastRow = result.data[result.data.length - 1];
+          if (lastRow && lastRow[1]) {
+            names.set(ctx, lastRow[1]);
+          }
+        }
+      } catch (err) {
+        // no name data for this context
+      }
+    }));
+  }
+  console.log(`Fetched ${names.size} vessel names from history API`);
+  return names;
+}
+
+function renderContextList(filter) {
+  const listEl = document.getElementById('me-context-list');
+  if (!listEl) return;
+  listEl.innerHTML = '';
+  const filterLower = (filter || '').toLowerCase();
+
+  // Self option
+  if (!filterLower || 'self'.includes(filterLower)) {
+    const row = document.createElement('label');
+    row.className = 'me-path-row';
+    row.innerHTML = `<input type="radio" name="me-ctx" value="self" ${state.context === 'self' ? 'checked' : ''} onchange="meSelectContext('self')" /> <span>Self</span>`;
+    listEl.appendChild(row);
+  }
+
+  (Array.isArray(state.availableContexts) ? state.availableContexts : []).forEach((c) => {
+    const ctx = c.context || c;
+    const label = contextDisplayName(ctx, state.vesselNames);
+    if (filterLower && !label.toLowerCase().includes(filterLower) && !ctx.toLowerCase().includes(filterLower)) return;
+    const row = document.createElement('label');
+    row.className = 'me-path-row';
+    row.innerHTML = `<input type="radio" name="me-ctx" value="${ctx}" ${state.context === ctx ? 'checked' : ''} onchange="meSelectContext('${ctx}')" /> ${label}`;
+    listEl.appendChild(row);
+  });
+}
+
+export function filterContexts(value) {
+  renderContextList(value);
+}
+
+export function selectContext(ctx) {
+  state.context = ctx;
+  state._pathsStale = true;
+  loadAvailablePaths();
 }
 
 export async function lookupContexts() {
@@ -559,31 +630,27 @@ export async function lookupContexts() {
     const data = await resp.json();
     state.availableContexts = data.contexts || data || [];
 
-    const select = document.getElementById('me-context-dropdown');
-    select.innerHTML = '<option value="self">Self</option>';
-    (Array.isArray(state.availableContexts)
-      ? state.availableContexts
-      : []
-    ).forEach((c) => {
-      const ctx = c.context || c;
-      const label = contextDisplayName(ctx);
-      select.innerHTML += `<option value="${ctx}">${label}</option>`;
-    });
     const countEl = document.getElementById('me-context-count');
     if (countEl) {
       const n = Array.isArray(state.availableContexts) ? state.availableContexts.length : 0;
       countEl.textContent = `${n} vessel${n !== 1 ? 's' : ''} found`;
     }
+    // Clear filter and render list immediately with MMSI-only labels
+    const filterEl = document.getElementById('me-context-filter');
+    if (filterEl) filterEl.value = '';
+    renderContextList('');
     document.getElementById('me-context-select').style.display = 'block';
+
+    // Fetch vessel names in background, then re-render with names
+    fetchVesselNames(state.availableContexts, from, to).then((names) => {
+      state.vesselNames = names;
+      renderContextList(filterEl ? filterEl.value : '');
+    }).catch((err) => {
+      console.error('Failed to fetch vessel names:', err);
+    });
   } catch (err) {
     console.error('Failed to load contexts:', err);
   }
-}
-
-export function onContextChange() {
-  state.context = document.getElementById('me-context-dropdown').value;
-  state._pathsStale = true;
-  loadAvailablePaths();
 }
 
 export async function loadAvailablePaths() {
@@ -1118,7 +1185,7 @@ function renderDetailPanel() {
     state.dataPoints.forEach((dp) => {
       if (dp.values[p] !== undefined) {
         xData.push(new Date(dp.ts));
-        yData.push(dp.values[p]);
+        yData.push(convertValue(dp.values[p], p));
       }
     });
 
@@ -1143,7 +1210,7 @@ function renderDetailPanel() {
         height: 80,
         margin: { t: 5, b: 20, l: 40, r: 5 },
         xaxis: { showgrid: false, showticklabels: false },
-        yaxis: { showgrid: true, gridcolor: '#eee' },
+        yaxis: { showgrid: true, gridcolor: '#eee', title: { text: getUnitForPath(p), font: { size: 10 } } },
         shapes: [
           {
             type: 'line',
@@ -1847,4 +1914,13 @@ export function showResultsTab(tabName) {
   );
   document.getElementById('me-all-points').style.display = tabName === 'allpoints' ? 'block' : 'none';
   document.getElementById('me-detail').style.display = tabName === 'detail' ? 'block' : 'none';
+
+  // Resize sparklines when detail tab becomes visible
+  if (tabName === 'detail') {
+    setTimeout(() => {
+      document.querySelectorAll('.me-sparkline').forEach((el) => {
+        if (el.data) Plotly.Plots.resize(el);
+      });
+    }, 50);
+  }
 }
