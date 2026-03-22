@@ -167,7 +167,10 @@ export function registerHistoryApiRoute(
         res.json(paths);
       } else {
         // No time range specified: return all available paths (legacy behavior)
-        const paths = getAvailablePathsArray(dataDir, app);
+        const context = req.query.context
+          ? getContext(req.query.context as string, selfId)
+          : undefined;
+        const paths = getAvailablePathsArray(dataDir, app, context);
         res.json(paths);
       }
     } catch (error) {
@@ -295,7 +298,10 @@ export function registerHistoryApiRoute(
         res.json(paths);
       } else {
         // No time range specified: return all available paths (legacy behavior)
-        const paths = getAvailablePathsArray(dataDir, app);
+        const context = req.query.context
+          ? getContext(req.query.context as string, selfId)
+          : undefined;
+        const paths = getAvailablePathsArray(dataDir, app, context);
         res.json(paths);
       }
     } catch (error) {

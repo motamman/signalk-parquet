@@ -227,8 +227,14 @@ export class HistoryProvider implements HistoryApi {
 
     this.debug(`[HistoryProvider] getPaths: from=${from}, to=${to}`);
 
-    // For now, return all available paths (could be optimized to filter by time range)
-    const paths = getAvailablePathsArray(this.dataDir, this.app);
+    // Extract context if present (PathsRequest type doesn't include context, but callers may pass it)
+    const queryContext = (query as any).context;
+    const context = queryContext
+      ? (!queryContext || queryContext === 'vessels.self' || queryContext === 'self'
+          ? `vessels.${this.selfId}`
+          : queryContext.replace(/ /gi, ''))
+      : undefined;
+    const paths = getAvailablePathsArray(this.dataDir, this.app, context);
     return paths as PathsResponse;
   }
 

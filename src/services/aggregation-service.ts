@@ -42,6 +42,22 @@ export interface AggregationProgress {
   error?: string;
 }
 
+export interface BulkAggregationProgress {
+  jobId: string;
+  status: 'scanning' | 'running' | 'completed' | 'cancelled' | 'error';
+  phase: 'scan' | 'aggregation';
+  currentDate?: string;
+  datesProcessed: number;
+  datesTotal: number;
+  percent: number;
+  filesCreated: number;
+  recordsAggregated: number;
+  startTime: Date;
+  completedAt?: Date;
+  error?: string;
+  errors: string[];
+}
+
 export interface AggregationResult {
   sourceTier: AggregationTier;
   targetTier: AggregationTier;
@@ -50,6 +66,18 @@ export interface AggregationResult {
   filesCreated: number;
   duration: number;
   errors: string[];
+}
+
+const bulkAggregationJobs = new Map<string, BulkAggregationProgress>();
+const BULK_JOB_TTL_MS = 60 * 60 * 1000; // 1 hour
+
+function scheduleBulkJobCleanup(jobId: string) {
+  setTimeout(() => {
+    const job = bulkAggregationJobs.get(jobId);
+    if (job && job.status !== 'running' && job.status !== 'scanning') {
+      bulkAggregationJobs.delete(jobId);
+    }
+  }, BULK_JOB_TTL_MS);
 }
 
 const TIER_INTERVALS: Record<AggregationTier, number> = {
@@ -533,5 +561,173 @@ export class AggregationService {
     const results = await this.aggregateDate(yesterday);
 
     return results;
+  }
+
+  /**
+   * Discover all unique dates in tier=raw across all contexts and paths
+   */
+  async discoverRawDates(startDate?: Date, endDate?: Date): Promise<Date[]> {
+    const rawDir = path.join(this.config.outputDirectory, 'tier=raw');
+    if (!(await fs.pathExists(rawDir))) return [];
+
+    const dayDirs = await glob(
+      path.join(rawDir, 'context=*', 'path=*', 'year=*', 'day=*')
+    );
+
+    const dateSet = new Set<string>();
+    for (const dir of dayDirs) {
+      const yearMatch = dir.match(/year=(\d{4})/);
+      const dayMatch = dir.match(/day=(\d{1,3})/);
+      if (yearMatch && dayMatch) {
+        const year = parseInt(yearMatch[1]);
+        const day = parseInt(dayMatch[1]);
+        const date = this.hivePathBuilder.dateFromDayOfYear(year, day);
+        const dateStr = date.toISOString().slice(0, 10);
+
+        if (startDate && date < startDate) continue;
+        if (endDate && date > endDate) continue;
+
+        dateSet.add(dateStr);
+      }
+    }
+
+    return Array.from(dateSet)
+      .sort()
+      .map(d => new Date(d + 'T00:00:00Z'));
+  }
+
+  /**
+   * Start bulk aggregation as a background job
+   */
+  startBulkAggregation(startDate?: Date, endDate?: Date): string {
+    const jobId = `bulk_agg_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+
+    const progress: BulkAggregationProgress = {
+      jobId,
+      status: 'scanning',
+      phase: 'scan',
+      datesProcessed: 0,
+      datesTotal: 0,
+      percent: 0,
+      filesCreated: 0,
+      recordsAggregated: 0,
+      startTime: new Date(),
+      errors: [],
+    };
+
+    bulkAggregationJobs.set(jobId, progress);
+    this.cancelRequested = false;
+
+    this.runBulkAggregation(jobId, startDate, endDate).catch(error => {
+      const job = bulkAggregationJobs.get(jobId);
+      if (job) {
+        job.status = 'error';
+        job.error = (error as Error).message;
+        job.completedAt = new Date();
+      }
+    });
+
+    return jobId;
+  }
+
+  /**
+   * Run bulk aggregation across all dates in tier=raw
+   */
+  private async runBulkAggregation(
+    jobId: string,
+    startDate?: Date,
+    endDate?: Date
+  ): Promise<void> {
+    const progress = bulkAggregationJobs.get(jobId);
+    if (!progress) return;
+
+    try {
+      // Phase 1: Discover dates
+      progress.phase = 'scan';
+      progress.status = 'scanning';
+
+      const dates = await this.discoverRawDates(startDate, endDate);
+      progress.datesTotal = dates.length;
+
+      if (dates.length === 0) {
+        progress.status = 'completed';
+        progress.completedAt = new Date();
+        scheduleBulkJobCleanup(jobId);
+        return;
+      }
+
+      this.app.debug(
+        `[BulkAggregation] Found ${dates.length} dates to aggregate (${dates[0].toISOString().slice(0, 10)} to ${dates[dates.length - 1].toISOString().slice(0, 10)})`
+      );
+
+      // Phase 2: Aggregate each date
+      progress.phase = 'aggregation';
+      progress.status = 'running';
+
+      for (let i = 0; i < dates.length; i++) {
+        if (this.cancelRequested) {
+          progress.status = 'cancelled';
+          progress.completedAt = new Date();
+          scheduleBulkJobCleanup(jobId);
+          return;
+        }
+
+        const date = dates[i];
+        const dateStr = date.toISOString().slice(0, 10);
+        progress.currentDate = dateStr;
+        progress.datesProcessed = i;
+        progress.percent = Math.round((i / dates.length) * 100);
+
+        try {
+          const results = await this.aggregateDate(date);
+
+          for (const r of results) {
+            progress.filesCreated += r.filesCreated;
+            progress.recordsAggregated += r.recordsAggregated;
+            if (r.errors.length > 0) {
+              progress.errors.push(...r.errors.map(e => `[${dateStr}] ${e}`));
+            }
+          }
+        } catch (error) {
+          const errorMsg = `[${dateStr}] ${(error as Error).message}`;
+          this.app.error(`[BulkAggregation] ${errorMsg}`);
+          progress.errors.push(errorMsg);
+        }
+      }
+
+      progress.datesProcessed = dates.length;
+      progress.percent = 100;
+      progress.status = 'completed';
+      progress.completedAt = new Date();
+      scheduleBulkJobCleanup(jobId);
+
+      this.app.debug(
+        `[BulkAggregation] Complete: ${dates.length} dates, ${progress.filesCreated} files created, ${progress.recordsAggregated} records aggregated`
+      );
+    } catch (error) {
+      progress.status = 'error';
+      progress.error = (error as Error).message;
+      progress.completedAt = new Date();
+      scheduleBulkJobCleanup(jobId);
+    }
+  }
+
+  /**
+   * Get bulk aggregation job progress
+   */
+  getBulkProgress(jobId: string): BulkAggregationProgress | null {
+    return bulkAggregationJobs.get(jobId) || null;
+  }
+
+  /**
+   * Cancel a bulk aggregation job
+   */
+  cancelBulk(jobId: string): boolean {
+    const job = bulkAggregationJobs.get(jobId);
+    if (job && (job.status === 'running' || job.status === 'scanning')) {
+      this.cancelRequested = true;
+      return true;
+    }
+    return false;
   }
 }

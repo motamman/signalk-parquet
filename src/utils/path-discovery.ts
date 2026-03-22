@@ -10,7 +10,11 @@ import { DuckDBPool } from './duckdb-pool';
  * Get available SignalK paths from Hive directory structure
  * Scans tier=raw/context={ctx}/path={path}/ and returns paths that contain data files
  */
-export function getAvailablePaths(dataDir: string, app: ServerAPI): PathInfo[] {
+export function getAvailablePaths(
+  dataDir: string,
+  app: ServerAPI,
+  context?: string
+): PathInfo[] {
   const paths: PathInfo[] = [];
   const hiveBuilder = new HivePathBuilder();
 
@@ -22,9 +26,9 @@ export function getAvailablePaths(dataDir: string, app: ServerAPI): PathInfo[] {
   }
 
   try {
-    // Get self context sanitized for matching
-    const selfContext = app.selfContext;
-    const sanitizedSelfContext = hiveBuilder.sanitizeContext(selfContext);
+    // Get target context sanitized for matching
+    const targetContext = context || app.selfContext;
+    const sanitizedTargetContext = hiveBuilder.sanitizeContext(targetContext);
 
     // Iterate context= directories
     const contextDirs = fs.readdirSync(hiveRawDir);
@@ -39,8 +43,8 @@ export function getAvailablePaths(dataDir: string, app: ServerAPI): PathInfo[] {
       // Extract and unsanitize context name
       const sanitizedContext = contextDir.replace('context=', '');
 
-      // Only include paths for self context
-      if (sanitizedContext !== sanitizedSelfContext) continue;
+      // Only include paths for target context
+      if (sanitizedContext !== sanitizedTargetContext) continue;
 
       // Iterate path= directories within each context
       const pathDirs = fs.readdirSync(contextPath);
@@ -107,9 +111,10 @@ function countParquetFilesRecursive(dir: string): number {
  */
 export function getAvailablePathsArray(
   dataDir: string,
-  app: ServerAPI
+  app: ServerAPI,
+  context?: string
 ): string[] {
-  const pathInfos = getAvailablePaths(dataDir, app);
+  const pathInfos = getAvailablePaths(dataDir, app, context);
   return pathInfos.map(pathInfo => pathInfo.path);
 }
 

@@ -4,7 +4,7 @@
  * Handles SQLite buffer status and data migration to Hive partitioning
  */
 
-let currentMigrationJobId = null;
+let currentMigrationJobId = localStorage.getItem('migrationJobId') || null;
 let migrationPollInterval = null;
 
 /**
@@ -297,6 +297,7 @@ async function startMigration() {
     }
 
     currentMigrationJobId = data.jobId;
+    localStorage.setItem('migrationJobId', data.jobId);
 
     // Start polling for progress
     migrationPollInterval = setInterval(pollMigrationProgress, 1000);
@@ -319,8 +320,15 @@ async function pollMigrationProgress() {
     );
     const data = await response.json();
 
-    if (!data.success) {
-      console.error('Failed to get progress:', data.error);
+    if (!data.success || response.status === 404) {
+      // Job not found — stale ID from a previous session
+      clearInterval(migrationPollInterval);
+      migrationPollInterval = null;
+      currentMigrationJobId = null;
+      localStorage.removeItem('migrationJobId');
+      document.getElementById('migrationProgress').style.display = 'none';
+      document.getElementById('startMigrationBtn').disabled = false;
+      document.getElementById('cancelMigrationBtn').disabled = true;
       return;
     }
 
@@ -334,6 +342,8 @@ async function pollMigrationProgress() {
     ) {
       clearInterval(migrationPollInterval);
       migrationPollInterval = null;
+      currentMigrationJobId = null;
+      localStorage.removeItem('migrationJobId');
       document.getElementById('startMigrationBtn').disabled = false;
       document.getElementById('cancelMigrationBtn').disabled = true;
 
@@ -360,13 +370,22 @@ function updateMigrationProgress(data) {
   const progressText = document.getElementById('migrationProgressText');
   const currentFile = document.getElementById('migrationCurrentFile');
 
-  progressBar.style.width = `${data.percent}%`;
-  progressText.textContent = `${data.percent}% complete (${data.processed}/${data.total} files)`;
-
-  if (data.currentFile) {
-    currentFile.textContent = `Current: ${data.currentFile}`;
+  if (data.phase === 'aggregation') {
+    const aggDone = data.aggregationDatesProcessed || 0;
+    const aggTotal = data.aggregationDatesTotal || 0;
+    const aggPercent = aggTotal > 0 ? Math.round((aggDone / aggTotal) * 100) : 0;
+    progressBar.style.width = `${aggPercent}%`;
+    progressText.textContent = `Building tiers: ${aggDone}/${aggTotal} dates (${aggPercent}%)`;
+    currentFile.textContent = data.aggregationCurrentDate ? `Current: ${data.aggregationCurrentDate}` : '';
   } else {
-    currentFile.textContent = '';
+    progressBar.style.width = `${data.percent}%`;
+    progressText.textContent = `${data.percent}% complete (${data.processed}/${data.total} files)`;
+
+    if (data.currentFile) {
+      currentFile.textContent = `Current: ${data.currentFile}`;
+    } else {
+      currentFile.textContent = '';
+    }
   }
 
   // Update status color
@@ -531,5 +550,16 @@ document.addEventListener('DOMContentLoaded', () => {
   if (migrationTab && migrationTab.classList.contains('active')) {
     refreshStoreStats();
     refreshBufferStatus();
+  }
+
+  // Resume polling if a migration job was in progress
+  if (currentMigrationJobId) {
+    const progressDiv = document.getElementById('migrationProgress');
+    if (progressDiv) {
+      progressDiv.style.display = 'block';
+      document.getElementById('startMigrationBtn').disabled = true;
+      document.getElementById('cancelMigrationBtn').disabled = false;
+      migrationPollInterval = setInterval(pollMigrationProgress, 1000);
+    }
   }
 });

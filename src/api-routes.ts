@@ -4153,6 +4153,7 @@ export function registerApiRoutes(
         targetDirectory,
         targetTier = 'raw',
         deleteSource = false,
+        triggerAggregation = true,
       } = req.body;
 
       const source = sourceDirectory || getDataDir();
@@ -4172,6 +4173,7 @@ export function registerApiRoutes(
         targetDirectory: target,
         targetTier,
         deleteSourceAfterMigration: deleteSource,
+        triggerAggregation,
       });
 
       return res.json({
@@ -4387,6 +4389,91 @@ export function registerApiRoutes(
         success: true,
         deletedFiles: result.deletedFiles,
         freedMB: (result.freedBytes / 1024 / 1024).toFixed(2),
+      });
+    } catch (error) {
+      return res.status(500).json({
+        success: false,
+        error: (error as Error).message,
+      });
+    }
+  });
+
+  // ===========================================
+  // BULK AGGREGATION API ROUTES
+  // ===========================================
+
+  // Start bulk aggregation for all dates in tier=raw
+  router.post('/api/aggregate/bulk', async (req, res) => {
+    try {
+      const { startDate, endDate } = req.body;
+
+      const start = startDate ? new Date(startDate) : undefined;
+      const end = endDate ? new Date(endDate) : undefined;
+
+      if (start && isNaN(start.getTime())) {
+        return res.status(400).json({
+          success: false,
+          error: 'Invalid startDate format',
+        });
+      }
+      if (end && isNaN(end.getTime())) {
+        return res.status(400).json({
+          success: false,
+          error: 'Invalid endDate format',
+        });
+      }
+
+      const jobId = aggregationService.startBulkAggregation(start, end);
+
+      return res.json({
+        success: true,
+        jobId,
+        message: 'Bulk aggregation started',
+      });
+    } catch (error) {
+      return res.status(500).json({
+        success: false,
+        error: (error as Error).message,
+      });
+    }
+  });
+
+  // Get bulk aggregation progress
+  router.get('/api/aggregate/bulk/:jobId', (req, res) => {
+    try {
+      const { jobId } = req.params;
+      const progress = aggregationService.getBulkProgress(jobId);
+
+      if (!progress) {
+        return res.status(404).json({
+          success: false,
+          error: 'Bulk aggregation job not found',
+        });
+      }
+
+      return res.json({
+        success: true,
+        ...progress,
+      });
+    } catch (error) {
+      return res.status(500).json({
+        success: false,
+        error: (error as Error).message,
+      });
+    }
+  });
+
+  // Cancel bulk aggregation
+  router.post('/api/aggregate/bulk/cancel/:jobId', (req, res) => {
+    try {
+      const { jobId } = req.params;
+      const cancelled = aggregationService.cancelBulk(jobId);
+
+      return res.json({
+        success: cancelled,
+        message: cancelled
+          ? 'Cancel requested'
+          : 'Job not found or not running',
       });
     } catch (error) {
       return res.status(500).json({

@@ -11,18 +11,20 @@ import { glob } from 'glob';
 import { ServerAPI } from '@signalk/server-api';
 import { HivePathBuilder, AggregationTier } from '../utils/hive-path-builder';
 import { DuckDBPool } from '../utils/duckdb-pool';
+import { AggregationService, AggregationConfig } from './aggregation-service';
 
 export interface MigrationConfig {
   sourceDirectory: string;
   targetDirectory: string;
   targetTier: AggregationTier;
   deleteSourceAfterMigration: boolean;
+  triggerAggregation?: boolean;
 }
 
 export interface MigrationProgress {
   jobId: string;
   status: 'scanning' | 'running' | 'completed' | 'cancelled' | 'error';
-  phase: 'scan' | 'migrate' | 'cleanup';
+  phase: 'scan' | 'migrate' | 'cleanup' | 'aggregation';
   processed: number;
   total: number;
   percent: number;
@@ -34,6 +36,9 @@ export interface MigrationProgress {
   filesMigrated: number;
   filesSkipped: number;
   errors: string[];
+  aggregationDatesProcessed?: number;
+  aggregationDatesTotal?: number;
+  aggregationCurrentDate?: string;
 }
 
 export interface ScanResult {
@@ -263,6 +268,52 @@ export class MigrationService {
       if (config.deleteSourceAfterMigration) {
         progress.phase = 'cleanup';
         await this.cleanupEmptyDirectories(config.sourceDirectory);
+      }
+
+      // Phase 4: Aggregation (if requested)
+      if (config.triggerAggregation && progress.filesMigrated > 0) {
+        progress.phase = 'aggregation';
+
+        try {
+          const aggConfig: AggregationConfig = {
+            outputDirectory: config.targetDirectory,
+            filenamePrefix: 'signalk_data',
+            retentionDays: { raw: 365, '5s': 365, '60s': 365, '1h': 365 },
+          };
+          const aggService = new AggregationService(aggConfig, this.app);
+
+          // Discover dates in the target raw tier
+          const dates = await aggService.discoverRawDates();
+          progress.aggregationDatesTotal = dates.length;
+          progress.aggregationDatesProcessed = 0;
+
+          for (let i = 0; i < dates.length; i++) {
+            if (this.cancelRequested) {
+              progress.status = 'cancelled';
+              progress.completedAt = new Date();
+              scheduleMigrationJobCleanup(jobId);
+              return;
+            }
+
+            const dateStr = dates[i].toISOString().slice(0, 10);
+            progress.aggregationCurrentDate = dateStr;
+            progress.aggregationDatesProcessed = i;
+
+            try {
+              await aggService.aggregateDate(dates[i]);
+            } catch (error) {
+              progress.errors.push(
+                `Aggregation failed for ${dateStr}: ${(error as Error).message}`
+              );
+            }
+          }
+
+          progress.aggregationDatesProcessed = dates.length;
+        } catch (error) {
+          progress.errors.push(
+            `Aggregation phase failed: ${(error as Error).message}`
+          );
+        }
       }
 
       progress.status = 'completed';
