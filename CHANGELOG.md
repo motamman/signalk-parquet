@@ -1,5 +1,72 @@
 # Changelog
 
+## [0.7.20-beta.2] - 2026-03-22
+
+### Added
+
+- **Map Explorer** — New spatial query and visualization tab replicating ZedDisplay Historical Data Explorer
+  - Draw bounding box or radius on interactive Leaflet map with draggable/resizable handles
+  - Query historical data for any vessel within a geographic area and time range
+  - Multi-path overlay (up to 3 paths) with color-coded track, chart, and data table views
+  - Playback controls: play/pause, forward/reverse, speed control, scrub slider
+  - Export: CSV, GeoJSON, KML
+  - Save to SignalK resources: waypoints, tracks, routes
+  - Save/load named areas for repeated queries
+  - OpenSeaMap overlay toggle
+  - Sparkline mini-charts in detail panel
+  - Legend with 3-state visibility toggle (visible/active/hidden)
+- **Searchable Path Selector** — Replaced 3 dropdown selects with searchable checkbox list
+  - Filter paths by substring, select up to 3 with visual chips
+  - Remaining checkboxes disabled when 3 selected
+  - Removable chip badges for selected paths
+- **Display Unit Conversion** — Data table, tooltips, detail panel, and summary stats now show values in user-configured display units
+  - Fetches `/signalk/v1/api/{context}/{path}/meta` for each queried path
+  - Applies `displayUnits.formula` conversion and `displayFormat` decimal formatting
+  - Shows `displayUnits.symbol` as unit label (e.g., kn, °F, ft)
+  - Context-aware: uses correct vessel context for meta lookups
+- **Vessel Name Display** — Context dropdown shows `MMSI XXXXXXXXX` instead of raw URN strings
+  - `contextDisplayName()` extracts MMSI via regex, shows "Self" for own vessel
+  - Vessel count label above dropdown (e.g., "115 vessels found")
+- **Path Configuration: Scalar Properties** — `name`, `mmsi`, `uuid`, and other root-level string/number/boolean properties now appear in the Add Path tree for both self and other vessels
+
+### Changed
+
+- **Date-Reactive Query Config** — Changing lookback or date range now immediately reloads available paths and vessel contexts (previously required manual interaction)
+  - `setLookback()`, `setTimeMode()`, and date input `onchange` all trigger path and context refresh
+  - Date range picker simplified to two compact `<input type="date">` in a single connected field
+- **Context List Refreshes on Date Change** — When "Look up other vessels" is checked, changing the time range re-fetches the context list with the new date params
+
+---
+
+## [0.7.20-beta.1] - 2026-03-21
+
+### Added
+
+- **Bulk Aggregation Endpoint** — New `POST /api/aggregate/bulk` builds 5s/60s/1h tiers from all raw tier data in a single background job
+  - Optional `startDate`/`endDate` to limit scope
+  - Progress polling via `GET /api/aggregate/bulk/:jobId`
+  - Cancel via `POST /api/aggregate/bulk/cancel/:jobId`
+  - Discovers all dates across all contexts automatically
+- **Post-Migration Aggregation** — Migration now automatically builds aggregation tiers after moving files to hive structure
+  - New `triggerAggregation` param on `POST /api/migrate` (default: `true`)
+  - Phase 4 runs after file migration: discovers dates from migrated files and aggregates each
+  - Progress shows "Building tiers: 45/120 dates" during aggregation phase
+- **Context-Aware Paths Endpoint** — `/history/paths` now accepts `?context=` parameter
+  - `?context=vessels.urn:mrn:imo:mmsi:NNNNN` returns paths for that vessel
+  - No context param returns self paths only (backward compatible)
+  - Works on both `/signalk/v1/history/paths` and `/api/history/paths`
+  - SignalK v2 HistoryApi `getPaths()` also supports context
+
+### Fixed
+
+- **Migrated Data Invisible** — Data migrated from flat to hive structure had no aggregated tiers (5s/60s/1h). Auto-tier selection picked empty tiers, returning no data for history queries. Bulk aggregation backfills the missing tiers.
+
+### Changed
+
+- **Migration UI Persistence** — Job ID stored in `localStorage` so migration progress survives page refreshes. Stale job IDs auto-clear when server returns 404.
+
+---
+
 ## [0.7.15] - 2026-03-17
 
 ### Added

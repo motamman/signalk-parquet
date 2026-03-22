@@ -20,6 +20,8 @@ Vessel data Parquet file archive with automated value and geospatial triggers. H
   - Structure: `tier=raw/context={ctx}/path={path}/year={year}/day={day}/`
   - Aggregation tiers: `raw`, `5s`, `60s`, `1h`
   - Automatic partition pruning for time-range queries
+  - **Bulk Aggregation**: `POST /api/aggregate/bulk` builds all tiers from raw data in one background job
+  - **Post-Migration Aggregation**: Migration automatically builds tiers after moving files to hive structure
 - **NEW Cloud Federated Querying**: Query historical data directly from S3 or Cloudflare R2 using DuckDB's native support
   - Three-tier query hierarchy: local parquet → cloud supplement → SQLite buffer
   - Automatic partition pruning reduces data transfer by 70-90%
@@ -88,11 +90,22 @@ The validation system checks each Parquet file for:
 - **Command Management**: Register, execute, and manage SignalK commands with automatic path configuration
 - **Regimen-Based Data Collection**: Control data collection with command-based regimens
 - **Multi-Vessel Support**: Wildcard vessel contexts (`vessels.*`) with MMSI-based exclusion filtering
+  - **Context-Aware Path Discovery**: `/history/paths?context=vessels.urn:mrn:imo:mmsi:NNNNN` returns paths for any tracked vessel
 - **Source Filtering**: Filter data by SignalK source labels (bypasses server arbitration for raw data access)
 - **Comprehensive REST API**: Full programmatic control of queries and configuration
 
 ### User Interface & Integration
 - **Responsive Web Interface**: Complete web-based management interface
+- **NEW Map Explorer**: Interactive spatial query and visualization tab
+  - Draw bounding box or radius areas on a Leaflet map to query vessel data geographically
+  - Multi-path overlay (up to 3 paths) with color-coded track, chart, and data table
+  - Searchable path selector with checkbox list and removable chips
+  - Display values in user-configured units via SignalK metadata (`displayUnits`)
+  - Playback controls with scrub slider for time-series review
+  - Export to CSV, GeoJSON, KML; save as SignalK waypoints, tracks, or routes
+  - OpenSeaMap nautical chart overlay
+  - Save/load named geographic areas for repeated queries
+  - MMSI-labeled vessel context dropdown with date-filtered vessel discovery
 - **Cloud Storage Integration**: Upload files to Amazon S3 or Cloudflare R2 as part of the daily export pipeline
 - **Context Support**: Support for multiple vessel contexts with exclusion controls
 
