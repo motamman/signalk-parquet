@@ -1683,7 +1683,7 @@ export function closeRouteModal() {
 }
 
 export function updateRoutePreview() {
-  const threshold = parseFloat(document.getElementById('me-route-tolerance').value) || 15;
+  const threshold = parseFloat(document.getElementById('me-route-tolerance').value) || 5;
   const coords = state._routeCoords || state.dataPoints.map((pt) => [pt.lon, pt.lat]);
   const simplified = simplifyTrack(coords, threshold);
   const dist = trackDistanceMeters(simplified);
@@ -1696,7 +1696,7 @@ export function confirmSaveRoute() {
   const name = document.getElementById('me-route-name').value.trim();
   if (!name) return;
   const desc = document.getElementById('me-route-desc').value.trim();
-  const threshold = parseFloat(document.getElementById('me-route-tolerance').value) || 15;
+  const threshold = parseFloat(document.getElementById('me-route-tolerance').value) || 5;
 
   const coords = state._routeCoords || state.dataPoints.map((pt) => [pt.lon, pt.lat]);
   const simplified = simplifyTrack(coords, threshold);
