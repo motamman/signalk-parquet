@@ -507,6 +507,14 @@ export function setTimeMode(mode) {
 export function onDateRangeChange() {
   const fromEl = document.getElementById('me-from');
   const toEl = document.getElementById('me-to');
+
+  // When start date changes, auto-suggest end = start + 1 day
+  if (fromEl.value && (!toEl.value || toEl.value < fromEl.value)) {
+    const start = new Date(fromEl.value);
+    start.setDate(start.getDate() + 1);
+    toEl.value = start.toISOString().split('T')[0];
+  }
+
   if (!fromEl.value || !toEl.value) return; // wait until both dates are set
   state._pathsStale = true;
   loadAvailablePaths();
@@ -1569,7 +1577,9 @@ export function saveAsTrack() {
     setToolbarStatus('Need at least 2 points for a track.');
     return;
   }
-  const name = prompt('Track name:', `Track ${new Date().toLocaleDateString()}`);
+  const { from } = getQueryTimeRange();
+  const defaultName = `Track ${new Date(from).toLocaleDateString()}`;
+  const name = prompt('Track name:', defaultName);
   if (!name) return;
 
   const coords = state.dataPoints.map((pt) => [pt.lon, pt.lat]);
@@ -1605,6 +1615,15 @@ export function saveAsRoute() {
   if (cb) cb.checked = false;
   const statusEl = document.getElementById('me-route-hires-status');
   if (statusEl) statusEl.textContent = '';
+
+  // Pre-fill route name with date-based default
+  const nameInput = document.getElementById('me-route-name');
+  if (nameInput && !nameInput.value) {
+    const { from } = getQueryTimeRange();
+    nameInput.value = `Route ${new Date(from).toLocaleDateString()}`;
+  }
+  if (nameInput) nameInput.style.border = '';
+
   document.getElementById('me-route-modal').style.display = 'flex';
   updateRoutePreview();
 }
@@ -1680,6 +1699,8 @@ export async function toggleRouteHiRes() {
 
 export function closeRouteModal() {
   document.getElementById('me-route-modal').style.display = 'none';
+  const nameInput = document.getElementById('me-route-name');
+  if (nameInput) { nameInput.value = ''; nameInput.style.border = ''; }
 }
 
 export function updateRoutePreview() {
@@ -1693,8 +1714,14 @@ export function updateRoutePreview() {
 }
 
 export function confirmSaveRoute() {
-  const name = document.getElementById('me-route-name').value.trim();
-  if (!name) return;
+  const nameEl = document.getElementById('me-route-name');
+  const name = nameEl.value.trim();
+  if (!name) {
+    nameEl.style.border = '2px solid red';
+    nameEl.focus();
+    return;
+  }
+  nameEl.style.border = '';
   const desc = document.getElementById('me-route-desc').value.trim();
   const threshold = parseFloat(document.getElementById('me-route-tolerance').value) || 5;
 
@@ -1738,7 +1765,7 @@ export function confirmSaveRoute() {
 // Unlike Ramer-Douglas-Peucker, this never cuts corners through dangerous waters.
 //
 // coords: [[lon, lat], ...], headingThresholdDeg: degrees, maxLegMeters: meters
-function simplifyTrack(coords, headingThresholdDeg, maxLegMeters = 3704) {
+function simplifyTrack(coords, headingThresholdDeg, maxLegMeters = 3704, minLegMeters = 20) {
   if (coords.length <= 2) return coords.slice();
 
   const result = [coords[0]];
@@ -1746,14 +1773,17 @@ function simplifyTrack(coords, headingThresholdDeg, maxLegMeters = 3704) {
   let prevBearing = bearing(coords[0][1], coords[0][0], coords[1][1], coords[1][0]);
 
   for (let i = 1; i < coords.length - 1; i++) {
-    const b = bearing(coords[i][1], coords[i][0], coords[i + 1][1], coords[i + 1][0]);
-    let delta = Math.abs(b - prevBearing);
-    if (delta > 180) delta = 360 - delta;
-
     const legDist = haversine(
       coords[lastKeptIndex][1], coords[lastKeptIndex][0],
       coords[i][1], coords[i][0]
     );
+
+    // Skip points too close to the last kept point
+    if (legDist < minLegMeters) continue;
+
+    const b = bearing(coords[i][1], coords[i][0], coords[i + 1][1], coords[i + 1][0]);
+    let delta = Math.abs(b - prevBearing);
+    if (delta > 180) delta = 360 - delta;
 
     if (delta >= headingThresholdDeg || legDist >= maxLegMeters) {
       result.push(coords[i]);
