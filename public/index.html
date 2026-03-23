@@ -981,6 +981,17 @@
       }
 
       /* ========== Map Explorer Styles ========== */
+      .me-layout {
+        display: flex;
+        gap: 12px;
+        margin-bottom: 10px;
+      }
+
+      .me-layout-map {
+        flex: 1;
+        min-width: 0;
+      }
+
       .me-map-container {
         height: 450px;
         width: 100%;
@@ -1068,34 +1079,40 @@
       }
 
       .me-query-panel {
-        padding: 12px;
+        padding: 8px 10px;
         background: #fafafa;
+        overflow: hidden;
         border: 1px solid #e0e0e0;
         border-radius: 8px;
-        margin-bottom: 10px;
+        display: flex;
+        flex-direction: column;
+        flex: 1;
       }
 
       .me-query-panel h3 {
-        margin: 0 0 10px;
-        font-size: 1.1rem;
+        margin: 0 0 6px;
+        font-size: 1rem;
         color: #555;
+        flex-shrink: 0;
       }
 
       .me-query-grid {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-        gap: 12px;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        flex: 1;
+        min-height: 0;
       }
 
       .me-query-col label {
-        font-size: 13px;
-        margin-bottom: 4px;
+        font-size: 12px;
+        margin-bottom: 2px;
       }
 
       .me-query-col select,
       .me-query-col input {
-        font-size: 13px;
-        padding: 6px 8px;
+        font-size: 12px;
+        padding: 4px 6px;
       }
 
       .me-btn-group {
@@ -1105,8 +1122,8 @@
       }
 
       .me-btn-group button {
-        padding: 4px 10px;
-        font-size: 12px;
+        padding: 3px 8px;
+        font-size: 11px;
         margin: 0;
         background: #e0e0e0;
         color: #333;
@@ -1186,7 +1203,7 @@
       }
 
       .me-path-list {
-        max-height: 160px;
+        max-height: 90px;
         overflow-y: auto;
         border: 1px solid #ddd;
         border-radius: 4px;
@@ -1196,9 +1213,9 @@
       .me-path-row {
         display: flex;
         align-items: center;
-        gap: 6px;
-        padding: 3px 8px;
-        font-size: 12px;
+        gap: 4px;
+        padding: 2px 6px;
+        font-size: 11px;
         cursor: pointer;
         font-weight: normal;
       }
@@ -1207,9 +1224,11 @@
         background: #f0f0f0;
       }
 
-      .me-path-row input[type="checkbox"] {
+      .me-path-row input[type="checkbox"],
+      .me-path-row input[type="radio"] {
         width: auto;
         margin: 0;
+        flex-shrink: 0;
       }
 
       .me-path-disabled {
@@ -1376,12 +1395,17 @@
       }
 
       @media (max-width: 600px) {
-        .me-map-container {
-          height: 300px;
+        .me-layout {
+          flex-direction: column;
         }
 
-        .me-query-grid {
-          grid-template-columns: 1fr;
+        .me-query-panel {
+          flex: none;
+          max-height: none;
+        }
+
+        .me-map-container {
+          height: 300px;
         }
 
         .me-toolbar {
@@ -3274,19 +3298,31 @@
                 ⚓ OpenSeaMap
               </button>
               <span id="me-status" class="me-status-text"></span>
+              <div id="me-export-btns" class="me-export" style="display: none; margin-left: auto;">
+                <button onclick="meExportCSV()" class="me-btn-sm">📄 CSV</button>
+                <button onclick="meExportGeoJSON()" class="me-btn-sm">🌍 GeoJSON</button>
+                <button onclick="meExportKML()" class="me-btn-sm">📍 KML</button>
+                <span style="border-left: 1px solid #ccc; margin: 0 4px"></span>
+                <button onclick="meSaveAsWaypoint()" class="me-btn-sm">📌 Waypoint</button>
+                <button onclick="meSaveAsTrack()" class="me-btn-sm">🛤️ Track</button>
+                <button onclick="meSaveAsRoute()" class="me-btn-sm">🧭 Route</button>
+              </div>
             </div>
 
-            <!-- Map -->
-            <div id="me-map" class="me-map-container"></div>
+            <!-- Map + Query Config side by side -->
+            <div class="me-layout">
+              <!-- Left: Map -->
+              <div class="me-layout-map">
+                <div id="me-map" class="me-map-container"></div>
+                <!-- Legend -->
+                <div id="me-legend" class="me-legend"></div>
+                <!-- Summary Bar -->
+                <div id="me-summary" class="me-summary"></div>
+              </div>
 
-            <!-- Legend -->
-            <div id="me-legend" class="me-legend"></div>
-
-            <!-- Summary Bar -->
-            <div id="me-summary" class="me-summary"></div>
-
-            <!-- Query Configuration -->
-            <div class="me-query-panel">
+              <!-- Right: Query Configuration -->
+              <div style="display: flex; flex-direction: column; flex: 0 0 340px;">
+              <div class="me-query-panel">
               <h3>Query Configuration</h3>
               <div class="me-query-grid">
                 <!-- Time Range -->
@@ -3310,7 +3346,7 @@
                   <div
                     id="me-lookback-btns"
                     class="me-btn-group"
-                    style="margin-top: 6px"
+                    style="margin-top: 4px"
                   >
                     <button data-days="1" onclick="meSetLookback(1)">1d</button>
                     <button data-days="3" onclick="meSetLookback(3)">3d</button>
@@ -3328,7 +3364,7 @@
                       30d
                     </button>
                   </div>
-                  <div id="me-date-range" style="display: none; margin-top: 6px;">
+                  <div id="me-date-range" style="display: none; margin-top: 4px;">
                     <div class="me-date-range-picker">
                       <input type="date" id="me-from" onchange="meOnDateRangeChange()" />
                       <span class="me-date-sep">&ndash;</span>
@@ -3353,12 +3389,14 @@
                   </div>
                   <div id="me-context-select" style="display: none">
                     <div id="me-context-count" style="font-size: 11px; color: #666; margin-bottom: 2px;"></div>
-                    <select
-                      id="me-context-dropdown"
-                      onchange="meOnContextChange()"
-                    >
-                      <option value="self">Self</option>
-                    </select>
+                    <input
+                      type="text"
+                      id="me-context-filter"
+                      class="me-path-filter"
+                      placeholder="Filter vessels..."
+                      oninput="meFilterContexts(this.value)"
+                    />
+                    <div id="me-context-list" class="me-path-list" style="max-height: 90px;"></div>
                   </div>
                 </div>
 
@@ -3383,7 +3421,7 @@
                     <option value="min">Min</option>
                     <option value="max">Max</option>
                   </select>
-                  <label style="margin-top: 8px">Smoothing</label>
+                  <label style="margin-top: 4px">Smoothing</label>
                   <select id="me-smoothing" onchange="meShowSmoothingParam()">
                     <option value="none">None</option>
                     <option value="sma">SMA</option>
@@ -3396,13 +3434,15 @@
                 </div>
               </div>
 
+            </div><!-- /me-query-panel -->
               <button
                 onclick="meExecuteMapQuery()"
-                style="margin-top: 12px; background: #4caf50"
+                style="margin-top: 6px; background: #4caf50; width: 100%;"
               >
                 ▶ Run Query
               </button>
-            </div>
+            </div><!-- /query column wrapper -->
+            </div><!-- /me-layout -->
 
             <!-- Loading -->
             <div id="me-loading" class="me-loading" style="display: none">
@@ -3460,68 +3500,23 @@
                     style="width: 100%"
                   />
                   <div class="me-playback-controls">
-                    <button
-                      id="me-reverse-btn"
-                      onclick="meTogglePlayReverse()"
-                      class="me-btn-sm"
-                    >
-                      ⏪
-                    </button>
-                    <button
-                      onclick="meSkipPlayback(-10)"
-                      class="me-btn-sm"
-                    >
-                      -10
-                    </button>
-                    <button
-                      id="me-play-btn"
-                      onclick="meTogglePlayback()"
-                      class="me-btn-sm"
-                      style="min-width: 60px"
-                    >
-                      Play
-                    </button>
-                    <button
-                      onclick="meSkipPlayback(10)"
-                      class="me-btn-sm"
-                    >
-                      +10
-                    </button>
-                    <select
-                      onchange="meSetPlaySpeed(this.value)"
-                      style="width: auto; padding: 4px"
-                    >
+                    <button onclick="meSkipPlayback(-Infinity)" class="me-btn-sm" title="First">|&#9664;</button>
+                    <button onclick="meSkipPlayback(-10)" class="me-btn-sm" title="Back 10">&#9664;&#9664;</button>
+                    <button onclick="meSkipPlayback(-1)" class="me-btn-sm" title="Back 1">&#9664;</button>
+                    <button id="me-play-btn" onclick="meTogglePlayback()" class="me-btn-sm" style="min-width: 50px" title="Play/Pause">&#9654;</button>
+                    <button onclick="meSkipPlayback(1)" class="me-btn-sm" title="Forward 1">&#9654;</button>
+                    <button onclick="meSkipPlayback(10)" class="me-btn-sm" title="Forward 10">&#9654;&#9654;</button>
+                    <button onclick="meSkipPlayback(Infinity)" class="me-btn-sm" title="Last">&#9654;|</button>
+                    <select onchange="meSetPlaySpeed(this.value)" style="width: auto; padding: 4px">
                       <option value="1">1x</option>
                       <option value="2">2x</option>
-                      <option value="5">5x</option>
+                      <option value="5" selected>5x</option>
                       <option value="10">10x</option>
                     </select>
                   </div>
                 </div>
               </div>
 
-              <!-- Export + Save as SignalK Resources -->
-              <div class="me-export">
-                <button onclick="meExportCSV()" class="me-btn-sm">
-                  📄 CSV
-                </button>
-                <button onclick="meExportGeoJSON()" class="me-btn-sm">
-                  🌍 GeoJSON
-                </button>
-                <button onclick="meExportKML()" class="me-btn-sm">
-                  📍 KML
-                </button>
-                <span style="border-left: 1px solid #ccc; margin: 0 6px"></span>
-                <button onclick="meSaveAsWaypoint()" class="me-btn-sm">
-                  📌 Save Waypoint
-                </button>
-                <button onclick="meSaveAsTrack()" class="me-btn-sm">
-                  🛤️ Save Track
-                </button>
-                <button onclick="meSaveAsRoute()" class="me-btn-sm">
-                  🧭 Save Route
-                </button>
-              </div>
             </div>
           </div>
 
@@ -3592,15 +3587,22 @@
                 <input type="text" id="me-route-desc" placeholder="Description" />
               </div>
               <div class="form-group">
+                <label style="display: inline; font-weight: normal; cursor: pointer;">
+                  <input type="checkbox" id="me-route-hires" style="width: auto;" onchange="meToggleRouteHiRes()" />
+                  High-resolution track (better turns, slower)
+                </label>
+                <div id="me-route-hires-status" style="font-size: 11px; color: #666; margin: 4px 0;"></div>
+              </div>
+              <div class="form-group">
                 <label>
-                  Detail level: <span id="me-route-tolerance-val">50m</span>
+                  Turn detail: <span id="me-route-tolerance-val">5°</span>
                 </label>
                 <input
                   type="range"
                   id="me-route-tolerance"
-                  min="5"
-                  max="500"
-                  value="50"
+                  min="2"
+                  max="15"
+                  value="5"
                   oninput="meUpdateRoutePreview()"
                   style="width: 100%"
                 />

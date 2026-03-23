@@ -104,8 +104,10 @@ The validation system checks each Parquet file for:
   - Playback controls with scrub slider for time-series review
   - Export to CSV, GeoJSON, KML; save as SignalK waypoints, tracks, or routes
   - OpenSeaMap nautical chart overlay
-  - Save/load named geographic areas for repeated queries
-  - MMSI-labeled vessel context dropdown with date-filtered vessel discovery
+  - Save/load named geographic areas with server sync via SignalK Resources API (shared with ZedDisplay)
+  - High-resolution track option for maximum route fidelity when saving routes
+  - Vessel name display in context dropdown with searchable filter
+  - Auto-selects first data point after query for immediate detail view
 - **Cloud Storage Integration**: Upload files to Amazon S3 or Cloudflare R2 as part of the daily export pipeline
 - **Context Support**: Support for multiple vessel contexts with exclusion controls
 

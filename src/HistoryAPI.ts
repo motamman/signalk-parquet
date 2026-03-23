@@ -1357,8 +1357,20 @@ export class HistoryAPI {
             // Each source does its own aggregation into (timestamp, value, priority).
             // UNION ALL the results, then ROW_NUMBER to pick highest-priority source per bucket.
             // Priority: buffer(3) > raw tier gap(2) > aggregated/raw tier parquet(1).
-            const tsCol = getTierTimestampColumn(effectiveTier);
-            const whereClause = getTierWhereClause(effectiveTier, hasValueJson);
+            // String paths must always use raw tier (no aggregated value_avg exists)
+            const scalarEffectiveTier = isStringPath(pathSpec.path) ? 'raw' : effectiveTier;
+            if (isStringPath(pathSpec.path) && effectiveTier !== 'raw') {
+              // Rebuild fromClause pointing to raw tier for string paths
+              localFilePath = path.join(
+                this.dataDir, 'tier=raw',
+                `context=${sanitizedContext}`, `path=${sanitizedSkPath}`,
+                '**', '*.parquet'
+              );
+              localFromClause = buildFromClause(localFilePath);
+              fromClause = localFromClause;
+            }
+            const tsCol = getTierTimestampColumn(scalarEffectiveTier);
+            const whereClause = getTierWhereClause(scalarEffectiveTier, hasValueJson);
             const bucketExpr = (col: string) =>
               `strftime(DATE_TRUNC('seconds', EPOCH_MS(CAST(FLOOR(EPOCH_MS(${col}::TIMESTAMP) / ${timeResolutionMillis}) * ${timeResolutionMillis} AS BIGINT))), '%Y-%m-%dT%H:%M:%SZ')`;
 
@@ -1366,7 +1378,7 @@ export class HistoryAPI {
               const subqueries: string[] = [];
 
               // Source 1: tier parquet (uses tier-native columns and aggregate)
-              const tierAggExpr = getTierAggregateExpression(pathSpec.aggregateMethod, pathSpec.path, effectiveTier, hasValueJson, app, context as string);
+              const tierAggExpr = getTierAggregateExpression(pathSpec.aggregateMethod, pathSpec.path, scalarEffectiveTier, hasValueJson, app, context as string);
               subqueries.push(`
                 SELECT ${bucketExpr(tsCol)} as timestamp, ${tierAggExpr} as value, 1 as priority
                 FROM ${fc} AS source_data
@@ -1447,12 +1459,15 @@ export class HistoryAPI {
                 fallbackKnownPaths
               );
               if (bufferSubquery) {
+                const fallbackAggExpr = isStringPath(pathSpec.path)
+                  ? 'FIRST(value)'
+                  : 'AVG(TRY_CAST(value AS DOUBLE))';
                 const bufferQuery = `
                   SELECT
                     strftime(DATE_TRUNC('seconds',
                       EPOCH_MS(CAST(FLOOR(EPOCH_MS(signalk_timestamp::TIMESTAMP) / ${timeResolutionMillis}) * ${timeResolutionMillis} AS BIGINT))
                     ), '%Y-%m-%dT%H:%M:%SZ') as timestamp,
-                    AVG(TRY_CAST(value AS DOUBLE)) as value
+                    ${fallbackAggExpr} as value
                   FROM ${bufferSubquery} AS source_data
                   WHERE value IS NOT NULL
                   GROUP BY timestamp
@@ -1943,10 +1958,15 @@ function getAggregateFunction(method: AggregateMethod): string {
   }
 }
 
-function getValueExpression(pathName: string, hasValueJson: boolean): string {
+function getValueExpression(pathName: string, hasValueJson: boolean, forceRaw: boolean = false): string {
   // For position data or other complex objects, use value_json if the column exists
   if (pathName === 'navigation.position' && hasValueJson) {
     return 'value_json';
+  }
+
+  // When forceRaw is set, return value as-is (for string paths)
+  if (forceRaw) {
+    return 'value';
   }
 
   // For numeric data, try to cast to DOUBLE, fallback to the original value
@@ -2020,6 +2040,14 @@ function getTierWhereClause(tier: string, hasValueJson: boolean): string {
   return 'value_avg IS NOT NULL';
 }
 
+// Root-level SignalK paths that are string properties, not numeric time series
+const STRING_PATHS = new Set(['name', 'mmsi', 'uuid', 'flag', 'port', 'callsignVhf']);
+
+function isStringPath(pathName: string): boolean {
+  // Root-level paths without dots are typically string properties
+  return STRING_PATHS.has(pathName) || !pathName.includes('.');
+}
+
 function getAggregateExpression(
   method: AggregateMethod,
   pathName: string,
@@ -2027,6 +2055,20 @@ function getAggregateExpression(
   app?: any,
   context?: string
 ): string {
+  // String paths: can't AVG/MIN/MAX — use FIRST, LAST, or FIRST for average/default
+  if (isStringPath(pathName)) {
+    const valueExpr = getValueExpression(pathName, hasValueJson, true);
+    switch (method) {
+      case 'last':
+        return `LAST(${valueExpr})`;
+      case 'first':
+      case 'average':
+      case undefined:
+      default:
+        return `FIRST(${valueExpr})`;
+    }
+  }
+
   const valueExpr = getValueExpression(pathName, hasValueJson);
 
   if (method === 'middle_index') {

@@ -1,5 +1,34 @@
 # Changelog
 
+## [0.7.20-beta.3] - 2026-03-23
+
+### Added
+
+- **Saved Areas — SignalK Resources Sync** — Saved search areas now persist to the SignalK server via the Resources API (`zeddisplay-search-areas` resource type)
+  - Shared with ZedDisplay: areas saved in either app appear in both
+  - Server is source of truth; localStorage used only for unsynced offline saves
+  - Automatic push of locally-created areas on next server contact
+  - Delete propagates to server so all clients stay in sync
+- **High-Resolution Track Option** — Checkbox in Save as Route panel fetches raw-tier position data for maximum track fidelity
+  - Fetches full `navigation.position` history at 1-second resolution
+  - Status indicator shows point count after fetch
+- **Vessel Name Display** — Context dropdown now shows actual vessel names (e.g., "Sea Breeze (338123456)") instead of raw MMSI numbers
+  - Batch-fetches `name` path from history for each discovered context
+  - Searchable context list with filter-as-you-type
+- **Auto-Select First Data Point** — After a query completes, the first data point is automatically selected so detail panel and sparklines are immediately visible
+
+### Changed
+
+- **Route Simplification** — Reduced default turn-detail tolerance for more accurate route geometry; user-adjustable tolerance slider
+- **Query Panel Layout** — Reorganized query configuration panel for better flow; date range end auto-suggests start + 1 day
+- **String Path Handling** — HistoryAPI now correctly queries string properties (`name`, `mmsi`, `uuid`, `flag`, `port`, `callsignVhf`) using raw tier and `FIRST(value)` aggregation instead of attempting numeric `AVG()` casts
+
+### Fixed
+
+- **String Path Aggregation** — String properties (`name`, `mmsi`, `uuid`, etc.) now return their string value at any tier; previously returned NULL because `AVG()` cast failed. HistoryAPI forces raw tier and uses `FIRST(value)` to preserve the original string
+
+---
+
 ## [0.7.20-beta.2] - 2026-03-22
 
 ### Added

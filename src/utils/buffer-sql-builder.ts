@@ -42,9 +42,13 @@ export function buildBufferScalarSubquery(
 
   const tableName = pathToTableName(pathStr);
 
+  // Root-level paths without dots are string properties (name, mmsi, uuid, etc.)
+  const isStringPath = !pathStr.includes('.');
+  const valueExpr = isStringPath ? 'value' : 'TRY_CAST(value AS DOUBLE)';
+
   return `(SELECT
     signalk_timestamp,
-    TRY_CAST(value AS DOUBLE) AS value,
+    ${valueExpr} AS value,
     NULL::VARCHAR AS value_json
   FROM buffer.${tableName}
   WHERE context = '${escapeSql(String(context))}'

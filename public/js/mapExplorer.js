@@ -53,6 +53,7 @@ let state = {
   availablePaths: [],
   pathMeta: {},              // { 'nav.speedOverGround': { formula, symbol, displayFormat } }
   availableContexts: [],
+  vesselNames: new Map(),
   // Results
   results: null,
   trackLayer: null,
@@ -117,6 +118,7 @@ export function initMapExplorer() {
   state._pathsStale = true;
   loadSavedAreas();
   loadAvailablePaths();
+  updateQueryPanelState();
 
   setTimeout(() => state.map.invalidateSize(), 200);
 }
@@ -212,6 +214,7 @@ function finalizeBbox(corner1, corner2) {
   };
 
   drawAreaOnMap();
+  updateQueryPanelState();
 }
 
 // =============================================================================
@@ -261,6 +264,7 @@ function finalizeRadius(center, radius) {
   };
 
   drawAreaOnMap();
+  updateQueryPanelState();
 }
 
 // =============================================================================
@@ -307,6 +311,18 @@ function clearAreaLayer() {
   state.handles = [];
 }
 
+function updateQueryPanelState() {
+  const panel = document.querySelector('.me-query-panel');
+  if (!panel) return;
+  if (state.areaGeometry) {
+    panel.style.opacity = '1';
+    panel.style.pointerEvents = 'auto';
+  } else {
+    panel.style.opacity = '0.4';
+    panel.style.pointerEvents = 'none';
+  }
+}
+
 function clearDrawing() {
   clearAreaLayer();
   if (state.drawPreview) {
@@ -319,6 +335,7 @@ function clearDrawing() {
   state.drawStartLatLng = null;
   document.getElementById('me-map').style.cursor = '';
   setToolbarStatus('');
+  updateQueryPanelState();
 }
 
 function makeHandle(latlng, index) {
@@ -490,6 +507,14 @@ export function setTimeMode(mode) {
 export function onDateRangeChange() {
   const fromEl = document.getElementById('me-from');
   const toEl = document.getElementById('me-to');
+
+  // When start date changes, auto-suggest end = start + 1 day
+  if (fromEl.value && (!toEl.value || toEl.value < fromEl.value)) {
+    const start = new Date(fromEl.value);
+    start.setDate(start.getDate() + 1);
+    toEl.value = start.toISOString().split('T')[0];
+  }
+
   if (!fromEl.value || !toEl.value) return; // wait until both dates are set
   state._pathsStale = true;
   loadAvailablePaths();
@@ -510,12 +535,82 @@ export function setLookback(days) {
   }
 }
 
-function contextDisplayName(ctx) {
+function contextDisplayName(ctx, vesselNames) {
   if (ctx === 'self' || ctx === 'vessels.self') return 'Self';
   const mmsiMatch = ctx.match(/mmsi:(\d+)/);
-  if (mmsiMatch) return `MMSI ${mmsiMatch[1]}`;
+  const mmsi = mmsiMatch ? mmsiMatch[1] : null;
+  const name = vesselNames ? vesselNames.get(ctx) : null;
+  if (name && mmsi) return `${name} (${mmsi})`;
+  if (name) return name;
+  if (mmsi) return `MMSI ${mmsi}`;
   const lastDot = ctx.lastIndexOf('.');
   return lastDot >= 0 ? ctx.substring(lastDot + 1) : ctx;
+}
+
+async function fetchVesselNames(contexts, from, to) {
+  const names = new Map();
+  // Batch in groups of 10 to avoid overwhelming the server
+  const ctxList = (Array.isArray(contexts) ? contexts : [])
+    .map((c) => c.context || c)
+    .filter((ctx) => ctx !== 'self' && ctx !== 'vessels.self');
+
+  for (let i = 0; i < ctxList.length; i += 10) {
+    const batch = ctxList.slice(i, i + 10);
+    await Promise.all(batch.map(async (ctx) => {
+      try {
+        const url = `/signalk/v1/history/values?context=${encodeURIComponent(ctx)}&paths=name&from=${from}&to=${to}&resolution=86400`;
+        const resp = await fetch(url);
+        if (!resp.ok) return;
+        const data = await resp.json();
+        const result = Array.isArray(data) ? data[0] : data;
+        if (result && result.data && result.data.length > 0) {
+          const lastRow = result.data[result.data.length - 1];
+          if (lastRow && lastRow[1]) {
+            names.set(ctx, lastRow[1]);
+          }
+        }
+      } catch (err) {
+        // no name data for this context
+      }
+    }));
+  }
+  console.log(`Fetched ${names.size} vessel names from history API`);
+  return names;
+}
+
+function renderContextList(filter) {
+  const listEl = document.getElementById('me-context-list');
+  if (!listEl) return;
+  listEl.innerHTML = '';
+  const filterLower = (filter || '').toLowerCase();
+
+  // Self option
+  if (!filterLower || 'self'.includes(filterLower)) {
+    const row = document.createElement('label');
+    row.className = 'me-path-row';
+    row.innerHTML = `<input type="radio" name="me-ctx" value="self" ${state.context === 'self' ? 'checked' : ''} onchange="meSelectContext('self')" /> <span>Self</span>`;
+    listEl.appendChild(row);
+  }
+
+  (Array.isArray(state.availableContexts) ? state.availableContexts : []).forEach((c) => {
+    const ctx = c.context || c;
+    const label = contextDisplayName(ctx, state.vesselNames);
+    if (filterLower && !label.toLowerCase().includes(filterLower) && !ctx.toLowerCase().includes(filterLower)) return;
+    const row = document.createElement('label');
+    row.className = 'me-path-row';
+    row.innerHTML = `<input type="radio" name="me-ctx" value="${ctx}" ${state.context === ctx ? 'checked' : ''} onchange="meSelectContext('${ctx}')" /> ${label}`;
+    listEl.appendChild(row);
+  });
+}
+
+export function filterContexts(value) {
+  renderContextList(value);
+}
+
+export function selectContext(ctx) {
+  state.context = ctx;
+  state._pathsStale = true;
+  loadAvailablePaths();
 }
 
 export async function lookupContexts() {
@@ -543,31 +638,27 @@ export async function lookupContexts() {
     const data = await resp.json();
     state.availableContexts = data.contexts || data || [];
 
-    const select = document.getElementById('me-context-dropdown');
-    select.innerHTML = '<option value="self">Self</option>';
-    (Array.isArray(state.availableContexts)
-      ? state.availableContexts
-      : []
-    ).forEach((c) => {
-      const ctx = c.context || c;
-      const label = contextDisplayName(ctx);
-      select.innerHTML += `<option value="${ctx}">${label}</option>`;
-    });
     const countEl = document.getElementById('me-context-count');
     if (countEl) {
       const n = Array.isArray(state.availableContexts) ? state.availableContexts.length : 0;
       countEl.textContent = `${n} vessel${n !== 1 ? 's' : ''} found`;
     }
+    // Clear filter and render list immediately with MMSI-only labels
+    const filterEl = document.getElementById('me-context-filter');
+    if (filterEl) filterEl.value = '';
+    renderContextList('');
     document.getElementById('me-context-select').style.display = 'block';
+
+    // Fetch vessel names in background, then re-render with names
+    fetchVesselNames(state.availableContexts, from, to).then((names) => {
+      state.vesselNames = names;
+      renderContextList(filterEl ? filterEl.value : '');
+    }).catch((err) => {
+      console.error('Failed to fetch vessel names:', err);
+    });
   } catch (err) {
     console.error('Failed to load contexts:', err);
   }
-}
-
-export function onContextChange() {
-  state.context = document.getElementById('me-context-dropdown').value;
-  state._pathsStale = true;
-  loadAvailablePaths();
 }
 
 export async function loadAvailablePaths() {
@@ -709,13 +800,11 @@ export async function executeMapQuery() {
   state.mode = STATES.LOADING;
   document.getElementById('me-loading').style.display = 'block';
   document.getElementById('me-results-panel').style.display = 'none';
+  const exportBtns = document.getElementById('me-export-btns');
+  if (exportBtns) exportBtns.style.display = 'none';
 
   const { from, to } = getQueryTimeRange();
   const ctx = state.context === 'self' ? '' : state.context;
-
-  // Auto-resolution: ~500 points
-  const msRange = new Date(to).getTime() - new Date(from).getTime();
-  const resolution = Math.max(1, Math.round(msRange / 500 / 1000));
 
   // Always include navigation.position for track
   const allPaths = ['navigation.position', ...paths.filter((p) => !p.startsWith('navigation.position'))];
@@ -733,7 +822,6 @@ export async function executeMapQuery() {
     `/signalk/v1/history/values?context=${ctx}` +
     `&from=${from}&to=${to}` +
     `&paths=${allPaths.join(',')}` +
-    `&resolution=${resolution}` +
     spatialParam;
 
   try {
@@ -753,8 +841,15 @@ export async function executeMapQuery() {
     renderLegend();
     renderSummary();
 
+    // Auto-select first data point so detail/sparklines are visible immediately
+    if (state.dataPoints.length > 0) {
+      selectPoint(0);
+    }
+
     document.getElementById('me-loading').style.display = 'none';
     document.getElementById('me-results-panel').style.display = 'block';
+    const exportBtns2 = document.getElementById('me-export-btns');
+    if (exportBtns2) exportBtns2.style.display = 'flex';
   } catch (err) {
     console.error('Map query failed:', err);
     document.getElementById('me-loading').style.display = 'none';
@@ -950,6 +1045,11 @@ function renderMapResults() {
     state.markerLayers.push(marker);
   });
 
+  // Bring selected marker to front
+  if (state.selectedIndex >= 0 && state.markerLayers[state.selectedIndex]) {
+    state.markerLayers[state.selectedIndex].bringToFront();
+  }
+
   // Fit bounds to track
   if (state.trackLayer) {
     state.map.fitBounds(state.trackLayer.getBounds().pad(0.1));
@@ -1088,7 +1188,7 @@ function renderDetailPanel() {
     state.dataPoints.forEach((dp) => {
       if (dp.values[p] !== undefined) {
         xData.push(new Date(dp.ts));
-        yData.push(dp.values[p]);
+        yData.push(convertValue(dp.values[p], p));
       }
     });
 
@@ -1113,7 +1213,7 @@ function renderDetailPanel() {
         height: 80,
         margin: { t: 5, b: 20, l: 40, r: 5 },
         xaxis: { showgrid: false, showticklabels: false },
-        yaxis: { showgrid: true, gridcolor: '#eee' },
+        yaxis: { showgrid: true, gridcolor: '#eee', title: { text: getUnitForPath(p), font: { size: 10 } } },
         shapes: [
           {
             type: 'line',
@@ -1155,7 +1255,7 @@ export function togglePlayback() {
 function startPlayback() {
   if (state.dataPoints.length === 0) return;
   state.playing = true;
-  document.getElementById('me-play-btn').textContent = 'Pause';
+  document.getElementById('me-play-btn').textContent = '\u23F8';
 
   if (state.selectedIndex < 0) state.selectedIndex = 0;
 
@@ -1178,7 +1278,7 @@ function stopPlayback() {
   if (state.playInterval) clearInterval(state.playInterval);
   state.playInterval = null;
   const btn = document.getElementById('me-play-btn');
-  if (btn) btn.textContent = 'Play';
+  if (btn) btn.textContent = '\u25B6';
 }
 
 export function togglePlayReverse() {
@@ -1192,10 +1292,15 @@ export function togglePlayReverse() {
 }
 
 export function skipPlayback(delta) {
-  const next = Math.max(
-    0,
-    Math.min(state.dataPoints.length - 1, state.selectedIndex + delta)
-  );
+  if (state.dataPoints.length === 0) return;
+  let next;
+  if (delta === -Infinity) {
+    next = 0;
+  } else if (delta === Infinity) {
+    next = state.dataPoints.length - 1;
+  } else {
+    next = Math.max(0, Math.min(state.dataPoints.length - 1, state.selectedIndex + delta));
+  }
   selectPoint(next);
 }
 
@@ -1472,7 +1577,9 @@ export function saveAsTrack() {
     setToolbarStatus('Need at least 2 points for a track.');
     return;
   }
-  const name = prompt('Track name:', `Track ${new Date().toLocaleDateString()}`);
+  const { from } = getQueryTimeRange();
+  const defaultName = `Track ${new Date(from).toLocaleDateString()}`;
+  const name = prompt('Track name:', defaultName);
   if (!name) return;
 
   const coords = state.dataPoints.map((pt) => [pt.lon, pt.lat]);
@@ -1502,44 +1609,136 @@ export function saveAsRoute() {
     setToolbarStatus('Need at least 2 points for a route.');
     return;
   }
+  state._routeCoords = null;
+  state._routeHiResCoords = null;
+  const cb = document.getElementById('me-route-hires');
+  if (cb) cb.checked = false;
+  const statusEl = document.getElementById('me-route-hires-status');
+  if (statusEl) statusEl.textContent = '';
+
+  // Pre-fill route name with date-based default
+  const nameInput = document.getElementById('me-route-name');
+  if (nameInput && !nameInput.value) {
+    const { from } = getQueryTimeRange();
+    nameInput.value = `Route ${new Date(from).toLocaleDateString()}`;
+  }
+  if (nameInput) nameInput.style.border = '';
+
   document.getElementById('me-route-modal').style.display = 'flex';
   updateRoutePreview();
 }
 
+export async function toggleRouteHiRes() {
+  const cb = document.getElementById('me-route-hires');
+  const statusEl = document.getElementById('me-route-hires-status');
+
+  if (!cb.checked) {
+    state._routeCoords = null;
+    updateRoutePreview();
+    if (statusEl) statusEl.textContent = '';
+    return;
+  }
+
+  // Already fetched?
+  if (state._routeHiResCoords) {
+    state._routeCoords = state._routeHiResCoords;
+    updateRoutePreview();
+    return;
+  }
+
+  if (statusEl) statusEl.textContent = 'Fetching high-resolution track...';
+
+  const { from, to } = getQueryTimeRange();
+  const ctx = state.context === 'self' ? '' : state.context;
+  let spatialParam = '';
+  if (state.areaType === 'bbox') {
+    const g = state.areaGeometry;
+    spatialParam = `&bbox=${g.west},${g.south},${g.east},${g.north}`;
+  } else if (state.areaType === 'radius') {
+    const g = state.areaGeometry;
+    spatialParam = `&radius=${g.lon},${g.lat},${g.radius}`;
+  }
+
+  try {
+    const url =
+      `/signalk/v1/history/values?context=${ctx}` +
+      `&from=${from}&to=${to}` +
+      `&paths=navigation.position` +
+      `&resolution=5` +
+      spatialParam;
+    const resp = await fetch(url);
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const data = await resp.json();
+    const result = Array.isArray(data) ? data[0] : data;
+
+    const hiResCoords = [];
+    if (result && result.data) {
+      result.data.forEach((row) => {
+        const posVal = row[1];
+        if (!posVal) return;
+        let lat, lon;
+        if (typeof posVal === 'object' && posVal.latitude !== undefined) {
+          lat = posVal.latitude; lon = posVal.longitude;
+        } else if (Array.isArray(posVal)) {
+          lon = posVal[0]; lat = posVal[1];
+        } else return;
+        if (lat && lon) hiResCoords.push([lon, lat]);
+      });
+    }
+
+    state._routeHiResCoords = hiResCoords;
+    state._routeCoords = hiResCoords;
+    if (statusEl) statusEl.textContent = `${hiResCoords.length} high-res points loaded.`;
+    updateRoutePreview();
+  } catch (err) {
+    console.error('High-res fetch failed:', err);
+    if (statusEl) statusEl.textContent = 'Failed to load high-res data.';
+    cb.checked = false;
+  }
+}
+
 export function closeRouteModal() {
   document.getElementById('me-route-modal').style.display = 'none';
+  const nameInput = document.getElementById('me-route-name');
+  if (nameInput) { nameInput.value = ''; nameInput.style.border = ''; }
 }
 
 export function updateRoutePreview() {
-  const tolerance = parseFloat(document.getElementById('me-route-tolerance').value) || 50;
-  const coords = state.dataPoints.map((pt) => [pt.lon, pt.lat]);
-  const simplified = simplifyPath(coords, tolerance);
-  const dist = calculatePathDistance(simplified);
+  const threshold = parseFloat(document.getElementById('me-route-tolerance').value) || 5;
+  const coords = state._routeCoords || state.dataPoints.map((pt) => [pt.lon, pt.lat]);
+  const simplified = simplifyTrack(coords, threshold);
+  const dist = trackDistanceMeters(simplified);
   document.getElementById('me-route-preview').textContent =
-    `${coords.length} points simplified to ${simplified.length} waypoints (${(dist / 1000).toFixed(1)} km)`;
-  document.getElementById('me-route-tolerance-val').textContent = `${tolerance}m`;
+    `${coords.length} points \u2192 ${simplified.length} waypoints \u2022 ${metersToNM(dist).toFixed(1)} NM`;
+  document.getElementById('me-route-tolerance-val').textContent = `${threshold}\u00B0`;
 }
 
 export function confirmSaveRoute() {
-  const name = document.getElementById('me-route-name').value.trim();
-  if (!name) return;
+  const nameEl = document.getElementById('me-route-name');
+  const name = nameEl.value.trim();
+  if (!name) {
+    nameEl.style.border = '2px solid red';
+    nameEl.focus();
+    return;
+  }
+  nameEl.style.border = '';
   const desc = document.getElementById('me-route-desc').value.trim();
-  const tolerance = parseFloat(document.getElementById('me-route-tolerance').value) || 50;
+  const threshold = parseFloat(document.getElementById('me-route-tolerance').value) || 5;
 
-  const coords = state.dataPoints.map((pt) => [pt.lon, pt.lat]);
-  const simplified = simplifyPath(coords, tolerance);
-  const dist = calculatePathDistance(simplified);
+  const coords = state._routeCoords || state.dataPoints.map((pt) => [pt.lon, pt.lat]);
+  const simplified = simplifyTrack(coords, threshold);
+  const dist = trackDistanceMeters(simplified);
 
   const id = crypto.randomUUID();
   const data = {
     name,
     description: desc,
-    distance: dist,
+    distance: Math.round(dist),
     feature: {
       type: 'Feature',
       geometry: { type: 'LineString', coordinates: simplified },
       properties: {
-        coordinatesMeta: simplified.map(() => ({ name: '' })),
+        coordinatesMeta: simplified.map((_, i) => ({ name: `WPT ${i + 1}` })),
       },
       id: '',
     },
@@ -1551,7 +1750,7 @@ export function confirmSaveRoute() {
     body: JSON.stringify(data),
   })
     .then((r) => {
-      if (r.ok) setToolbarStatus(`Route "${name}" saved (${simplified.length} waypoints).`);
+      if (r.ok) setToolbarStatus(`Route "${name}" saved (${simplified.length} waypoints, ${metersToNM(dist).toFixed(1)} NM).`);
       else setToolbarStatus('Failed to save route.');
       closeRouteModal();
     })
@@ -1561,50 +1760,60 @@ export function confirmSaveRoute() {
     });
 }
 
-// Ramer-Douglas-Peucker path simplification
-function simplifyPath(coords, tolerance) {
-  if (coords.length <= 2) return coords;
+// Course-delta track simplification for marine route creation.
+// Preserves waypoints at turns while removing redundant straight-line points.
+// Unlike Ramer-Douglas-Peucker, this never cuts corners through dangerous waters.
+//
+// coords: [[lon, lat], ...], headingThresholdDeg: degrees, maxLegMeters: meters
+function simplifyTrack(coords, headingThresholdDeg, maxLegMeters = 3704, minLegMeters = 20) {
+  if (coords.length <= 2) return coords.slice();
 
-  // Convert tolerance from meters to approx degrees
-  const tolDeg = tolerance / 111320;
+  const result = [coords[0]];
+  let lastKeptIndex = 0;
+  let prevBearing = bearing(coords[0][1], coords[0][0], coords[1][1], coords[1][0]);
 
-  function perpDist(pt, lineStart, lineEnd) {
-    const dx = lineEnd[0] - lineStart[0];
-    const dy = lineEnd[1] - lineStart[1];
-    const lenSq = dx * dx + dy * dy;
-    if (lenSq === 0) return Math.sqrt((pt[0] - lineStart[0]) ** 2 + (pt[1] - lineStart[1]) ** 2);
-    const t = Math.max(0, Math.min(1, ((pt[0] - lineStart[0]) * dx + (pt[1] - lineStart[1]) * dy) / lenSq));
-    const projX = lineStart[0] + t * dx;
-    const projY = lineStart[1] + t * dy;
-    return Math.sqrt((pt[0] - projX) ** 2 + (pt[1] - projY) ** 2);
+  for (let i = 1; i < coords.length - 1; i++) {
+    const legDist = haversine(
+      coords[lastKeptIndex][1], coords[lastKeptIndex][0],
+      coords[i][1], coords[i][0]
+    );
+
+    // Skip points too close to the last kept point
+    if (legDist < minLegMeters) continue;
+
+    const b = bearing(coords[i][1], coords[i][0], coords[i + 1][1], coords[i + 1][0]);
+    let delta = Math.abs(b - prevBearing);
+    if (delta > 180) delta = 360 - delta;
+
+    if (delta >= headingThresholdDeg || legDist >= maxLegMeters) {
+      result.push(coords[i]);
+      lastKeptIndex = i;
+    }
+    prevBearing = b;
   }
 
-  function rdp(pts, tol) {
-    if (pts.length <= 2) return pts;
-    let maxDist = 0, maxIdx = 0;
-    for (let i = 1; i < pts.length - 1; i++) {
-      const d = perpDist(pts[i], pts[0], pts[pts.length - 1]);
-      if (d > maxDist) { maxDist = d; maxIdx = i; }
-    }
-    if (maxDist > tol) {
-      const left = rdp(pts.slice(0, maxIdx + 1), tol);
-      const right = rdp(pts.slice(maxIdx), tol);
-      return left.slice(0, -1).concat(right);
-    }
-    return [pts[0], pts[pts.length - 1]];
-  }
-
-  return rdp(coords, tolDeg);
+  result.push(coords[coords.length - 1]);
+  return result;
 }
 
-// Calculate path distance in meters using Haversine
-function calculatePathDistance(coords) {
+function bearing(lat1, lon1, lat2, lon2) {
+  const toRad = Math.PI / 180;
+  const dLon = (lon2 - lon1) * toRad;
+  const y = Math.sin(dLon) * Math.cos(lat2 * toRad);
+  const x = Math.cos(lat1 * toRad) * Math.sin(lat2 * toRad) -
+    Math.sin(lat1 * toRad) * Math.cos(lat2 * toRad) * Math.cos(dLon);
+  return ((Math.atan2(y, x) * 180 / Math.PI) + 360) % 360;
+}
+
+function trackDistanceMeters(coords) {
   let total = 0;
   for (let i = 1; i < coords.length; i++) {
     total += haversine(coords[i - 1][1], coords[i - 1][0], coords[i][1], coords[i][0]);
   }
   return total;
 }
+
+function metersToNM(m) { return m / 1852; }
 
 function haversine(lat1, lon1, lat2, lon2) {
   const R = 6371000;
@@ -1620,13 +1829,191 @@ function haversine(lat1, lon1, lat2, lon2) {
 // =============================================================================
 
 const SAVED_AREAS_KEY = 'signalk-parquet-saved-areas';
+const RESOURCE_TYPE = 'zeddisplay-search-areas';
 
-function loadSavedAreas() {
-  try {
-    state.savedAreas = JSON.parse(localStorage.getItem(SAVED_AREAS_KEY) || '[]');
-  } catch {
-    state.savedAreas = [];
+// ---------------------------------------------------------------------------
+// Server communication helpers
+// ---------------------------------------------------------------------------
+
+function areaToGeoJsonFeature(area) {
+  const properties = {
+    name: area.name,
+    ...(area.description ? { description: area.description } : {}),
+    createdAt: area.created,
+    areaType: area.type,
+  };
+
+  let geometry;
+  if (area.type === 'bbox') {
+    const { west, south, east, north } = area.geometry;
+    properties.point1Lat = south;
+    properties.point1Lng = west;
+    properties.point2Lat = north;
+    properties.point2Lng = east;
+    geometry = {
+      type: 'Polygon',
+      coordinates: [[
+        [west, south], [east, south], [east, north], [west, north], [west, south],
+      ]],
+    };
+  } else {
+    const { lat, lon, radius } = area.geometry;
+    properties.point1Lat = lat;
+    properties.point1Lng = lon;
+    // Approximate point2 as radius meters due east of center
+    const dLng = radius / (111320 * Math.cos(lat * Math.PI / 180));
+    properties.point2Lat = lat;
+    properties.point2Lng = lon + dLng;
+    properties.radius = radius;
+    geometry = { type: 'Point', coordinates: [lon, lat] };
   }
+
+  return { type: 'Feature', geometry, properties };
+}
+
+function areaToResourceData(area) {
+  const feature = areaToGeoJsonFeature(area);
+  return {
+    name: area.name,
+    description: JSON.stringify(feature),
+    position: {
+      latitude: feature.properties.point1Lat,
+      longitude: feature.properties.point1Lng,
+    },
+  };
+}
+
+function resourceDataToArea(id, data) {
+  let geoJson;
+  try {
+    geoJson = JSON.parse(data.description || '{}');
+  } catch {
+    geoJson = {};
+  }
+
+  const props = geoJson.properties || {};
+  const geom = geoJson.geometry || {};
+  const areaType = props.areaType || 'bbox';
+  const hasExplicit = 'point1Lat' in props;
+
+  let geometry;
+
+  if (hasExplicit && areaType === 'bbox') {
+    geometry = {
+      west: props.point1Lng,
+      south: props.point1Lat,
+      east: props.point2Lng,
+      north: props.point2Lat,
+    };
+  } else if (hasExplicit && areaType === 'radius') {
+    const lat = props.point1Lat;
+    const lon = props.point1Lng;
+    const radius = props.radius || 0;
+    geometry = { lat, lon, radius: Math.round(radius) };
+  } else if (areaType === 'bbox' && geom.coordinates) {
+    const ring = geom.coordinates[0] || [];
+    geometry = {
+      west: ring[0]?.[0] || 0,
+      south: ring[0]?.[1] || 0,
+      east: ring[2]?.[0] || 0,
+      north: ring[2]?.[1] || 0,
+    };
+  } else {
+    const lon = geom.coordinates?.[0] || 0;
+    const lat = geom.coordinates?.[1] || 0;
+    const radius = props.radius || 0;
+    geometry = { lat, lon, radius: Math.round(radius) };
+  }
+
+  return {
+    id,
+    name: data.name || 'Untitled',
+    description: props.description || '',
+    type: areaType,
+    geometry,
+    created: props.createdAt || new Date().toISOString(),
+  };
+}
+
+let _resourceTypeEnsured = false;
+async function ensureResourceType() {
+  if (_resourceTypeEnsured) return;
+  try {
+    const resp = await fetch(`/signalk/v2/api/resources/${RESOURCE_TYPE}`);
+    if (resp.ok) { _resourceTypeEnsured = true; return; }
+    // Try to create the resource type via the resources-provider plugin config
+    await fetch(`/plugins/resources-provider/_config/${RESOURCE_TYPE}`, { method: 'POST' });
+    _resourceTypeEnsured = true;
+  } catch {
+    // Silently fail — server may not support this, we'll still try PUTs
+  }
+}
+
+async function fetchServerAreas() {
+  try {
+    await ensureResourceType();
+    const resp = await fetch(`/signalk/v2/api/resources/${RESOURCE_TYPE}`);
+    if (!resp.ok) return [];
+    const data = await resp.json();
+    return Object.entries(data).map(([id, d]) => resourceDataToArea(id, d));
+  } catch {
+    return [];
+  }
+}
+
+async function putAreaToServer(area) {
+  try {
+    await ensureResourceType();
+    await fetch(`/signalk/v2/api/resources/${RESOURCE_TYPE}/${area.id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(areaToResourceData(area)),
+    });
+  } catch {
+    // Non-critical — area is saved locally
+  }
+}
+
+
+// ---------------------------------------------------------------------------
+// Load / Save / Delete with server sync
+// ---------------------------------------------------------------------------
+
+async function loadSavedAreas() {
+  // 1. Fetch server areas (source of truth)
+  const serverAreas = await fetchServerAreas();
+
+  // 2. Load localStorage for unsynced local areas only
+  let localAreas;
+  try {
+    localAreas = JSON.parse(localStorage.getItem(SAVED_AREAS_KEY) || '[]');
+  } catch {
+    localAreas = [];
+  }
+
+  // 3. Server is truth. Only add local areas that were never synced.
+  const result = [...serverAreas];
+
+  for (const a of localAreas) {
+    if (a.synced === false) {
+      result.push(a);
+      // Try to push to server
+      putAreaToServer(a).then(() => {
+        a.synced = true;
+        localStorage.setItem(SAVED_AREAS_KEY, JSON.stringify(
+          state.savedAreas.filter((x) => x.synced === false)
+        ));
+      });
+    }
+  }
+
+  state.savedAreas = result.sort(
+    (a, b) => new Date(b.created).getTime() - new Date(a.created).getTime()
+  );
+  // Only persist unsynced areas in localStorage
+  localStorage.setItem(SAVED_AREAS_KEY, JSON.stringify(
+    state.savedAreas.filter((a) => a.synced === false)
+  ));
 }
 
 export function showSaveAreaDialog() {
@@ -1646,24 +2033,47 @@ export function saveArea() {
   if (!name) return;
   const desc = document.getElementById('me-save-desc').value.trim();
 
-  state.savedAreas.push({
-    id: Date.now(),
+  const area = {
+    id: crypto.randomUUID(),
     name,
     description: desc,
     type: state.areaType,
     geometry: { ...state.areaGeometry },
     created: new Date().toISOString(),
-  });
+    synced: false,
+  };
 
-  localStorage.setItem(SAVED_AREAS_KEY, JSON.stringify(state.savedAreas));
+  state.savedAreas.push(area);
+  localStorage.setItem(SAVED_AREAS_KEY, JSON.stringify(
+    state.savedAreas.filter((a) => a.synced === false)
+  ));
   document.getElementById('me-save-name').value = '';
   document.getElementById('me-save-desc').value = '';
   closeSaveModal();
   setToolbarStatus(`Area "${name}" saved.`);
+
+  // Sync to server (non-blocking)
+  putAreaToServer(area).then(() => {
+    area.synced = true;
+    localStorage.setItem(SAVED_AREAS_KEY, JSON.stringify(
+      state.savedAreas.filter((a) => a.synced === false)
+    ));
+  }).catch(() =>
+    setToolbarStatus(`Area "${name}" saved locally (server sync failed).`)
+  );
 }
 
-export function showSavedAreasModal() {
-  loadSavedAreas();
+export async function showSavedAreasModal() {
+  // Show loading state immediately
+  const list = document.getElementById('me-saved-list');
+  list.innerHTML = '<p>Loading saved areas...</p>';
+  document.getElementById('me-saved-modal').style.display = 'flex';
+
+  await loadSavedAreas();
+  renderSavedAreasList();
+}
+
+function renderSavedAreasList() {
   const list = document.getElementById('me-saved-list');
   list.innerHTML = '';
 
@@ -1680,15 +2090,13 @@ export function showSavedAreasModal() {
           ${area.description ? `<br><small>${area.description}</small>` : ''}
         </div>
         <div>
-          <button onclick="window.meLoadArea(${area.id})" class="me-btn-sm">Load</button>
-          <button onclick="window.meDeleteArea(${area.id})" class="me-btn-sm me-btn-danger">Delete</button>
+          <button onclick="window.meLoadArea('${area.id}')" class="me-btn-sm">Load</button>
+          <button onclick="window.meDeleteArea('${area.id}')" class="me-btn-sm me-btn-danger">Delete</button>
         </div>
       `;
       list.appendChild(div);
     });
   }
-
-  document.getElementById('me-saved-modal').style.display = 'flex';
 }
 
 export function closeSavedModal() {
@@ -1702,6 +2110,7 @@ export function loadArea(id) {
   state.areaType = area.type;
   state.areaGeometry = { ...area.geometry };
   drawAreaOnMap();
+  updateQueryPanelState();
 
   // Fit to area
   if (state.areaLayer) {
@@ -1713,10 +2122,18 @@ export function loadArea(id) {
   setToolbarStatus(`Loaded area "${area.name}".`);
 }
 
-export function deleteArea(id) {
+export async function deleteArea(id) {
   state.savedAreas = state.savedAreas.filter((a) => a.id !== id);
   localStorage.setItem(SAVED_AREAS_KEY, JSON.stringify(state.savedAreas));
-  showSavedAreasModal(); // Refresh the list
+  renderSavedAreasList();
+
+  // Delete from server and report result
+  try {
+    const resp = await fetch(`/signalk/v2/api/resources/${RESOURCE_TYPE}/${id}`, { method: 'DELETE' });
+    if (!resp.ok) setToolbarStatus(`Server delete failed (${resp.status}).`);
+  } catch {
+    setToolbarStatus('Server delete failed (network error).');
+  }
 }
 
 // =============================================================================
@@ -1811,4 +2228,13 @@ export function showResultsTab(tabName) {
   );
   document.getElementById('me-all-points').style.display = tabName === 'allpoints' ? 'block' : 'none';
   document.getElementById('me-detail').style.display = tabName === 'detail' ? 'block' : 'none';
+
+  // Resize sparklines when detail tab becomes visible
+  if (tabName === 'detail') {
+    setTimeout(() => {
+      document.querySelectorAll('.me-sparkline').forEach((el) => {
+        if (el.data) Plotly.Plots.resize(el);
+      });
+    }, 50);
+  }
 }
