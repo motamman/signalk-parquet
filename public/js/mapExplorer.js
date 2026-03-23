@@ -1829,13 +1829,191 @@ function haversine(lat1, lon1, lat2, lon2) {
 // =============================================================================
 
 const SAVED_AREAS_KEY = 'signalk-parquet-saved-areas';
+const RESOURCE_TYPE = 'zeddisplay-search-areas';
 
-function loadSavedAreas() {
-  try {
-    state.savedAreas = JSON.parse(localStorage.getItem(SAVED_AREAS_KEY) || '[]');
-  } catch {
-    state.savedAreas = [];
+// ---------------------------------------------------------------------------
+// Server communication helpers
+// ---------------------------------------------------------------------------
+
+function areaToGeoJsonFeature(area) {
+  const properties = {
+    name: area.name,
+    ...(area.description ? { description: area.description } : {}),
+    createdAt: area.created,
+    areaType: area.type,
+  };
+
+  let geometry;
+  if (area.type === 'bbox') {
+    const { west, south, east, north } = area.geometry;
+    properties.point1Lat = south;
+    properties.point1Lng = west;
+    properties.point2Lat = north;
+    properties.point2Lng = east;
+    geometry = {
+      type: 'Polygon',
+      coordinates: [[
+        [west, south], [east, south], [east, north], [west, north], [west, south],
+      ]],
+    };
+  } else {
+    const { lat, lon, radius } = area.geometry;
+    properties.point1Lat = lat;
+    properties.point1Lng = lon;
+    // Approximate point2 as radius meters due east of center
+    const dLng = radius / (111320 * Math.cos(lat * Math.PI / 180));
+    properties.point2Lat = lat;
+    properties.point2Lng = lon + dLng;
+    properties.radius = radius;
+    geometry = { type: 'Point', coordinates: [lon, lat] };
   }
+
+  return { type: 'Feature', geometry, properties };
+}
+
+function areaToResourceData(area) {
+  const feature = areaToGeoJsonFeature(area);
+  return {
+    name: area.name,
+    description: JSON.stringify(feature),
+    position: {
+      latitude: feature.properties.point1Lat,
+      longitude: feature.properties.point1Lng,
+    },
+  };
+}
+
+function resourceDataToArea(id, data) {
+  let geoJson;
+  try {
+    geoJson = JSON.parse(data.description || '{}');
+  } catch {
+    geoJson = {};
+  }
+
+  const props = geoJson.properties || {};
+  const geom = geoJson.geometry || {};
+  const areaType = props.areaType || 'bbox';
+  const hasExplicit = 'point1Lat' in props;
+
+  let geometry;
+
+  if (hasExplicit && areaType === 'bbox') {
+    geometry = {
+      west: props.point1Lng,
+      south: props.point1Lat,
+      east: props.point2Lng,
+      north: props.point2Lat,
+    };
+  } else if (hasExplicit && areaType === 'radius') {
+    const lat = props.point1Lat;
+    const lon = props.point1Lng;
+    const radius = props.radius || 0;
+    geometry = { lat, lon, radius: Math.round(radius) };
+  } else if (areaType === 'bbox' && geom.coordinates) {
+    const ring = geom.coordinates[0] || [];
+    geometry = {
+      west: ring[0]?.[0] || 0,
+      south: ring[0]?.[1] || 0,
+      east: ring[2]?.[0] || 0,
+      north: ring[2]?.[1] || 0,
+    };
+  } else {
+    const lon = geom.coordinates?.[0] || 0;
+    const lat = geom.coordinates?.[1] || 0;
+    const radius = props.radius || 0;
+    geometry = { lat, lon, radius: Math.round(radius) };
+  }
+
+  return {
+    id,
+    name: data.name || 'Untitled',
+    description: props.description || '',
+    type: areaType,
+    geometry,
+    created: props.createdAt || new Date().toISOString(),
+  };
+}
+
+let _resourceTypeEnsured = false;
+async function ensureResourceType() {
+  if (_resourceTypeEnsured) return;
+  try {
+    const resp = await fetch(`/signalk/v2/api/resources/${RESOURCE_TYPE}`);
+    if (resp.ok) { _resourceTypeEnsured = true; return; }
+    // Try to create the resource type via the resources-provider plugin config
+    await fetch(`/plugins/resources-provider/_config/${RESOURCE_TYPE}`, { method: 'POST' });
+    _resourceTypeEnsured = true;
+  } catch {
+    // Silently fail — server may not support this, we'll still try PUTs
+  }
+}
+
+async function fetchServerAreas() {
+  try {
+    await ensureResourceType();
+    const resp = await fetch(`/signalk/v2/api/resources/${RESOURCE_TYPE}`);
+    if (!resp.ok) return [];
+    const data = await resp.json();
+    return Object.entries(data).map(([id, d]) => resourceDataToArea(id, d));
+  } catch {
+    return [];
+  }
+}
+
+async function putAreaToServer(area) {
+  try {
+    await ensureResourceType();
+    await fetch(`/signalk/v2/api/resources/${RESOURCE_TYPE}/${area.id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(areaToResourceData(area)),
+    });
+  } catch {
+    // Non-critical — area is saved locally
+  }
+}
+
+
+// ---------------------------------------------------------------------------
+// Load / Save / Delete with server sync
+// ---------------------------------------------------------------------------
+
+async function loadSavedAreas() {
+  // 1. Fetch server areas (source of truth)
+  const serverAreas = await fetchServerAreas();
+
+  // 2. Load localStorage for unsynced local areas only
+  let localAreas;
+  try {
+    localAreas = JSON.parse(localStorage.getItem(SAVED_AREAS_KEY) || '[]');
+  } catch {
+    localAreas = [];
+  }
+
+  // 3. Server is truth. Only add local areas that were never synced.
+  const result = [...serverAreas];
+
+  for (const a of localAreas) {
+    if (a.synced === false) {
+      result.push(a);
+      // Try to push to server
+      putAreaToServer(a).then(() => {
+        a.synced = true;
+        localStorage.setItem(SAVED_AREAS_KEY, JSON.stringify(
+          state.savedAreas.filter((x) => x.synced === false)
+        ));
+      });
+    }
+  }
+
+  state.savedAreas = result.sort(
+    (a, b) => new Date(b.created).getTime() - new Date(a.created).getTime()
+  );
+  // Only persist unsynced areas in localStorage
+  localStorage.setItem(SAVED_AREAS_KEY, JSON.stringify(
+    state.savedAreas.filter((a) => a.synced === false)
+  ));
 }
 
 export function showSaveAreaDialog() {
@@ -1855,24 +2033,47 @@ export function saveArea() {
   if (!name) return;
   const desc = document.getElementById('me-save-desc').value.trim();
 
-  state.savedAreas.push({
-    id: Date.now(),
+  const area = {
+    id: crypto.randomUUID(),
     name,
     description: desc,
     type: state.areaType,
     geometry: { ...state.areaGeometry },
     created: new Date().toISOString(),
-  });
+    synced: false,
+  };
 
-  localStorage.setItem(SAVED_AREAS_KEY, JSON.stringify(state.savedAreas));
+  state.savedAreas.push(area);
+  localStorage.setItem(SAVED_AREAS_KEY, JSON.stringify(
+    state.savedAreas.filter((a) => a.synced === false)
+  ));
   document.getElementById('me-save-name').value = '';
   document.getElementById('me-save-desc').value = '';
   closeSaveModal();
   setToolbarStatus(`Area "${name}" saved.`);
+
+  // Sync to server (non-blocking)
+  putAreaToServer(area).then(() => {
+    area.synced = true;
+    localStorage.setItem(SAVED_AREAS_KEY, JSON.stringify(
+      state.savedAreas.filter((a) => a.synced === false)
+    ));
+  }).catch(() =>
+    setToolbarStatus(`Area "${name}" saved locally (server sync failed).`)
+  );
 }
 
-export function showSavedAreasModal() {
-  loadSavedAreas();
+export async function showSavedAreasModal() {
+  // Show loading state immediately
+  const list = document.getElementById('me-saved-list');
+  list.innerHTML = '<p>Loading saved areas...</p>';
+  document.getElementById('me-saved-modal').style.display = 'flex';
+
+  await loadSavedAreas();
+  renderSavedAreasList();
+}
+
+function renderSavedAreasList() {
   const list = document.getElementById('me-saved-list');
   list.innerHTML = '';
 
@@ -1889,15 +2090,13 @@ export function showSavedAreasModal() {
           ${area.description ? `<br><small>${area.description}</small>` : ''}
         </div>
         <div>
-          <button onclick="window.meLoadArea(${area.id})" class="me-btn-sm">Load</button>
-          <button onclick="window.meDeleteArea(${area.id})" class="me-btn-sm me-btn-danger">Delete</button>
+          <button onclick="window.meLoadArea('${area.id}')" class="me-btn-sm">Load</button>
+          <button onclick="window.meDeleteArea('${area.id}')" class="me-btn-sm me-btn-danger">Delete</button>
         </div>
       `;
       list.appendChild(div);
     });
   }
-
-  document.getElementById('me-saved-modal').style.display = 'flex';
 }
 
 export function closeSavedModal() {
@@ -1923,10 +2122,18 @@ export function loadArea(id) {
   setToolbarStatus(`Loaded area "${area.name}".`);
 }
 
-export function deleteArea(id) {
+export async function deleteArea(id) {
   state.savedAreas = state.savedAreas.filter((a) => a.id !== id);
   localStorage.setItem(SAVED_AREAS_KEY, JSON.stringify(state.savedAreas));
-  showSavedAreasModal(); // Refresh the list
+  renderSavedAreasList();
+
+  // Delete from server and report result
+  try {
+    const resp = await fetch(`/signalk/v2/api/resources/${RESOURCE_TYPE}/${id}`, { method: 'DELETE' });
+    if (!resp.ok) setToolbarStatus(`Server delete failed (${resp.status}).`);
+  } catch {
+    setToolbarStatus('Server delete failed (network error).');
+  }
 }
 
 // =============================================================================
