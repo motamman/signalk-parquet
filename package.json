@@ -1,6 +1,6 @@
 {
   "name": "signalk-parquet",
-  "version": "0.7.20-beta.2",
+  "version": "0.7.20-beta.3",
   "description": "Vessel data Parquet file archive with automated value and geospatial triggers. History API compliant with cloud backups and queries.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
