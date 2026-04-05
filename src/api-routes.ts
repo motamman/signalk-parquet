@@ -688,7 +688,6 @@ export function registerApiRoutes(
 
       (async () => {
         try {
-          const config = state.currentConfig!;
           const dataDir = state.getDataDirPath();
 
           job.phase = 'Discovering local files...';
@@ -883,7 +882,6 @@ export function registerApiRoutes(
 
       cloudSyncJobs.set(jobId, job);
 
-      const config = state.currentConfig!;
       const dataDir = state.getDataDirPath();
       const { keys } = req.body as { keys?: string[] };
 
