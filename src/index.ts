@@ -81,18 +81,12 @@ export default function (app: ServerAPI): SignalKPlugin {
       (app.getSelfPath('name') as any) ||
       'unknown_vessel';
 
-    // Use SignalK's main config directory (~/.signalk/)
-    const signalkDataDir = (app as any).config.configPath;
-    const defaultOutputDir = path.join(signalkDataDir, 'signalk-parquet-data');
-
     state.currentConfig = {
       bufferSize: options?.bufferSize || 1000,
       saveIntervalSeconds: options?.saveIntervalSeconds || 30,
       outputDirectory: options?.outputDirectory?.trim()
-        ? path.isAbsolute(options.outputDirectory.trim())
-          ? options.outputDirectory.trim()
-          : path.join(signalkDataDir, options.outputDirectory.trim())
-        : defaultOutputDir,
+        ? options.outputDirectory.trim()
+        : app.getDataDirPath(),
       filenamePrefix: options?.filenamePrefix || 'signalk_data',
       retentionDays: options?.retentionDays || 7,
       fileFormat: options?.fileFormat || 'parquet',
