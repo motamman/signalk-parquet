@@ -1,6 +1,6 @@
 import * as fs from 'fs-extra';
 import * as path from 'path';
-import { Router } from 'express';
+import e, { Router } from 'express';
 import { ParquetWriter } from './parquet-writer';
 import { registerHistoryApiRoute } from './HistoryAPI';
 import { registerApiRoutes } from './api-routes';
@@ -63,6 +63,12 @@ export default function (app: ServerAPI): SignalKPlugin {
     parquetWriter: undefined,
     cloudClient: undefined,
     currentConfig: undefined,
+    getDataDirPath: () => {
+      if (!state.currentConfig) {
+        throw new Error('Current config is not set');
+      }
+      return state.currentConfig.outputDirectory;
+    },
     commandState: {
       registeredCommands: new Map(),
       putHandlers: new Map(),

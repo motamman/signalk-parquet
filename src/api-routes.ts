@@ -145,7 +145,7 @@ let sharedAnalyzer: ClaudeAnalyzer | null = null;
 function getSharedAnalyzer(
   config: any,
   app: ServerAPI,
-  getDataDir: () => string,
+  dataDir: string,
   state: PluginState
 ): ClaudeAnalyzer {
   if (!sharedAnalyzer) {
@@ -157,7 +157,7 @@ function getSharedAnalyzer(
         temperature: config.claudeIntegration.temperature || 0.3,
       },
       app,
-      getDataDir(),
+      dataDir,
       state
     );
     app.debug('🔧 Created shared Claude analyzer instance');
@@ -277,12 +277,6 @@ export function registerApiRoutes(
     router.use(express.static(publicPath));
   }
 
-  // Get the current configuration for data directory
-  const getDataDir = (): string => {
-    // Use the user-configured output directory, fallback to SignalK default
-    return state.currentConfig?.outputDirectory || app.getDataDirPath();
-  };
-
   // Convert BigInt values to regular numbers for JSON serialization
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   function mapForJSON(rawData: any[]): any[] {
@@ -300,7 +294,7 @@ export function registerApiRoutes(
     '/api/paths',
     (_: TypedRequest, res: TypedResponse<PathsApiResponse>) => {
       try {
-        const dataDir = getDataDir();
+        const dataDir = state.getDataDirPath();
         const paths = getAvailablePaths(dataDir, app);
 
         return res.json({
@@ -322,7 +316,7 @@ export function registerApiRoutes(
     '/api/files/:path(*)',
     (req: TypedRequest, res: TypedResponse<FilesApiResponse>) => {
       try {
-        const dataDir = getDataDir();
+        const dataDir = state.getDataDirPath();
         const signalkPath = req.params.path;
         const selfContextPath = app.selfContext
           .replace(/\./g, '/')
@@ -378,7 +372,7 @@ export function registerApiRoutes(
     '/api/sample/:path(*)',
     async (req: TypedRequest, res: TypedResponse<SampleApiResponse>) => {
       try {
-        const dataDir = getDataDir();
+        const dataDir = state.getDataDirPath();
         const signalkPath = req.params.path;
         const limit = parseInt(req.query.limit as string) || 10;
 
@@ -486,7 +480,7 @@ export function registerApiRoutes(
           });
         }
 
-        const dataDir = getDataDir();
+        const dataDir = state.getDataDirPath();
 
         // Replace placeholder paths in query with actual file paths
         let processedQuery = query;
@@ -695,7 +689,7 @@ export function registerApiRoutes(
       (async () => {
         try {
           const config = state.currentConfig!;
-          const dataDir = getDataDir();
+          const dataDir = state.getDataDirPath();
 
           job.phase = 'Discovering local files...';
           // Only scan hive-partitioned files (tier=X/context=Y/path=Z/year=YYYY/day=DDD/)
@@ -890,7 +884,7 @@ export function registerApiRoutes(
       cloudSyncJobs.set(jobId, job);
 
       const config = state.currentConfig!;
-      const dataDir = getDataDir();
+      const dataDir = state.getDataDirPath();
       const { keys } = req.body as { keys?: string[] };
 
       (async () => {
@@ -1854,7 +1848,7 @@ export function registerApiRoutes(
           });
         }
 
-        const analyzer = getSharedAnalyzer(config, app, getDataDir, state);
+        const analyzer = getSharedAnalyzer(config, app, state.getDataDirPath(), state);
 
         const startTime = Date.now();
         const testResult = await analyzer.testConnection();
@@ -1939,7 +1933,7 @@ export function registerApiRoutes(
         }
 
         // Use shared analyzer instance to maintain conversation state
-        const analyzer = getSharedAnalyzer(config, app, getDataDir, state);
+        const analyzer = getSharedAnalyzer(config, app, state.getDataDirPath(), state);
 
         // Build analysis request
         let analysisRequest: AnalysisRequest;
@@ -2058,7 +2052,7 @@ export function registerApiRoutes(
         );
 
         // Use shared analyzer instance to access stored conversations
-        const analyzer = getSharedAnalyzer(config, app, getDataDir, state);
+        const analyzer = getSharedAnalyzer(config, app, state.getDataDirPath(), state);
 
         // Process follow-up question
         const followUpRequest = {
@@ -2104,7 +2098,7 @@ export function registerApiRoutes(
 
         const limit = parseInt(req.query.limit || '20', 10);
 
-        const analyzer = getSharedAnalyzer(config, app, getDataDir, state);
+        const analyzer = getSharedAnalyzer(config, app, state.getDataDirPath(), state);
 
         const history = await analyzer.getAnalysisHistory(limit);
 
@@ -2162,7 +2156,7 @@ export function registerApiRoutes(
 
         const analysisId = req.params.id;
 
-        const analyzer = getSharedAnalyzer(config, app, getDataDir, state);
+        const analyzer = getSharedAnalyzer(config, app, state.getDataDirPath(), state);
 
         const result = await analyzer.deleteAnalysis(analysisId);
 
@@ -2196,7 +2190,7 @@ export function registerApiRoutes(
     '/api/vessel-context',
     async (_: TypedRequest, res: TypedResponse<any>) => {
       try {
-        const contextManager = new VesselContextManager(app, getDataDir());
+        const contextManager = new VesselContextManager(app, state.getDataDirPath());
         const context = await contextManager.getVesselContext();
 
         return res.json({
@@ -2226,7 +2220,7 @@ export function registerApiRoutes(
       try {
         const { vesselInfo, customContext } = req.body;
 
-        const contextManager = new VesselContextManager(app, getDataDir());
+        const contextManager = new VesselContextManager(app, state.getDataDirPath());
         const updatedContext = await contextManager.updateVesselContext(
           vesselInfo,
           customContext,
@@ -2255,7 +2249,7 @@ export function registerApiRoutes(
     '/api/vessel-context/refresh',
     async (_: TypedRequest, res: TypedResponse<any>) => {
       try {
-        const contextManager = new VesselContextManager(app, getDataDir());
+        const contextManager = new VesselContextManager(app, state.getDataDirPath());
         const refreshedContext = await contextManager.refreshVesselInfo();
 
         return res.json({
@@ -2303,7 +2297,7 @@ export function registerApiRoutes(
     '/api/vessel-context/claude-preview',
     async (_: TypedRequest, res: TypedResponse<any>) => {
       try {
-        const contextManager = new VesselContextManager(app, getDataDir());
+        const contextManager = new VesselContextManager(app, state.getDataDirPath());
         // Ensure context is loaded before generating preview
         await contextManager.getVesselContext();
         const claudeContext = contextManager.generateClaudeContext();
@@ -3821,7 +3815,7 @@ export function registerApiRoutes(
 
   router.get('/api/store/stats', async (_req, res) => {
     try {
-      const dataDir = getDataDir();
+      const dataDir = state.getDataDirPath();
       const hiveBuilder = new HivePathBuilder();
       const tiers: Array<{ tier: string; fileCount: number }> = [];
       const contexts: Array<{
@@ -4116,7 +4110,7 @@ export function registerApiRoutes(
   router.post('/api/migrate/scan', async (req, res) => {
     try {
       const { sourceDirectory } = req.body;
-      const source = sourceDirectory || getDataDir();
+      const source = sourceDirectory || state.getDataDirPath();
 
       const result = await migrationService.scan(source);
 
@@ -4156,8 +4150,8 @@ export function registerApiRoutes(
         triggerAggregation = true,
       } = req.body;
 
-      const source = sourceDirectory || getDataDir();
-      const target = targetDirectory || getDataDir();
+      const source = sourceDirectory || state.getDataDirPath();
+      const target = targetDirectory || state.getDataDirPath();
 
       // Validate tier
       const validTiers: AggregationTier[] = ['raw', '5s', '60s', '1h'];
@@ -4267,7 +4261,7 @@ export function registerApiRoutes(
   // Initialize aggregation service
   const aggregationService = new AggregationService(
     {
-      outputDirectory: getDataDir(),
+      outputDirectory: state.getDataDirPath(),
       filenamePrefix: state.currentConfig?.filenamePrefix || 'signalk_data',
       retentionDays: {
         raw: state.currentConfig?.retentionDays || 7,
@@ -4543,7 +4537,7 @@ export function registerApiRoutes(
       // Fire async job (not awaited — runs in background)
       (async () => {
         try {
-          const dataDir = getDataDir();
+          const dataDir = state.getDataDirPath();
           const aggregatedTiers: AggregationTier[] = ['5s', '60s', '1h'];
 
           // Scan for angular paths in aggregated tiers
