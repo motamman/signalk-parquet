@@ -608,6 +608,7 @@ export interface PluginState {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   cloudClient?: any; // S3 or R2 client (S3-compatible)
   currentConfig?: PluginConfig;
+  getDataDirPath: () => string;
   commandState: CommandRegistrationState;
   // Process management
   currentProcess?: ProcessState;
