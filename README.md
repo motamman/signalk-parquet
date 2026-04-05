@@ -37,6 +37,9 @@ Vessel data Parquet file archive with automated value and geospatial triggers. H
 - **NEW Buffer Bucketing**: SQLite buffer data bucketed to match Parquet query resolution
   - Prevents raw per-second records from flooding bucketed query results
   - Supports all aggregate methods including vector averaging for angular paths
+- **NEW Dynamic Regimen Control**: Data subscriptions update in real-time when regimen commands are received
+  - No plugin restart needed to activate/deactivate recording regimens
+  - Regimen state changes via SignalK commands immediately start/stop path recording
 
 ### Data Validation & Schema Repair
 - **NEW Schema Validation**: Comprehensive validation of Parquet file schemas against SignalK metadata standards

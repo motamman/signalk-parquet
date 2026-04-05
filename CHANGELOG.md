@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.7.20-beta.4] - 2026-04-05
+
+### Fixed
+
+- **Shutdown Data Loss** — Fixed race condition where SQLite buffer was closed before data subscriptions were torn down, causing "SQLite buffer is closed! Data will be lost" errors during plugin restart. Subscriptions are now unsubscribed first, then the buffer is safely closed.
+
+### Added
+
+- **Regimen-Aware Subscription Updates** — Data subscriptions now dynamically update when regimen commands are received via SignalK deltas. Previously, toggling a regimen only took effect after plugin restart.
+
+---
+
 ## [0.7.20-beta.3] - 2026-03-23
 
 ### Added
