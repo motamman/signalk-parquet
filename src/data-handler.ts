@@ -190,6 +190,7 @@ export function subscribeToCommandPaths(
     (subscriptionError: unknown) => {},
     (delta: Delta) => {
       // Process each update in the delta
+      const prevRegimens = new Set(state.activeRegimens);
       if (delta.updates) {
         delta.updates.forEach((update: Update) => {
           if (hasValues(update)) {
@@ -209,6 +210,11 @@ export function subscribeToCommandPaths(
             });
           }
         });
+      }
+      // If active regimens changed, re-evaluate data subscriptions
+      if (state.activeRegimens.size !== prevRegimens.size ||
+          [...state.activeRegimens].some(r => !prevRegimens.has(r))) {
+        updateDataSubscriptions(currentPaths, state, config, app);
       }
     }
   );

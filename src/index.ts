@@ -575,27 +575,7 @@ export default function (app: ServerAPI): SignalKPlugin {
       saveAllBuffers(state.currentConfig, state, app);
     }
 
-    // Stop export service (pending records will be exported on next startup)
-    if (state.exportService) {
-      try {
-        state.exportService.stop();
-        app.debug('Parquet export service stopped');
-      } catch (error) {
-        app.error(`Error stopping export service: ${error}`);
-      }
-    }
-
-    // Close SQLite buffer
-    if (state.sqliteBuffer) {
-      try {
-        state.sqliteBuffer.close();
-        app.debug('SQLite buffer closed');
-      } catch (error) {
-        app.error(`Error closing SQLite buffer: ${error}`);
-      }
-    }
-
-    // Unsubscribe from all paths
+    // Unsubscribe from all paths FIRST to stop data flow before closing buffer
     state.unsubscribes.forEach(unsubscribe => {
       if (typeof unsubscribe === 'function') {
         unsubscribe();
@@ -611,6 +591,26 @@ export default function (app: ServerAPI): SignalKPlugin {
         }
       });
       state.streamSubscriptions = [];
+    }
+
+    // Stop export service (pending records will be exported on next startup)
+    if (state.exportService) {
+      try {
+        state.exportService.stop();
+        app.debug('Parquet export service stopped');
+      } catch (error) {
+        app.error(`Error stopping export service: ${error}`);
+      }
+    }
+
+    // Close SQLite buffer (safe now that subscriptions are torn down)
+    if (state.sqliteBuffer) {
+      try {
+        state.sqliteBuffer.close();
+        app.debug('SQLite buffer closed');
+      } catch (error) {
+        app.error(`Error closing SQLite buffer: ${error}`);
+      }
     }
 
     // Shutdown runtime streaming service
