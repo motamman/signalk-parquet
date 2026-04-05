@@ -289,6 +289,37 @@ export function registerApiRoutes(
     });
   }
 
+  // Returns sorted parquet files for a SignalK path, or null if the directory doesn't exist
+  function getDataFilesForPath(signalkPath: string): {
+    pathDir: string;
+    files: Array<{ name: string; path: string; size: number; modified: string }>;
+  } | null {
+    const selfContextPath = app.selfContext
+      .replace(/\./g, '/')
+      .replace(/:/g, '_');
+    const pathDir = path.join(
+      state.getDataDirPath(),
+      selfContextPath,
+      signalkPath.replace(/\./g, '/')
+    );
+    if (!fs.existsSync(pathDir)) return null;
+    const files = fs
+      .readdirSync(pathDir)
+      .filter((file: string) => file.endsWith('.parquet'))
+      .map((file: string) => {
+        const filePath = path.join(pathDir, file);
+        const stat = fs.statSync(filePath);
+        return {
+          name: file,
+          path: filePath,
+          size: stat.size,
+          modified: stat.mtime.toISOString(),
+        };
+      })
+      .sort((a, b) => b.modified.localeCompare(a.modified));
+    return { pathDir, files };
+  }
+
   // Get available SignalK paths
   router.get(
     '/api/paths',
@@ -316,47 +347,19 @@ export function registerApiRoutes(
     '/api/files/:path(*)',
     (req: TypedRequest, res: TypedResponse<FilesApiResponse>) => {
       try {
-        const dataDir = state.getDataDirPath();
         const signalkPath = req.params.path;
-        const selfContextPath = app.selfContext
-          .replace(/\./g, '/')
-          .replace(/:/g, '_');
-        const pathDir = path.join(
-          dataDir,
-          selfContextPath,
-          signalkPath.replace(/\./g, '/')
-        );
-
-        if (!fs.existsSync(pathDir)) {
+        const result = getDataFilesForPath(signalkPath);
+        if (!result) {
           return res.status(404).json({
             success: false,
             error: `Path not found: ${signalkPath}`,
           });
         }
-
-        const files = fs
-          .readdirSync(pathDir)
-          .filter((file: string) => file.endsWith('.parquet'))
-          .map((file: string) => {
-            const filePath = path.join(pathDir, file);
-            const stat = fs.statSync(filePath);
-            return {
-              name: file,
-              path: filePath,
-              size: stat.size,
-              modified: stat.mtime.toISOString(),
-            };
-          })
-          .sort(
-            (a, b) =>
-              new Date(b.modified).getTime() - new Date(a.modified).getTime()
-          );
-
         return res.json({
           success: true,
           path: signalkPath,
-          directory: pathDir,
-          files: files,
+          directory: result.pathDir,
+          files: result.files,
         });
       } catch (error) {
         return res.status(500).json({
@@ -372,45 +375,25 @@ export function registerApiRoutes(
     '/api/sample/:path(*)',
     async (req: TypedRequest, res: TypedResponse<SampleApiResponse>) => {
       try {
-        const dataDir = state.getDataDirPath();
         const signalkPath = req.params.path;
         const limit = parseInt(req.query.limit as string) || 10;
 
-        const selfContextPath = app.selfContext
-          .replace(/\./g, '/')
-          .replace(/:/g, '_');
-        const pathDir = path.join(
-          dataDir,
-          selfContextPath,
-          signalkPath.replace(/\./g, '/')
-        );
-
-        if (!fs.existsSync(pathDir)) {
+        const result = getDataFilesForPath(signalkPath);
+        if (!result) {
           return res.status(404).json({
             success: false,
             error: `Path not found: ${signalkPath}`,
           });
         }
 
-        // Get the most recent parquet file
-        const files = fs
-          .readdirSync(pathDir)
-          .filter((file: string) => file.endsWith('.parquet'))
-          .map((file: string) => {
-            const filePath = path.join(pathDir, file);
-            const stat = fs.statSync(filePath);
-            return { name: file, path: filePath, modified: stat.mtime };
-          })
-          .sort((a, b) => b.modified.getTime() - a.modified.getTime());
-
-        if (files.length === 0) {
+        if (result.files.length === 0) {
           return res.status(404).json({
             success: false,
             error: `No parquet files found for path: ${signalkPath}`,
           });
         }
 
-        const sampleFile = files[0];
+        const sampleFile = result.files[0];
         const query = `SELECT * FROM read_parquet('${sampleFile.path}', union_by_name=true) LIMIT ${limit}`;
 
         // Get connection from pool (spatial extension already loaded)
