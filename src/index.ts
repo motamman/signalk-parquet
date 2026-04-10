@@ -1,6 +1,6 @@
 import * as fs from 'fs-extra';
 import * as path from 'path';
-import { Router } from 'express';
+import e, { Router } from 'express';
 import { ParquetWriter } from './parquet-writer';
 import { registerHistoryApiRoute } from './HistoryAPI';
 import { registerApiRoutes } from './api-routes';
@@ -63,6 +63,12 @@ export default function (app: ServerAPI): SignalKPlugin {
     parquetWriter: undefined,
     cloudClient: undefined,
     currentConfig: undefined,
+    getDataDirPath: () => {
+      if (!state.currentConfig) {
+        throw new Error('Current config is not set');
+      }
+      return state.currentConfig.outputDirectory;
+    },
     commandState: {
       registeredCommands: new Map(),
       putHandlers: new Map(),
@@ -81,18 +87,12 @@ export default function (app: ServerAPI): SignalKPlugin {
       (app.getSelfPath('name') as any) ||
       'unknown_vessel';
 
-    // Use SignalK's main config directory (~/.signalk/)
-    const signalkDataDir = (app as any).config.configPath;
-    const defaultOutputDir = path.join(signalkDataDir, 'signalk-parquet-data');
-
     state.currentConfig = {
       bufferSize: options?.bufferSize || 1000,
       saveIntervalSeconds: options?.saveIntervalSeconds || 30,
       outputDirectory: options?.outputDirectory?.trim()
-        ? path.isAbsolute(options.outputDirectory.trim())
-          ? options.outputDirectory.trim()
-          : path.join(signalkDataDir, options.outputDirectory.trim())
-        : defaultOutputDir,
+        ? options.outputDirectory.trim()
+        : app.getDataDirPath(),
       filenamePrefix: options?.filenamePrefix || 'signalk_data',
       retentionDays: options?.retentionDays || 7,
       fileFormat: options?.fileFormat || 'parquet',
