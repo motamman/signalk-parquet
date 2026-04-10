@@ -214,6 +214,50 @@ export function subscribeToCommandPaths(
       // If active regimens changed, re-evaluate data subscriptions
       if (state.activeRegimens.size !== prevRegimens.size ||
           [...state.activeRegimens].some(r => !prevRegimens.has(r))) {
+        const streamSubscriptions = (
+          state as PluginState & { streamSubscriptions?: unknown }
+        ).streamSubscriptions;
+
+        const disposeStreamSubscription = (subscription: unknown): void => {
+          if (typeof subscription === 'function') {
+            subscription();
+            return;
+          }
+
+          if (subscription && typeof subscription === 'object') {
+            const candidate = subscription as {
+              unsubscribe?: () => void;
+              dispose?: () => void;
+              off?: () => void;
+            };
+
+            if (typeof candidate.unsubscribe === 'function') {
+              candidate.unsubscribe();
+            } else if (typeof candidate.dispose === 'function') {
+              candidate.dispose();
+            } else if (typeof candidate.off === 'function') {
+              candidate.off();
+            }
+          }
+        };
+
+        if (Array.isArray(streamSubscriptions)) {
+          streamSubscriptions.forEach(disposeStreamSubscription);
+          streamSubscriptions.length = 0;
+        } else if (streamSubscriptions instanceof Map) {
+          streamSubscriptions.forEach(disposeStreamSubscription);
+          streamSubscriptions.clear();
+        } else if (streamSubscriptions instanceof Set) {
+          streamSubscriptions.forEach(disposeStreamSubscription);
+          streamSubscriptions.clear();
+        } else if (streamSubscriptions && typeof streamSubscriptions === 'object') {
+          Object.values(streamSubscriptions as Record<string, unknown>).forEach(
+            disposeStreamSubscription
+          );
+          Object.keys(streamSubscriptions as Record<string, unknown>).forEach(key => {
+            delete (streamSubscriptions as Record<string, unknown>)[key];
+          });
+        }
         updateDataSubscriptions(currentPaths, state, config, app);
       }
     }
