@@ -305,31 +305,53 @@ export class ParquetExportService {
         `[DailyExport] Found ${pathsForDate.length} paths with data for ${dateStr}`
       );
 
-      // Export each context/path to its own file
+      // Export each context/path to its own file (batched to limit memory)
+      const BATCH_SIZE = 5000;
+
       for (const { context, path: signalkPath } of pathsForDate) {
         try {
-          const records = this.sqliteBuffer.getRecordsForPathAndDate(
+          const count = this.sqliteBuffer.getRecordCountForPathAndDate(
             context,
             signalkPath,
             targetDate
           );
 
-          if (records.length === 0) {
+          if (count === 0) {
             continue;
           }
 
-          // Build file path for daily file
-          const filePath = await this.exportDailyGroup(
+          const firstBatch =
+            this.sqliteBuffer.getRecordsForPathAndDateBatched(
+              context,
+              signalkPath,
+              targetDate,
+              BATCH_SIZE,
+              0
+            );
+          let offset = BATCH_SIZE;
+
+          const filePath = await this.exportDailyGroupBatched(
             context,
             signalkPath,
-            records,
-            targetDate,
-            batchId
+            firstBatch,
+            () => {
+              const batch =
+                this.sqliteBuffer.getRecordsForPathAndDateBatched(
+                  context,
+                  signalkPath,
+                  targetDate,
+                  BATCH_SIZE,
+                  offset
+                );
+              offset += BATCH_SIZE;
+              return batch;
+            },
+            targetDate
           );
 
           if (filePath) {
             filesCreated.push(filePath);
-            recordsExported += records.length;
+            recordsExported += count;
 
             // Mark records as exported by date range
             this.sqliteBuffer.markDateExported(
@@ -340,7 +362,7 @@ export class ParquetExportService {
             );
 
             this.app.debug(
-              `[DailyExport] Exported ${records.length} records for ${context}:${signalkPath}`
+              `[DailyExport] Exported ${count} records for ${context}:${signalkPath}`
             );
           }
         } catch (error) {
@@ -452,6 +474,74 @@ export class ParquetExportService {
       return filePath;
     } catch (error) {
       // Clean up temp file on failure
+      try {
+        await fs.remove(tempFilePath);
+      } catch {
+        // Ignore cleanup errors
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Export records in batches to avoid loading all rows into memory at once.
+   * firstBatch is used for schema detection; nextBatch callback pulls subsequent chunks.
+   */
+  private async exportDailyGroupBatched(
+    context: string,
+    signalkPath: string,
+    firstBatch: DataRecord[],
+    nextBatch: () => DataRecord[],
+    targetDate: Date
+  ): Promise<string | null> {
+    if (firstBatch.length === 0) return null;
+
+    let filePath: string;
+
+    if (this.config.useHivePartitioning) {
+      const resolvedContext =
+        context === 'vessels.self' ? this.app.selfContext : context;
+
+      const dirPath = this.hivePathBuilder.buildPath(
+        this.config.outputDirectory,
+        'raw',
+        resolvedContext,
+        signalkPath,
+        targetDate
+      );
+      const timestampStr = new Date()
+        .toISOString()
+        .replace(/[:.]/g, '')
+        .slice(0, 15);
+      filePath = path.join(
+        dirPath,
+        `${this.config.filenamePrefix}_${timestampStr}.parquet`
+      );
+    } else {
+      filePath = this.buildFlatFilePath(context, signalkPath);
+    }
+
+    await fs.ensureDir(path.dirname(filePath));
+
+    const tempFilePath = filePath + '.tmp';
+
+    try {
+      await this.parquetWriter.writeParquetBatched(
+        tempFilePath,
+        firstBatch,
+        nextBatch,
+        signalkPath
+      );
+
+      const stats = await fs.stat(tempFilePath);
+      if (stats.size < 100) {
+        throw new Error('Written file is too small, likely corrupt');
+      }
+
+      await fs.rename(tempFilePath, filePath);
+
+      return filePath;
+    } catch (error) {
       try {
         await fs.remove(tempFilePath);
       } catch {

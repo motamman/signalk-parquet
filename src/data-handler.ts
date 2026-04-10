@@ -214,7 +214,7 @@ export function subscribeToCommandPaths(
       // If active regimens changed, re-evaluate data subscriptions
       if (state.activeRegimens.size !== prevRegimens.size ||
           [...state.activeRegimens].some(r => !prevRegimens.has(r))) {
-        const streamSubscriptions = (
+        const streamSubscriptions: any = (
           state as PluginState & { streamSubscriptions?: unknown }
         ).streamSubscriptions;
 

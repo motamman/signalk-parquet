@@ -626,6 +626,12 @@ export interface ParquetWriter {
   writeJSON(filepath: string, records: DataRecord[]): Promise<string>;
   writeCSV(filepath: string, records: DataRecord[]): Promise<string>;
   writeParquet(filepath: string, records: DataRecord[]): Promise<string>;
+  writeParquetBatched(
+    filepath: string,
+    firstBatch: DataRecord[],
+    nextBatch: () => DataRecord[],
+    currentPath?: string
+  ): Promise<string>;
   getSchemaService(): SchemaService | undefined;
 }
 

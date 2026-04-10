@@ -925,6 +925,75 @@ export class SQLiteBuffer {
   }
 
   /**
+   * Count unexported records for a specific context, path, and date (UTC).
+   */
+  getRecordCountForPathAndDate(
+    context: string,
+    signalkPath: string,
+    date: Date
+  ): number {
+    if (!this._open) return 0;
+
+    const tableInfo = this.tableMap.get(signalkPath);
+    if (!tableInfo) return 0;
+
+    const dateStr = date.toISOString().slice(0, 10);
+    const startOfDay = `${dateStr}T00:00:00.000Z`;
+    const endOfDay = `${dateStr}T23:59:59.999Z`;
+
+    const row = this.db
+      .prepare(
+        `
+      SELECT COUNT(*) as cnt FROM ${tableInfo.tableName}
+      WHERE context = ?
+        AND received_timestamp >= ? AND received_timestamp <= ?
+        AND exported = 0
+    `
+      )
+      .get(context, startOfDay, endOfDay) as { cnt: number } | undefined;
+
+    return row?.cnt ?? 0;
+  }
+
+  /**
+   * Get a batch of unexported records for a specific context, path, and date (UTC).
+   * Uses LIMIT/OFFSET to avoid materializing all rows at once.
+   */
+  getRecordsForPathAndDateBatched(
+    context: string,
+    signalkPath: string,
+    date: Date,
+    limit: number,
+    offset: number
+  ): DataRecord[] {
+    if (!this._open) return [];
+
+    const tableInfo = this.tableMap.get(signalkPath);
+    if (!tableInfo) return [];
+
+    const dateStr = date.toISOString().slice(0, 10);
+    const startOfDay = `${dateStr}T00:00:00.000Z`;
+    const endOfDay = `${dateStr}T23:59:59.999Z`;
+
+    const bufferRecords = this.db
+      .prepare(
+        `
+      SELECT * FROM ${tableInfo.tableName}
+      WHERE context = ?
+        AND received_timestamp >= ? AND received_timestamp <= ?
+        AND exported = 0
+      ORDER BY received_timestamp ASC
+      LIMIT ? OFFSET ?
+    `
+      )
+      .all(context, startOfDay, endOfDay, limit, offset) as BufferRecord[];
+
+    return bufferRecords.map(r =>
+      this.bufferRecordToDataRecord(r, signalkPath)
+    );
+  }
+
+  /**
    * Mark records for a specific date as exported.
    * Queries the specific path's table.
    */
