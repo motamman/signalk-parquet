@@ -575,6 +575,37 @@ export default function (app: ServerAPI): SignalKPlugin {
       saveAllBuffers(state.currentConfig, state, app);
     }
 
+    // Unsubscribe from all paths FIRST to stop data flow before closing buffer
+    state.unsubscribes.forEach(unsubscribe => {
+      if (typeof unsubscribe === 'function') {
+        unsubscribe();
+      }
+    });
+    state.unsubscribes = [];
+
+    // Clean up stream subscriptions (new streambundle approach)
+    if (state.streamSubscriptions) {
+      state.streamSubscriptions.forEach(sub => {
+        if (typeof sub === 'function') {
+          sub();
+        } else if (sub && typeof sub === 'object') {
+          const candidate = sub as {
+            unsubscribe?: () => void;
+            dispose?: () => void;
+            end?: () => void;
+          };
+          if (typeof candidate.unsubscribe === 'function') {
+            candidate.unsubscribe();
+          } else if (typeof candidate.dispose === 'function') {
+            candidate.dispose();
+          } else if (typeof candidate.end === 'function') {
+            candidate.end();
+          }
+        }
+      });
+      state.streamSubscriptions = [];
+    }
+
     // Stop export service (pending records will be exported on next startup)
     if (state.exportService) {
       try {
@@ -585,7 +616,7 @@ export default function (app: ServerAPI): SignalKPlugin {
       }
     }
 
-    // Close SQLite buffer
+    // Close SQLite buffer (safe now that subscriptions are torn down)
     if (state.sqliteBuffer) {
       try {
         state.sqliteBuffer.close();
@@ -593,24 +624,6 @@ export default function (app: ServerAPI): SignalKPlugin {
       } catch (error) {
         app.error(`Error closing SQLite buffer: ${error}`);
       }
-    }
-
-    // Unsubscribe from all paths
-    state.unsubscribes.forEach(unsubscribe => {
-      if (typeof unsubscribe === 'function') {
-        unsubscribe();
-      }
-    });
-    state.unsubscribes = [];
-
-    // Clean up stream subscriptions (new streambundle approach)
-    if (state.streamSubscriptions) {
-      state.streamSubscriptions.forEach(stream => {
-        if (stream && typeof stream.end === 'function') {
-          stream.end();
-        }
-      });
-      state.streamSubscriptions = [];
     }
 
     // Shutdown runtime streaming service

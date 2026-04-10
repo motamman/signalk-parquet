@@ -190,6 +190,7 @@ export function subscribeToCommandPaths(
     (subscriptionError: unknown) => {},
     (delta: Delta) => {
       // Process each update in the delta
+      const prevRegimens = new Set(state.activeRegimens);
       if (delta.updates) {
         delta.updates.forEach((update: Update) => {
           if (hasValues(update)) {
@@ -209,6 +210,55 @@ export function subscribeToCommandPaths(
             });
           }
         });
+      }
+      // If active regimens changed, re-evaluate data subscriptions
+      if (state.activeRegimens.size !== prevRegimens.size ||
+          [...state.activeRegimens].some(r => !prevRegimens.has(r))) {
+        const streamSubscriptions = (
+          state as PluginState & { streamSubscriptions?: unknown }
+        ).streamSubscriptions;
+
+        const disposeStreamSubscription = (subscription: unknown): void => {
+          if (typeof subscription === 'function') {
+            subscription();
+            return;
+          }
+
+          if (subscription && typeof subscription === 'object') {
+            const candidate = subscription as {
+              unsubscribe?: () => void;
+              dispose?: () => void;
+              off?: () => void;
+            };
+
+            if (typeof candidate.unsubscribe === 'function') {
+              candidate.unsubscribe();
+            } else if (typeof candidate.dispose === 'function') {
+              candidate.dispose();
+            } else if (typeof candidate.off === 'function') {
+              candidate.off();
+            }
+          }
+        };
+
+        if (Array.isArray(streamSubscriptions)) {
+          streamSubscriptions.forEach(disposeStreamSubscription);
+          streamSubscriptions.length = 0;
+        } else if (streamSubscriptions instanceof Map) {
+          streamSubscriptions.forEach(disposeStreamSubscription);
+          streamSubscriptions.clear();
+        } else if (streamSubscriptions instanceof Set) {
+          streamSubscriptions.forEach(disposeStreamSubscription);
+          streamSubscriptions.clear();
+        } else if (streamSubscriptions && typeof streamSubscriptions === 'object') {
+          Object.values(streamSubscriptions as Record<string, unknown>).forEach(
+            disposeStreamSubscription
+          );
+          Object.keys(streamSubscriptions as Record<string, unknown>).forEach(key => {
+            delete (streamSubscriptions as Record<string, unknown>)[key];
+          });
+        }
+        updateDataSubscriptions(currentPaths, state, config, app);
       }
     }
   );
@@ -319,6 +369,28 @@ function shouldExcludeVessel(
   return false; // Don't exclude if we can't determine MMSI
 }
 
+// Dispose a single stream subscription returned by streambundle .onValue()
+function disposeStreamSubscription(subscription: unknown): void {
+  if (typeof subscription === 'function') {
+    subscription();
+    return;
+  }
+  if (subscription && typeof subscription === 'object') {
+    const candidate = subscription as {
+      unsubscribe?: () => void;
+      dispose?: () => void;
+      end?: () => void;
+    };
+    if (typeof candidate.unsubscribe === 'function') {
+      candidate.unsubscribe();
+    } else if (typeof candidate.dispose === 'function') {
+      candidate.dispose();
+    } else if (typeof candidate.end === 'function') {
+      candidate.end();
+    }
+  }
+}
+
 // Update data path subscriptions based on active regimens
 export function updateDataSubscriptions(
   currentPaths: PathConfig[],
@@ -333,6 +405,13 @@ export function updateDataSubscriptions(
     }
   });
   state.unsubscribes = [];
+
+  // Dispose existing streambundle subscriptions to prevent duplicate handlers
+  if (state.streamSubscriptions) {
+    state.streamSubscriptions.forEach(disposeStreamSubscription);
+    state.streamSubscriptions = [];
+  }
+
   state.subscribedPaths.clear();
 
   // Re-subscribe to command paths
