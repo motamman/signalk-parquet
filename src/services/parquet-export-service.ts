@@ -320,14 +320,13 @@ export class ParquetExportService {
             continue;
           }
 
-          const firstBatch =
-            this.sqliteBuffer.getRecordsForPathAndDateBatched(
-              context,
-              signalkPath,
-              targetDate,
-              BATCH_SIZE,
-              0
-            );
+          const firstBatch = this.sqliteBuffer.getRecordsForPathAndDateBatched(
+            context,
+            signalkPath,
+            targetDate,
+            BATCH_SIZE,
+            0
+          );
           let offset = BATCH_SIZE;
 
           const filePath = await this.exportDailyGroupBatched(
@@ -335,14 +334,13 @@ export class ParquetExportService {
             signalkPath,
             firstBatch,
             () => {
-              const batch =
-                this.sqliteBuffer.getRecordsForPathAndDateBatched(
-                  context,
-                  signalkPath,
-                  targetDate,
-                  BATCH_SIZE,
-                  offset
-                );
+              const batch = this.sqliteBuffer.getRecordsForPathAndDateBatched(
+                context,
+                signalkPath,
+                targetDate,
+                BATCH_SIZE,
+                offset
+              );
               offset += BATCH_SIZE;
               return batch;
             },
