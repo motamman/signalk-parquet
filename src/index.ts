@@ -585,9 +585,22 @@ export default function (app: ServerAPI): SignalKPlugin {
 
     // Clean up stream subscriptions (new streambundle approach)
     if (state.streamSubscriptions) {
-      state.streamSubscriptions.forEach(stream => {
-        if (stream && typeof stream.end === 'function') {
-          stream.end();
+      state.streamSubscriptions.forEach(sub => {
+        if (typeof sub === 'function') {
+          sub();
+        } else if (sub && typeof sub === 'object') {
+          const candidate = sub as {
+            unsubscribe?: () => void;
+            dispose?: () => void;
+            end?: () => void;
+          };
+          if (typeof candidate.unsubscribe === 'function') {
+            candidate.unsubscribe();
+          } else if (typeof candidate.dispose === 'function') {
+            candidate.dispose();
+          } else if (typeof candidate.end === 'function') {
+            candidate.end();
+          }
         }
       });
       state.streamSubscriptions = [];

@@ -369,6 +369,28 @@ function shouldExcludeVessel(
   return false; // Don't exclude if we can't determine MMSI
 }
 
+// Dispose a single stream subscription returned by streambundle .onValue()
+function disposeStreamSubscription(subscription: unknown): void {
+  if (typeof subscription === 'function') {
+    subscription();
+    return;
+  }
+  if (subscription && typeof subscription === 'object') {
+    const candidate = subscription as {
+      unsubscribe?: () => void;
+      dispose?: () => void;
+      end?: () => void;
+    };
+    if (typeof candidate.unsubscribe === 'function') {
+      candidate.unsubscribe();
+    } else if (typeof candidate.dispose === 'function') {
+      candidate.dispose();
+    } else if (typeof candidate.end === 'function') {
+      candidate.end();
+    }
+  }
+}
+
 // Update data path subscriptions based on active regimens
 export function updateDataSubscriptions(
   currentPaths: PathConfig[],
@@ -383,6 +405,13 @@ export function updateDataSubscriptions(
     }
   });
   state.unsubscribes = [];
+
+  // Dispose existing streambundle subscriptions to prevent duplicate handlers
+  if (state.streamSubscriptions) {
+    state.streamSubscriptions.forEach(disposeStreamSubscription);
+    state.streamSubscriptions = [];
+  }
+
   state.subscribedPaths.clear();
 
   // Re-subscribe to command paths
