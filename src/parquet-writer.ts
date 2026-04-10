@@ -235,6 +235,80 @@ export class ParquetWriter {
     }
   }
 
+  /**
+   * Write Parquet file in batches to avoid loading all records into memory.
+   * Uses firstBatch for schema detection, then pulls subsequent batches via callback.
+   */
+  async writeParquetBatched(
+    filepath: string,
+    firstBatch: DataRecord[],
+    nextBatch: () => DataRecord[],
+    currentPath?: string
+  ): Promise<string> {
+    try {
+      if (firstBatch.length === 0) {
+        this.app?.debug('No records to write to Parquet file');
+        return filepath;
+      }
+
+      if (!parquet) {
+        throw new Error('ParquetJS not available');
+      }
+
+      const schema = await this.createParquetSchema(
+        firstBatch,
+        currentPath || firstBatch[0].path
+      );
+      const writer = await parquet.ParquetWriter.openFile(schema, filepath);
+
+      // Write first batch
+      for (const record of firstBatch) {
+        const preparedRecord = this.prepareRecordForParquet(record, schema);
+        await writer.appendRow({ ...preparedRecord });
+      }
+
+      // Pull and write subsequent batches
+      let batch = nextBatch();
+      while (batch.length > 0) {
+        for (const record of batch) {
+          const preparedRecord = this.prepareRecordForParquet(record, schema);
+          await writer.appendRow({ ...preparedRecord });
+        }
+        batch = nextBatch();
+      }
+
+      await writer.close();
+
+      const isValid = await this.validateParquetFile(filepath);
+      if (!isValid) {
+        const quarantineDir = path.join(path.dirname(filepath), 'quarantine');
+        await fs.ensureDir(quarantineDir);
+        const quarantineFile = path.join(
+          quarantineDir,
+          path.basename(filepath)
+        );
+        await fs.move(filepath, quarantineFile, { overwrite: true });
+
+        await this.logQuarantine(
+          quarantineFile,
+          'write',
+          'File failed validation after write'
+        );
+
+        throw new Error(
+          `Parquet file failed validation after write, moved to quarantine: ${quarantineFile}`
+        );
+      }
+
+      return filepath;
+    } catch (error) {
+      this.app?.debug(
+        `Parquet batched writing failed: ${(error as Error).message}`
+      );
+      throw error;
+    }
+  }
+
   // Create Parquet schema based on sample records
   // Now uses consolidated SchemaService
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
