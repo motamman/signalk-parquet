@@ -4646,4 +4646,220 @@ export function registerApiRoutes(
     job.completedAt = new Date();
     return res.json({ success: true, jobId: job.id });
   });
+
+  // ===========================================
+  // POSITION AGGREGATION MIGRATION API ROUTES
+  // ===========================================
+
+  const positionAggJobs = new Map<
+    string,
+    {
+      id: string;
+      status: 'running' | 'completed' | 'cancelled' | 'error';
+      dryRun: boolean;
+      positionPaths: string[];
+      datesProcessed: number;
+      totalDates: number;
+      startTime: Date;
+      completedAt?: Date;
+      error?: string;
+      results: Array<{
+        date: string;
+        tiersReaggregated: number;
+        errors: string[];
+      }>;
+    }
+  >();
+
+  // Start position aggregation migration job
+  router.post('/api/migrate/position-aggregation', async (req, res) => {
+    try {
+      const { dryRun = false } = req.body || {};
+      const jobId = `posagg_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+
+      const job = {
+        id: jobId,
+        status: 'running' as 'running' | 'completed' | 'cancelled' | 'error',
+        dryRun,
+        positionPaths: [] as string[],
+        datesProcessed: 0,
+        totalDates: 0,
+        startTime: new Date(),
+        completedAt: undefined as Date | undefined,
+        error: undefined as string | undefined,
+        results: [] as Array<{
+          date: string;
+          tiersReaggregated: number;
+          errors: string[];
+        }>,
+      };
+      positionAggJobs.set(jobId, job);
+
+      // Fire async job (not awaited — runs in background)
+      (async () => {
+        try {
+          const dataDir = state.getDataDirPath();
+
+          // Scan raw tier for paths whose schema has value_latitude/value_longitude
+          const positionPathsFound = new Set<string>();
+          const datesToProcess = new Set<string>();
+
+          const rawTierDir = path.join(dataDir, 'tier=raw');
+          if (await fs.pathExists(rawTierDir)) {
+            const contextDirs = await glob(path.join(rawTierDir, 'context=*'));
+            for (const contextDir of contextDirs) {
+              const pathDirs = await glob(path.join(contextDir, 'path=*'));
+              for (const pathDir of pathDirs) {
+                const signalkPath = path
+                  .basename(pathDir)
+                  .replace('path=', '')
+                  .replace(/__/g, '.');
+
+                // Sample one parquet file from this path to detect position schema
+                const sampleFiles = await glob(
+                  path.join(pathDir, 'year=*', 'day=*', '*.parquet')
+                );
+                const candidate = sampleFiles.find(
+                  f =>
+                    !f.includes('/processed/') &&
+                    !f.includes('/quarantine/') &&
+                    !f.includes('/failed/') &&
+                    !f.includes('/repaired/')
+                );
+                if (!candidate) continue;
+
+                let isPositionPath = false;
+                const conn = await DuckDBPool.getConnection();
+                try {
+                  const schemaResult = await conn.runAndReadAll(
+                    `SELECT column_name FROM (DESCRIBE SELECT * FROM read_parquet('${candidate}'))`
+                  );
+                  const cols = schemaResult
+                    .getRowObjects()
+                    .map((r: Record<string, unknown>) => r.column_name as string);
+                  isPositionPath =
+                    cols.includes('value_latitude') &&
+                    cols.includes('value_longitude');
+                } catch (err) {
+                  app.debug(
+                    `Position migration: failed to read schema for ${candidate}: ${(err as Error).message}`
+                  );
+                } finally {
+                  conn.disconnectSync();
+                }
+
+                if (!isPositionPath) continue;
+
+                positionPathsFound.add(signalkPath);
+
+                // Collect all dates with raw data for this position path
+                const validFiles = sampleFiles.filter(
+                  f =>
+                    !f.includes('/processed/') &&
+                    !f.includes('/quarantine/') &&
+                    !f.includes('/failed/') &&
+                    !f.includes('/repaired/')
+                );
+                for (const file of validFiles) {
+                  const yearMatch = file.match(/year=(\d{4})/);
+                  const dayMatch = file.match(/day=(\d{3})/);
+                  if (yearMatch && dayMatch) {
+                    datesToProcess.add(`${yearMatch[1]}-${dayMatch[1]}`);
+                  }
+                }
+              }
+            }
+          }
+
+          job.positionPaths = Array.from(positionPathsFound);
+          job.totalDates = datesToProcess.size;
+
+          app.debug(
+            `Position aggregation migration: found ${positionPathsFound.size} position paths, ${datesToProcess.size} dates to process`
+          );
+
+          if (dryRun) {
+            job.status = 'completed';
+            job.completedAt = new Date();
+            return;
+          }
+
+          const positionPathSet = positionPathsFound;
+          const pathFilter = (p: string) => positionPathSet.has(p);
+
+          for (const dateKey of datesToProcess) {
+            if (job.status === 'cancelled') break;
+
+            const [yearStr, dayStr] = dateKey.split('-');
+            const year = parseInt(yearStr);
+            const dayOfYear = parseInt(dayStr);
+            const date = new Date(Date.UTC(year, 0, dayOfYear));
+
+            try {
+              const results = await aggregationService.aggregateDate(
+                date,
+                pathFilter
+              );
+              const errors = results.flatMap(r => r.errors);
+              const tiersReaggregated = results.filter(
+                r => r.filesCreated > 0
+              ).length;
+              job.results.push({
+                date: date.toISOString().slice(0, 10),
+                tiersReaggregated,
+                errors,
+              });
+            } catch (error) {
+              job.results.push({
+                date: date.toISOString().slice(0, 10),
+                tiersReaggregated: 0,
+                errors: [(error as Error).message],
+              });
+            }
+
+            job.datesProcessed++;
+          }
+
+          job.status = 'completed';
+          job.completedAt = new Date();
+        } catch (error) {
+          job.status = 'error';
+          job.error = (error as Error).message;
+          job.completedAt = new Date();
+        }
+      })();
+
+      return res.json({ success: true, jobId, dryRun });
+    } catch (error) {
+      return res.status(500).json({
+        success: false,
+        error: (error as Error).message,
+      });
+    }
+  });
+
+  // Poll position aggregation migration progress
+  router.get('/api/migrate/position-aggregation/:jobId', (req, res) => {
+    const job = positionAggJobs.get(req.params.jobId);
+    if (!job) {
+      return res.status(404).json({ success: false, error: 'Job not found' });
+    }
+    return res.json({
+      success: true,
+      ...job,
+    });
+  });
+
+  // Cancel position aggregation migration
+  router.post('/api/migrate/position-aggregation/cancel/:jobId', (req, res) => {
+    const job = positionAggJobs.get(req.params.jobId);
+    if (!job || job.status !== 'running') {
+      return res
+        .status(400)
+        .json({ success: false, error: 'Job not found or not running' });
+    }
+    job.status = 'cancelled';
+    job.completedAt = new Date();
+    return res.json({ success: true, jobId: job.id });
+  });
 }
