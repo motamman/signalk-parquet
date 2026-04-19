@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.7.20-beta.5] - 2026-04-19
+
+### Added
+
+- **Position Aggregation Migration** — New `POST /api/migrate/position-aggregation` endpoint re-aggregates position paths into 5s/60s/1h tiers. Scans the raw tier for paths whose schema includes `value_latitude`/`value_longitude`, then runs targeted aggregation against just those paths. Supports `dryRun` for previewing.
+  - GPS outlier rejection via `POSITION_MAX_SPEED_MPS` (25 m/s ≈ 48.6 kn) — discards single-point glitches whose implied speed from their temporal neighbor exceeds the cap
+  - `AggregationService.aggregateDate()` and `aggregateTier()` now accept an optional `pathFilter` for targeted re-aggregation
+  - Aggregator auto-detects position schema (`value_latitude`/`value_longitude`) alongside scalar schema
+- **Batched Parquet Writing** — New `ParquetWriter.writeParquetBatched()` streams records to Parquet in pull-based batches instead of loading all rows into memory. Reduces peak memory during large exports from the SQLite buffer.
+- **Central Constants Module** — New `src/constants.ts` as the single home for tunable numeric constants. Starts with `POSITION_MAX_SPEED_MPS`; future tunables land here before graduating to plugin config.
+
+### Fixed
+
+- **Output Directory Location** (thanks @tkurki, PR #48) — When `outputDirectory` is unset, it now defaults to `app.getDataDirPath()` (i.e., `plugin-config-data/<pluginId>/`) instead of being created directly under the settings directory.
+- **Streambundle Subscription Disposal** — Streambundle subscriptions are now properly disposed during shutdown and in `updateDataSubscriptions`, preventing leaked listeners on regimen changes and plugin restart.
+
+### Changed
+
+- **`api-routes.ts` Refactor** — Extracted `getDataFilesForPath` helper and switched call sites to `PluginState.getDataDirPath()` for consistent data-dir resolution. Removed unused variables.
+- **ParquetExportService Formatting** — Minor readability cleanup; no behavior change.
+
+---
+
 ## [0.7.20-beta.4] - 2026-04-05
 
 ### Fixed
