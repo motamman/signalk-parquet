@@ -22,6 +22,12 @@ Vessel data Parquet file archive with automated value and geospatial triggers. H
   - Automatic partition pruning for time-range queries
   - **Bulk Aggregation**: `POST /api/aggregate/bulk` builds all tiers from raw data in one background job
   - **Post-Migration Aggregation**: Migration automatically builds tiers after moving files to hive structure
+  - **NEW Position Aggregation Migration**: `POST /api/migrate/position-aggregation` re-aggregates position paths (`value_latitude`/`value_longitude`) into 5s/60s/1h tiers
+    - Auto-detects position paths in the raw tier by schema
+    - GPS outlier rejection via `POSITION_MAX_SPEED_MPS` (25 m/s ≈ 48.6 kn) to discard single-point glitches
+    - Supports `dryRun` for previewing
+- **NEW Batched Parquet Writing**: Streams records to Parquet in pull-based batches instead of loading all rows into memory
+  - Reduces peak memory during large exports from the SQLite buffer
 - **NEW Cloud Federated Querying**: Query historical data directly from S3 or Cloudflare R2 using DuckDB's native support
   - Three-tier query hierarchy: local parquet → cloud supplement → SQLite buffer
   - Automatic partition pruning reduces data transfer by 70-90%

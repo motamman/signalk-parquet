@@ -18,6 +18,7 @@ import { ServerAPI } from '@signalk/server-api';
 import { DuckDBPool } from '../utils/duckdb-pool';
 import { HivePathBuilder, AggregationTier } from '../utils/hive-path-builder';
 import { isAngularPath } from '../utils/angular-paths';
+import { POSITION_MAX_SPEED_MPS } from '../constants';
 
 export interface AggregationConfig {
   outputDirectory: string;
@@ -103,9 +104,14 @@ export class AggregationService {
   }
 
   /**
-   * Run aggregation for a specific date
+   * Run aggregation for a specific date.
+   * Optional pathFilter restricts which signalk paths are aggregated (used by
+   * targeted migrations like position re-aggregation).
    */
-  async aggregateDate(date: Date): Promise<AggregationResult[]> {
+  async aggregateDate(
+    date: Date,
+    pathFilter?: (signalkPath: string) => boolean
+  ): Promise<AggregationResult[]> {
     const results: AggregationResult[] = [];
 
     // Aggregate through the hierarchy: raw -> 5s -> 60s -> 1h
@@ -114,7 +120,12 @@ export class AggregationService {
       const targetTier = TIER_HIERARCHY[i + 1];
 
       try {
-        const result = await this.aggregateTier(sourceTier, targetTier, date);
+        const result = await this.aggregateTier(
+          sourceTier,
+          targetTier,
+          date,
+          pathFilter
+        );
         results.push(result);
       } catch (error) {
         this.app.error(
@@ -141,7 +152,8 @@ export class AggregationService {
   async aggregateTier(
     sourceTier: AggregationTier,
     targetTier: AggregationTier,
-    date: Date
+    date: Date,
+    pathFilter?: (signalkPath: string) => boolean
   ): Promise<AggregationResult> {
     const startTime = Date.now();
     const errors: string[] = [];
@@ -197,6 +209,7 @@ export class AggregationService {
 
       try {
         const { context, signalkPath } = this.parseGroupKey(key);
+        if (pathFilter && !pathFilter(signalkPath)) continue;
         const result = await this.aggregateGroup(
           files,
           context,
@@ -244,8 +257,10 @@ export class AggregationService {
     const isSourceRaw = sourceTier === 'raw';
     const fileListStr = files.map(f => `'${f}'`).join(', ');
 
-    // Check schema compatibility - skip object-type paths (like position with value_latitude/value_longitude)
+    // Detect schema: scalar ('value' / 'value_avg'), position ('value_latitude'/'value_longitude'),
+    // or unsupported object-type (skip).
     const connection = await DuckDBPool.getConnection();
+    let isPosition = false;
     try {
       const schemaQuery = `SELECT column_name FROM (DESCRIBE SELECT * FROM read_parquet([${fileListStr}], union_by_name=true))`;
       const schemaResult = await connection.runAndReadAll(schemaQuery);
@@ -253,9 +268,15 @@ export class AggregationService {
         .getRowObjects()
         .map((r: Record<string, unknown>) => r.column_name as string);
 
-      // For raw tier, we need 'value' column; for aggregated tiers, we need 'bucket_time' and 'value_avg'
+      const hasLatLon =
+        columns.includes('value_latitude') &&
+        columns.includes('value_longitude');
       const requiredColumn = isSourceRaw ? 'value' : 'bucket_time';
-      if (!columns.includes(requiredColumn)) {
+      const hasScalarColumn = columns.includes(requiredColumn);
+
+      if (hasLatLon) {
+        isPosition = true;
+      } else if (!hasScalarColumn) {
         this.app.debug(
           `Skipping ${signalkPath}: no '${requiredColumn}' column (object-type data stays in raw tier)`
         );
@@ -283,17 +304,25 @@ export class AggregationService {
       `${this.config.filenamePrefix}_${date.toISOString().slice(0, 10)}_aggregated.parquet`
     );
 
-    // Use different query depending on source tier schema and whether the path is angular
-    // Raw tier has: received_timestamp, value
-    // Aggregated tiers have: bucket_time, value_avg, value_min, value_max, sample_count, first_timestamp, last_timestamp
-    const angular = isAngularPath(signalkPath, this.app, context);
-    const query = this.buildAggregationQuery(
-      fileListStr,
-      intervalSeconds,
-      isSourceRaw,
-      angular,
-      outputFile
-    );
+    // Use different query depending on source tier schema and whether the path is angular/position
+    // Raw tier has: received_timestamp, value (or value_latitude/value_longitude for position)
+    // Aggregated tiers have: bucket_time, value_avg/value_latitude, value_min, value_max, sample_count, first_timestamp, last_timestamp
+    const angular =
+      !isPosition && isAngularPath(signalkPath, this.app, context);
+    const query = isPosition
+      ? this.buildPositionAggregationQuery(
+          fileListStr,
+          intervalSeconds,
+          isSourceRaw,
+          outputFile
+        )
+      : this.buildAggregationQuery(
+          fileListStr,
+          intervalSeconds,
+          isSourceRaw,
+          angular,
+          outputFile
+        );
 
     try {
       await connection.runAndReadAll(query);
@@ -437,6 +466,146 @@ export class AggregationService {
         ) src
         GROUP BY time_bucket(INTERVAL '${intervalSeconds} seconds', src_bucket_time::TIMESTAMP), context, path
         ORDER BY 1
+      ) TO '${outputFile}' (FORMAT PARQUET, COMPRESSION 'SNAPPY');
+    `;
+  }
+
+  /**
+   * Build position aggregation query.
+   *
+   * Selects one representative point per bucket by ranking candidates:
+   *   1. Fewest glitchy neighbors — a neighbor is glitchy when the implied
+   *      speed between it and the candidate exceeds POSITION_MAX_SPEED_MPS.
+   *      Both neighbors clean beats one; one beats none.
+   *   2. Timestamp at or after the bucket midpoint.
+   *   3. Closest to the bucket midpoint.
+   *
+   * A bucket always produces a row if any candidate exists; buckets made
+   * entirely of glitches still emit their least-bad candidate.
+   */
+  private buildPositionAggregationQuery(
+    fileListStr: string,
+    intervalSeconds: number,
+    isSourceRaw: boolean,
+    outputFile: string
+  ): string {
+    // Haversine distance in meters between two lat/lon pairs.
+    const haversine = (
+      lat1: string,
+      lon1: string,
+      lat2: string,
+      lon2: string
+    ) => `
+      (2 * 6371000 * ASIN(SQRT(
+        POWER(SIN(RADIANS(${lat2} - ${lat1}) / 2), 2) +
+        COS(RADIANS(${lat1})) * COS(RADIANS(${lat2})) *
+        POWER(SIN(RADIANS(${lon2} - ${lon1}) / 2), 2)
+      )))
+    `;
+
+    // Source columns differ between raw and aggregated tiers.
+    // Raw: received_timestamp, value_latitude, value_longitude
+    // Aggregated: bucket_time (as timestamp), value_latitude, value_longitude, sample_count, first_timestamp, last_timestamp
+    const tsCol = isSourceRaw ? 'received_timestamp' : 'bucket_time';
+    const srcSampleCount = isSourceRaw ? '1::BIGINT' : 'sample_count';
+    const srcFirstTs = isSourceRaw ? 'received_timestamp' : 'first_timestamp';
+    const srcLastTs = isSourceRaw ? 'received_timestamp' : 'last_timestamp';
+
+    return `
+      COPY (
+        WITH src AS (
+          SELECT
+            ${tsCol}::TIMESTAMP AS ts,
+            context,
+            path,
+            TRY_CAST(value_latitude AS DOUBLE) AS lat,
+            TRY_CAST(value_longitude AS DOUBLE) AS lon,
+            ${srcSampleCount} AS src_sample_count,
+            ${srcFirstTs}::TIMESTAMP AS src_first_ts,
+            ${srcLastTs}::TIMESTAMP AS src_last_ts
+          FROM read_parquet([${fileListStr}], union_by_name=true)
+          WHERE TRY_CAST(value_latitude AS DOUBLE) BETWEEN -90 AND 90
+            AND TRY_CAST(value_longitude AS DOUBLE) BETWEEN -180 AND 180
+        ),
+        bucketed AS (
+          SELECT
+            time_bucket(INTERVAL '${intervalSeconds} seconds', ts) AS bucket_time,
+            *
+          FROM src
+        ),
+        with_neighbors AS (
+          SELECT
+            *,
+            LAG(lat) OVER w AS prev_lat,
+            LAG(lon) OVER w AS prev_lon,
+            LAG(ts)  OVER w AS prev_ts,
+            LEAD(lat) OVER w AS next_lat,
+            LEAD(lon) OVER w AS next_lon,
+            LEAD(ts)  OVER w AS next_ts
+          FROM bucketed
+          WINDOW w AS (PARTITION BY context, path, bucket_time ORDER BY ts)
+        ),
+        scored AS (
+          SELECT
+            *,
+            (bucket_time + INTERVAL '${intervalSeconds * 500} milliseconds') AS bucket_mid,
+            CASE
+              WHEN prev_ts IS NULL THEN 1
+              WHEN ${haversine('prev_lat', 'prev_lon', 'lat', 'lon')} /
+                   GREATEST(EXTRACT(EPOCH FROM (ts - prev_ts)), 0.001) <= ${POSITION_MAX_SPEED_MPS}
+                THEN 1
+              ELSE 0
+            END AS prev_ok,
+            CASE
+              WHEN next_ts IS NULL THEN 1
+              WHEN ${haversine('lat', 'lon', 'next_lat', 'next_lon')} /
+                   GREATEST(EXTRACT(EPOCH FROM (next_ts - ts)), 0.001) <= ${POSITION_MAX_SPEED_MPS}
+                THEN 1
+              ELSE 0
+            END AS next_ok
+          FROM with_neighbors
+        ),
+        ranked AS (
+          SELECT
+            *,
+            ROW_NUMBER() OVER (
+              PARTITION BY context, path, bucket_time
+              ORDER BY
+                (prev_ok + next_ok) DESC,
+                CASE WHEN ts >= bucket_mid THEN 0 ELSE 1 END,
+                ABS(EXTRACT(EPOCH FROM (ts - bucket_mid)))
+            ) AS rn
+          FROM scored
+        ),
+        bucket_stats AS (
+          SELECT
+            bucket_time,
+            context,
+            path,
+            SUM(src_sample_count)::BIGINT AS sample_count,
+            MIN(src_first_ts) AS first_timestamp,
+            MAX(src_last_ts) AS last_timestamp
+          FROM bucketed
+          GROUP BY bucket_time, context, path
+        )
+        SELECT
+          r.bucket_time,
+          r.context,
+          r.path,
+          r.lat AS value_latitude,
+          r.lon AS value_longitude,
+          NULL::DOUBLE AS value_min,
+          NULL::DOUBLE AS value_max,
+          s.sample_count,
+          s.first_timestamp,
+          s.last_timestamp
+        FROM ranked r
+        JOIN bucket_stats s
+          ON r.bucket_time = s.bucket_time
+         AND r.context = s.context
+         AND r.path = s.path
+        WHERE r.rn = 1
+        ORDER BY r.bucket_time
       ) TO '${outputFile}' (FORMAT PARQUET, COMPRESSION 'SNAPPY');
     `;
   }
