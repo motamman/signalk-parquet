@@ -4651,25 +4651,32 @@ export function registerApiRoutes(
   // POSITION AGGREGATION MIGRATION API ROUTES
   // ===========================================
 
-  const positionAggJobs = new Map<
-    string,
-    {
-      id: string;
-      status: 'running' | 'completed' | 'cancelled' | 'error';
-      dryRun: boolean;
-      positionPaths: string[];
-      datesProcessed: number;
-      totalDates: number;
-      startTime: Date;
-      completedAt?: Date;
-      error?: string;
-      results: Array<{
-        date: string;
-        tiersReaggregated: number;
-        errors: string[];
-      }>;
-    }
-  >();
+  type PositionAggJob = {
+    id: string;
+    status: 'running' | 'completed' | 'cancelled' | 'error';
+    dryRun: boolean;
+    positionPaths: string[];
+    datesProcessed: number;
+    totalDates: number;
+    startTime: Date;
+    completedAt?: Date;
+    error?: string;
+    results: Array<{
+      date: string;
+      tiersReaggregated: number;
+      errors: string[];
+    }>;
+  };
+  const positionAggJobs = new Map<string, PositionAggJob>();
+  const POSITION_AGG_JOB_TTL_MS = 10 * 60 * 1000;
+  const schedulePositionAggJobCleanup = (jobId: string) => {
+    setTimeout(() => {
+      const j = positionAggJobs.get(jobId);
+      if (j && j.status !== 'running') {
+        positionAggJobs.delete(jobId);
+      }
+    }, POSITION_AGG_JOB_TTL_MS);
+  };
 
   // Start position aggregation migration job
   router.post('/api/migrate/position-aggregation', async (req, res) => {
@@ -4715,24 +4722,52 @@ export function registerApiRoutes(
                   .replace('path=', '')
                   .replace(/__/g, '.');
 
-                // Sample one parquet file from this path to detect position schema
-                const sampleFiles = await glob(
-                  path.join(pathDir, 'year=*', 'day=*', '*.parquet')
+                // Walk year/day directories and sample one parquet per day
+                // to avoid loading every parquet path into memory.
+                const dayDirs = await glob(
+                  path.join(pathDir, 'year=*', 'day=*')
                 );
-                const candidate = sampleFiles.find(
-                  f =>
-                    !f.includes('/processed/') &&
-                    !f.includes('/quarantine/') &&
-                    !f.includes('/failed/') &&
-                    !f.includes('/repaired/')
-                );
-                if (!candidate) continue;
+                if (dayDirs.length === 0) continue;
 
+                const dayCandidates: Array<{
+                  file: string;
+                  year: string;
+                  day: string;
+                }> = [];
+                for (const dayDir of dayDirs) {
+                  const yearMatch = dayDir.match(/year=(\d{4})/);
+                  const dayMatch = dayDir.match(/day=(\d{3})/);
+                  if (!yearMatch || !dayMatch) continue;
+
+                  const entries = await fs.readdir(dayDir, {
+                    withFileTypes: true,
+                  });
+                  const file = entries
+                    .filter(e => e.isFile() && e.name.endsWith('.parquet'))
+                    .map(e => path.join(dayDir, e.name))
+                    .find(
+                      f =>
+                        !f.includes('/processed/') &&
+                        !f.includes('/quarantine/') &&
+                        !f.includes('/failed/') &&
+                        !f.includes('/repaired/')
+                    );
+                  if (file) {
+                    dayCandidates.push({
+                      file,
+                      year: yearMatch[1],
+                      day: dayMatch[1],
+                    });
+                  }
+                }
+                if (dayCandidates.length === 0) continue;
+
+                const schemaSample = dayCandidates[0].file;
                 let isPositionPath = false;
                 const conn = await DuckDBPool.getConnection();
                 try {
                   const schemaResult = await conn.runAndReadAll(
-                    `SELECT column_name FROM (DESCRIBE SELECT * FROM read_parquet('${candidate}'))`
+                    `SELECT column_name FROM (DESCRIBE SELECT * FROM read_parquet('${schemaSample}'))`
                   );
                   const cols = schemaResult
                     .getRowObjects()
@@ -4742,7 +4777,7 @@ export function registerApiRoutes(
                     cols.includes('value_longitude');
                 } catch (err) {
                   app.debug(
-                    `Position migration: failed to read schema for ${candidate}: ${(err as Error).message}`
+                    `Position migration: failed to read schema for ${schemaSample}: ${(err as Error).message}`
                   );
                 } finally {
                   conn.disconnectSync();
@@ -4751,21 +4786,8 @@ export function registerApiRoutes(
                 if (!isPositionPath) continue;
 
                 positionPathsFound.add(signalkPath);
-
-                // Collect all dates with raw data for this position path
-                const validFiles = sampleFiles.filter(
-                  f =>
-                    !f.includes('/processed/') &&
-                    !f.includes('/quarantine/') &&
-                    !f.includes('/failed/') &&
-                    !f.includes('/repaired/')
-                );
-                for (const file of validFiles) {
-                  const yearMatch = file.match(/year=(\d{4})/);
-                  const dayMatch = file.match(/day=(\d{3})/);
-                  if (yearMatch && dayMatch) {
-                    datesToProcess.add(`${yearMatch[1]}-${dayMatch[1]}`);
-                  }
+                for (const { year, day } of dayCandidates) {
+                  datesToProcess.add(`${year}-${day}`);
                 }
               }
             }
@@ -4781,13 +4803,16 @@ export function registerApiRoutes(
           if (dryRun) {
             job.status = 'completed';
             job.completedAt = new Date();
+            schedulePositionAggJobCleanup(jobId);
             return;
           }
 
           const positionPathSet = positionPathsFound;
           const pathFilter = (p: string) => positionPathSet.has(p);
 
-          for (const dateKey of datesToProcess) {
+          // Sort date keys so the job processes days in a stable, reproducible order
+          const sortedDates = Array.from(datesToProcess).sort();
+          for (const dateKey of sortedDates) {
             if (job.status === 'cancelled') break;
 
             const [yearStr, dayStr] = dateKey.split('-');
@@ -4822,10 +4847,12 @@ export function registerApiRoutes(
 
           job.status = 'completed';
           job.completedAt = new Date();
+          schedulePositionAggJobCleanup(jobId);
         } catch (error) {
           job.status = 'error';
           job.error = (error as Error).message;
           job.completedAt = new Date();
+          schedulePositionAggJobCleanup(jobId);
         }
       })();
 
@@ -4860,6 +4887,7 @@ export function registerApiRoutes(
     }
     job.status = 'cancelled';
     job.completedAt = new Date();
+    schedulePositionAggJobCleanup(job.id);
     return res.json({ success: true, jobId: job.id });
   });
 }

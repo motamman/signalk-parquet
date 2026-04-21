@@ -64,10 +64,12 @@ async function writeRawPositionParquet(points: RawPoint[]) {
 
   const conn = await DuckDBPool.getConnection();
   try {
+    // Write received_timestamp as UTF8 ISO string (with trailing Z) to match
+    // production parquet, where the SQLite buffer exports it as TEXT.
     const valuesSql = points
       .map(
         p =>
-          `('${p.ts}'::TIMESTAMP, '${CONTEXT}', '${SIGNALK_PATH}', ${
+          `('${p.ts}', '${CONTEXT}', '${SIGNALK_PATH}', ${
             p.lat === null ? 'NULL' : p.lat
           }, ${p.lon === null ? 'NULL' : p.lon})`
       )
@@ -166,7 +168,7 @@ async function testCleanTrack() {
   // Bucket midpoint = 2500ms; tiebreak "at-or-after midpoint, closest" picks i=5.
   const points: RawPoint[] = [];
   for (let i = 0; i < 10; i++) {
-    const ts = new Date(TEST_DATE.getTime() + i * 500).toISOString().replace('Z', '');
+    const ts = new Date(TEST_DATE.getTime() + i * 500).toISOString();
     points.push({ ts, lat: 40.0 + i * 0.00001, lon: -70.0 });
   }
   await writeRawPositionParquet(points);
@@ -188,7 +190,7 @@ async function testGpsGlitch() {
   // with a wild jump (lat 0, lon 0 → ~7800 km from cluster). Should be rejected.
   const points: RawPoint[] = [];
   for (let i = 0; i < 10; i++) {
-    const ts = new Date(TEST_DATE.getTime() + i * 500).toISOString().replace('Z', '');
+    const ts = new Date(TEST_DATE.getTime() + i * 500).toISOString();
     if (i === 5) {
       // Glitch: massive jump, neighbors will see implausible implied speed
       points.push({ ts, lat: 0.0, lon: 0.0 });
@@ -226,7 +228,7 @@ async function testPeninsulaCurve() {
   const radius = 0.0001;
   const points: RawPoint[] = [];
   for (let i = 0; i < 10; i++) {
-    const ts = new Date(TEST_DATE.getTime() + i * 500).toISOString().replace('Z', '');
+    const ts = new Date(TEST_DATE.getTime() + i * 500).toISOString();
     const angle = (i / 9) * (Math.PI / 2);
     const lat = 40.0 + radius * Math.sin(angle);
     const lon = -70.0 + radius * Math.cos(angle);
@@ -253,7 +255,7 @@ async function testAllInvalid() {
   // All points have null lat/lon → filtered out at source CTE → no bucket
   const points: RawPoint[] = [];
   for (let i = 0; i < 5; i++) {
-    const ts = new Date(TEST_DATE.getTime() + i * 1000).toISOString().replace('Z', '');
+    const ts = new Date(TEST_DATE.getTime() + i * 1000).toISOString();
     points.push({ ts, lat: null, lon: null });
   }
   await writeRawPositionParquet(points);
@@ -267,7 +269,7 @@ async function testSingleValid() {
   console.log('\n--- Test 5: Single valid record ---');
   await resetDataDir();
 
-  const ts = new Date(TEST_DATE.getTime() + 1500).toISOString().replace('Z', '');
+  const ts = new Date(TEST_DATE.getTime() + 1500).toISOString();
   await writeRawPositionParquet([{ ts, lat: 41.5, lon: -71.5 }]);
   await runAggregation();
 
@@ -288,7 +290,7 @@ async function testReAggregationCascade() {
   // Should produce 12 buckets at 5s, 1 at 60s, 1 at 1h.
   const points: RawPoint[] = [];
   for (let i = 0; i < 120; i++) {
-    const ts = new Date(TEST_DATE.getTime() + i * 500).toISOString().replace('Z', '');
+    const ts = new Date(TEST_DATE.getTime() + i * 500).toISOString();
     points.push({ ts, lat: 40.0 + i * 0.00001, lon: -70.0 });
   }
   await writeRawPositionParquet(points);

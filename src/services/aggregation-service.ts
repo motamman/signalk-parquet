@@ -473,10 +473,15 @@ export class AggregationService {
   /**
    * Build position aggregation query.
    *
-   * Selects one representative point per bucket: the record whose timestamp is
-   * closest to the bucket midpoint, after rejecting GPS glitches (records whose
-   * implied speed to either temporal neighbor exceeds POSITION_MAX_SPEED_MPS).
-   * Walks forward then backward from the midpoint to find a non-glitch candidate.
+   * Selects one representative point per bucket by ranking candidates:
+   *   1. Fewest glitchy neighbors — a neighbor is glitchy when the implied
+   *      speed between it and the candidate exceeds POSITION_MAX_SPEED_MPS.
+   *      Both neighbors clean beats one; one beats none.
+   *   2. Timestamp at or after the bucket midpoint.
+   *   3. Closest to the bucket midpoint.
+   *
+   * A bucket always produces a row if any candidate exists; buckets made
+   * entirely of glitches still emit their least-bad candidate.
    */
   private buildPositionAggregationQuery(
     fileListStr: string,
@@ -513,15 +518,13 @@ export class AggregationService {
             ${tsCol}::TIMESTAMP AS ts,
             context,
             path,
-            CAST(value_latitude AS DOUBLE) AS lat,
-            CAST(value_longitude AS DOUBLE) AS lon,
+            TRY_CAST(value_latitude AS DOUBLE) AS lat,
+            TRY_CAST(value_longitude AS DOUBLE) AS lon,
             ${srcSampleCount} AS src_sample_count,
             ${srcFirstTs}::TIMESTAMP AS src_first_ts,
             ${srcLastTs}::TIMESTAMP AS src_last_ts
           FROM read_parquet([${fileListStr}], union_by_name=true)
-          WHERE value_latitude IS NOT NULL
-            AND value_longitude IS NOT NULL
-            AND TRY_CAST(value_latitude AS DOUBLE) BETWEEN -90 AND 90
+          WHERE TRY_CAST(value_latitude AS DOUBLE) BETWEEN -90 AND 90
             AND TRY_CAST(value_longitude AS DOUBLE) BETWEEN -180 AND 180
         ),
         bucketed AS (
