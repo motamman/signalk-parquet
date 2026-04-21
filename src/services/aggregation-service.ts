@@ -120,7 +120,12 @@ export class AggregationService {
       const targetTier = TIER_HIERARCHY[i + 1];
 
       try {
-        const result = await this.aggregateTier(sourceTier, targetTier, date, pathFilter);
+        const result = await this.aggregateTier(
+          sourceTier,
+          targetTier,
+          date,
+          pathFilter
+        );
         results.push(result);
       } catch (error) {
         this.app.error(
@@ -264,7 +269,8 @@ export class AggregationService {
         .map((r: Record<string, unknown>) => r.column_name as string);
 
       const hasLatLon =
-        columns.includes('value_latitude') && columns.includes('value_longitude');
+        columns.includes('value_latitude') &&
+        columns.includes('value_longitude');
       const requiredColumn = isSourceRaw ? 'value' : 'bucket_time';
       const hasScalarColumn = columns.includes(requiredColumn);
 
@@ -301,7 +307,8 @@ export class AggregationService {
     // Use different query depending on source tier schema and whether the path is angular/position
     // Raw tier has: received_timestamp, value (or value_latitude/value_longitude for position)
     // Aggregated tiers have: bucket_time, value_avg/value_latitude, value_min, value_max, sample_count, first_timestamp, last_timestamp
-    const angular = !isPosition && isAngularPath(signalkPath, this.app, context);
+    const angular =
+      !isPosition && isAngularPath(signalkPath, this.app, context);
     const query = isPosition
       ? this.buildPositionAggregationQuery(
           fileListStr,
@@ -478,7 +485,12 @@ export class AggregationService {
     outputFile: string
   ): string {
     // Haversine distance in meters between two lat/lon pairs.
-    const haversine = (lat1: string, lon1: string, lat2: string, lon2: string) => `
+    const haversine = (
+      lat1: string,
+      lon1: string,
+      lat2: string,
+      lon2: string
+    ) => `
       (2 * 6371000 * ASIN(SQRT(
         POWER(SIN(RADIANS(${lat2} - ${lat1}) / 2), 2) +
         COS(RADIANS(${lat1})) * COS(RADIANS(${lat2})) *
