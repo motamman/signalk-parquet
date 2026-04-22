@@ -2,6 +2,7 @@ import * as fs from 'fs-extra';
 import * as path from 'path';
 import { glob } from 'glob';
 import express, { Router } from 'express';
+import multer from 'multer';
 import { getAvailablePaths } from './utils/path-discovery';
 import { DuckDBInstance } from '@duckdb/node-api';
 import { DuckDBPool } from './utils/duckdb-pool';
@@ -38,6 +39,12 @@ import {
   ProcessCancelApiResponse,
 } from './types';
 import { MigrationService } from './services/migration-service';
+import { GPX_UPLOAD_MAX_FILE_BYTES, GPX_UPLOAD_MAX_FILES } from './constants';
+import {
+  GpxImportService,
+  DEFAULT_IMPORT_PATHS,
+  GpxImportPath,
+} from './services/gpx-import-service';
 import { AggregationService } from './services/aggregation-service';
 import { AggregationTier, HivePathBuilder } from './utils/hive-path-builder';
 import { isAngularPath } from './utils/angular-paths';
@@ -292,7 +299,12 @@ export function registerApiRoutes(
   // Returns sorted parquet files for a SignalK path, or null if the directory doesn't exist
   function getDataFilesForPath(signalkPath: string): {
     pathDir: string;
-    files: Array<{ name: string; path: string; size: number; modified: string }>;
+    files: Array<{
+      name: string;
+      path: string;
+      size: number;
+      modified: string;
+    }>;
   } | null {
     const selfContextPath = app.selfContext
       .replace(/\./g, '/')
@@ -675,11 +687,18 @@ export function registerApiRoutes(
 
           job.phase = 'Discovering local files...';
           // Only scan hive-partitioned files (tier=X/context=Y/path=Z/year=YYYY/day=DDD/)
-          const excludedDirs = ['/processed/', '/repaired/', '/failed/', '/quarantine/'];
+          const excludedDirs = [
+            '/processed/',
+            '/repaired/',
+            '/failed/',
+            '/quarantine/',
+          ];
           const allLocalFiles = await glob(
             path.join(dataDir, 'tier=*', '**', '*.parquet')
           );
-          const localFiles = allLocalFiles.filter(f => !excludedDirs.some(dir => f.includes(dir)));
+          const localFiles = allLocalFiles.filter(
+            f => !excludedDirs.some(dir => f.includes(dir))
+          );
           job.localFilesTotal = localFiles.length;
 
           const localKeys = new Map<string, { path: string; size: number }>();
@@ -885,11 +904,18 @@ export function registerApiRoutes(
           } else {
             job.phase = 'Scanning local files...';
             // Only sync hive-partitioned files (tier=X/context=Y/path=Z/year=YYYY/day=DDD/)
-            const excludedDirs = ['/processed/', '/repaired/', '/failed/', '/quarantine/'];
+            const excludedDirs = [
+              '/processed/',
+              '/repaired/',
+              '/failed/',
+              '/quarantine/',
+            ];
             const allLocalFiles = await glob(
               path.join(dataDir, 'tier=*', '**', '*.parquet')
             );
-            const localFiles = allLocalFiles.filter(f => !excludedDirs.some(dir => f.includes(dir)));
+            const localFiles = allLocalFiles.filter(
+              f => !excludedDirs.some(dir => f.includes(dir))
+            );
 
             job.phase = `Listing ${label} objects...`;
             job.progress = 10;
@@ -1829,7 +1855,12 @@ export function registerApiRoutes(
           });
         }
 
-        const analyzer = getSharedAnalyzer(config, app, state.getDataDirPath(), state);
+        const analyzer = getSharedAnalyzer(
+          config,
+          app,
+          state.getDataDirPath(),
+          state
+        );
 
         const startTime = Date.now();
         const testResult = await analyzer.testConnection();
@@ -1914,7 +1945,12 @@ export function registerApiRoutes(
         }
 
         // Use shared analyzer instance to maintain conversation state
-        const analyzer = getSharedAnalyzer(config, app, state.getDataDirPath(), state);
+        const analyzer = getSharedAnalyzer(
+          config,
+          app,
+          state.getDataDirPath(),
+          state
+        );
 
         // Build analysis request
         let analysisRequest: AnalysisRequest;
@@ -2033,7 +2069,12 @@ export function registerApiRoutes(
         );
 
         // Use shared analyzer instance to access stored conversations
-        const analyzer = getSharedAnalyzer(config, app, state.getDataDirPath(), state);
+        const analyzer = getSharedAnalyzer(
+          config,
+          app,
+          state.getDataDirPath(),
+          state
+        );
 
         // Process follow-up question
         const followUpRequest = {
@@ -2079,7 +2120,12 @@ export function registerApiRoutes(
 
         const limit = parseInt(req.query.limit || '20', 10);
 
-        const analyzer = getSharedAnalyzer(config, app, state.getDataDirPath(), state);
+        const analyzer = getSharedAnalyzer(
+          config,
+          app,
+          state.getDataDirPath(),
+          state
+        );
 
         const history = await analyzer.getAnalysisHistory(limit);
 
@@ -2137,7 +2183,12 @@ export function registerApiRoutes(
 
         const analysisId = req.params.id;
 
-        const analyzer = getSharedAnalyzer(config, app, state.getDataDirPath(), state);
+        const analyzer = getSharedAnalyzer(
+          config,
+          app,
+          state.getDataDirPath(),
+          state
+        );
 
         const result = await analyzer.deleteAnalysis(analysisId);
 
@@ -2171,7 +2222,10 @@ export function registerApiRoutes(
     '/api/vessel-context',
     async (_: TypedRequest, res: TypedResponse<any>) => {
       try {
-        const contextManager = new VesselContextManager(app, state.getDataDirPath());
+        const contextManager = new VesselContextManager(
+          app,
+          state.getDataDirPath()
+        );
         const context = await contextManager.getVesselContext();
 
         return res.json({
@@ -2201,7 +2255,10 @@ export function registerApiRoutes(
       try {
         const { vesselInfo, customContext } = req.body;
 
-        const contextManager = new VesselContextManager(app, state.getDataDirPath());
+        const contextManager = new VesselContextManager(
+          app,
+          state.getDataDirPath()
+        );
         const updatedContext = await contextManager.updateVesselContext(
           vesselInfo,
           customContext,
@@ -2230,7 +2287,10 @@ export function registerApiRoutes(
     '/api/vessel-context/refresh',
     async (_: TypedRequest, res: TypedResponse<any>) => {
       try {
-        const contextManager = new VesselContextManager(app, state.getDataDirPath());
+        const contextManager = new VesselContextManager(
+          app,
+          state.getDataDirPath()
+        );
         const refreshedContext = await contextManager.refreshVesselInfo();
 
         return res.json({
@@ -2278,7 +2338,10 @@ export function registerApiRoutes(
     '/api/vessel-context/claude-preview',
     async (_: TypedRequest, res: TypedResponse<any>) => {
       try {
-        const contextManager = new VesselContextManager(app, state.getDataDirPath());
+        const contextManager = new VesselContextManager(
+          app,
+          state.getDataDirPath()
+        );
         // Ensure context is loaded before generating preview
         await contextManager.getVesselContext();
         const claudeContext = contextManager.generateClaudeContext();
@@ -4236,6 +4299,432 @@ export function registerApiRoutes(
   });
 
   // ===========================================
+  // GPX IMPORT API ROUTES
+  // ===========================================
+
+  // Created lazily in routes below so state.parquetWriter is available at
+  // request time (not at plugin-start when the writer may not yet exist).
+  let gpxImportService: GpxImportService | undefined;
+  const getGpxImportService = (): GpxImportService => {
+    if (!state.parquetWriter) {
+      throw new Error(
+        'ParquetWriter not initialized — cannot import GPX files'
+      );
+    }
+    if (!gpxImportService) {
+      gpxImportService = new GpxImportService(app, state.parquetWriter);
+    }
+    return gpxImportService;
+  };
+
+  // Validate + defaulting for both the upload and server-directory routes.
+  // Returns a normalised slice of the service config, or a 400-ready error
+  // string. Kept in one place so the two routes can't drift apart.
+  const validateAndResolveImportOptions = (
+    requestedPaths: string[] | undefined,
+    contextOverride: string | undefined,
+    filenamePrefixOverride: string | undefined
+  ):
+    | {
+        ok: true;
+        paths: GpxImportPath[];
+        context: string;
+        filenamePrefix: string;
+      }
+    | { ok: false; error: string } => {
+    // De-duplicate while preserving order so a malformed client request
+    // doesn't fan out duplicate records into the same parquet file.
+    const requestedRaw =
+      requestedPaths && requestedPaths.length > 0
+        ? requestedPaths
+        : (DEFAULT_IMPORT_PATHS as string[]);
+    const requested = Array.from(new Set(requestedRaw));
+
+    const supported = new Set<string>(DEFAULT_IMPORT_PATHS);
+    const invalid = requested.filter(p => !supported.has(p));
+    if (invalid.length > 0) {
+      return {
+        ok: false,
+        error: `Unsupported paths: ${invalid.join(', ')}. Supported: ${DEFAULT_IMPORT_PATHS.join(', ')}`,
+      };
+    }
+
+    const context =
+      contextOverride && contextOverride.length > 0
+        ? contextOverride
+        : app.selfContext;
+    const filenamePrefix =
+      filenamePrefixOverride && filenamePrefixOverride.length > 0
+        ? filenamePrefixOverride
+        : `${state.currentConfig?.filenamePrefix || 'signalk_data'}_gpx`;
+
+    return {
+      ok: true,
+      paths: requested as GpxImportPath[],
+      context,
+      filenamePrefix,
+    };
+  };
+
+  // Per-request stash for upload-session metadata. A WeakMap keeps this
+  // off `req` itself so we don't need to widen Express's Request type
+  // with a one-off field, and the entry goes away automatically once the
+  // request object is gc'd.
+  interface UploadSession {
+    dir: string;
+    sessionId: string;
+  }
+  const uploadSessions = new WeakMap<express.Request, UploadSession>();
+
+  // Scan a directory for .gpx files
+  router.post('/api/import/gpx/scan', async (req, res) => {
+    try {
+      const { sourceDirectory } = req.body;
+      if (!sourceDirectory || typeof sourceDirectory !== 'string') {
+        return res.status(400).json({
+          success: false,
+          error: 'sourceDirectory is required',
+        });
+      }
+
+      const result = await getGpxImportService().scan(sourceDirectory);
+
+      return res.json({
+        success: true,
+        totalFiles: result.totalFiles,
+        totalSize: result.totalSize,
+        totalSizeMB: (result.totalSize / 1024 / 1024).toFixed(2),
+        files: result.files.map(f => ({
+          path: f.path,
+          name: path.basename(f.path),
+          sizeMB: (f.size / 1024 / 1024).toFixed(2),
+        })),
+      });
+    } catch (error) {
+      return res.status(500).json({
+        success: false,
+        error: (error as Error).message,
+      });
+    }
+  });
+
+  // Start a GPX import job
+  router.post('/api/import/gpx', async (req, res) => {
+    try {
+      const {
+        sourceDirectory,
+        sourceFiles,
+        context,
+        paths,
+        filenamePrefix,
+        deleteSource = false,
+      } = req.body as {
+        sourceDirectory?: string;
+        sourceFiles?: string[];
+        context?: string;
+        paths?: string[];
+        filenamePrefix?: string;
+        deleteSource?: boolean;
+      };
+
+      if (!sourceDirectory && (!sourceFiles || sourceFiles.length === 0)) {
+        return res.status(400).json({
+          success: false,
+          error: 'sourceDirectory or sourceFiles is required',
+        });
+      }
+
+      const resolved = validateAndResolveImportOptions(
+        paths,
+        context,
+        filenamePrefix
+      );
+      if (!resolved.ok) {
+        return res.status(400).json({ success: false, error: resolved.error });
+      }
+
+      const jobId = await getGpxImportService().import({
+        sourceDirectory,
+        sourceFiles,
+        targetDirectory: state.getDataDirPath(),
+        context: resolved.context,
+        paths: resolved.paths,
+        filenamePrefix: resolved.filenamePrefix,
+        deleteSourceAfterImport: deleteSource,
+        sourceLabel: 'gpx-import',
+      });
+
+      return res.json({
+        success: true,
+        jobId,
+        message: 'GPX import started',
+      });
+    } catch (error) {
+      return res.status(500).json({
+        success: false,
+        error: (error as Error).message,
+      });
+    }
+  });
+
+  // Progress for an import job
+  router.get('/api/import/gpx/progress/:jobId', (req, res) => {
+    try {
+      const { jobId } = req.params;
+      const progress = getGpxImportService().getProgress(jobId);
+
+      if (!progress) {
+        return res.status(404).json({
+          success: false,
+          error: 'Import job not found',
+        });
+      }
+
+      return res.json({
+        success: true,
+        ...progress,
+        bytesProcessedMB: (progress.bytesProcessed / 1024 / 1024).toFixed(2),
+      });
+    } catch (error) {
+      return res.status(500).json({
+        success: false,
+        error: (error as Error).message,
+      });
+    }
+  });
+
+  // Cancel an import job
+  router.post('/api/import/gpx/cancel/:jobId', (req, res) => {
+    try {
+      const { jobId } = req.params;
+      const cancelled = getGpxImportService().cancel(jobId);
+
+      if (!cancelled) {
+        return res.status(400).json({
+          success: false,
+          error: 'Import job not found or not running',
+        });
+      }
+
+      return res.json({
+        success: true,
+        message: 'Cancellation requested',
+      });
+    } catch (error) {
+      return res.status(500).json({
+        success: false,
+        error: (error as Error).message,
+      });
+    }
+  });
+
+  // Upload .gpx files via multipart form and immediately kick off an import.
+  //
+  // Files are streamed to a per-request temp directory under the plugin's
+  // data dir so that bulky uploads never stage through memory. The job id
+  // used for the upload session doubles as the upload dir name, which makes
+  // cleanup trivial — whether the job completes, is cancelled, or crashes.
+  //
+  // Form fields (multipart/form-data):
+  //   files           One or more .gpx files (field name 'files')
+  //   context         Optional SignalK context (default: self)
+  //   paths           Optional comma-separated SignalK paths
+  //   filenamePrefix  Optional filename prefix for emitted parquet files
+  const uploadStorage = multer.diskStorage({
+    destination: (req, _file, cb) => {
+      // Create the session directory on the first file so every file in the
+      // same upload request shares it. Keyed on the Request object via a
+      // WeakMap so we don't have to widen Express types with a one-off field.
+      // Surface ensureDirSync failures (permissions, full disk) through cb
+      // so multer rejects the upload cleanly instead of hanging the request.
+      try {
+        let session = uploadSessions.get(req);
+        if (!session) {
+          const sessionId = `upload_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+          const dir = path.join(
+            state.getDataDirPath(),
+            'gpx-uploads',
+            sessionId
+          );
+          fs.ensureDirSync(dir);
+          session = { dir, sessionId };
+          uploadSessions.set(req, session);
+        }
+        cb(null, session.dir);
+      } catch (err) {
+        cb(err as Error, '');
+      }
+    },
+    filename: (_req, file, cb) => {
+      // Preserve original filename so the import log is informative; strip
+      // path components to defeat any path-traversal via the upload name.
+      const safe = path.basename(file.originalname).replace(/[^\w.\-]/g, '_');
+      cb(null, safe);
+    },
+  });
+
+  const uploadFilter = (
+    _req: express.Request,
+    file: Express.Multer.File,
+    cb: multer.FileFilterCallback
+  ) => {
+    if (!file.originalname.toLowerCase().endsWith('.gpx')) {
+      cb(
+        new Error(`Only .gpx files are accepted (got '${file.originalname}')`)
+      );
+      return;
+    }
+    cb(null, true);
+  };
+
+  const gpxUpload = multer({
+    storage: uploadStorage,
+    fileFilter: uploadFilter,
+    limits: {
+      fileSize: GPX_UPLOAD_MAX_FILE_BYTES,
+      files: GPX_UPLOAD_MAX_FILES,
+    },
+  });
+
+  router.post(
+    '/api/import/gpx/upload',
+    gpxUpload.array('files'),
+    async (req, res) => {
+      const session = uploadSessions.get(req);
+      const uploadDir = session?.dir;
+      const files = (req.files as Express.Multer.File[]) || [];
+
+      try {
+        if (files.length === 0 || !uploadDir) {
+          return res.status(400).json({
+            success: false,
+            error: 'No .gpx files received',
+          });
+        }
+
+        const body = req.body as {
+          context?: string;
+          paths?: string; // form fields are strings; accept CSV
+          filenamePrefix?: string;
+        };
+
+        const requested =
+          body.paths && body.paths.trim().length > 0
+            ? body.paths
+                .split(',')
+                .map(s => s.trim())
+                .filter(Boolean)
+            : undefined;
+
+        const resolved = validateAndResolveImportOptions(
+          requested,
+          body.context,
+          body.filenamePrefix
+        );
+        if (!resolved.ok) {
+          return res
+            .status(400)
+            .json({ success: false, error: resolved.error });
+        }
+
+        const jobId = await getGpxImportService().import({
+          sourceFiles: files.map(f => f.path),
+          targetDirectory: state.getDataDirPath(),
+          context: resolved.context,
+          paths: resolved.paths,
+          filenamePrefix: resolved.filenamePrefix,
+          deleteSourceAfterImport: true, // uploaded temp files — always clean up
+          sourceLabel: 'gpx-import',
+        });
+
+        // Remove the per-upload staging dir when the job finishes. Polls the
+        // service rather than taking a callback because the service is the
+        // existing job-progress model; kept bounded below so a TTL'd progress
+        // entry (job deleted at 30 min) doesn't leak the timer forever.
+        const service = getGpxImportService();
+        const POLL_MS = 1000;
+        const MAX_POLL_MS = 60 * 60 * 1000; // 1h — well past any realistic import
+        const startedAt = Date.now();
+        const cleanup = setInterval(() => {
+          const progress = service.getProgress(jobId);
+          const finished =
+            progress &&
+            (progress.status === 'completed' ||
+              progress.status === 'cancelled' ||
+              progress.status === 'error');
+          const progressGone = progress === null; // TTL evicted it — nothing more we can learn
+          const pastDeadline = Date.now() - startedAt > MAX_POLL_MS;
+          if (finished || progressGone || pastDeadline) {
+            clearInterval(cleanup);
+            fs.remove(uploadDir).catch(() => {
+              // Best-effort: if remove fails, the dir stays around; not critical.
+            });
+          }
+        }, POLL_MS);
+
+        return res.json({
+          success: true,
+          jobId,
+          filesReceived: files.length,
+          message: 'Upload complete, GPX import started',
+        });
+      } catch (error) {
+        // On error before the job starts, remove the uploaded files so
+        // repeated failed attempts don't leak disk space.
+        if (uploadDir) {
+          fs.remove(uploadDir).catch(() => {
+            // ignore
+          });
+        }
+        return res.status(500).json({
+          success: false,
+          error: (error as Error).message,
+        });
+      }
+    }
+  );
+
+  // Multer errors (e.g. unsupported file type, size limit exceeded) surface
+  // as errors thrown from the middleware. Convert them to clean JSON 400s.
+  router.use(
+    '/api/import/gpx/upload',
+    (
+      err: Error,
+      _req: express.Request,
+      res: express.Response,
+      next: express.NextFunction
+    ): void => {
+      if (err) {
+        res.status(400).json({
+          success: false,
+          error: err.message,
+        });
+        return;
+      }
+      next();
+    }
+  );
+
+  // List all import jobs
+  router.get('/api/import/gpx/jobs', (_req, res) => {
+    try {
+      const service = getGpxImportService();
+      const jobIds = service.getJobIds();
+      const jobs = jobIds.map(id => service.getProgress(id)).filter(Boolean);
+
+      return res.json({
+        success: true,
+        jobs,
+      });
+    } catch (error) {
+      return res.status(500).json({
+        success: false,
+        error: (error as Error).message,
+      });
+    }
+  });
+
+  // ===========================================
   // AGGREGATION API ROUTES
   // ===========================================
 
@@ -4771,7 +5260,9 @@ export function registerApiRoutes(
                   );
                   const cols = schemaResult
                     .getRowObjects()
-                    .map((r: Record<string, unknown>) => r.column_name as string);
+                    .map(
+                      (r: Record<string, unknown>) => r.column_name as string
+                    );
                   isPositionPath =
                     cols.includes('value_latitude') &&
                     cols.includes('value_longitude');
