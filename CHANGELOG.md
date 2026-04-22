@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.7.30] - 2026-04-22
+
+Stable release — promotes the 0.7.20-beta line (beta.2 through beta.6) to a tagged npm release. No code changes since beta.6; see beta entries below for the full set of features and fixes included.
+
+---
+
 ## [0.7.20-beta.6] - 2026-04-21
 
 ### Added
