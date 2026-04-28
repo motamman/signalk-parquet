@@ -45,6 +45,10 @@ import {
   DEFAULT_IMPORT_PATHS,
   GpxImportPath,
 } from './services/gpx-import-service';
+import {
+  CompactionConflictError,
+  CompactionService,
+} from './services/compaction-service';
 import { AggregationService } from './services/aggregation-service';
 import { AggregationTier, HivePathBuilder } from './utils/hive-path-builder';
 import { isAngularPath } from './utils/angular-paths';
@@ -4353,6 +4357,21 @@ export function registerApiRoutes(
       contextOverride && contextOverride.length > 0
         ? contextOverride
         : app.selfContext;
+    // Filename prefix lands in `path.join(dir, `${prefix}_${ts}_…`.parquet)`
+    // so an unconstrained value enables path traversal AND silently
+    // breaks compaction's single-quote filename invariant. Restrict to
+    // the same alphabet the live writer uses.
+    if (
+      filenamePrefixOverride !== undefined &&
+      filenamePrefixOverride.length > 0
+    ) {
+      if (!/^[A-Za-z0-9_-]{1,64}$/.test(filenamePrefixOverride)) {
+        return {
+          ok: false,
+          error: 'filenamePrefix must be 1-64 chars of [A-Za-z0-9_-]',
+        };
+      }
+    }
     const filenamePrefix =
       filenamePrefixOverride && filenamePrefixOverride.length > 0
         ? filenamePrefixOverride
@@ -4711,6 +4730,224 @@ export function registerApiRoutes(
       const service = getGpxImportService();
       const jobIds = service.getJobIds();
       const jobs = jobIds.map(id => service.getProgress(id)).filter(Boolean);
+
+      return res.json({
+        success: true,
+        jobs,
+      });
+    } catch (error) {
+      return res.status(500).json({
+        success: false,
+        error: (error as Error).message,
+      });
+    }
+  });
+
+  // ===========================================
+  // COMPACTION API ROUTES
+  // ===========================================
+  //
+  // Merges per-day parquet files within each (tier, context, path, year)
+  // group into a single per-year file. Long-term-storage hygiene: keeps
+  // DuckDB queries spanning years fast and the filesystem light. See
+  // src/services/compaction-service.ts for the layout details.
+
+  const compactionService = new CompactionService(app);
+
+  // Validate + normalise the body of /api/compact and /api/compact/scan.
+  // Tier is allow-listed; beforeYear is clamped to [2000, currentUTCYear]
+  // so an authenticated admin cannot accidentally compact the
+  // in-progress year via a high cutoff like 9999 (which would race live
+  // writes).
+  const COMPACTION_VALID_TIERS: AggregationTier[] = ['raw', '5s', '60s', '1h'];
+  const COMPACTION_MIN_YEAR = 2000;
+  const validateCompactionInput = (body: {
+    tier?: AggregationTier;
+    beforeYear?: number;
+    pathFilter?: string;
+  }):
+    | {
+        ok: true;
+        tier: AggregationTier;
+        beforeYear: number;
+        pathFilter?: string;
+      }
+    | { ok: false; error: string } => {
+    const tier = body.tier ?? 'raw';
+    if (!COMPACTION_VALID_TIERS.includes(tier)) {
+      return {
+        ok: false,
+        error: `Invalid tier: ${tier}. Must be one of: ${COMPACTION_VALID_TIERS.join(', ')}`,
+      };
+    }
+    const currentYear = new Date().getUTCFullYear();
+    let beforeYear = currentYear;
+    if (body.beforeYear !== undefined) {
+      if (
+        typeof body.beforeYear !== 'number' ||
+        !Number.isFinite(body.beforeYear) ||
+        !Number.isInteger(body.beforeYear)
+      ) {
+        return {
+          ok: false,
+          error: 'beforeYear must be an integer',
+        };
+      }
+      if (
+        body.beforeYear < COMPACTION_MIN_YEAR ||
+        body.beforeYear > currentYear
+      ) {
+        return {
+          ok: false,
+          error: `beforeYear must be between ${COMPACTION_MIN_YEAR} and ${currentYear}`,
+        };
+      }
+      beforeYear = body.beforeYear;
+    }
+    return { ok: true, tier, beforeYear, pathFilter: body.pathFilter };
+  };
+
+  router.post('/api/compact/scan', async (req, res) => {
+    try {
+      const validated = validateCompactionInput(req.body || {});
+      if (!validated.ok) {
+        return res.status(400).json({ success: false, error: validated.error });
+      }
+      const { tier, beforeYear: cutoff, pathFilter } = validated;
+
+      const plan = await compactionService.scan({
+        baseDirectory: state.getDataDirPath(),
+        tier,
+        beforeYear: cutoff,
+        pathFilter,
+      });
+
+      return res.json({
+        success: true,
+        tier,
+        beforeYear: cutoff,
+        totalGroups: plan.totalGroups,
+        totalSourceFiles: plan.totalSourceFiles,
+        totalSourceBytes: plan.totalSourceBytes,
+        totalSourceMB: (plan.totalSourceBytes / 1024 / 1024).toFixed(2),
+        groups: plan.groups.map(g => ({
+          tier: g.tier,
+          context: g.context,
+          path: g.path,
+          year: g.year,
+          sourceFiles: g.sourceFiles,
+          sourceMB: (g.sourceBytes / 1024 / 1024).toFixed(2),
+        })),
+      });
+    } catch (error) {
+      return res.status(500).json({
+        success: false,
+        error: (error as Error).message,
+      });
+    }
+  });
+
+  router.post('/api/compact', async (req, res) => {
+    try {
+      const validated = validateCompactionInput(req.body || {});
+      if (!validated.ok) {
+        return res.status(400).json({ success: false, error: validated.error });
+      }
+      const { tier, beforeYear: cutoff, pathFilter } = validated;
+
+      const jobId = await compactionService.compact({
+        baseDirectory: state.getDataDirPath(),
+        tier,
+        beforeYear: cutoff,
+        pathFilter,
+      });
+
+      return res.json({
+        success: true,
+        jobId,
+        tier,
+        beforeYear: cutoff,
+        message: 'Compaction started',
+      });
+    } catch (error) {
+      if (error instanceof CompactionConflictError) {
+        return res.status(409).json({
+          success: false,
+          error: error.message,
+        });
+      }
+      return res.status(500).json({
+        success: false,
+        error: (error as Error).message,
+      });
+    }
+  });
+
+  router.get('/api/compact/progress/:jobId', (req, res) => {
+    // Polled by the admin UI; matches the no-store header on validation
+    // and repair progress routes so a browser/proxy cache can't make a
+    // running job look stuck or hide a cancellation.
+    res.setHeader('Cache-Control', 'no-store');
+    try {
+      const { jobId } = req.params;
+      const progress = compactionService.getProgress(jobId);
+
+      if (!progress) {
+        return res.status(404).json({
+          success: false,
+          error: 'Compaction job not found',
+        });
+      }
+
+      return res.json({
+        success: true,
+        ...progress,
+        bytesBeforeMB: (progress.bytesBefore / 1024 / 1024).toFixed(2),
+        bytesAfterMB: (progress.bytesAfter / 1024 / 1024).toFixed(2),
+        savingsMB: (
+          (progress.bytesBefore - progress.bytesAfter) /
+          1024 /
+          1024
+        ).toFixed(2),
+      });
+    } catch (error) {
+      return res.status(500).json({
+        success: false,
+        error: (error as Error).message,
+      });
+    }
+  });
+
+  router.post('/api/compact/cancel/:jobId', (req, res) => {
+    try {
+      const { jobId } = req.params;
+      const cancelled = compactionService.cancel(jobId);
+
+      if (!cancelled) {
+        return res.status(400).json({
+          success: false,
+          error: 'Compaction job not found or not running',
+        });
+      }
+
+      return res.json({
+        success: true,
+        message: 'Cancellation requested',
+      });
+    } catch (error) {
+      return res.status(500).json({
+        success: false,
+        error: (error as Error).message,
+      });
+    }
+  });
+
+  router.get('/api/compact/jobs', (_req, res) => {
+    try {
+      const jobIds = compactionService.getJobIds();
+      const jobs = jobIds
+        .map(id => compactionService.getProgress(id))
+        .filter(Boolean);
 
       return res.json({
         success: true,

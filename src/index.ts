@@ -4,6 +4,11 @@ import e, { Router } from 'express';
 import { ParquetWriter } from './parquet-writer';
 import { registerHistoryApiRoute } from './HistoryAPI';
 import { registerApiRoutes } from './api-routes';
+import {
+  cleanupStrandedCompactionTempFiles,
+  quiesceAllCompactionJobs,
+  recoverStrandedCompactionTrash,
+} from './services/compaction-service';
 import { CACHE_SIZE } from './config/cache-defaults';
 // import { HistoricalStreamingService } from './historical-streaming';
 import { SignalKPlugin, PluginConfig, PluginState, PathConfig } from './types';
@@ -218,6 +223,27 @@ export default function (app: ServerAPI): SignalKPlugin {
     // Ensure output directory exists
     fs.ensureDirSync(state.currentConfig.outputDirectory);
 
+    // Clean up any *.tmp files left behind by a previous SignalK crash
+    // mid-COPY. Best-effort; failures are logged but do not block start.
+    await cleanupStrandedCompactionTempFiles(
+      app,
+      state.currentConfig.outputDirectory
+    ).catch(err => {
+      app.error(`Compaction startup cleanup failed: ${(err as Error).message}`);
+    });
+
+    // Recover any stranded `.compaction-trash-*` dirs from a crash
+    // between move-to-trash and publish-rename. Runs before any new
+    // data subscriptions land so a restore can't clobber fresh files.
+    await recoverStrandedCompactionTrash(
+      app,
+      state.currentConfig.outputDirectory
+    ).catch(err => {
+      app.error(
+        `Compaction trash recovery failed: ${(err as Error).message}`
+      );
+    });
+
     // Initialize DuckDB connection pool once
     await DuckDBPool.initialize();
     app.debug('DuckDB connection pool initialized');
@@ -239,8 +265,12 @@ export default function (app: ServerAPI): SignalKPlugin {
         await DuckDBPool.initializeS3({
           accessKeyId: state.currentConfig.cloudUpload.accessKeyId,
           secretAccessKey: state.currentConfig.cloudUpload.secretAccessKey,
-          region: isR2 ? 'auto' : (state.currentConfig.cloudUpload.region || 'us-east-1'),
-          endpoint: isR2 ? `${state.currentConfig.cloudUpload.accountId}.r2.cloudflarestorage.com` : undefined,
+          region: isR2
+            ? 'auto'
+            : state.currentConfig.cloudUpload.region || 'us-east-1',
+          endpoint: isR2
+            ? `${state.currentConfig.cloudUpload.accountId}.r2.cloudflarestorage.com`
+            : undefined,
         });
         app.debug('DuckDB S3 credentials initialized for federated queries');
       } catch (error) {
@@ -414,7 +444,6 @@ export default function (app: ServerAPI): SignalKPlugin {
                 }
               }
             }
-
           }
         } catch (error) {
           app.error(`[StartupExport] Failed: ${(error as Error).message}`);
@@ -469,7 +498,9 @@ export default function (app: ServerAPI): SignalKPlugin {
               enabled: true,
               bucket: state.currentConfig.cloudUpload.bucket || '',
               keyPrefix: state.currentConfig.cloudUpload.keyPrefix || '',
-              region: isR2 ? 'auto' : (state.currentConfig.cloudUpload.region || 'us-east-1'),
+              region: isR2
+                ? 'auto'
+                : state.currentConfig.cloudUpload.region || 'us-east-1',
             }
           : undefined;
 
@@ -556,6 +587,26 @@ export default function (app: ServerAPI): SignalKPlugin {
   };
 
   plugin.stop = async function (): Promise<void> {
+    // Signal any running compaction jobs to cancel and wait for them
+    // to land at a group boundary. A single in-flight DuckDB COPY is
+    // uninterruptible, so a multi-GB year group still finishes before
+    // the loop exits — but we need to wait for that, otherwise
+    // DuckDBPool.shutdown() below races the COPY and leaves a partial
+    // temp file behind. Bounded so a stuck job can't hang the stop
+    // path indefinitely.
+    const quiesce = await quiesceAllCompactionJobs();
+    if (quiesce.signalled > 0) {
+      app.debug(
+        `Compaction quiesce: signalled=${quiesce.signalled}, ` +
+          `quiesced=${quiesce.quiesced}, remaining=${quiesce.remaining}`
+      );
+      if (quiesce.remaining > 0) {
+        app.error(
+          `${quiesce.remaining} compaction job(s) still running at shutdown timeout; proceeding anyway`
+        );
+      }
+    }
+
     // Unregister as History API provider
     unregisterHistoryApiProvider(app);
 
