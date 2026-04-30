@@ -3800,6 +3800,272 @@
                 ></div>
               </div>
             </div>
+
+            <!-- GPX Import Section -->
+            <div
+              id="gpxImportPanel"
+              style="
+                margin-top: 30px;
+                padding: 20px;
+                background: #f3e5f5;
+                border-radius: 8px;
+                border: 2px solid #8e24aa;
+              "
+            >
+              <h3 style="margin-top: 0; color: #4a148c">
+                📥 Import GPX Files
+              </h3>
+              <p style="color: #666; margin-bottom: 15px">
+                Import historical GPS tracks from .gpx files into the parquet
+                store. Each track point is expanded into SignalK records for
+                the selected paths and written as raw-tier parquet files.
+              </p>
+
+              <div class="form-group">
+                <label for="gpxFileInput">GPX files to import</label>
+                <div
+                  id="gpxDropZone"
+                  role="button"
+                  tabindex="0"
+                  aria-label="Click to pick .gpx files or drop them here"
+                  style="
+                    border: 2px dashed #8e24aa;
+                    border-radius: 6px;
+                    padding: 25px;
+                    text-align: center;
+                    background: #fafafa;
+                    cursor: pointer;
+                    transition: background 0.15s, border-color 0.15s;
+                  "
+                >
+                  <div style="color: #6a1b9a; font-size: 1.05em">
+                    <strong>Click to pick files</strong> or drag &amp; drop
+                    .gpx files here
+                  </div>
+                  <div
+                    id="gpxSelectedFiles"
+                    style="
+                      margin-top: 12px;
+                      color: #666;
+                      font-size: 0.9em;
+                      text-align: left;
+                    "
+                  >
+                    No files selected
+                  </div>
+                </div>
+                <input
+                  type="file"
+                  id="gpxFileInput"
+                  accept=".gpx,application/gpx+xml"
+                  multiple
+                  style="display: none"
+                />
+                <div
+                  id="gpxRejectedNote"
+                  style="
+                    margin-top: 6px;
+                    color: #c62828;
+                    font-size: 0.85em;
+                    display: none;
+                  "
+                ></div>
+              </div>
+
+              <details id="gpxAdvancedBlock" style="margin-bottom: 15px">
+                <summary
+                  style="cursor: pointer; color: #6a1b9a; font-weight: 500"
+                >
+                  Advanced: import from a server-side directory instead
+                </summary>
+                <div class="form-group" style="margin-top: 10px">
+                  <label for="gpxSourceDirectory"
+                    >Server directory (searched recursively)</label
+                  >
+                  <input
+                    type="text"
+                    id="gpxSourceDirectory"
+                    placeholder="/home/pi/tracks"
+                    style="width: 100%"
+                  />
+                  <small style="color: #666">
+                    Path is evaluated on the Signal K host — useful for bulk
+                    imports from mounted USB drives.
+                  </small>
+                </div>
+                <div
+                  class="form-group"
+                  style="display: flex; align-items: center; gap: 10px; margin-top: 10px"
+                >
+                  <input
+                    type="checkbox"
+                    id="gpxDeleteSource"
+                    style="width: auto"
+                  />
+                  <label
+                    for="gpxDeleteSource"
+                    style="margin: 0; font-weight: normal"
+                    >Delete source .gpx files from the server after successful
+                    import</label
+                  >
+                </div>
+                <div style="margin-top: 10px">
+                  <button
+                    onclick="scanGpxImport()"
+                    style="background: #8e24aa"
+                  >
+                    🔍 Scan Files
+                  </button>
+                </div>
+              </details>
+
+              <div class="form-group">
+                <label for="gpxContext">Target vessel</label>
+                <input
+                  type="text"
+                  id="gpxContext"
+                  placeholder="(default: this vessel)"
+                  style="width: 100%"
+                />
+                <small style="color: #666"
+                  >Leave blank to import for this vessel. Only change this if
+                  the data belongs to another vessel already known to Signal K
+                  (advanced).</small
+                >
+              </div>
+
+              <div class="form-group">
+                <label>Paths to emit per track point</label>
+                <div style="display: flex; flex-direction: column; gap: 5px">
+                  <label style="font-weight: normal">
+                    <input
+                      type="checkbox"
+                      class="gpxPath"
+                      value="navigation.position"
+                      checked
+                    />
+                    navigation.position
+                  </label>
+                  <label style="font-weight: normal">
+                    <input
+                      type="checkbox"
+                      class="gpxPath"
+                      value="navigation.speedOverGround"
+                      checked
+                    />
+                    navigation.speedOverGround
+                  </label>
+                  <label style="font-weight: normal">
+                    <input
+                      type="checkbox"
+                      class="gpxPath"
+                      value="navigation.courseOverGroundTrue"
+                      checked
+                    />
+                    navigation.courseOverGroundTrue
+                  </label>
+                  <label style="font-weight: normal">
+                    <input
+                      type="checkbox"
+                      class="gpxPath"
+                      value="navigation.gnss.antennaAltitude"
+                      checked
+                    />
+                    navigation.gnss.antennaAltitude
+                  </label>
+                </div>
+                <small style="color: #666; display: block; margin-top: 6px">
+                  Values are stored in SignalK's canonical units (m/s, rad, m).
+                  Tools that read the parquet files will display them in your
+                  configured display units, just like live data.
+                </small>
+              </div>
+
+              <div
+                style="
+                  margin-top: 20px;
+                  display: flex;
+                  gap: 10px;
+                  flex-wrap: wrap;
+                "
+              >
+                <button
+                  onclick="startGpxImport()"
+                  style="background: #4caf50"
+                  id="startGpxImportBtn"
+                  disabled
+                >
+                  ▶️ Start Import
+                </button>
+                <button
+                  onclick="cancelGpxImport()"
+                  style="background: #f44336"
+                  id="cancelGpxImportBtn"
+                  disabled
+                >
+                  ❌ Cancel
+                </button>
+              </div>
+
+              <div
+                id="gpxScanResults"
+                style="
+                  margin-top: 20px;
+                  display: none;
+                  padding: 15px;
+                  background: white;
+                  border-radius: 5px;
+                  border: 1px solid #ddd;
+                "
+              >
+                <h4 style="margin-top: 0">Scan Results</h4>
+                <div id="gpxScanContent"></div>
+              </div>
+
+              <div
+                id="gpxImportProgress"
+                style="
+                  margin-top: 20px;
+                  display: none;
+                  padding: 15px;
+                  background: white;
+                  border-radius: 5px;
+                  border: 1px solid #ddd;
+                "
+              >
+                <h4 style="margin-top: 0">Import Progress</h4>
+                <div
+                  style="
+                    background: #e0e0e0;
+                    border-radius: 5px;
+                    height: 20px;
+                    overflow: hidden;
+                    margin-bottom: 10px;
+                  "
+                >
+                  <div
+                    id="gpxImportProgressBar"
+                    style="
+                      background: linear-gradient(90deg, #8e24aa, #ba68c8);
+                      height: 100%;
+                      width: 0%;
+                      transition: width 0.3s;
+                    "
+                  ></div>
+                </div>
+                <div id="gpxImportProgressText" aria-live="polite">
+                  0% complete
+                </div>
+                <div
+                  id="gpxImportCurrentFile"
+                  style="color: #666; font-size: 0.9em; margin-top: 5px"
+                ></div>
+                <div
+                  id="gpxImportStats"
+                  style="color: #666; font-size: 0.9em; margin-top: 5px"
+                ></div>
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -3807,6 +4073,7 @@
 
     <script type="module" src="js/main.js"></script>
     <script src="js/migration.js"></script>
+    <script src="js/import.js"></script>
 
     <!-- Analysis History Modal -->
     <div
