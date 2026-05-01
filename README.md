@@ -46,6 +46,11 @@ Vessel data Parquet file archive with automated value and geospatial triggers. H
 - **NEW Dynamic Regimen Control**: Data subscriptions update in real-time when regimen commands are received
   - No plugin restart needed to activate/deactivate recording regimens
   - Regimen state changes via SignalK commands immediately start/stop path recording
+- **NEW GPX Track Import**: Load historical GPX tracks (other vessels, handhelds, archived logs) directly into the Hive-partitioned parquet store, bypassing the live SignalK subscription path
+  - Drag-and-drop browser upload from the Status tab, or "Advanced" server-directory mode for USB-drive bulk imports on the host
+  - Dependency-free GPX 1.0 / 1.1 parser extracts `<trkpt>` lat/lon/time plus optional `<ele>`, `<speed>`, `<course>`; `<course>` is converted from degrees to radians to match `navigation.courseOverGroundTrue`
+  - Job-based with per-`jobId` cancellation, progress polling, and 30-minute TTL on finished jobs
+  - Browser upload caps: 50 MB per file, 500 files per request
 
 ### Data Validation & Schema Repair
 - **NEW Schema Validation**: Comprehensive validation of Parquet file schemas against SignalK metadata standards

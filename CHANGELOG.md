@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.7.40-beta.1] - 2026-05-01
+
+### Added
+
+- **GPX Track Import** (thanks @msallin, PR #51) — New workflow to load historical GPX tracks (recorded by other vessels, handhelds, or archived logs) directly into the Hive-partitioned parquet store, bypassing the live SignalK subscription path.
+  - **Status tab UI** — Drag-and-drop / click-to-pick file zone with keyboard support (`role=button`, Enter/Space, `aria-live` progress). Non-`.gpx` files are ignored with a visible note; folder drops show a clear unsupported message. The Start button is disabled while a job is running or an upload is in flight, and a `beforeunload` warning fires if the user tries to leave mid-upload. Filenames are rendered via `textContent` so user-supplied names cannot inject markup.
+  - **Browser uploads** — Multipart upload via `multer` disk storage, streamed to a per-request temp dir under `plugin-config-data/gpx-uploads/<sessionId>/`. Per-file cap is 50 MB (`GPX_UPLOAD_MAX_FILE_BYTES`) with a 500-file ceiling per request (`GPX_UPLOAD_MAX_FILES`). Temp-dir cleanup exits when the job finishes, when the progress entry is TTL-evicted, or after a safety deadline.
+  - **Server-directory mode** — Preserved behind an "Advanced" details block for USB-drive bulk imports on the host (Scan + Delete-source checkbox).
+  - **Job tracking** — Per-`jobId` cancellation prevents concurrent imports from trampling each other; output filenames carry a ms timestamp + random suffix so two jobs writing into the same partition never collide. Finished jobs stick around for 30 minutes (`IMPORT_JOB_TTL_MS`) for the UI to poll.
+  - **API routes** — `POST /api/import/gpx/scan`, `POST /api/import/gpx`, `POST /api/import/gpx/upload`, `GET /api/import/gpx/progress/:jobId`, `POST /api/import/gpx/cancel/:jobId`, `GET /api/import/gpx/jobs`.
+  - **Parser** — Dependency-free GPX 1.0 / 1.1 parser (`src/utils/gpx-parser.ts`) that extracts `<trkpt>` lat/lon/time plus optional `<ele>`, `<speed>`, `<course>`. Trackpoints without `<time>` are skipped (no partition key).
+  - **Unit handling** — `<speed>` pass-through in m/s, `<ele>` pass-through in metres, `<course>` converted from degrees to radians (matches `navigation.courseOverGroundTrue`).
+- **New dependency** — `multer` (with `@types/multer`) for the browser-upload endpoint.
+
+---
+
 ## [0.7.30] - 2026-04-22
 
 Stable release — promotes the 0.7.20-beta line (beta.2 through beta.6) to a tagged npm release. No code changes since beta.6; see beta entries below for the full set of features and fixes included.
