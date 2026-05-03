@@ -49,7 +49,10 @@ import {
   CompactionConflictError,
   CompactionService,
 } from './services/compaction-service';
-import { AggregationService } from './services/aggregation-service';
+import {
+  AggregationService,
+  buildPerTierRetention,
+} from './services/aggregation-service';
 import { AggregationTier, HivePathBuilder } from './utils/hive-path-builder';
 import { isAngularPath } from './utils/angular-paths';
 import {
@@ -4977,12 +4980,11 @@ export function registerApiRoutes(
     {
       outputDirectory: state.getDataDirPath(),
       filenamePrefix: state.currentConfig?.filenamePrefix || 'signalk_data',
-      retentionDays: {
-        raw: state.currentConfig?.retentionDays || 7,
-        '5s': (state.currentConfig?.retentionDays || 7) * 2,
-        '60s': (state.currentConfig?.retentionDays || 7) * 4,
-        '1h': (state.currentConfig?.retentionDays || 7) * 12,
-      },
+      // ?? not || so explicit 0 (= keep forever) survives the coalesce.
+      retentionDays: buildPerTierRetention(
+        state.currentConfig?.retentionDays ?? 0
+      ),
+      pathRetentionOverrides: state.currentConfig?.pathRetentionOverrides,
     },
     app
   );

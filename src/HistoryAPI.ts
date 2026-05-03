@@ -65,16 +65,14 @@ export function registerHistoryApiRoute(
   app: any,
   sqliteBuffer?: SQLiteBufferInterface,
   autoDiscoveryService?: AutoDiscoveryService,
-  s3Config?: S3QueryConfig,
-  retentionDays: number = 7
+  s3Config?: S3QueryConfig
 ) {
   const historyApi = new HistoryAPI(
     selfId,
     dataDir,
     sqliteBuffer,
     autoDiscoveryService,
-    s3Config,
-    retentionDays
+    s3Config
   );
   // Handler for values endpoint
   const handleValues = (req: Request, res: Response) => {
@@ -473,21 +471,18 @@ export class HistoryAPI {
   private hivePathBuilder: HivePathBuilder;
   private autoDiscoveryService?: AutoDiscoveryService;
   private s3Config?: S3QueryConfig;
-  private retentionDays: number;
 
   constructor(
     private selfId: string,
     private dataDir: string,
     sqliteBuffer?: SQLiteBufferInterface,
     autoDiscoveryService?: AutoDiscoveryService,
-    s3Config?: S3QueryConfig,
-    retentionDays: number = 7
+    s3Config?: S3QueryConfig
   ) {
     this.sqliteBuffer = sqliteBuffer;
     this.hivePathBuilder = new HivePathBuilder();
     this.autoDiscoveryService = autoDiscoveryService;
     this.s3Config = s3Config;
-    this.retentionDays = retentionDays;
   }
 
   /**
@@ -858,12 +853,6 @@ export class HistoryAPI {
     // Convert ZonedDateTime to Date for S3 pattern building
     const fromDate = new Date(from.toInstant().toString());
     const toDate = new Date(to.toInstant().toString());
-
-    // Calculate retention cutoff for hybrid queries
-    const retentionCutoff = new Date();
-    retentionCutoff.setUTCDate(
-      retentionCutoff.getUTCDate() - this.retentionDays
-    );
 
     // If spatial filter is set, get valid timestamps from position data
     // This allows filtering non-position paths by "when vessel was in this area"

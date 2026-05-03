@@ -40,8 +40,33 @@ import {
 } from './history-provider';
 import { SQLiteBuffer } from './utils/sqlite-buffer';
 import { ParquetExportService } from './services/parquet-export-service';
-import { AggregationService } from './services/aggregation-service';
+import {
+  AggregationService,
+  buildPerTierRetention,
+} from './services/aggregation-service';
+import {
+  PathRetentionRule,
+  validatePathRetentionRules,
+} from './utils/retention-rules';
 import { AutoDiscoveryService } from './services/auto-discovery';
+
+/**
+ * Validate `pathRetentionOverrides` from the persisted config. Bad
+ * entries are dropped (with a logged error) rather than crashing
+ * plugin start; the SignalK admin UI enforces shape via JSON Schema
+ * for UI-driven changes, but a hand-edited config can bypass that.
+ */
+function parsePathRetentionOverrides(
+  raw: unknown,
+  app: ServerAPI
+): PathRetentionRule[] | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  const { rules, errors } = validatePathRetentionRules(raw);
+  for (const err of errors) {
+    app.error(`[Retention] Dropping invalid override: ${err}`);
+  }
+  return rules.length > 0 ? rules : undefined;
+}
 
 export default function (app: ServerAPI): SignalKPlugin {
   const plugin: SignalKPlugin = {
@@ -99,7 +124,16 @@ export default function (app: ServerAPI): SignalKPlugin {
         ? options.outputDirectory.trim()
         : app.getDataDirPath(),
       filenamePrefix: options?.filenamePrefix || 'signalk_data',
-      retentionDays: options?.retentionDays || 7,
+      retentionDays:
+        typeof options?.retentionDays === 'number' &&
+        Number.isFinite(options.retentionDays) &&
+        options.retentionDays >= 0
+          ? options.retentionDays
+          : 0,
+      pathRetentionOverrides: parsePathRetentionOverrides(
+        options?.pathRetentionOverrides,
+        app
+      ),
       fileFormat: options?.fileFormat || 'parquet',
       vesselMMSI: vesselMMSI,
       cloudUpload: (() => {
@@ -332,12 +366,10 @@ export default function (app: ServerAPI): SignalKPlugin {
         {
           outputDirectory: state.currentConfig.outputDirectory,
           filenamePrefix: state.currentConfig.filenamePrefix,
-          retentionDays: {
-            raw: state.currentConfig.retentionDays,
-            '5s': state.currentConfig.retentionDays * 2,
-            '60s': state.currentConfig.retentionDays * 4,
-            '1h': state.currentConfig.retentionDays * 12,
-          },
+          retentionDays: buildPerTierRetention(
+            state.currentConfig.retentionDays
+          ),
+          pathRetentionOverrides: state.currentConfig.pathRetentionOverrides,
         },
         app
       );
@@ -363,26 +395,74 @@ export default function (app: ServerAPI): SignalKPlugin {
             `[DailyExport] Exported ${result.recordsExported} records to ${result.filesCreated.length} files`
           );
 
-          // Run aggregation after daily export if Hive partitioning is enabled
+          // Run aggregation after daily export if Hive partitioning is enabled.
+          // Track whether aggregation and upload succeeded — cleanup must NOT
+          // run if either failed, because the whole point of post-pipeline
+          // cleanup is that files about to be deleted have already been
+          // rolled up and (when configured) uploaded.
+          let aggregationOk = false;
+          let uploadOk = false;
           if (aggregationService) {
             try {
               const aggResults = await aggregationService.runDailyAggregation();
+              const aggHadErrors = aggResults.some(r => r.errors.length > 0);
+              aggregationOk = !aggHadErrors;
               app.debug(
-                `[DailyExport] Aggregation complete: ${JSON.stringify(aggResults.map(r => ({ tier: r.targetTier, files: r.filesCreated })))}`
+                `[DailyExport] Aggregation complete: ${JSON.stringify(aggResults.map(r => ({ tier: r.targetTier, files: r.filesCreated, errors: r.errors.length })))}`
               );
+            } catch (aggErr) {
+              app.error(
+                `[DailyExport] Aggregation failed: ${(aggErr as Error).message}`
+              );
+            }
 
-              // Upload files to cloud after aggregation
-              if (state.currentConfig?.cloudUpload.provider !== 'none') {
+            const cloudEnabled =
+              state.currentConfig?.cloudUpload.provider !== 'none';
+            if (cloudEnabled && aggregationOk) {
+              try {
                 await uploadConsolidatedFilesToS3(
                   state.currentConfig!,
                   yesterday,
                   state,
                   app
                 );
+                uploadOk = true;
+              } catch (upErr) {
+                app.error(
+                  `[DailyExport] Cloud upload failed: ${(upErr as Error).message}`
+                );
               }
-            } catch (aggErr) {
+            } else if (!cloudEnabled) {
+              uploadOk = true; // No upload required → vacuously OK.
+            }
+
+            // Apply retention rules. Skipped if aggregation or (when
+            // applicable) upload didn't complete cleanly: short-retention
+            // raw files we'd be about to delete may not have been rolled
+            // up or synced yet, so deleting them now would lose data.
+            const cfg = state.currentConfig!;
+            const willDeleteAnything =
+              cfg.retentionDays > 0 ||
+              (cfg.pathRetentionOverrides &&
+                cfg.pathRetentionOverrides.length > 0);
+            if (willDeleteAnything && aggregationOk && uploadOk) {
+              try {
+                const cleanup = await aggregationService.cleanupOldData();
+                const summary = `[DailyExport] Retention cleanup: ${cleanup.deletedFiles} files removed, ${cleanup.failedFiles} failed, ${(cleanup.freedBytes / 1024 / 1024).toFixed(2)} MB freed`;
+                if (cleanup.failedFiles > 0) {
+                  app.error(summary);
+                } else {
+                  app.debug(summary);
+                }
+              } catch (cleanErr) {
+                app.error(
+                  `[DailyExport] Retention cleanup failed: ${(cleanErr as Error).message}`
+                );
+              }
+            } else if (willDeleteAnything) {
               app.error(
-                `[DailyExport] Aggregation failed: ${(aggErr as Error).message}`
+                `[DailyExport] Retention cleanup SKIPPED: aggregation or upload did not complete cleanly. ` +
+                  `Short-retention paths will accumulate until the next successful run.`
               );
             }
           }
@@ -512,8 +592,7 @@ export default function (app: ServerAPI): SignalKPlugin {
         app,
         state.sqliteBuffer, // Pass SQLite buffer for federated queries
         state.autoDiscoveryService, // Pass auto-discovery service
-        s3QueryConfig, // S3 config for federated queries
-        state.currentConfig.retentionDays // Retention days for local/S3 cutoff
+        s3QueryConfig // S3 config for federated queries
       );
       app.debug(
         `[AutoDiscovery] History API registered with autoDiscoveryService: ${!!state.autoDiscoveryService}`
@@ -744,15 +823,47 @@ export default function (app: ServerAPI): SignalKPlugin {
           'Prefix added to all generated Parquet files. Useful if running multiple instances or for organizing data. Example: "boat_name" produces "boat_name_2024-01-15T1200.parquet"',
         default: 'signalk_data',
       },
-      // retentionDays: {
-      //   type: 'number',
-      //   title: 'Retention Period (days)',
-      //   description:
-      //     'Number of days to keep raw Parquet files on disk. Higher tiers are retained longer automatically (5s: 2x, 60s: 4x, 1h: 12x).',
-      //   default: 7,
-      //   minimum: 1,
-      //   maximum: 365,
-      // },
+      retentionDays: {
+        type: 'integer',
+        title: 'Retention Period (days)',
+        description:
+          'Days to keep raw-tier Parquet files. Aggregated tiers scale automatically (5s: 2x, 60s: 4x, 1h: 12x). 0 = keep forever (default). Cleanup runs once per day, right after the daily export.',
+        default: 0,
+        minimum: 0,
+        maximum: 36500,
+      },
+      pathRetentionOverrides: {
+        type: 'array',
+        title: 'Per-Path Retention Overrides',
+        description:
+          'Override retention for specific SignalK paths. Each rule has a glob pattern (* matches any chars, including dots), a number of days (0 = keep forever), and an optional skipAggregation flag (true = path stays raw-only, never rolled up). The most specific pattern wins; ties broken in declaration order. Example: pattern "environment.wind.*", days 1, skipAggregation true => wind paths kept for 24h in tier=raw and never aggregated.',
+        items: {
+          type: 'object',
+          required: ['pattern', 'days'],
+          properties: {
+            pattern: {
+              type: 'string',
+              title: 'Path pattern',
+              description: 'Glob over the SignalK path. * matches any chars.',
+            },
+            days: {
+              type: 'integer',
+              title: 'Days',
+              description: '0 = keep forever.',
+              minimum: 0,
+              maximum: 36500,
+            },
+            skipAggregation: {
+              type: 'boolean',
+              title: 'Skip aggregation',
+              description:
+                'When true, paths matching this rule are not rolled up into 5s/60s/1h tiers.',
+              default: false,
+            },
+          },
+        },
+        default: [],
+      },
       exportBatchSize: {
         type: 'number',
         title: 'Export Batch Size',

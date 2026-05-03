@@ -41,3 +41,11 @@ export const GPX_UPLOAD_MAX_FILES = 500;
  * MigrationService - kept identical so both jobs feel the same.
  */
 export const IMPORT_JOB_TTL_MS = 30 * 60 * 1000;
+
+/**
+ * Retention cleanup: how many files to process between event-loop yields.
+ * Walking a large parquet tree shouldn't starve other plugin work (live
+ * data ingestion, SignalK websocket heartbeats) on slow disks, so the
+ * cleanup loop yields after this many files.
+ */
+export const CLEANUP_YIELD_INTERVAL = 200;

@@ -2,6 +2,10 @@
 
 ## [0.7.40-beta.1] - 2026-05-01
 
+### Breaking
+
+- **`retentionDays` is now actively enforced.** Previous versions defined `retentionDays` but never scheduled cleanup, so any persisted value sat dormant. Cleanup now runs once per day, right after the daily export. **If your persisted config has `retentionDays` set to anything other than `0` and you don't want daily deletion of older data, set it to `0` (keep forever) before upgrading.** Older installs may carry a persisted `retentionDays: 7` that was the legacy default; check via the SignalK admin UI under the SignalK to Parquet plugin config. The new default for fresh installs is `0`.
+
 ### Added
 
 - **GPX Track Import** (thanks @msallin, PR #51) — New workflow to load historical GPX tracks (recorded by other vessels, handhelds, or archived logs) directly into the Hive-partitioned parquet store, bypassing the live SignalK subscription path.

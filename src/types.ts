@@ -48,7 +48,15 @@ export interface PluginConfig {
   saveIntervalSeconds: number;
   outputDirectory: string;
   filenamePrefix: string;
+  // Global retention period in days for tier=raw. Tiers above raw use a
+  // multiplier (5s=2x, 60s=4x, 1h=12x). 0 means "keep forever" — the
+  // historical default behaviour, since the cleanup job was previously
+  // never scheduled.
   retentionDays: number;
+  // Optional per-path overrides. Match by glob (`*` matches any chars
+  // including dots); most-specific pattern wins, ties broken by
+  // declaration order. See utils/retention-rules.ts.
+  pathRetentionOverrides?: import('./utils/retention-rules').PathRetentionRule[];
   fileFormat: 'json' | 'csv' | 'parquet';
   vesselMMSI: string;
   cloudUpload: CloudUploadConfig;
