@@ -53,6 +53,7 @@ import {
 import {
   parseDurationToMillis,
   parseResolutionToMillis,
+  InvalidResolutionError,
 } from './utils/duration-parser';
 import { isAngularPath } from './utils/angular-paths';
 
@@ -825,6 +826,11 @@ export class HistoryAPI {
       allResult = this.convertToLocalTime(allResult);
       res.json(allResult);
     } catch (error) {
+      if (error instanceof InvalidResolutionError) {
+        debug(`Bad request in getValues: ${error.message}`);
+        res.status(400).json({ error: error.message });
+        return;
+      }
       debug(`Error in getValues: ${error}`);
       res.status(500).json({
         error: 'Internal server error',
