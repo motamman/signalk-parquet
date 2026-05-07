@@ -154,12 +154,24 @@ export class HistoryProvider implements HistoryApi {
       query.context === ('self' as Context)
         ? (`vessels.${this.selfId}` as Context)
         : query.context;
-    const resolution =
-      query.resolution ||
-      Math.round(((to.toEpochSecond() - from.toEpochSecond()) / 500) * 1000);
+    // query.resolution is in seconds per the SignalK History API spec;
+    // the DuckDB bucketing SQL below works in milliseconds. Reject 0,
+    // negative, NaN, and Infinity here so they don't reach SQL as a
+    // divide-by-zero, negative bucket, or unbounded cardinality query.
+    const r = query.resolution;
+    const resolutionFromQuery = r != null && Number.isFinite(r) && r > 0;
+    // Compute the auto fallback in milliseconds so a sub-second range
+    // doesn't truncate to a 0 ms divisor in the SQL bucketing.
+    const autoResolutionMs = Math.max(
+      1,
+      Math.round(
+        (to.toInstant().toEpochMilli() - from.toInstant().toEpochMilli()) / 500
+      )
+    );
+    const resolutionMs = resolutionFromQuery ? r * 1000 : autoResolutionMs;
 
     this.debug(
-      `[HistoryProvider] getValues: context=${context}, from=${from}, to=${to}, resolution=${resolution}ms, paths=${query.pathSpecs.length}`
+      `[HistoryProvider] getValues: context=${context}, from=${from}, to=${to}, resolution=${resolutionMs}ms (${resolutionFromQuery ? 'from query' : 'auto'}), paths=${query.pathSpecs.length}`
     );
 
     const fromIso = from.toInstant().toString();
@@ -175,7 +187,7 @@ export class HistoryProvider implements HistoryApi {
           pathSpec,
           fromIso,
           toIso,
-          resolution
+          resolutionMs
         );
         allData[pathSpec.path] = pathData;
       } catch (error) {
