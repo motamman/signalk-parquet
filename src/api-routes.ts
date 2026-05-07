@@ -4304,6 +4304,9 @@ export function registerApiRoutes(
 
   // Created lazily in routes below so state.parquetWriter is available at
   // request time (not at plugin-start when the writer may not yet exist).
+  // aggregationService is captured by closure (declared further down in
+  // this same function) and is always initialized by the time any HTTP
+  // handler fires, so the const-after-use pattern is safe here.
   let gpxImportService: GpxImportService | undefined;
   const getGpxImportService = (): GpxImportService => {
     if (!state.parquetWriter) {
@@ -4312,7 +4315,11 @@ export function registerApiRoutes(
       );
     }
     if (!gpxImportService) {
-      gpxImportService = new GpxImportService(app, state.parquetWriter);
+      gpxImportService = new GpxImportService(
+        app,
+        state.parquetWriter,
+        aggregationService
+      );
     }
     return gpxImportService;
   };

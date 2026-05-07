@@ -21,6 +21,7 @@ const GPX_PHASE_LABEL = {
   scan: 'Finding files',
   parse: 'Reading files',
   write: 'Writing parquet',
+  aggregate: 'Building tiers',
 };
 
 function getSelectedGpxPaths() {
@@ -458,14 +459,29 @@ function updateGpxImportProgress(data) {
   const stats = document.getElementById('gpxImportStats');
 
   const phase = GPX_PHASE_LABEL[data.phase] || data.phase || '';
-  progressBar.style.width = `${data.percent}%`;
-  progressText.textContent =
-    `${data.percent}% complete (${data.processed}/${data.total} files` +
-    (phase ? `, ${phase.toLowerCase()}` : '') +
-    ')';
-  currentFile.textContent = data.currentFile
-    ? `Current: ${data.currentFile}`
-    : '';
+
+  if (data.phase === 'aggregate') {
+    // Switch the bar to date-based progress; the file-percent has already
+    // hit 100% by this phase and would otherwise sit frozen.
+    const aggDone = data.aggregationDatesProcessed || 0;
+    const aggTotal = data.aggregationDatesTotal || 0;
+    const aggPercent =
+      aggTotal > 0 ? Math.round((aggDone / aggTotal) * 100) : 0;
+    progressBar.style.width = `${aggPercent}%`;
+    progressText.textContent = `Building tiers: ${aggDone}/${aggTotal} dates (${aggPercent}%)`;
+    currentFile.textContent = data.aggregationCurrentDate
+      ? `Current date: ${data.aggregationCurrentDate}`
+      : '';
+  } else {
+    progressBar.style.width = `${data.percent}%`;
+    progressText.textContent =
+      `${data.percent}% complete (${data.processed}/${data.total} files` +
+      (phase ? `, ${phase.toLowerCase()}` : '') +
+      ')';
+    currentFile.textContent = data.currentFile
+      ? `Current: ${data.currentFile}`
+      : '';
+  }
   stats.textContent =
     `Points parsed: ${Number(data.pointsParsed).toLocaleString()} ` +
     `· Records written: ${Number(data.recordsWritten).toLocaleString()} ` +

@@ -27,6 +27,7 @@ import { DataRecord, ParquetWriter } from '../types';
 import { HivePathBuilder } from '../utils/hive-path-builder';
 import { parseGpx, GpxPoint } from '../utils/gpx-parser';
 import { IMPORT_JOB_TTL_MS } from '../constants';
+import { AggregationService } from './aggregation-service';
 
 export type GpxImportPath =
   | 'navigation.position'
@@ -55,7 +56,7 @@ export interface GpxImportConfig {
 export interface GpxImportProgress {
   jobId: string;
   status: 'scanning' | 'running' | 'completed' | 'cancelled' | 'error';
-  phase: 'scan' | 'parse' | 'write';
+  phase: 'scan' | 'parse' | 'write' | 'aggregate';
   processed: number; // files processed
   total: number; // files to process
   percent: number;
@@ -71,6 +72,10 @@ export interface GpxImportProgress {
   filesSkipped: number;
   filesCreated: string[];
   errors: string[];
+  // Populated only during the post-write aggregation phase
+  aggregationDatesTotal?: number;
+  aggregationDatesProcessed?: number;
+  aggregationCurrentDate?: string;
 }
 
 export interface GpxScanResult {
@@ -94,16 +99,22 @@ export class GpxImportService {
   private readonly app: ServerAPI;
   private readonly parquetWriter: ParquetWriter;
   private readonly hivePathBuilder: HivePathBuilder;
+  private readonly aggregationService?: AggregationService;
 
   // Per-job cancellation. A set (rather than a single flag) so concurrent
   // imports don't trample each other's state — cancelling one job never
   // cancels another.
   private readonly cancelledJobs: Set<string> = new Set();
 
-  constructor(app: ServerAPI, parquetWriter: ParquetWriter) {
+  constructor(
+    app: ServerAPI,
+    parquetWriter: ParquetWriter,
+    aggregationService?: AggregationService
+  ) {
     this.app = app;
     this.parquetWriter = parquetWriter;
     this.hivePathBuilder = new HivePathBuilder();
+    this.aggregationService = aggregationService;
   }
 
   /**
@@ -233,6 +244,11 @@ export class GpxImportService {
 
       progress.status = 'running';
 
+      // Distinct (year, dayOfYear) partitions touched by this import,
+      // keyed by ISO YYYY-MM-DD. Drives the post-write aggregation phase
+      // so we only re-aggregate days we actually wrote raw files into.
+      const touchedDays = new Map<string, Date>();
+
       for (let i = 0; i < gpxFiles.length; i++) {
         if (this.cancelledJobs.has(jobId)) {
           progress.status = 'cancelled';
@@ -255,7 +271,8 @@ export class GpxImportService {
             resolvedContext,
             config,
             progress,
-            metadataCache
+            metadataCache,
+            touchedDays
           );
 
           if (imported) {
@@ -276,7 +293,26 @@ export class GpxImportService {
         }
       }
 
-      progress.status = 'completed';
+      // Aggregation phase: rebuild 5s/60s/1h tiers for every (year, day)
+      // partition we wrote into. Without this the daily auto-aggregation
+      // only covers yesterday, leaving historical imports stranded in raw.
+      // aggregateDate() is idempotent (DuckDB COPY ... TO overwrites the
+      // single per-day output file), so re-running for already-aggregated
+      // dates is safe.
+      if (
+        this.aggregationService &&
+        touchedDays.size > 0 &&
+        !this.cancelledJobs.has(jobId)
+      ) {
+        await this.runAggregationPhase(jobId, touchedDays, progress);
+      }
+
+      // Cancellation requested mid-aggregation is reported as cancelled,
+      // not completed; partial tier coverage is real and the caller
+      // should know.
+      progress.status = this.cancelledJobs.has(jobId)
+        ? 'cancelled'
+        : 'completed';
       progress.completedAt = new Date();
       scheduleImportJobCleanup(jobId);
     } catch (error) {
@@ -312,6 +348,10 @@ export class GpxImportService {
   /**
    * Parse a single GPX file and write its points to the parquet store.
    * Returns true if at least one parquet file was produced.
+   *
+   * `touchedDays` is mutated to record each (year, day) partition this
+   * file wrote into; the caller drives a post-import aggregation phase
+   * over that set.
    */
   private async importFile(
     jobId: string,
@@ -319,7 +359,8 @@ export class GpxImportService {
     resolvedContext: string,
     config: GpxImportConfig,
     progress: GpxImportProgress,
-    metadataCache: Map<string, object | undefined>
+    metadataCache: Map<string, object | undefined>,
+    touchedDays: Map<string, Date>
   ): Promise<boolean> {
     const xml = await fs.readFile(sourcePath, 'utf8');
     const parsed = parseGpx(xml);
@@ -407,6 +448,12 @@ export class GpxImportService {
         await fs.rename(tempFilePath, filePath);
         progress.filesCreated.push(filePath);
         progress.recordsWritten += group.records.length;
+        // Record only after a successful write so a failed group doesn't
+        // schedule aggregation for a partition we never produced.
+        const dayKey = group.anchor.toISOString().slice(0, 10);
+        if (!touchedDays.has(dayKey)) {
+          touchedDays.set(dayKey, group.anchor);
+        }
       } catch (error) {
         try {
           await fs.remove(tempFilePath);
@@ -418,6 +465,53 @@ export class GpxImportService {
     }
 
     return groups.size > 0;
+  }
+
+  /**
+   * Re-aggregate every (year, day) partition this import wrote into.
+   * `aggregateDate()` cascades raw -> 5s -> 60s -> 1h, and is idempotent
+   * (DuckDB COPY ... TO overwrites the per-day output file), so running
+   * it for already-aggregated dates is safe; it just refolds the new
+   * raw rows in alongside the existing ones.
+   *
+   * Errors per-date are recorded but don't fail the import; partial
+   * tier coverage is better than rejecting the whole job.
+   */
+  private async runAggregationPhase(
+    jobId: string,
+    touchedDays: Map<string, Date>,
+    progress: GpxImportProgress
+  ): Promise<void> {
+    if (!this.aggregationService) return;
+
+    progress.phase = 'aggregate';
+    progress.aggregationDatesTotal = touchedDays.size;
+    progress.aggregationDatesProcessed = 0;
+
+    // Stable order: YYYY-MM-DD sorts chronologically as a string.
+    const sortedDays = Array.from(touchedDays.entries()).sort(([a], [b]) =>
+      a.localeCompare(b)
+    );
+
+    let i = 0;
+    for (const [dateStr, date] of sortedDays) {
+      if (this.cancelledJobs.has(jobId)) return;
+
+      progress.aggregationCurrentDate = dateStr;
+      progress.aggregationDatesProcessed = i;
+
+      try {
+        await this.aggregationService.aggregateDate(date);
+      } catch (error) {
+        progress.errors.push(
+          `Aggregation failed for ${dateStr}: ${(error as Error).message}`
+        );
+      }
+      i++;
+    }
+
+    progress.aggregationDatesProcessed = touchedDays.size;
+    progress.aggregationCurrentDate = undefined;
   }
 
   private buildHiveFilePath(
