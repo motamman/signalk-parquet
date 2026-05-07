@@ -150,12 +150,17 @@ export class RetentionRuleSet {
 /**
  * Validate a list of rules. Always returns the valid rules plus any
  * per-entry errors so callers can drop only the bad entries instead of
- * all of them. A non-array input returns `rules: []` with one error.
+ * all of them. Omitted input (undefined / null) is valid and yields an
+ * empty rule set; a present-but-non-array input returns `rules: []` with
+ * one error.
  */
 export function validatePathRetentionRules(rules: unknown): {
   rules: PathRetentionRule[];
   errors: string[];
 } {
+  if (rules === undefined || rules === null) {
+    return { rules: [], errors: [] };
+  }
   if (!Array.isArray(rules)) {
     return { rules: [], errors: ['pathRetentionOverrides must be an array'] };
   }

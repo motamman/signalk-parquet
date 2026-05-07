@@ -441,10 +441,12 @@ export default function (app: ServerAPI): SignalKPlugin {
             // raw files we'd be about to delete may not have been rolled
             // up or synced yet, so deleting them now would lose data.
             const cfg = state.currentConfig!;
+            // A pure skipAggregation override (days = 0) doesn't expire
+            // anything, so it shouldn't trigger a daily walk of the
+            // store. Only count overrides that can actually delete.
             const willDeleteAnything =
               cfg.retentionDays > 0 ||
-              (cfg.pathRetentionOverrides &&
-                cfg.pathRetentionOverrides.length > 0);
+              !!cfg.pathRetentionOverrides?.some(rule => rule.days > 0);
             if (willDeleteAnything && aggregationOk && uploadOk) {
               try {
                 const cleanup = await aggregationService.cleanupOldData();
@@ -592,7 +594,8 @@ export default function (app: ServerAPI): SignalKPlugin {
         app,
         state.sqliteBuffer, // Pass SQLite buffer for federated queries
         state.autoDiscoveryService, // Pass auto-discovery service
-        s3QueryConfig // S3 config for federated queries
+        s3QueryConfig, // S3 config for federated queries
+        state.currentConfig.pathRetentionOverrides // skipAggregation read-path fallback
       );
       app.debug(
         `[AutoDiscovery] History API registered with autoDiscoveryService: ${!!state.autoDiscoveryService}`
