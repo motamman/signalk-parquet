@@ -140,11 +140,10 @@ export class HistoryProvider implements HistoryApi {
    * Get historical values for the specified query
    */
   async getValues(query: ValuesRequest): Promise<ValuesResponse> {
-    console.log(
-      '[HistoryProvider] getValues called with:',
-      JSON.stringify(query, (_, v) =>
+    this.debug(
+      `[HistoryProvider] getValues called with: ${JSON.stringify(query, (_, v) =>
         typeof v === 'bigint' ? v.toString() : v
-      )
+      )}`
     );
     const { from, to } = parseTimeRange(query);
     // Translate 'vessels.self' to actual vessel URN (same as HTTP endpoint)
@@ -258,7 +257,7 @@ export class HistoryProvider implements HistoryApi {
       context,
       pathSpec.path
     );
-    console.log(`[HistoryProvider] Querying Hive path: ${filePath}`);
+    this.debug(`[HistoryProvider] Querying Hive path: ${filePath}`);
 
     // Use connection with buffer attached if available
     const hasBuffer = DuckDBPool.isSQLiteBufferInitialized();
