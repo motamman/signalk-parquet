@@ -498,6 +498,103 @@ else
 fi
 
 # ============================================================
+# K. COMPACTION ENDPOINTS
+# ============================================================
+log_section "K. Compaction Endpoints"
+
+# K1: Scan with default args (read-only; safe on any store)
+log_test "K1: Compact scan (tier=raw)"
+RESPONSE=$(auth_request POST "/plugins/signalk-parquet/api/compact/scan" \
+    '{"tier": "raw"}')
+check_response "$RESPONSE" "K1: Compact scan" "totalGroups"
+
+# K2: Scan with invalid tier (expect 400-style error in body)
+log_test "K2: Compact scan with invalid tier"
+RESPONSE=$(auth_request POST "/plugins/signalk-parquet/api/compact/scan" \
+    '{"tier": "bogus"}')
+if echo "$RESPONSE" | jq -e '.error' > /dev/null 2>&1; then
+    log_pass "K2: Invalid tier rejected"
+else
+    log_fail "K2: Invalid tier" "Expected error, got: $RESPONSE"
+fi
+
+# K3: Scan with out-of-range beforeYear (expect error)
+log_test "K3: Compact scan with invalid beforeYear"
+RESPONSE=$(auth_request POST "/plugins/signalk-parquet/api/compact/scan" \
+    '{"tier": "raw", "beforeYear": 1900}')
+if echo "$RESPONSE" | jq -e '.error' > /dev/null 2>&1; then
+    log_pass "K3: Invalid beforeYear rejected"
+else
+    log_fail "K3: Invalid beforeYear" "Expected error, got: $RESPONSE"
+fi
+
+# K4: Start compaction; capture jobId for follow-ups. The store may
+# have nothing to compact, in which case the job completes near-instantly
+# but jobId is still returned.
+log_test "K4: Start compaction"
+COMPACT_START=$(auth_request POST "/plugins/signalk-parquet/api/compact" \
+    '{"tier": "raw"}')
+COMPACT_JOB_ID=$(echo "$COMPACT_START" | jq -r '.jobId // empty')
+if [[ -n "$COMPACT_JOB_ID" ]]; then
+    log_pass "K4: Compaction started (jobId=${COMPACT_JOB_ID:0:8}...)"
+else
+    log_fail "K4: Compaction start" "No jobId in: $COMPACT_START"
+fi
+
+# K5: Poll progress for the started job
+if [[ -n "$COMPACT_JOB_ID" ]]; then
+    log_test "K5: Compact progress for live job"
+    RESPONSE=$(auth_request GET "/plugins/signalk-parquet/api/compact/progress/${COMPACT_JOB_ID}")
+    check_response "$RESPONSE" "K5: Compact progress" "status"
+else
+    log_skip "K5: Compact progress (no jobId from K4)"
+fi
+
+# K6: List active/recent jobs
+log_test "K6: List compaction jobs"
+RESPONSE=$(auth_request GET "/plugins/signalk-parquet/api/compact/jobs")
+check_response "$RESPONSE" "K6: List jobs" "jobs"
+
+# K7: Cancel the started job. With no work to do, the job may already
+# be 'completed' by the time we cancel; either response is acceptable.
+if [[ -n "$COMPACT_JOB_ID" ]]; then
+    log_test "K7: Cancel compaction job"
+    RESPONSE=$(auth_request POST "/plugins/signalk-parquet/api/compact/cancel/${COMPACT_JOB_ID}" '{}')
+    if echo "$RESPONSE" | jq -e '.success' > /dev/null 2>&1; then
+        log_pass "K7: Cancel accepted"
+    elif echo "$RESPONSE" | jq -e '.error' > /dev/null 2>&1; then
+        ERROR_MSG=$(echo "$RESPONSE" | jq -r '.error')
+        if [[ "$ERROR_MSG" == *"not running"* ]] || [[ "$ERROR_MSG" == *"not found"* ]]; then
+            log_pass "K7: Cancel of finished/unknown job (job already completed)"
+        else
+            log_fail "K7: Cancel" "$ERROR_MSG"
+        fi
+    else
+        log_fail "K7: Cancel" "Unexpected: $RESPONSE"
+    fi
+else
+    log_skip "K7: Cancel (no jobId from K4)"
+fi
+
+# K8: Progress for an unknown job (expect 404-style error)
+log_test "K8: Progress for unknown job"
+RESPONSE=$(auth_request GET "/plugins/signalk-parquet/api/compact/progress/nonexistent-job-id")
+if echo "$RESPONSE" | jq -e '.error' > /dev/null 2>&1; then
+    log_pass "K8: Unknown jobId rejected"
+else
+    log_fail "K8: Unknown jobId" "Expected error, got: $RESPONSE"
+fi
+
+# K9: Cancel of unknown job (expect error)
+log_test "K9: Cancel unknown job"
+RESPONSE=$(auth_request POST "/plugins/signalk-parquet/api/compact/cancel/nonexistent-job-id" '{}')
+if echo "$RESPONSE" | jq -e '.error' > /dev/null 2>&1; then
+    log_pass "K9: Unknown jobId cancel rejected"
+else
+    log_fail "K9: Unknown jobId cancel" "Expected error, got: $RESPONSE"
+fi
+
+# ============================================================
 # SUMMARY
 # ============================================================
 log_section "TEST SUMMARY"

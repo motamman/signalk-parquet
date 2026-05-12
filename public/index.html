@@ -4066,6 +4066,161 @@
                 ></div>
               </div>
             </div>
+
+            <!-- Compaction Section -->
+            <div
+              id="compactionPanel"
+              style="
+                margin-top: 30px;
+                padding: 20px;
+                background: #e8eaf6;
+                border-radius: 8px;
+                border: 2px solid #3949ab;
+              "
+            >
+              <h3 style="margin-top: 0; color: #1a237e">
+                🗜️ Compact old years
+              </h3>
+              <p style="color: #666; margin-bottom: 15px">
+                Merges per-day parquet files within each
+                (tier, context, path, year) group into a single per-year
+                file, then deletes the source day-files. Run this on a
+                long-running store to keep DuckDB queries fast and the
+                filesystem light. Only completed years (strictly before
+                the cutoff) are touched.
+              </p>
+
+              <div
+                style="
+                  display: grid;
+                  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+                  gap: 10px;
+                "
+              >
+                <div class="form-group">
+                  <label for="compactTier">Tier</label>
+                  <select id="compactTier" style="width: 100%">
+                    <option value="raw" selected>raw</option>
+                    <option value="5s">5s</option>
+                    <option value="60s">60s</option>
+                    <option value="1h">1h</option>
+                  </select>
+                </div>
+                <div class="form-group">
+                  <label for="compactBeforeYear">Compact years before</label>
+                  <input
+                    type="number"
+                    id="compactBeforeYear"
+                    placeholder="(default: this year)"
+                    style="width: 100%"
+                    min="2000"
+                    max="2099"
+                  />
+                </div>
+                <div class="form-group">
+                  <label for="compactPathFilter"
+                    >Path filter (substring)</label
+                  >
+                  <input
+                    type="text"
+                    id="compactPathFilter"
+                    placeholder="(optional, e.g. navigation.)"
+                    style="width: 100%"
+                  />
+                </div>
+              </div>
+
+              <div
+                style="
+                  margin-top: 15px;
+                  display: flex;
+                  gap: 10px;
+                  flex-wrap: wrap;
+                "
+              >
+                <button
+                  onclick="scanCompaction()"
+                  style="background: #3949ab"
+                >
+                  🔍 Scan
+                </button>
+                <button
+                  onclick="startCompaction()"
+                  style="background: #4caf50"
+                  id="startCompactionBtn"
+                  disabled
+                >
+                  ▶️ Start Compaction
+                </button>
+                <button
+                  onclick="cancelCompaction()"
+                  style="background: #f44336"
+                  id="cancelCompactionBtn"
+                  disabled
+                >
+                  ❌ Cancel
+                </button>
+              </div>
+
+              <div
+                id="compactScanResults"
+                style="
+                  margin-top: 20px;
+                  display: none;
+                  padding: 15px;
+                  background: white;
+                  border-radius: 5px;
+                  border: 1px solid #ddd;
+                "
+              >
+                <h4 style="margin-top: 0">Scan results</h4>
+                <div id="compactScanContent"></div>
+              </div>
+
+              <div
+                id="compactionProgress"
+                style="
+                  margin-top: 20px;
+                  display: none;
+                  padding: 15px;
+                  background: white;
+                  border-radius: 5px;
+                  border: 1px solid #ddd;
+                "
+              >
+                <h4 style="margin-top: 0">Compaction progress</h4>
+                <div
+                  style="
+                    background: #e0e0e0;
+                    border-radius: 5px;
+                    height: 20px;
+                    overflow: hidden;
+                    margin-bottom: 10px;
+                  "
+                >
+                  <div
+                    id="compactionProgressBar"
+                    style="
+                      background: linear-gradient(90deg, #3949ab, #7986cb);
+                      height: 100%;
+                      width: 0%;
+                      transition: width 0.3s;
+                    "
+                  ></div>
+                </div>
+                <div id="compactionProgressText" aria-live="polite">
+                  0% complete
+                </div>
+                <div
+                  id="compactionCurrentGroup"
+                  style="color: #666; font-size: 0.9em; margin-top: 5px"
+                ></div>
+                <div
+                  id="compactionStats"
+                  style="color: #666; font-size: 0.9em; margin-top: 5px"
+                ></div>
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -4074,6 +4229,7 @@
     <script type="module" src="js/main.js"></script>
     <script src="js/migration.js"></script>
     <script src="js/import.js"></script>
+    <script src="js/compaction.js"></script>
 
     <!-- Analysis History Modal -->
     <div
