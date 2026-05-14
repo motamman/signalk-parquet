@@ -57,6 +57,12 @@ export interface PluginConfig {
   // including dots); most-specific pattern wins, ties broken by
   // declaration order. See utils/retention-rules.ts.
   pathRetentionOverrides?: import('./utils/retention-rules').PathRetentionRule[];
+  // Bumped each time we run a non-trivial migration over saved options.
+  // Absent on installs that have never started 0.7.40+. Used to make
+  // migrations one-shot — once we've seen and stamped a config, we
+  // trust the values in it literally (so an operator who explicitly
+  // re-enters the legacy default in the UI keeps it on next start).
+  configSchemaVersion?: number;
   fileFormat: 'json' | 'csv' | 'parquet';
   vesselMMSI: string;
   cloudUpload: CloudUploadConfig;

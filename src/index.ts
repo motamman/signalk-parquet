@@ -117,6 +117,32 @@ export default function (app: ServerAPI): SignalKPlugin {
       (app.getSelfPath('name') as any) ||
       'unknown_vessel';
 
+    // One-shot legacy retention migration. Pre-0.7.40 the home-port
+    // action's savePluginOptions side effect baked retentionDays = 7
+    // into saved configs even though cleanup was never scheduled, so
+    // the value sat dormant. Now that cleanup actually runs, an
+    // upgrader who never deliberately set retention would suddenly
+    // start losing data. The configSchemaVersion sentinel lets us
+    // distinguish "saved 7 from old default" (no stamp) from "saved 7
+    // from explicit choice" (stamp present from prior run): once we
+    // stamp, the migration condition fails forever for that install,
+    // so re-entering 7 in the UI is honoured on next start.
+    const needsLegacyRetentionMigration =
+      options?.configSchemaVersion === undefined &&
+      options?.retentionDays === 7 &&
+      (!Array.isArray(options?.pathRetentionOverrides) ||
+        options.pathRetentionOverrides.length === 0);
+
+    if (needsLegacyRetentionMigration) {
+      app.error(
+        '[Retention] Detected legacy retentionDays=7 from a pre-0.7.40 install. ' +
+          'Previous versions baked this default into saved configs as a side effect ' +
+          'of the home-port action but never enforced it. Treating as 0 (keep forever) ' +
+          'and persisting the change. To opt into 7-day retention, set ' +
+          '"Retention Period (days)" to 7 in the plugin admin UI.'
+      );
+    }
+
     state.currentConfig = {
       bufferSize: options?.bufferSize || 1000,
       saveIntervalSeconds: options?.saveIntervalSeconds || 30,
@@ -124,16 +150,18 @@ export default function (app: ServerAPI): SignalKPlugin {
         ? options.outputDirectory.trim()
         : app.getDataDirPath(),
       filenamePrefix: options?.filenamePrefix || 'signalk_data',
-      retentionDays:
-        typeof options?.retentionDays === 'number' &&
-        Number.isFinite(options.retentionDays) &&
-        options.retentionDays >= 0
+      retentionDays: needsLegacyRetentionMigration
+        ? 0
+        : typeof options?.retentionDays === 'number' &&
+            Number.isFinite(options.retentionDays) &&
+            options.retentionDays >= 0
           ? options.retentionDays
           : 0,
       pathRetentionOverrides: parsePathRetentionOverrides(
         options?.pathRetentionOverrides,
         app
       ),
+      configSchemaVersion: 1,
       fileFormat: options?.fileFormat || 'parquet',
       vesselMMSI: vesselMMSI,
       cloudUpload: (() => {
@@ -180,6 +208,19 @@ export default function (app: ServerAPI): SignalKPlugin {
       // Daily export hour (0-23 UTC, default 2 AM)
       dailyExportHour: options?.dailyExportHour ?? 4,
     };
+
+    // Persist the migration so the configSchemaVersion sentinel lands
+    // on disk; without this, every restart would re-trigger the
+    // legacy detection. Also writes the corrected retentionDays = 0.
+    if (needsLegacyRetentionMigration) {
+      app.savePluginOptions(state.currentConfig, (err?: unknown) => {
+        if (err) {
+          app.error(
+            `[Retention] Failed to persist legacy migration: ${(err as Error).message}`
+          );
+        }
+      });
+    }
 
     // Load webapp configuration including commands
     const webAppConfig = loadWebAppConfig(app);
