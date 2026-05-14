@@ -56,6 +56,10 @@ import {
   InvalidResolutionError,
 } from './utils/duration-parser';
 import { isAngularPath } from './utils/angular-paths';
+import {
+  PathRetentionRule,
+  RetentionRuleSet,
+} from './utils/retention-rules';
 
 export function registerHistoryApiRoute(
   router: Pick<Router, 'get'>,
@@ -66,7 +70,7 @@ export function registerHistoryApiRoute(
   sqliteBuffer?: SQLiteBufferInterface,
   autoDiscoveryService?: AutoDiscoveryService,
   s3Config?: S3QueryConfig,
-  retentionDays: number = 7
+  pathRetentionOverrides?: PathRetentionRule[]
 ) {
   const historyApi = new HistoryAPI(
     selfId,
@@ -74,7 +78,7 @@ export function registerHistoryApiRoute(
     sqliteBuffer,
     autoDiscoveryService,
     s3Config,
-    retentionDays
+    pathRetentionOverrides
   );
   // Handler for values endpoint
   const handleValues = (req: Request, res: Response) => {
@@ -473,7 +477,12 @@ export class HistoryAPI {
   private hivePathBuilder: HivePathBuilder;
   private autoDiscoveryService?: AutoDiscoveryService;
   private s3Config?: S3QueryConfig;
-  private retentionDays: number;
+  // Mirrors AggregationService's rule set so the read path can fall
+  // back to tier=raw for skipAggregation paths. The aggregation
+  // pipeline doesn't write 5s/60s/1h files for those, so a higher-
+  // resolution query against an aggregated tier would otherwise return
+  // empty.
+  private retentionRules: RetentionRuleSet;
 
   constructor(
     private selfId: string,
@@ -481,13 +490,13 @@ export class HistoryAPI {
     sqliteBuffer?: SQLiteBufferInterface,
     autoDiscoveryService?: AutoDiscoveryService,
     s3Config?: S3QueryConfig,
-    retentionDays: number = 7
+    pathRetentionOverrides?: PathRetentionRule[]
   ) {
     this.sqliteBuffer = sqliteBuffer;
     this.hivePathBuilder = new HivePathBuilder();
     this.autoDiscoveryService = autoDiscoveryService;
     this.s3Config = s3Config;
-    this.retentionDays = retentionDays;
+    this.retentionRules = new RetentionRuleSet(pathRetentionOverrides || []);
   }
 
   /**
@@ -859,12 +868,6 @@ export class HistoryAPI {
     const fromDate = new Date(from.toInstant().toString());
     const toDate = new Date(to.toInstant().toString());
 
-    // Calculate retention cutoff for hybrid queries
-    const retentionCutoff = new Date();
-    retentionCutoff.setUTCDate(
-      retentionCutoff.getUTCDate() - this.retentionDays
-    );
-
     // If spatial filter is set, get valid timestamps from position data
     // This allows filtering non-position paths by "when vessel was in this area"
     let spatialTimestamps: Set<string> | null = null;
@@ -1040,7 +1043,22 @@ export class HistoryAPI {
         // Build file patterns based on query source
         let localFilePath: string | null = null;
         let s3FilePath: string | null = null;
-        const effectiveTier = tier || 'raw';
+        let effectiveTier = tier || 'raw';
+
+        // Honour per-path skipAggregation: AggregationService never wrote
+        // 5s/60s/1h files for these paths, so reading any aggregated tier
+        // would return empty. Fall back to raw — the existing object-path
+        // and string-path overrides further down handle their own special
+        // cases and run after this.
+        if (
+          effectiveTier !== 'raw' &&
+          this.retentionRules.shouldSkipAggregation(pathSpec.path)
+        ) {
+          debug(
+            `Path ${pathSpec.path}: skipAggregation rule matched — overriding tier=${effectiveTier} to raw`
+          );
+          effectiveTier = 'raw';
+        }
 
         // Always query local first
         const sanitizedContext = this.hivePathBuilder.sanitizeContext(context);

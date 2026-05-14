@@ -18,16 +18,53 @@ import { ServerAPI } from '@signalk/server-api';
 import { DuckDBPool } from '../utils/duckdb-pool';
 import { HivePathBuilder, AggregationTier } from '../utils/hive-path-builder';
 import { isAngularPath } from '../utils/angular-paths';
-import { POSITION_MAX_SPEED_MPS } from '../constants';
+import { CLEANUP_YIELD_INTERVAL, POSITION_MAX_SPEED_MPS } from '../constants';
+import { PathRetentionRule, RetentionRuleSet } from '../utils/retention-rules';
 
 export interface AggregationConfig {
   outputDirectory: string;
   filenamePrefix: string;
+  // Per-tier retention in days. 0 means "keep forever". Tiers above raw
+  // are multiples of the raw value by convention (5s=2x, 60s=4x,
+  // 1h=12x), but they are passed in independently so the route layer
+  // can override.
   retentionDays: {
     raw: number;
     '5s': number;
     '60s': number;
     '1h': number;
+  };
+  // Optional per-path overrides applied on top of the tier defaults.
+  // The override's `days` value is the raw retention; the same tier
+  // multipliers (2/4/12x) scale it to upper tiers. `skipAggregation`
+  // removes a path from the rollup pipeline entirely.
+  pathRetentionOverrides?: PathRetentionRule[];
+}
+
+// Tier multipliers used when scaling a raw-tier retention to upper
+// tiers. The same convention applies to the global default and to
+// per-path overrides; exported so callers in index.ts and the route
+// layer build identical AggregationConfig.retentionDays without
+// drifting from this file.
+export const TIER_RETENTION_MULTIPLIER: Record<AggregationTier, number> = {
+  raw: 1,
+  '5s': 2,
+  '60s': 4,
+  '1h': 12,
+};
+
+/**
+ * Build the per-tier retention block from a raw-tier value. 0 stays
+ * 0 in every tier (= keep forever).
+ */
+export function buildPerTierRetention(
+  rawDays: number
+): AggregationConfig['retentionDays'] {
+  return {
+    raw: rawDays * TIER_RETENTION_MULTIPLIER.raw,
+    '5s': rawDays * TIER_RETENTION_MULTIPLIER['5s'],
+    '60s': rawDays * TIER_RETENTION_MULTIPLIER['60s'],
+    '1h': rawDays * TIER_RETENTION_MULTIPLIER['1h'],
   };
 }
 
@@ -94,6 +131,7 @@ export class AggregationService {
   private readonly config: AggregationConfig;
   private readonly app: ServerAPI;
   private readonly hivePathBuilder: HivePathBuilder;
+  private readonly retentionRules: RetentionRuleSet;
   private currentJob: AggregationProgress | null = null;
   private cancelRequested: boolean = false;
 
@@ -101,6 +139,17 @@ export class AggregationService {
     this.config = config;
     this.app = app;
     this.hivePathBuilder = new HivePathBuilder();
+    this.retentionRules = new RetentionRuleSet(
+      config.pathRetentionOverrides || [],
+      (rule, err) => {
+        // A pattern that fails to compile is dropped; log so the
+        // operator sees the offending rule rather than silently losing
+        // it. Doesn't block plugin start.
+        this.app.error(
+          `[Retention] Dropping rule with invalid pattern '${rule.pattern}': ${err.message}`
+        );
+      }
+    );
   }
 
   /**
@@ -210,6 +259,14 @@ export class AggregationService {
       try {
         const { context, signalkPath } = this.parseGroupKey(key);
         if (pathFilter && !pathFilter(signalkPath)) continue;
+        // Honour per-path skipAggregation. These paths live only in
+        // tier=raw and are cleaned up directly via cleanupOldData.
+        if (this.retentionRules.shouldSkipAggregation(signalkPath)) {
+          this.app.debug(
+            `Skipping aggregation for ${signalkPath}: matched a retention rule with skipAggregation=true`
+          );
+          continue;
+        }
         const result = await this.aggregateGroup(
           files,
           context,
@@ -645,23 +702,42 @@ export class AggregationService {
   }
 
   /**
-   * Clean up old data based on retention settings
+   * Clean up old data based on retention settings.
+   *
+   * Per-tier retention defaults come from `config.retentionDays`. A
+   * value of 0 at any tier means "keep forever" — that tier is skipped
+   * entirely. Per-path overrides take precedence: when a file's path
+   * matches a retention rule, the rule's `days` (scaled by the tier
+   * multiplier) is used instead of the global tier default.
+   *
+   * Files outside the Hive layout (legacy flat storage) are not
+   * touched: there is no path/year/day to anchor a retention decision
+   * on.
    */
   async cleanupOldData(): Promise<{
     deletedFiles: number;
+    failedFiles: number;
     freedBytes: number;
   }> {
     let deletedFiles = 0;
+    let failedFiles = 0;
     let freedBytes = 0;
 
     const now = new Date();
+    const hasPathRules = !this.retentionRules.isEmpty();
+    let processedSinceYield = 0;
 
     for (const tier of TIER_HIERARCHY) {
-      const retentionDays = this.config.retentionDays[tier];
-      const cutoffDate = new Date(now);
-      cutoffDate.setUTCDate(cutoffDate.getUTCDate() - retentionDays);
+      if (this.cancelRequested) break;
 
-      // Find files older than retention period
+      const tierDefaultDays = this.config.retentionDays[tier];
+      // No tier default and no per-path overrides → nothing to do for
+      // this tier. With overrides present we still walk the tier so
+      // path-specific rules can act even when the global is infinite.
+      if (tierDefaultDays <= 0 && !hasPathRules) continue;
+
+      const tierMultiplier = TIER_RETENTION_MULTIPLIER[tier];
+
       const pattern = path.join(
         this.config.outputDirectory,
         `tier=${tier}`,
@@ -672,34 +748,89 @@ export class AggregationService {
       const files = await glob(pattern);
 
       for (const file of files) {
+        if (this.cancelRequested) break;
+        if (++processedSinceYield >= CLEANUP_YIELD_INTERVAL) {
+          processedSinceYield = 0;
+          await new Promise(resolve => setImmediate(resolve));
+        }
+
         try {
           const parsed = this.hivePathBuilder.detectPathStyle(file);
-          if (parsed.isHive && parsed.year && parsed.dayOfYear) {
-            const fileDate = this.hivePathBuilder.dateFromDayOfYear(
-              parsed.year,
-              parsed.dayOfYear
-            );
+          if (!parsed.isHive || !parsed.year || !parsed.dayOfYear) continue;
 
-            if (fileDate < cutoffDate) {
-              const stats = await fs.stat(file);
-              freedBytes += stats.size;
-              await fs.remove(file);
-              deletedFiles++;
-            }
+          const effectiveDays = this.resolveEffectiveRetentionDays(
+            parsed.signalkPath,
+            tierDefaultDays,
+            tierMultiplier
+          );
+          // null means keep forever for this (path, tier) pair.
+          if (effectiveDays === null) continue;
+
+          // Compare at day granularity (midnight UTC). The partition's
+          // fileDate is midnight UTC; if cutoffDate kept the current
+          // time-of-day, a `days: 1` cleanup running mid-afternoon
+          // would already see "yesterday" as older than cutoff and
+          // delete it ~16 hours before its day was actually complete.
+          const cutoffDate = new Date(now);
+          cutoffDate.setUTCHours(0, 0, 0, 0);
+          cutoffDate.setUTCDate(cutoffDate.getUTCDate() - effectiveDays);
+
+          const fileDate = this.hivePathBuilder.dateFromDayOfYear(
+            parsed.year,
+            parsed.dayOfYear
+          );
+
+          if (fileDate < cutoffDate) {
+            const stats = await fs.stat(file);
+            await fs.remove(file);
+            freedBytes += stats.size;
+            deletedFiles++;
           }
         } catch (error) {
-          this.app.debug(
+          this.app.error(
             `Failed to check/delete ${file}: ${(error as Error).message}`
           );
+          failedFiles++;
         }
       }
     }
 
     this.app.debug(
-      `Cleanup: deleted ${deletedFiles} files, freed ${(freedBytes / 1024 / 1024).toFixed(2)} MB`
+      `Cleanup: deleted ${deletedFiles} files, ${failedFiles} failed, freed ${(freedBytes / 1024 / 1024).toFixed(2)} MB`
     );
 
-    return { deletedFiles, freedBytes };
+    return { deletedFiles, failedFiles, freedBytes };
+  }
+
+  /**
+   * Pick the retention to apply for one (path, tier) pair.
+   *
+   * - If a path-rule matches and `skipAggregation` is set: use rule.days
+   *   for every tier (no multiplier). The path lives only in raw, so
+   *   any stale rows in upper tiers should sweep at the same horizon
+   *   as raw rather than linger 2/4/12x longer.
+   * - Else if a path-rule matches: use rule.days × tierMultiplier
+   *   (rule.days is interpreted as raw-tier retention; upper tiers
+   *   scale by the same convention as the global default).
+   * - Else: use the global tier default.
+   * - 0 (from either source) means infinite — return null so the caller
+   *   skips deletion.
+   */
+  private resolveEffectiveRetentionDays(
+    signalkPath: string | undefined,
+    tierDefaultDays: number,
+    tierMultiplier: number
+  ): number | null {
+    if (signalkPath) {
+      const matched = this.retentionRules.match(signalkPath);
+      if (matched) {
+        if (matched.days <= 0) return null;
+        return matched.skipAggregation
+          ? matched.days
+          : matched.days * tierMultiplier;
+      }
+    }
+    return tierDefaultDays > 0 ? tierDefaultDays : null;
   }
 
   /**
