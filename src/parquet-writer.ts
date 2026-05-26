@@ -1,5 +1,6 @@
 import * as fs from 'fs-extra';
 import * as path from 'path';
+import { glob } from 'glob';
 import {
   DataRecord,
   ParquetWriterOptions,
@@ -891,4 +892,70 @@ export class ParquetWriter {
       );
     }
   }
+}
+
+/**
+ * Move undersized (`< 100B`) parquet files left behind by a crash between
+ * ParquetWriter.openFile() — which creates a 0-byte stub on disk — and the
+ * first appendRow()/close() that would populate it. The per-write catch
+ * block can't run if the process is killed in that window, so we sweep
+ * on plugin start. Files are moved to a sibling `quarantine/` dir, matching
+ * the in-flight quarantine layout; the History API already excludes those
+ * paths from queries.
+ */
+export async function quarantineEmptyParquetFiles(
+  app: ServerAPI,
+  baseDirectory: string
+): Promise<{ quarantined: number; failed: number }> {
+  if (!(await fs.pathExists(baseDirectory))) {
+    return { quarantined: 0, failed: 0 };
+  }
+
+  const candidates = await glob(path.join(baseDirectory, '**', '*.parquet'), {
+    ignore: [
+      path.join(baseDirectory, '**', 'quarantine', '**'),
+      path.join(baseDirectory, '**', 'failed', '**'),
+      path.join(baseDirectory, '**', 'repaired', '**'),
+      path.join(baseDirectory, '**', '.compaction-trash-*', '**'),
+    ],
+  });
+
+  let quarantined = 0;
+  let failed = 0;
+
+  for (const file of candidates) {
+    try {
+      const stats = await fs.stat(file);
+      if (stats.size >= 100) continue;
+
+      const quarantineDir = path.join(path.dirname(file), 'quarantine');
+      await fs.ensureDir(quarantineDir);
+      const quarantinePath = path.join(quarantineDir, path.basename(file));
+      await fs.move(file, quarantinePath, { overwrite: true });
+
+      const logLine = `${new Date().toISOString()} | startup-sweep | ${stats.size} bytes | Undersized parquet (likely crash between openFile and close) | ${quarantinePath}\n`;
+      await fs.appendFile(
+        path.join(quarantineDir, 'quarantine.log'),
+        logLine
+      );
+
+      quarantined++;
+      app.debug(
+        `Quarantined undersized parquet (${stats.size}B): ${file}`
+      );
+    } catch (err) {
+      failed++;
+      app.error(
+        `Failed to quarantine undersized parquet ${file}: ${(err as Error).message}`
+      );
+    }
+  }
+
+  if (quarantined > 0) {
+    app.debug(
+      `Parquet startup sweep: quarantined ${quarantined} undersized file(s)`
+    );
+  }
+
+  return { quarantined, failed };
 }

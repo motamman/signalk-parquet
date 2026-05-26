@@ -1,7 +1,7 @@
 import * as fs from 'fs-extra';
 import * as path from 'path';
 import e, { Router } from 'express';
-import { ParquetWriter } from './parquet-writer';
+import { ParquetWriter, quarantineEmptyParquetFiles } from './parquet-writer';
 import { registerHistoryApiRoute } from './HistoryAPI';
 import { registerApiRoutes } from './api-routes';
 import {
@@ -316,6 +316,19 @@ export default function (app: ServerAPI): SignalKPlugin {
     ).catch(err => {
       app.error(
         `Compaction trash recovery failed: ${(err as Error).message}`
+      );
+    });
+
+    // Quarantine zero-byte parquet stubs left by a crash between
+    // ParquetWriter.openFile() and close(). The read-path filename
+    // filter already excludes /quarantine/, so once these are moved
+    // they won't break DuckDB queries.
+    await quarantineEmptyParquetFiles(
+      app,
+      state.currentConfig.outputDirectory
+    ).catch(err => {
+      app.error(
+        `Empty parquet startup sweep failed: ${(err as Error).message}`
       );
     });
 
