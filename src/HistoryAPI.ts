@@ -60,6 +60,22 @@ import {
   PathRetentionRule,
   RetentionRuleSet,
 } from './utils/retention-rules';
+import {
+  parsePathFilters,
+  buildParquetFilterClause,
+  availableFilterColumns,
+  filterEcho,
+  FILTER_DELIMITERS,
+} from './utils/path-filters';
+
+// Allowed characters in the `paths` query parameter: path/aggregate tokens
+// (alphanumerics, `.,:_`), the inline-filter delimiters from PATH_FILTER_DEFS,
+// and `-`. Delimiters are escaped for use inside a character class; `-` is kept
+// last so it stays a literal.
+const PATHS_SANITIZER = new RegExp(
+  `[^0-9a-z.,:_${FILTER_DELIMITERS.replace(/[\\\]^-]/g, '\\$&')}-]`,
+  'gi'
+);
 
 export function registerHistoryApiRoute(
   router: Pick<Router, 'get'>,
@@ -472,6 +488,17 @@ function utcToLocalTimestamp(utcTs: Timestamp): Timestamp {
   }
 }
 
+// A response `values` entry: path + aggregate method, optional smoothing
+// metadata, plus any echoed inline-filter fields (e.g. `sourceRef`). The index
+// signature keeps it open to new filters without a type change here.
+interface HistoryValueEntry {
+  path: Path;
+  method: AggregateMethod;
+  smoothing?: string;
+  window?: number;
+  [field: string]: unknown;
+}
+
 export class HistoryAPI {
   private sqliteBuffer?: SQLiteBufferInterface;
   private hivePathBuilder: HivePathBuilder;
@@ -739,8 +766,13 @@ export class HistoryAPI {
       const timeResolutionMillis = req.query.resolution
         ? parseResolutionToMillis(req.query.resolution as string)
         : ((to.toEpochSecond() - from.toEpochSecond()) / 500) * 1000;
+      // Strip everything except path/aggregate characters, the filter
+      // delimiters from PATH_FILTER_DEFS, and `-` (common in source
+      // references). This is a coarse injection guard; values are also SQL-
+      // escaped downstream. Adding a delimiter to the registry extends this
+      // automatically.
       const pathExpressions = ((req.query.paths as string) || '')
-        .replace(/[^0-9a-z.,:_]/gi, '')
+        .replace(PATHS_SANITIZER, '')
         .split(',');
       const pathSpecs: PathSpec[] = pathExpressions.map(splitPathExpression);
 
@@ -861,7 +893,9 @@ export class HistoryAPI {
     positionPath: string = 'navigation.position',
     app?: any
   ): Promise<DataResult> {
-    const allData: { [path: string]: Array<[Timestamp, unknown]> } = {};
+    // Keyed by pathSpecKey(spec), not bare path, so the same path requested
+    // with different sources/aggregates keeps separate series.
+    const allData: { [key: string]: Array<[Timestamp, unknown]> } = {};
     const objectPaths = new Set<string>(); // Track which paths are object paths
 
     // Convert ZonedDateTime to Date for S3 pattern building
@@ -928,17 +962,29 @@ export class HistoryAPI {
               EPOCH_MS(CAST(FLOOR(EPOCH_MS(signalk_timestamp::TIMESTAMP) / ${timeResolutionMillis}) * ${timeResolutionMillis} AS BIGINT))
             ), '%Y-%m-%dT%H:%M:%SZ')`;
 
+            // Optional filters for the position path (e.g. one of several GPS
+            // receivers). This fast path is local-only (raw parquet + buffer),
+            // so probe just the local glob for the filter columns.
+            const posAvailable = await availableFilterColumns(
+              connection,
+              [posFilePath],
+              posPathSpec.filters
+            );
+            const posSourceFilter = buildParquetFilterClause(
+              posPathSpec.filters,
+              posAvailable
+            );
+
             // Build FROM: parquet UNION ALL buffer (for today's unexported data)
             const parquetFrom = `SELECT signalk_timestamp, value_latitude, value_longitude FROM (
               SELECT * FROM read_parquet('${posFilePath}', union_by_name=true, filename=true)
               WHERE filename NOT LIKE '%/processed/%'
               AND filename NOT LIKE '%/quarantine/%'
               AND filename NOT LIKE '%/failed/%'
-              AND filename NOT LIKE '%/repaired/%')`;
+              AND filename NOT LIKE '%/repaired/%'${posSourceFilter})`;
 
             let fromSource = `(${parquetFrom})`;
             if (hasBuffer && this.sqliteBuffer) {
-              const posPathSpec = pathSpecs.find(ps => isPositionPath(ps.path))!;
               const bufferTableCols = this.sqliteBuffer.getTableColumns(posPathSpec.path);
               const bufferSubquery = buildBufferObjectSubquery(
                 context, posPathSpec.path, fromIso, toIso,
@@ -947,7 +993,8 @@ export class HistoryAPI {
                   ['longitude', { name: 'longitude', columnName: 'value_longitude', dataType: 'numeric' as const }],
                 ]),
                 this.sqliteBuffer.getKnownPaths(),
-                bufferTableCols
+                bufferTableCols,
+                posPathSpec.filters
               );
               if (bufferSubquery) {
                 fromSource = `(${parquetFrom} UNION ALL SELECT signalk_timestamp, TRY_CAST(value_latitude AS DOUBLE) as value_latitude, TRY_CAST(value_longitude AS DOUBLE) as value_longitude FROM ${bufferSubquery})`;
@@ -1015,7 +1062,7 @@ export class HistoryAPI {
               }
             }
 
-            allData[posPathSpec.path] = posData;
+            allData[pathSpecKey(posPathSpec)] = posData;
             debug(
               `[Spatial] Bucketed ${rows.length} positions, ${posData.length} within filter`
             );
@@ -1024,7 +1071,7 @@ export class HistoryAPI {
           }
         } catch (error) {
           debug(`[Spatial] Error in fast position query: ${error}`);
-          allData[posPathSpec.path] = [];
+          allData[pathSpecKey(posPathSpec)] = [];
           spatialTimestamps = new Set<string>();
         }
       }
@@ -1036,7 +1083,11 @@ export class HistoryAPI {
     await limiter.map(pathSpecs, async pathSpec => {
       try {
         // Skip position if already handled by fast spatial bucket query
-        if (hasPositionPath && isPositionPath(pathSpec.path) && allData[pathSpec.path]) {
+        if (
+          hasPositionPath &&
+          isPositionPath(pathSpec.path) &&
+          allData[pathSpecKey(pathSpec)]
+        ) {
           return;
         }
 
@@ -1056,6 +1107,16 @@ export class HistoryAPI {
         ) {
           debug(
             `Path ${pathSpec.path}: skipAggregation rule matched — overriding tier=${effectiveTier} to raw`
+          );
+          effectiveTier = 'raw';
+        }
+
+        // Inline filters require raw data: aggregated tiers (5s/60s/1h) blend
+        // every source into each bucket and don't carry the source_* columns,
+        // so they cannot be filtered.
+        if (effectiveTier !== 'raw' && pathSpec.filters.length > 0) {
+          debug(
+            `Path ${pathSpec.path}: filter present — overriding tier=${effectiveTier} to raw`
           );
           effectiveTier = 'raw';
         }
@@ -1161,7 +1222,7 @@ export class HistoryAPI {
             fromClause = localFromClause;
           } else {
             debug(`No data source available for path ${pathSpec.path}`);
-            allData[pathSpec.path] = [];
+            allData[pathSpecKey(pathSpec)] = [];
             return;
           }
 
@@ -1293,6 +1354,20 @@ export class HistoryAPI {
             const objBucketExpr = (col: string) =>
               `strftime(DATE_TRUNC('seconds', EPOCH_MS(CAST(FLOOR(EPOCH_MS(${col}::TIMESTAMP) / ${timeResolutionMillis}) * ${timeResolutionMillis} AS BIGINT))), '%Y-%m-%dT%H:%M:%SZ')`;
 
+            // When filtering, probe the (raw) parquet schema for the filter
+            // columns so we either filter on them or exclude the parquet side
+            // when absent (legacy/imported files). Probe both local and S3
+            // since either may hold the data being queried.
+            const objAvailable = await availableFilterColumns(
+              connection,
+              [localFilePath, s3FilePath],
+              pathSpec.filters
+            );
+            const objSourceFilter = buildParquetFilterClause(
+              pathSpec.filters,
+              objAvailable
+            );
+
             const buildObjQuery = (fc: string) => {
               const subqueries: string[] = [];
 
@@ -1300,7 +1375,7 @@ export class HistoryAPI {
               subqueries.push(`
                 SELECT ${objBucketExpr(objTsCol)} as timestamp, ${componentSelects}, 1 as priority
                 FROM ${fc} AS source_data
-                WHERE ${objTsCol} >= '${fromIso}' AND ${objTsCol} < '${toIso}' AND (${componentWhereConditions})${spatialWhereClause}
+                WHERE ${objTsCol} >= '${fromIso}' AND ${objTsCol} < '${toIso}' AND (${componentWhereConditions})${spatialWhereClause}${objSourceFilter}
                 GROUP BY timestamp`);
 
               // Source 2: SQLite buffer (today's live data not yet exported)
@@ -1313,7 +1388,8 @@ export class HistoryAPI {
                   toIso,
                   componentSchema.components,
                   knownBufferPaths,
-                  bufferTableCols
+                  bufferTableCols,
+                  pathSpec.filters
                 );
                 if (bufferSubquery) {
                   subqueries.push(`
@@ -1358,7 +1434,7 @@ export class HistoryAPI {
               return [timestamp, reconstructedObject];
             });
 
-            allData[pathSpec.path] = pathData;
+            allData[pathSpecKey(pathSpec)] = pathData;
           } else {
             // Scalar path
             // First, check if value_json column exists in the parquet files
@@ -1376,6 +1452,20 @@ export class HistoryAPI {
 
             debug(
               `Path ${pathSpec.path}: value_json column ${hasValueJson ? 'exists' : 'does not exist'}`
+            );
+
+            // Filter the parquet tier when requested. Probe both local and S3
+            // (data may live in either) for the filter columns; columns absent
+            // everywhere become `AND 1=0` so the parquet side contributes
+            // nothing and the always-tagged buffer answers the query.
+            const scalarAvailable = await availableFilterColumns(
+              connection,
+              [localFilePath, s3FilePath],
+              pathSpec.filters
+            );
+            const scalarSourceFilter = buildParquetFilterClause(
+              pathSpec.filters,
+              scalarAvailable
             );
 
             // Each source does its own aggregation into (timestamp, value, priority).
@@ -1406,7 +1496,7 @@ export class HistoryAPI {
               subqueries.push(`
                 SELECT ${bucketExpr(tsCol)} as timestamp, ${tierAggExpr} as value, 1 as priority
                 FROM ${fc} AS source_data
-                WHERE ${tsCol} >= '${fromIso}' AND ${tsCol} < '${toIso}' AND ${whereClause}
+                WHERE ${tsCol} >= '${fromIso}' AND ${tsCol} < '${toIso}' AND ${whereClause}${scalarSourceFilter}
                 GROUP BY timestamp`);
 
               // Source 2: SQLite buffer (today's live data not yet exported)
@@ -1416,7 +1506,8 @@ export class HistoryAPI {
                   pathSpec.path,
                   fromIso,
                   toIso,
-                  knownBufferPaths
+                  knownBufferPaths,
+                  pathSpec.filters
                 );
                 if (bufferSubquery) {
                   const bufferAggExpr = getTierAggregateExpression(pathSpec.aggregateMethod, pathSpec.path, 'raw', false, app, context as string);
@@ -1459,7 +1550,7 @@ export class HistoryAPI {
               return [timestamp, value];
             });
 
-            allData[pathSpec.path] = pathData;
+            allData[pathSpecKey(pathSpec)] = pathData;
           }
         } finally {
           connection.disconnectSync();
@@ -1480,7 +1571,8 @@ export class HistoryAPI {
                 pathSpec.path,
                 fallbackFromIso,
                 fallbackToIso,
-                fallbackKnownPaths
+                fallbackKnownPaths,
+                pathSpec.filters
               );
               if (bufferSubquery) {
                 const fallbackAggExpr = isStringPath(pathSpec.path)
@@ -1499,7 +1591,7 @@ export class HistoryAPI {
                 `;
                 const bufResult = await bufferConn.runAndReadAll(bufferQuery);
                 const bufRows = bufResult.getRowObjects();
-                allData[pathSpec.path] = bufRows.map((row: any) => [
+                allData[pathSpecKey(pathSpec)] = bufRows.map((row: any) => [
                   row.timestamp as Timestamp,
                   row.value,
                 ]);
@@ -1510,10 +1602,10 @@ export class HistoryAPI {
             }
           } catch (bufErr) {
             debug(`Buffer-only fallback also failed for ${pathSpec.path}: ${bufErr}`);
-            allData[pathSpec.path] = [];
+            allData[pathSpecKey(pathSpec)] = [];
           }
         } else {
-          allData[pathSpec.path] = [];
+          allData[pathSpecKey(pathSpec)] = [];
         }
       }
     });
@@ -1522,20 +1614,21 @@ export class HistoryAPI {
     // This filters data to only include times when vessel was within spatial filter
     if (spatialTimestamps !== null) {
       for (const pathSpec of pathSpecs) {
-        if (!isPositionPath(pathSpec.path) && allData[pathSpec.path]) {
+        const key = pathSpecKey(pathSpec);
+        if (!isPositionPath(pathSpec.path) && allData[key]) {
           if (spatialTimestamps.size === 0) {
             // No position data in area — return empty for all correlated paths
-            allData[pathSpec.path] = [];
+            allData[key] = [];
             debug(
               `[Spatial Correlation] No matching positions — cleared ${pathSpec.path}`
             );
           } else {
-            const originalCount = allData[pathSpec.path].length;
-            allData[pathSpec.path] = allData[pathSpec.path].filter(
-              ([timestamp]) => spatialTimestamps!.has(timestamp)
+            const originalCount = allData[key].length;
+            allData[key] = allData[key].filter(([timestamp]) =>
+              spatialTimestamps!.has(timestamp)
             );
             debug(
-              `[Spatial Correlation] Filtered ${pathSpec.path}: ${originalCount} -> ${allData[pathSpec.path].length} records`
+              `[Spatial Correlation] Filtered ${pathSpec.path}: ${originalCount} -> ${allData[key].length} records`
             );
           }
         }
@@ -1552,12 +1645,7 @@ export class HistoryAPI {
 
     // Determine final data and values based on smoothing mode
     let finalData: Array<[Timestamp, ...unknown[]]>;
-    let finalValues: Array<{
-      path: Path;
-      method: AggregateMethod;
-      smoothing?: string;
-      window?: number;
-    }>;
+    let finalValues: HistoryValueEntry[];
 
     if (hasPerPathSmoothing) {
       // Per-path smoothing mode: apply smoothing only to paths that have it defined
@@ -1571,9 +1659,12 @@ export class HistoryAPI {
     } else {
       // No smoothing
       finalData = mergedData;
-      finalValues = pathSpecs.map(({ path, aggregateMethod }) => ({
+      finalValues = pathSpecs.map(({ path, aggregateMethod, filters }) => ({
         path,
         method: aggregateMethod,
+        // Echo each filter back (e.g. sourceRef) so callers can tell what each
+        // column was restricted to.
+        ...filterEcho(filters),
       }));
     }
 
@@ -1589,14 +1680,14 @@ export class HistoryAPI {
   }
 
   private mergePathData(
-    allData: { [path: string]: Array<[Timestamp, unknown]> },
+    allData: { [key: string]: Array<[Timestamp, unknown]> },
     pathSpecs: PathSpec[]
   ): Array<[Timestamp, ...unknown[]]> {
     // Create a map of all unique timestamps
     const timestampMap = new Map<string, unknown[]>();
 
     pathSpecs.forEach((pathSpec, index) => {
-      const pathData = allData[pathSpec.path] || [];
+      const pathData = allData[pathSpecKey(pathSpec)] || [];
       pathData.forEach(([timestamp, value]) => {
         if (!timestampMap.has(timestamp)) {
           timestampMap.set(timestamp, new Array(pathSpecs.length).fill(null));
@@ -1820,21 +1911,21 @@ export class HistoryAPI {
     pathSpecs: PathSpec[],
     objectPaths: Set<string>,
     usePerPathSmoothing: boolean = false
-  ): Array<{
-    path: Path;
-    method: AggregateMethod;
-    smoothing?: string;
-    window?: number;
-  }> {
-    const result: Array<{
-      path: Path;
-      method: AggregateMethod;
-      smoothing?: string;
-      window?: number;
-    }> = [];
+  ): HistoryValueEntry[] {
+    const result: HistoryValueEntry[] = [];
 
     pathSpecs.forEach(
-      ({ path, aggregateMethod, smoothing, smoothingParam, smoothingOnly }) => {
+      ({
+        path,
+        aggregateMethod,
+        smoothing,
+        smoothingParam,
+        smoothingOnly,
+        filters,
+      }) => {
+        // Every column derived from a filtered path carries the same filters,
+        // so echo them on each emitted entry.
+        const echo = filterEcho(filters);
         if (usePerPathSmoothing) {
           // Per-path smoothing mode
           // Check if using official SignalK syntax (smoothingOnly=true)
@@ -1843,17 +1934,12 @@ export class HistoryAPI {
 
           if (!smoothingOnly) {
             // Extension syntax: add raw value entry first
-            result.push({ path, method: aggregateMethod });
+            result.push({ path, method: aggregateMethod, ...echo });
           }
 
           // Add smoothed entry if smoothing is defined
           if (smoothing) {
-            const smoothedEntry: {
-              path: Path;
-              method: AggregateMethod;
-              smoothing: string;
-              window: number;
-            } = {
+            const smoothedEntry: HistoryValueEntry = {
               path,
               // For official syntax, use sma/ema as the method in response
               method: smoothingOnly
@@ -1866,23 +1952,26 @@ export class HistoryAPI {
                   : smoothing === 'sma'
                     ? 10
                     : 0.2,
+              ...echo,
             };
             result.push(smoothedEntry);
           }
         } else if (objectPaths.has(path)) {
           // Object path - EMA/SMA are embedded in the object as component properties
           // Just add the single path entry
-          result.push({ path, method: aggregateMethod });
+          result.push({ path, method: aggregateMethod, ...echo });
         } else {
           // Scalar path - add separate entries for value, EMA, and SMA
-          result.push({ path, method: aggregateMethod });
+          result.push({ path, method: aggregateMethod, ...echo });
           result.push({
             path: `${path}.ema` as Path,
             method: 'ema' as AggregateMethod,
+            ...echo,
           });
           result.push({
             path: `${path}.sma` as Path,
             method: 'sma' as AggregateMethod,
+            ...echo,
           });
         }
       }
@@ -1892,8 +1981,20 @@ export class HistoryAPI {
   }
 }
 
+// Parses a path expression into a PathSpec.
+//   'navigation.headingMagnetic'                        -> { aggregate: 'average' }
+//   'navigation.headingMagnetic:max'                    -> { aggregate: 'max' }
+//   'navigation.headingMagnetic:average:sma:5'          -> { aggregate: 'average', smoothing: 'sma' }
+//   'navigation.headingMagnetic|n2k-on-ve.can0.115'     -> { aggregate: 'average', filters: [sourceRef] }
+//   'navigation.headingMagnetic:max|n2k-on-ve.can0.115' -> { aggregate: 'max', filters: [sourceRef] }
+//
+// Inline filters (e.g. `|sourceRef`) are split off first via parsePathFilters,
+// so the `:`-separated aggregate/smoothing parsing below operates on the bare
+// path expression. See utils/path-filters.ts to add another filter.
 function splitPathExpression(pathExpression: string): PathSpec {
-  const parts = pathExpression.split(':');
+  const { base: expr, filters } = parsePathFilters(pathExpression);
+
+  const parts = expr.split(':');
   let aggregateMethod = (parts[1] || 'average') as AggregateMethod;
 
   // Validate the aggregation method
@@ -1948,7 +2049,24 @@ function splitPathExpression(pathExpression: string): PathSpec {
     smoothing,
     smoothingParam,
     smoothingOnly,
+    filters,
   };
+}
+
+// Unique key for a parsed path expression. The same path may be requested more
+// than once with a different filter, aggregate, or smoothing (e.g.
+// `heading|srcA,heading|srcB`); keying intermediate results by path alone would
+// collapse those into one column, so the key includes every distinguishing
+// field. Fields never contain spaces (paths, aggregates, and filter values are
+// sanitised upstream), so a space separator is unambiguous.
+function pathSpecKey(ps: PathSpec): string {
+  return [
+    ps.path,
+    ps.aggregateMethod,
+    ps.smoothing ?? '',
+    ps.smoothingParam ?? '',
+    ...ps.filters.map(f => `${f.column}=${f.value}`),
+  ].join(' ');
 }
 
 const functionForAggregate: { [key: string]: string } = {

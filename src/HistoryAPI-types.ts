@@ -1,11 +1,21 @@
-import { Brand, Context, Path, Timestamp } from '@signalk/server-api';
+import {
+  Brand,
+  Context,
+  Path,
+  SourceRef,
+  Timestamp,
+} from '@signalk/server-api';
 import { Request } from 'express';
+import { PathFilter } from './utils/path-filters';
 
 export type AggregateMethod = Brand<string, 'aggregatemethod'>;
 
 type ValueList = {
   path: Path;
   method: AggregateMethod;
+  // Present only when the request filtered this path to a specific source via
+  // the `path:aggregate|sourceRef` syntax.
+  sourceRef?: SourceRef;
 }[];
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -101,4 +111,7 @@ export interface PathSpec {
   smoothing?: 'sma' | 'ema'; // Per-path smoothing method
   smoothingParam?: number; // SMA period or EMA alpha
   smoothingOnly?: boolean; // Official syntax: return only smoothed value (path:sma:5)
+  // Inline filters parsed from the path expression (e.g. `|sourceRef`).
+  // See utils/path-filters.ts. Empty when none were requested.
+  filters: PathFilter[];
 }

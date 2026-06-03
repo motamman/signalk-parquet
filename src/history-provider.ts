@@ -7,7 +7,7 @@
 
 import { Temporal } from '@js-temporal/polyfill';
 import { ZonedDateTime, ZoneOffset, Instant } from '@js-joda/core';
-import { Context, Path, Timestamp, ServerAPI } from '@signalk/server-api';
+import { Context, Timestamp, ServerAPI } from '@signalk/server-api';
 import {
   HistoryApi,
   ValuesRequest,
@@ -19,6 +19,12 @@ import {
   PathSpec as SignalKPathSpec,
   AggregateMethod,
 } from '@signalk/server-api/dist/history';
+import {
+  filtersFromFields,
+  buildParquetFilterClause,
+  availableFilterColumns,
+  filterEcho,
+} from './utils/path-filters';
 import {
   getAvailablePathsArray,
   getAvailablePathsForTimeRange,
@@ -120,6 +126,22 @@ function parseTimeRange(
 }
 
 /**
+ * Unique key for a requested path spec. The same path may be requested more
+ * than once with a different filter, aggregate, or parameters; keying stored
+ * results by path alone would collapse those into one column, so the key
+ * includes every distinguishing field. Fields never contain spaces
+ * (paths/aggregates/filter values are sanitised upstream), so a space
+ * separator is unambiguous.
+ */
+function pathSpecKey(ps: SignalKPathSpec): string {
+  const parameter = (ps.parameter ?? []).join(',');
+  const filters = filtersFromFields(ps as unknown as Record<string, unknown>)
+    .map(f => `${f.column}=${f.value}`)
+    .join(' ');
+  return [ps.path, ps.aggregate, parameter, filters].join(' ');
+}
+
+/**
  * History API Provider implementation
  */
 export class HistoryProvider implements HistoryApi {
@@ -177,9 +199,12 @@ export class HistoryProvider implements HistoryApi {
     const toIso = to.toInstant().toString();
 
     // Query each path
-    const allData: { [pathName: string]: Array<[Timestamp, unknown]> } = {};
+    const allData: { [key: string]: Array<[Timestamp, unknown]> } = {};
 
     for (const pathSpec of query.pathSpecs) {
+      // Key by the full spec, not just path: the same path may appear multiple
+      // times with different sourceRef/aggregate and must stay separate.
+      const key = pathSpecKey(pathSpec);
       try {
         const pathData = await this.queryPath(
           context,
@@ -188,12 +213,12 @@ export class HistoryProvider implements HistoryApi {
           toIso,
           resolutionMs
         );
-        allData[pathSpec.path] = pathData;
+        allData[key] = pathData;
       } catch (error) {
         this.debug(
           `[HistoryProvider] Error querying path ${pathSpec.path}: ${error}`
         );
-        allData[pathSpec.path] = [];
+        allData[key] = [];
       }
     }
 
@@ -206,10 +231,14 @@ export class HistoryProvider implements HistoryApi {
         from: fromIso as Timestamp,
         to: toIso as Timestamp,
       },
-      values: query.pathSpecs.map(ps => ({
-        path: ps.path,
-        method: ps.aggregate,
-      })),
+      // Echo each filter (e.g. sourceRef) back per path. Cast covers the
+      // @signalk/server-api version gap until ValueList declares the field.
+      values: query.pathSpecs.map(ps => {
+        const echo = filterEcho(
+          filtersFromFields(ps as unknown as Record<string, unknown>)
+        );
+        return { path: ps.path, method: ps.aggregate, ...echo };
+      }) as ValuesResponse['values'],
       data: mergedData,
     };
   }
@@ -288,8 +317,23 @@ export class HistoryProvider implements HistoryApi {
 
       const aggFunc = this.getAggregateFunction(pathSpec.aggregate);
 
+      // Inline filters (e.g. sourceRef) come from the server-parsed PathSpec.
+      // The fields are populated by a newer @signalk/server-api than this plugin
+      // pins, so they are read defensively via the registry. This provider only
+      // queries raw-tier parquet; probe it for the filter columns so files
+      // without them are excluded rather than throwing.
+      const filters = filtersFromFields(
+        pathSpec as unknown as Record<string, unknown>
+      );
+      const available = await availableFilterColumns(
+        connection,
+        [filePath],
+        filters
+      );
+      const sourceFilter = buildParquetFilterClause(filters, available);
+
       // Build parquet FROM clause with filename filtering
-      const parquetFrom = `(SELECT * FROM read_parquet('${filePath}', union_by_name=true, filename=true) WHERE filename NOT LIKE '%/processed/%' AND filename NOT LIKE '%/quarantine/%' AND filename NOT LIKE '%/failed/%' AND filename NOT LIKE '%/repaired/%')`;
+      const parquetFrom = `(SELECT * FROM read_parquet('${filePath}', union_by_name=true, filename=true) WHERE filename NOT LIKE '%/processed/%' AND filename NOT LIKE '%/quarantine/%' AND filename NOT LIKE '%/failed/%' AND filename NOT LIKE '%/repaired/%'${sourceFilter})`;
 
       if (componentSchema && componentSchema.components.size > 0) {
         // Object path - aggregate each component
@@ -325,7 +369,8 @@ export class HistoryProvider implements HistoryApi {
             toIso,
             componentSchema.components,
             knownBufferPaths,
-            bufferTableCols
+            bufferTableCols,
+            filters
           );
           if (bufferSubquery) {
             federatedFrom = `(
@@ -398,7 +443,8 @@ export class HistoryProvider implements HistoryApi {
             pathSpec.path,
             fromIso,
             toIso,
-            knownBufferPaths
+            knownBufferPaths,
+            filters
           );
           if (bufferSubquery) {
             federatedFrom = `(
@@ -466,7 +512,7 @@ export class HistoryProvider implements HistoryApi {
    * Merge data from multiple paths into time-aligned rows
    */
   private mergePathData(
-    allData: { [path: string]: Array<[Timestamp, unknown]> },
+    allData: { [key: string]: Array<[Timestamp, unknown]> },
     pathSpecs: SignalKPathSpec[]
   ): Array<[Timestamp, ...unknown[]]> {
     // Collect all unique timestamps
@@ -478,21 +524,19 @@ export class HistoryProvider implements HistoryApi {
     // Sort timestamps
     const timestamps = Array.from(timestampSet).sort();
 
-    // Build lookup maps for each path
-    const pathMaps = new Map<string, Map<string, unknown>>();
-    pathSpecs.forEach(ps => {
+    // One lookup map per spec (by position), each fetched with the same
+    // composite key used to store it, so duplicate paths with different
+    // sourceRef/aggregate remain distinct columns.
+    const specMaps = pathSpecs.map(ps => {
       const map = new Map<string, unknown>();
-      (allData[ps.path] || []).forEach(([ts, val]) => map.set(ts, val));
-      pathMaps.set(ps.path, map);
+      (allData[pathSpecKey(ps)] || []).forEach(([ts, val]) => map.set(ts, val));
+      return map;
     });
 
     // Build merged rows
     return timestamps.map(ts => {
       const row: [Timestamp, ...unknown[]] = [ts as Timestamp];
-      pathSpecs.forEach(ps => {
-        const map = pathMaps.get(ps.path)!;
-        row.push(map.get(ts) ?? null);
-      });
+      specMaps.forEach(map => row.push(map.get(ts) ?? null));
       return row;
     });
   }
