@@ -467,6 +467,194 @@ export interface S3QueryConfig {
 }
 
 /**
+ * Stream a DataResult to the response as a single JSON document,
+ * progressively, instead of buffering it via res.json(). Output is
+ * byte-equivalent to the prior res.json(result) path: same field
+ * order (context, range, values, data, units?, meta?), same UTC->
+ * local timestamp conversion on the range and on each row[0].
+ *
+ * Wrapper construction: build the wrapper object with a `data: []`
+ * placeholder, JSON.stringify it once, then split at that placeholder.
+ * The two halves frame the row-by-row writes. This avoids hand-rolling
+ * `,` / `{}` / `[]` framing tokens.
+ *   Input wrapper -> '{...,"data":[],"units":{...}}'
+ *   prefix -> '{...,"data":['
+ *   suffix -> ']' + ',"units":{...}}'
+ *
+ * Backpressure: if res.write returns false the loop awaits 'drain'
+ * before continuing, so a slow client cannot grow Node's internal
+ * write buffer beyond the high-water mark. The wait races against
+ * 'close' so a client that disconnects mid-flight does not hang the
+ * stream forever.
+ *
+ * Cancellation: a 'close' listener on res sets a flag so the loop
+ * breaks early on client disconnect. The DuckDB result has already
+ * been materialised before this function is called, so cancellation
+ * is purely about cutting the write loop short.
+ *
+ * Logging: on success or post-headers failure, emits one structured
+ * line via the optional `log` callback with row count, byte count
+ * and wall-clock duration. Operators chasing "endpoint feels slow"
+ * have a single line to grep for.
+ */
+async function streamDataResult(
+  res: Response,
+  result: DataResult,
+  log?: (msg: string) => void
+): Promise<void> {
+  const startMs = Date.now();
+  let rowsWritten = 0;
+  let bytesWritten = 0;
+  let clientGone = false;
+  const onClose = (): void => {
+    clientGone = true;
+  };
+  // A mid-stream socket failure (ECONNRESET / EPIPE) emits 'error' on res.
+  // With no listener Node rethrows it as an uncaughtException and takes down
+  // the whole server process. Treat it like a disconnect: flip the flag so the
+  // write loop unwinds instead of writing into a broken socket.
+  const onError = (): void => {
+    clientGone = true;
+  };
+  res.on('close', onClose);
+  res.on('error', onError);
+
+  try {
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    // Streaming responses must not be cached by an intermediary.
+    // X-Accel-Buffering is nginx-specific (no-op elsewhere) and tells
+    // nginx not to buffer the response body, so chunks reach the
+    // client as we write them rather than after res.end().
+    res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('X-Accel-Buffering', 'no');
+
+    const localRange = {
+      from: utcToLocalTimestamp(result.range.from),
+      to: utcToLocalTimestamp(result.range.to),
+    };
+
+    // Build the wrapper with `data: []` placeholder so JSON.stringify
+    // produces the framing for us. Optional fields (units, meta) come
+    // after data per DataResult declaration order; insertion order in
+    // a plain object is preserved by JSON.stringify.
+    const wrapper: Record<string, unknown> = {
+      context: result.context,
+      range: localRange,
+      values: result.values,
+      data: [],
+    };
+    if (result.units) wrapper.units = result.units;
+    if (result.meta) wrapper.meta = result.meta;
+
+    const wrapperJson = JSON.stringify(wrapper);
+    const marker = '"data":[]';
+    const markerIdx = wrapperJson.indexOf(marker);
+    if (markerIdx === -1) {
+      // The wrapper is constructed locally with data:[] as a literal
+      // field; this branch only fires if a future JSON.stringify ever
+      // omits empty arrays. Cheaper to assert than to debug a silent
+      // wire-format break.
+      throw new Error('streamDataResult: wrapper marker not found');
+    }
+    const prefix = wrapperJson.slice(0, markerIdx) + '"data":[';
+    const suffix = ']' + wrapperJson.slice(markerIdx + marker.length);
+
+    const writeOrAwait = async (chunk: string): Promise<void> => {
+      bytesWritten += Buffer.byteLength(chunk, 'utf8');
+      if (!res.write(chunk)) {
+        // Wait for drain (kernel buffer flushed), close (client gone), or
+        // error (socket broke). Whichever fires first wins; all three unhook
+        // the others so we don't leak handlers across the loop, and we never
+        // await a 'drain' that a dead socket will never emit.
+        await new Promise<void>(resolve => {
+          let settled = false;
+          const finish = (): void => {
+            if (settled) return;
+            settled = true;
+            res.off('drain', finish);
+            res.off('close', finish);
+            res.off('error', finish);
+            resolve();
+          };
+          res.once('drain', finish);
+          res.once('close', finish);
+          res.once('error', finish);
+        });
+      }
+    };
+
+    await writeOrAwait(prefix);
+
+    const data = result.data;
+    for (let i = 0; i < data.length; i++) {
+      if (clientGone) break;
+      const row = data[i];
+      // Allocate a converted row instead of mutating in place. The
+      // input is logically owned by the caller, and a future second
+      // caller (audit log, dual-format response) would silently see
+      // local time where it expected UTC.
+      const converted = row.slice() as typeof row;
+      converted[0] = utcToLocalTimestamp(row[0]);
+      const rowChunk = (i > 0 ? ',' : '') + JSON.stringify(converted);
+      await writeOrAwait(rowChunk);
+      rowsWritten++;
+    }
+
+    if (clientGone) {
+      log?.(
+        `streamDataResult: client disconnected after ${rowsWritten}/${data.length} rows, ${bytesWritten} bytes, ${Date.now() - startMs}ms`
+      );
+      return;
+    }
+
+    await writeOrAwait(suffix);
+    res.end();
+    log?.(
+      `streamDataResult: rows=${rowsWritten} bytes=${bytesWritten} duration=${Date.now() - startMs}ms`
+    );
+  } finally {
+    res.off('close', onClose);
+    res.off('error', onError);
+  }
+}
+
+/**
+ * Buffered UTC->local conversion of a full DataResult. Used by callers
+ * that pass a non-streaming response (e.g. internal mocks that only
+ * implement res.json) so they receive the same locally-converted shape
+ * the streaming path produces.
+ */
+function convertToLocalTime(result: DataResult): DataResult {
+  return {
+    ...result,
+    range: {
+      from: utcToLocalTimestamp(result.range.from),
+      to: utcToLocalTimestamp(result.range.to),
+    },
+    data: result.data.map(row => {
+      const newRow = row.slice() as typeof row;
+      newRow[0] = utcToLocalTimestamp(row[0]);
+      return newRow;
+    }),
+  };
+}
+
+/**
+ * Returns true when `res` exposes the Node stream methods streamDataResult
+ * relies on. The plugin's HTTP routes pass a real Express Response, but
+ * historical-streaming.ts reuses getValues with a mock that only implements
+ * res.json / res.status().json — those callers go through the buffered path.
+ */
+function canStreamResponse(res: Response): boolean {
+  return (
+    typeof (res as Partial<Response>).write === 'function' &&
+    typeof (res as Partial<Response>).end === 'function' &&
+    typeof (res as Partial<Response>).setHeader === 'function' &&
+    typeof (res as Partial<Response>).on === 'function'
+  );
+}
+
+/**
  * Convert a UTC timestamp string to server-local time with offset suffix.
  * e.g. "2026-03-06T19:00:00Z" → "2026-03-06T14:00:00-05:00" (EST)
  */
@@ -547,23 +735,6 @@ export class HistoryAPI {
     this.sqliteBuffer = buffer;
   }
 
-  /**
-   * Convert all timestamps in a DataResult from UTC to server local time.
-   */
-  private convertToLocalTime(result: DataResult): DataResult {
-    return {
-      ...result,
-      range: {
-        from: utcToLocalTimestamp(result.range.from),
-        to: utcToLocalTimestamp(result.range.to),
-      },
-      data: result.data.map(row => {
-        const newRow = [...row] as typeof row;
-        newRow[0] = utcToLocalTimestamp(row[0]);
-        return newRow;
-      }),
-    };
-  }
 
   /**
    * Auto-select the optimal tier based on requested resolution
@@ -864,12 +1035,35 @@ export class HistoryAPI {
         }
       }
 
-      allResult = this.convertToLocalTime(allResult);
-      res.json(allResult);
+      if (canStreamResponse(res)) {
+        await streamDataResult(res, allResult, debug);
+      } else {
+        // Internal callers (historical-streaming.ts) pass a mock res with
+        // only json()/status().json(); fall back to the buffered shape so
+        // they keep working without an Express Response.
+        res.json(convertToLocalTime(allResult));
+      }
     } catch (error) {
       if (error instanceof InvalidResolutionError) {
         debug(`Bad request in getValues: ${error.message}`);
         res.status(400).json({ error: error.message });
+        return;
+      }
+      // Note: the response may have been streamed, so by the time an
+      // error reaches here, headers may already be on the wire. The two
+      // branches below are deliberately not consolidated into a single
+      // res.status(500) call as in the rest of this module.
+      if (res.headersSent) {
+        // Stream already started -- can't switch to a 500. Destroy the socket
+        // rather than res.end(): ending would close a half-written JSON array
+        // cleanly, so the client would see an orderly 200 indistinguishable
+        // from a complete body. Destroying surfaces a broken transfer instead.
+        // The message is distinct from the pre-stream failure path so an
+        // operator can tell a truncated mid-stream failure apart from it.
+        debug(
+          `Error in getValues after headersSent (truncated response): ${error}`
+        );
+        res.destroy();
         return;
       }
       debug(`Error in getValues: ${error}`);
