@@ -4309,11 +4309,12 @@ export function registerApiRoutes(
   // GPX IMPORT API ROUTES
   // ===========================================
 
-  // Created lazily in routes below so state.parquetWriter is available at
-  // request time (not at plugin-start when the writer may not yet exist).
-  // aggregationService is captured by closure (declared further down in
-  // this same function) and is always initialized by the time any HTTP
-  // handler fires, so the const-after-use pattern is safe here.
+  // Created lazily in the routes below so state.parquetWriter exists at
+  // request time (it may not yet at plugin-start). The aggregation
+  // dependency is resolved through getAggregationService() rather than the
+  // raw variable: that variable stays undefined until the getter first
+  // runs, so an import that beats every aggregation route would otherwise
+  // capture undefined and silently skip the aggregation phase.
   let gpxImportService: GpxImportService | undefined;
   const getGpxImportService = (): GpxImportService => {
     if (!state.parquetWriter) {
@@ -4325,7 +4326,7 @@ export function registerApiRoutes(
       gpxImportService = new GpxImportService(
         app,
         state.parquetWriter,
-        aggregationService
+        getAggregationService()
       );
     }
     return gpxImportService;
@@ -4975,19 +4976,32 @@ export function registerApiRoutes(
   // AGGREGATION API ROUTES
   // ===========================================
 
-  // Initialize aggregation service
-  const aggregationService = new AggregationService(
-    {
-      outputDirectory: state.getDataDirPath(),
-      filenamePrefix: state.currentConfig?.filenamePrefix || 'signalk_data',
-      // ?? not || so explicit 0 (= keep forever) survives the coalesce.
-      retentionDays: buildPerTierRetention(
-        state.currentConfig?.retentionDays ?? 0
-      ),
-      pathRetentionOverrides: state.currentConfig?.pathRetentionOverrides,
-    },
-    app
-  );
+  // Build the aggregation service lazily on first request, not at route
+  // registration. registerWithRouter runs while the plugin is being
+  // registered, which on a fresh install is before start() populates
+  // state.currentConfig. Eager construction would call getDataDirPath()
+  // with no config set and throw, aborting plugin registration. Any
+  // /api/aggregate* route can only be reached after start(), so the config
+  // is available by then. Memoized to a single instance so bulk-aggregation
+  // job state survives the start -> progress -> cancel request sequence.
+  let aggregationService: AggregationService | undefined;
+  const getAggregationService = (): AggregationService => {
+    if (!aggregationService) {
+      aggregationService = new AggregationService(
+        {
+          outputDirectory: state.getDataDirPath(),
+          filenamePrefix: state.currentConfig?.filenamePrefix || 'signalk_data',
+          // ?? not || so explicit 0 (= keep forever) survives the coalesce.
+          retentionDays: buildPerTierRetention(
+            state.currentConfig?.retentionDays ?? 0
+          ),
+          pathRetentionOverrides: state.currentConfig?.pathRetentionOverrides,
+        },
+        app
+      );
+    }
+    return aggregationService;
+  };
 
   // Run aggregation for a specific date
   router.post('/api/aggregate', async (req, res) => {
@@ -5010,7 +5024,7 @@ export function registerApiRoutes(
         `Starting aggregation for ${targetDate.toISOString().slice(0, 10)}`
       );
 
-      const results = await aggregationService.aggregateDate(targetDate);
+      const results = await getAggregationService().aggregateDate(targetDate);
 
       return res.json({
         success: true,
@@ -5065,7 +5079,7 @@ export function registerApiRoutes(
         `Starting aggregation ${sourceTier} -> ${targetTier} for ${targetDate.toISOString().slice(0, 10)}`
       );
 
-      const result = await aggregationService.aggregateTier(
+      const result = await getAggregationService().aggregateTier(
         sourceTier as AggregationTier,
         targetTier as AggregationTier,
         targetDate
@@ -5093,7 +5107,7 @@ export function registerApiRoutes(
   // Cleanup old aggregated data
   router.post('/api/aggregate/cleanup', async (_req, res) => {
     try {
-      const result = await aggregationService.cleanupOldData();
+      const result = await getAggregationService().cleanupOldData();
 
       return res.json({
         success: true,
@@ -5133,7 +5147,7 @@ export function registerApiRoutes(
         });
       }
 
-      const jobId = aggregationService.startBulkAggregation(start, end);
+      const jobId = getAggregationService().startBulkAggregation(start, end);
 
       return res.json({
         success: true,
@@ -5152,7 +5166,7 @@ export function registerApiRoutes(
   router.get('/api/aggregate/bulk/:jobId', (req, res) => {
     try {
       const { jobId } = req.params;
-      const progress = aggregationService.getBulkProgress(jobId);
+      const progress = getAggregationService().getBulkProgress(jobId);
 
       if (!progress) {
         return res.status(404).json({
@@ -5177,7 +5191,7 @@ export function registerApiRoutes(
   router.post('/api/aggregate/bulk/cancel/:jobId', (req, res) => {
     try {
       const { jobId } = req.params;
-      const cancelled = aggregationService.cancelBulk(jobId);
+      const cancelled = getAggregationService().cancelBulk(jobId);
 
       return res.json({
         success: cancelled,
@@ -5318,7 +5332,7 @@ export function registerApiRoutes(
             const date = new Date(Date.UTC(year, 0, dayOfYear));
 
             try {
-              const results = await aggregationService.aggregateDate(date);
+              const results = await getAggregationService().aggregateDate(date);
               const errors = results.flatMap(r => r.errors);
               const tiersReaggregated = results.filter(
                 r => r.filesCreated > 0
@@ -5558,7 +5572,7 @@ export function registerApiRoutes(
             const date = new Date(Date.UTC(year, 0, dayOfYear));
 
             try {
-              const results = await aggregationService.aggregateDate(
+              const results = await getAggregationService().aggregateDate(
                 date,
                 pathFilter
               );
