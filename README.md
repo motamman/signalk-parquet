@@ -850,6 +850,28 @@ curl "http://localhost:3000/signalk/v1/history/values?duration=1h&paths=navigati
 curl "http://localhost:3000/signalk/v1/history/values?duration=1h&paths=environment.wind.speedApparent:ema:0.3"
 ```
 
+#### Filtering by Source
+
+Append `|<sourceRef>` to a path to restrict it to a single SignalK source. This
+is useful when several devices publish the same path (e.g. multiple GPS
+receivers or heading sensors) and you want the history of just one of them. The
+source reference is the delta's `$source` value, and the filter applies after
+any optional aggregation method.
+
+| Format | Description | Example |
+|--------|-------------|---------|
+| `path\|sourceRef` | Filter a path to one source | `navigation.headingMagnetic\|n2k-on-ve.can0.115` |
+| `path:method\|sourceRef` | Aggregate and filter by source | `navigation.speedOverGround:max\|n2k-on-ve.can0.115` |
+
+```bash
+# Heading from a specific compass over the last hour
+curl "http://localhost:3000/signalk/v1/history/values?duration=1h&paths=navigation.headingMagnetic|n2k-on-ve.can0.115"
+```
+
+Source filtering always reads raw data: aggregated tiers blend every source
+into each time bucket, so they cannot be filtered by source. Each `values`
+entry in the response echoes the `sourceRef` it was restricted to.
+
 #### Extension Parameters (non-standard)
 
 | Parameter | Description | Format | Examples |

@@ -9,20 +9,16 @@
 import { Context, Path } from '@signalk/server-api';
 import { ComponentInfo } from './schema-cache';
 import { pathToTableName } from './sqlite-buffer';
-
-/**
- * Escape a string value for safe inclusion in SQL literals.
- * Prevents SQL injection by doubling single quotes.
- */
-function escapeSql(value: string): string {
-  return value.replace(/'/g, "''");
-}
+import { escapeSqlString } from './sql-escape';
+import { PathFilter, buildBufferFilterClause } from './path-filters';
 
 /**
  * Build a buffer subquery for a scalar (numeric) path.
  *
  * Output columns: signalk_timestamp, value
  * Matches raw-tier parquet schema so it can be UNION ALL'd directly.
+ *
+ * When filters are provided, rows are restricted to matching column values.
  *
  * Returns null if no buffer table exists for this path (caller should skip UNION ALL).
  */
@@ -31,7 +27,8 @@ export function buildBufferScalarSubquery(
   signalkPath: Path | string,
   fromIso: string,
   toIso: string,
-  knownBufferPaths?: Set<string>
+  knownBufferPaths?: Set<string>,
+  filters?: PathFilter[]
 ): string | null {
   const pathStr = String(signalkPath);
 
@@ -51,17 +48,19 @@ export function buildBufferScalarSubquery(
     ${valueExpr} AS value,
     NULL::VARCHAR AS value_json
   FROM buffer.${tableName}
-  WHERE context = '${escapeSql(String(context))}'
-    AND received_timestamp >= '${escapeSql(fromIso)}'
-    AND received_timestamp < '${escapeSql(toIso)}'
+  WHERE context = '${escapeSqlString(String(context))}'
+    AND received_timestamp >= '${escapeSqlString(fromIso)}'
+    AND received_timestamp < '${escapeSqlString(toIso)}'
     AND exported = 0
-    AND value IS NOT NULL)`;
+    AND value IS NOT NULL${buildBufferFilterClause(filters)})`;
 }
 
 /**
  * Build a buffer subquery for an object path (e.g. navigation.position).
  *
  * Per-path tables already have flattened value_* columns, so no json_extract needed.
+ *
+ * When filters are provided, rows are restricted to matching column values.
  *
  * Returns null if no buffer table exists for this path (caller should skip UNION ALL).
  */
@@ -72,7 +71,8 @@ export function buildBufferObjectSubquery(
   toIso: string,
   components: Map<string, ComponentInfo>,
   knownBufferPaths?: Set<string>,
-  bufferTableColumns?: Set<string>
+  bufferTableColumns?: Set<string>,
+  filters?: PathFilter[]
 ): string | null {
   const pathStr = String(signalkPath);
 
@@ -101,9 +101,9 @@ export function buildBufferObjectSubquery(
     signalk_timestamp,
     ${componentSelects}
   FROM buffer.${tableName}
-  WHERE context = '${escapeSql(String(context))}'
-    AND received_timestamp >= '${escapeSql(fromIso)}'
-    AND received_timestamp < '${escapeSql(toIso)}'
+  WHERE context = '${escapeSqlString(String(context))}'
+    AND received_timestamp >= '${escapeSqlString(fromIso)}'
+    AND received_timestamp < '${escapeSqlString(toIso)}'
     AND exported = 0
-    AND value_json IS NOT NULL)`;
+    AND value_json IS NOT NULL${buildBufferFilterClause(filters)})`;
 }
