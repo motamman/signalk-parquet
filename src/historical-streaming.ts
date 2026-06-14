@@ -85,7 +85,7 @@ export class HistoricalStreamingService {
     }
   }
 
-  private handleUnsubscribe(subscriptionMessage: any) {
+  private handleUnsubscribe(_subscriptionMessage: any) {
     // Handle unsubscription logic
   }
 
@@ -263,13 +263,13 @@ export class HistoricalStreamingService {
     this.activeSubscriptions.clear();
 
     // Clear all stream intervals
-    this.streamIntervals.forEach((interval, streamId) => {
+    this.streamIntervals.forEach((interval, _streamId) => {
       clearInterval(interval);
     });
     this.streamIntervals.clear();
 
     // Clear all pending timeouts
-    this.streamTimeouts.forEach((timeouts, streamId) => {
+    this.streamTimeouts.forEach((timeouts, _streamId) => {
       timeouts.forEach(timeout => clearTimeout(timeout));
     });
     this.streamTimeouts.clear();
@@ -338,7 +338,7 @@ export class HistoricalStreamingService {
         const persistedStreams = JSON.parse(data);
 
         if (Array.isArray(persistedStreams)) {
-          persistedStreams.forEach((streamConfig, index) => {
+          persistedStreams.forEach((streamConfig, _index) => {
             // Restore stream but keep status as stopped initially
             const stream = {
               ...streamConfig,
@@ -354,11 +354,6 @@ export class HistoricalStreamingService {
             this.streamLastTimestamps.delete(stream.id);
             this.streamTimeSeriesData.delete(stream.id);
 
-            // Debug: Verify timestamp was cleared
-            const timestampAfterClear = this.streamLastTimestamps.get(
-              stream.id
-            );
-
             // Auto-start streams that were running when server stopped
             if (streamConfig.autoRestart === true) {
               setTimeout(() => {
@@ -366,6 +361,7 @@ export class HistoricalStreamingService {
                 if (currentStream && currentStream.status !== 'running') {
                   this.startStream(stream.id);
                 } else {
+                  /* no-op: stream already running, nothing to restart */
                 }
               }, 2000); // Wait 2 seconds after startup
             }
@@ -522,10 +518,6 @@ export class HistoricalStreamingService {
 
           this.streams.set(streamId, stream);
 
-          const mode = historicalDataWindow.isIncremental
-            ? 'incremental'
-            : 'initial';
-
           // Mark that initial data was successfully loaded after restoration
           if (!historicalDataWindow.isIncremental && stream.restoredAt) {
             stream.hasInitialDataAfterRestore = true;
@@ -535,7 +527,9 @@ export class HistoricalStreamingService {
           // No new data available - this is normal for incremental streaming
           const lastTimestamp = this.streamLastTimestamps.get(streamId);
           if (lastTimestamp) {
+            /* no-op: incremental stream with no new data, nothing to send */
           } else {
+            /* no-op: no prior timestamp recorded yet */
           }
         }
       } catch (error) {
@@ -593,8 +587,6 @@ export class HistoricalStreamingService {
 
     // Also emit SignalK delta messages for other apps to subscribe to
     this.emitSignalKStreamData(streamId, timeSeriesData);
-
-    const mode = timeSeriesData.isIncremental ? 'incremental' : 'initial';
   }
 
   private emitSignalKStreamData(streamId: string, timeSeriesData: any) {
@@ -716,13 +708,6 @@ export class HistoricalStreamingService {
 
       let from: ZonedDateTime;
       let isIncremental = false;
-
-      // Debug: Check if stream was restored and should start fresh
-      const currentStream = this.streams.get(streamId);
-      const wasRestored =
-        currentStream &&
-        currentStream.restoredAt &&
-        !currentStream.hasInitialDataAfterRestore;
 
       if (lastTimestamp) {
         // Use sliding window: get new data since last timestamp

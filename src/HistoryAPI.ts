@@ -9,7 +9,6 @@ import { ZonedDateTime, ZoneOffset, ZoneId } from '@js-joda/core';
 import { Context, Path, Timestamp } from '@signalk/server-api';
 import { ParamsDictionary } from 'express-serve-static-core';
 import { ParsedQs } from 'qs';
-import { DuckDBInstance } from '@duckdb/node-api';
 import { DuckDBPool } from './utils/duckdb-pool';
 import path from 'path';
 import {
@@ -26,11 +25,7 @@ import {
   getAvailableContextsForTimeRange,
   getContextsInSpatialFilter,
 } from './utils/context-discovery';
-import {
-  getPathComponentSchema,
-  PathComponentSchema,
-  ComponentInfo,
-} from './utils/schema-cache';
+import { getPathComponentSchema, ComponentInfo } from './utils/schema-cache';
 import { ConcurrencyLimiter } from './utils/concurrency-limiter';
 import { CONCURRENCY } from './config/cache-defaults';
 import { SQLiteBufferInterface } from './types';
@@ -56,10 +51,7 @@ import {
   InvalidResolutionError,
 } from './utils/duration-parser';
 import { isAngularPath } from './utils/angular-paths';
-import {
-  PathRetentionRule,
-  RetentionRuleSet,
-} from './utils/retention-rules';
+import { PathRetentionRule, RetentionRuleSet } from './utils/retention-rules';
 import {
   parsePathFilters,
   buildParquetFilterClause,
@@ -660,7 +652,9 @@ function canStreamResponse(res: Response): boolean {
  */
 function utcToLocalTimestamp(utcTs: Timestamp): Timestamp {
   try {
-    const zdt = ZonedDateTime.parse(utcTs).withZoneSameInstant(ZoneId.systemDefault());
+    const zdt = ZonedDateTime.parse(utcTs).withZoneSameInstant(
+      ZoneId.systemDefault()
+    );
     // ZonedDateTime.toString() appends "[SYSTEM]" zone ID — strip it
     return zdt.toString().replace(/\[.*\]$/, '') as Timestamp;
   } catch {
@@ -672,7 +666,11 @@ function utcToLocalTimestamp(utcTs: Timestamp): Timestamp {
     const sign = offsetMin <= 0 ? '+' : '-';
     const absH = String(Math.floor(Math.abs(offsetMin) / 60)).padStart(2, '0');
     const absM = String(Math.abs(offsetMin) % 60).padStart(2, '0');
-    return (local.toISOString().replace('Z', '') + sign + absH + ':' + absM) as Timestamp;
+    return (local.toISOString().replace('Z', '') +
+      sign +
+      absH +
+      ':' +
+      absM) as Timestamp;
   }
 }
 
@@ -735,7 +733,6 @@ export class HistoryAPI {
     this.sqliteBuffer = buffer;
   }
 
-
   /**
    * Auto-select the optimal tier based on requested resolution
    * Returns undefined to use raw/flat data, or a tier name for aggregated data
@@ -751,6 +748,7 @@ export class HistoryAPI {
   private selectOptimalTier(
     resolutionMillis: number
   ): AggregationTier | undefined {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
     const fs = require('fs');
 
     // Determine preferred tier based on resolution
@@ -782,8 +780,6 @@ export class HistoryAPI {
     // No aggregated tiers available, use raw data
     return undefined;
   }
-
-
 
   /**
    * Get timestamps where vessel position was within the spatial filter
@@ -841,12 +837,30 @@ export class HistoryAPI {
         let fromSource = `(${parquetFrom})`;
         if (hasBuffer && this.sqliteBuffer) {
           const knownPaths = this.sqliteBuffer.getKnownPaths();
-          const bufferTableCols = this.sqliteBuffer.getTableColumns(positionPath);
+          const bufferTableCols =
+            this.sqliteBuffer.getTableColumns(positionPath);
           const bufferSubquery = buildBufferObjectSubquery(
-            context, positionPath, fromIso, toIso,
+            context,
+            positionPath,
+            fromIso,
+            toIso,
             new Map([
-              ['latitude', { name: 'latitude', columnName: 'value_latitude', dataType: 'numeric' as const }],
-              ['longitude', { name: 'longitude', columnName: 'value_longitude', dataType: 'numeric' as const }],
+              [
+                'latitude',
+                {
+                  name: 'latitude',
+                  columnName: 'value_latitude',
+                  dataType: 'numeric' as const,
+                },
+              ],
+              [
+                'longitude',
+                {
+                  name: 'longitude',
+                  columnName: 'value_longitude',
+                  dataType: 'numeric' as const,
+                },
+              ],
             ]),
             knownPaths,
             bufferTableCols
@@ -872,7 +886,11 @@ export class HistoryAPI {
         `;
 
         const result = await connection.runAndReadAll(query);
-        const rows = result.getRowObjects() as Array<{ timestamp: string; lat: number; lon: number }>;
+        const rows = result.getRowObjects() as Array<{
+          timestamp: string;
+          lat: number;
+          lon: number;
+        }>;
 
         // Filter buckets by spatial filter in JS
         const { bbox } = spatialFilter;
@@ -897,8 +915,10 @@ export class HistoryAPI {
             spatialFilter.radiusMeters !== undefined
           ) {
             const dist = calculateDistance(
-              row.lat, row.lon,
-              spatialFilter.centerLat, spatialFilter.centerLon
+              row.lat,
+              row.lon,
+              spatialFilter.centerLat,
+              spatialFilter.centerLon
             );
             if (dist > spatialFilter.radiusMeters) continue;
           }
@@ -964,7 +984,7 @@ export class HistoryAPI {
 
       // Handle position and numeric paths together
       const positionPath = 'navigation.position';
-      let allResult = pathSpecs.length
+      const allResult = pathSpecs.length
         ? await this.getNumericValues(
             context,
             from,
@@ -1099,7 +1119,8 @@ export class HistoryAPI {
     // If spatial filter is set, get valid timestamps from position data
     // This allows filtering non-position paths by "when vessel was in this area"
     let spatialTimestamps: Set<string> | null = null;
-    const hasPositionPath = spatialFilter && pathSpecs.some(ps => isPositionPath(ps.path));
+    const hasPositionPath =
+      spatialFilter && pathSpecs.some(ps => isPositionPath(ps.path));
     if (spatialFilter) {
       const hasNonPositionPaths = pathSpecs.some(
         ps => !isPositionPath(ps.path)
@@ -1134,7 +1155,9 @@ export class HistoryAPI {
         );
 
         const sanitizedCtx = this.hivePathBuilder.sanitizeContext(context);
-        const sanitizedPos = this.hivePathBuilder.sanitizePath(posPathSpec.path);
+        const sanitizedPos = this.hivePathBuilder.sanitizePath(
+          posPathSpec.path
+        );
         const posFilePath = path.join(
           this.dataDir,
           'tier=raw',
@@ -1179,12 +1202,31 @@ export class HistoryAPI {
 
             let fromSource = `(${parquetFrom})`;
             if (hasBuffer && this.sqliteBuffer) {
-              const bufferTableCols = this.sqliteBuffer.getTableColumns(posPathSpec.path);
+              const bufferTableCols = this.sqliteBuffer.getTableColumns(
+                posPathSpec.path
+              );
               const bufferSubquery = buildBufferObjectSubquery(
-                context, posPathSpec.path, fromIso, toIso,
+                context,
+                posPathSpec.path,
+                fromIso,
+                toIso,
                 new Map([
-                  ['latitude', { name: 'latitude', columnName: 'value_latitude', dataType: 'numeric' as const }],
-                  ['longitude', { name: 'longitude', columnName: 'value_longitude', dataType: 'numeric' as const }],
+                  [
+                    'latitude',
+                    {
+                      name: 'latitude',
+                      columnName: 'value_latitude',
+                      dataType: 'numeric' as const,
+                    },
+                  ],
+                  [
+                    'longitude',
+                    {
+                      name: 'longitude',
+                      columnName: 'value_longitude',
+                      dataType: 'numeric' as const,
+                    },
+                  ],
                 ]),
                 this.sqliteBuffer.getKnownPaths(),
                 bufferTableCols,
@@ -1211,7 +1253,11 @@ export class HistoryAPI {
             `;
 
             const result = await connection.runAndReadAll(query);
-            const rows = result.getRowObjects() as Array<{ timestamp: string; lat: number; lon: number }>;
+            const rows = result.getRowObjects() as Array<{
+              timestamp: string;
+              lat: number;
+              lon: number;
+            }>;
 
             // Filter by spatial and build position results + timestamps
             const posData: Array<[Timestamp, unknown]> = [];
@@ -1229,9 +1275,11 @@ export class HistoryAPI {
               // Lon check
               if (inArea) {
                 if (bbox.west <= bbox.east) {
-                  if (row.lon < bbox.west || row.lon > bbox.east) inArea = false;
+                  if (row.lon < bbox.west || row.lon > bbox.east)
+                    inArea = false;
                 } else {
-                  if (row.lon < bbox.west && row.lon > bbox.east) inArea = false;
+                  if (row.lon < bbox.west && row.lon > bbox.east)
+                    inArea = false;
                 }
               }
 
@@ -1244,15 +1292,20 @@ export class HistoryAPI {
                 spatialFilter.radiusMeters !== undefined
               ) {
                 const dist = calculateDistance(
-                  row.lat, row.lon,
-                  spatialFilter.centerLat, spatialFilter.centerLon
+                  row.lat,
+                  row.lon,
+                  spatialFilter.centerLat,
+                  spatialFilter.centerLon
                 );
                 if (dist > spatialFilter.radiusMeters) inArea = false;
               }
 
               if (inArea) {
                 spatialTimestamps.add(row.timestamp);
-                posData.push([row.timestamp as Timestamp, { latitude: row.lat, longitude: row.lon }]);
+                posData.push([
+                  row.timestamp as Timestamp,
+                  { latitude: row.lat, longitude: row.lon },
+                ]);
               }
             }
 
@@ -1378,7 +1431,10 @@ export class HistoryAPI {
 
         // Get connection from pool with SQLite buffer attached (spatial extension already loaded)
         const hasBuffer = DuckDBPool.isSQLiteBufferInitialized();
-        const knownBufferPaths = hasBuffer && this.sqliteBuffer ? this.sqliteBuffer.getKnownPaths() : undefined;
+        const knownBufferPaths =
+          hasBuffer && this.sqliteBuffer
+            ? this.sqliteBuffer.getKnownPaths()
+            : undefined;
         const connection = hasBuffer
           ? await DuckDBPool.getConnectionWithBuffer()
           : await DuckDBPool.getConnection();
@@ -1451,7 +1507,9 @@ export class HistoryAPI {
             // Aggregated tiers (5s/60s/1h) collapse object paths into scalar value_avg,
             // so always query raw tier for object paths
             if (effectiveTier !== 'raw') {
-              debug(`Path ${pathSpec.path}: Object path — overriding tier=${effectiveTier} to raw`);
+              debug(
+                `Path ${pathSpec.path}: Object path — overriding tier=${effectiveTier} to raw`
+              );
               localFilePath = path.join(
                 this.dataDir,
                 'tier=raw',
@@ -1464,20 +1522,35 @@ export class HistoryAPI {
               let rawS3FilePath: string | null = null;
               if (this.s3Config?.enabled) {
                 const rawEarliestDate = this.hivePathBuilder.findEarliestDate(
-                  this.dataDir, 'raw', sanitizedContext, sanitizedSkPath
+                  this.dataDir,
+                  'raw',
+                  sanitizedContext,
+                  sanitizedSkPath
                 );
                 if (rawEarliestDate && fromDate < rawEarliestDate) {
-                  const s3ToDate = new Date(rawEarliestDate.getTime() - 86400000);
+                  const s3ToDate = new Date(
+                    rawEarliestDate.getTime() - 86400000
+                  );
                   if (fromDate <= s3ToDate) {
                     rawS3FilePath = this.hivePathBuilder.buildS3Glob(
-                      this.s3Config.bucket, this.s3Config.keyPrefix || '',
-                      'raw', context, pathSpec.path, fromDate, s3ToDate
+                      this.s3Config.bucket,
+                      this.s3Config.keyPrefix || '',
+                      'raw',
+                      context,
+                      pathSpec.path,
+                      fromDate,
+                      s3ToDate
                     );
                   }
                 } else if (!rawEarliestDate) {
                   rawS3FilePath = this.hivePathBuilder.buildS3Glob(
-                    this.s3Config.bucket, this.s3Config.keyPrefix || '',
-                    'raw', context, pathSpec.path, fromDate, toDate
+                    this.s3Config.bucket,
+                    this.s3Config.keyPrefix || '',
+                    'raw',
+                    context,
+                    pathSpec.path,
+                    fromDate,
+                    toDate
                   );
                 }
               }
@@ -1490,7 +1563,9 @@ export class HistoryAPI {
                   UNION ALL
                   SELECT * FROM ${buildFromClause(rawS3FilePath)}
                 )`;
-                debug(`Hybrid query (raw tier): combining local and S3 sources`);
+                debug(
+                  `Hybrid query (raw tier): combining local and S3 sources`
+                );
               } else {
                 fromClause = rawLocalFrom;
               }
@@ -1510,9 +1585,10 @@ export class HistoryAPI {
                   comp.dataType
                 );
                 // TRY_CAST handles mixed-type parquet files (some store lat/lon as VARCHAR)
-                const colExpr = comp.dataType === 'numeric'
-                  ? `TRY_CAST(${comp.columnName} AS DOUBLE)`
-                  : comp.columnName;
+                const colExpr =
+                  comp.dataType === 'numeric'
+                    ? `TRY_CAST(${comp.columnName} AS DOUBLE)`
+                    : comp.columnName;
                 return `${aggFunc}(${colExpr}) as ${comp.name}`;
               })
               .join(',\n              ');
@@ -1544,7 +1620,11 @@ export class HistoryAPI {
             // UNION ALL the results, then ROW_NUMBER to pick highest-priority source per bucket.
             // Priority: buffer(3) > raw tier gap(2) > tier parquet(1).
             const objTsCol = getTierTimestampColumn('raw');
-            const componentCols = Array.from(componentSchema.components.values()).map(c => c.columnName).join(', ');
+            const componentCols = Array.from(
+              componentSchema.components.values()
+            )
+              .map(c => c.columnName)
+              .join(', ');
             const objBucketExpr = (col: string) =>
               `strftime(DATE_TRUNC('seconds', EPOCH_MS(CAST(FLOOR(EPOCH_MS(${col}::TIMESTAMP) / ${timeResolutionMillis}) * ${timeResolutionMillis} AS BIGINT))), '%Y-%m-%dT%H:%M:%SZ')`;
 
@@ -1574,7 +1654,9 @@ export class HistoryAPI {
 
               // Source 2: SQLite buffer (today's live data not yet exported)
               if (hasBuffer) {
-                const bufferTableCols = this.sqliteBuffer?.getTableColumns(pathSpec.path);
+                const bufferTableCols = this.sqliteBuffer?.getTableColumns(
+                  pathSpec.path
+                );
                 const bufferSubquery = buildBufferObjectSubquery(
                   context,
                   pathSpec.path,
@@ -1599,7 +1681,9 @@ export class HistoryAPI {
               }
 
               // Pick highest priority per timestamp bucket
-              const compNames = Array.from(componentSchema.components.keys()).join(', ');
+              const compNames = Array.from(
+                componentSchema.components.keys()
+              ).join(', ');
               return `
               SELECT timestamp, ${compNames} FROM (
                 SELECT timestamp, ${compNames},
@@ -1613,20 +1697,22 @@ export class HistoryAPI {
             const rows = result.getRowObjects();
 
             // Reconstruct objects from aggregated components
-            const pathData: Array<[Timestamp, unknown]> = rows.map((row: any) => {
-              const timestamp = row.timestamp as Timestamp;
-              const reconstructedObject: any = {};
+            const pathData: Array<[Timestamp, unknown]> = rows.map(
+              (row: any) => {
+                const timestamp = row.timestamp as Timestamp;
+                const reconstructedObject: any = {};
 
-              // Build object from component values
-              componentSchema.components.forEach((comp, componentName) => {
-                const value = (row as any)[componentName];
-                if (value !== null && value !== undefined) {
-                  reconstructedObject[componentName] = value;
-                }
-              });
+                // Build object from component values
+                componentSchema.components.forEach((comp, componentName) => {
+                  const value = (row as any)[componentName];
+                  if (value !== null && value !== undefined) {
+                    reconstructedObject[componentName] = value;
+                  }
+                });
 
-              return [timestamp, reconstructedObject];
-            });
+                return [timestamp, reconstructedObject];
+              }
+            );
 
             allData[pathSpecKey(pathSpec)] = pathData;
           } else {
@@ -1666,19 +1752,27 @@ export class HistoryAPI {
             // UNION ALL the results, then ROW_NUMBER to pick highest-priority source per bucket.
             // Priority: buffer(3) > raw tier gap(2) > aggregated/raw tier parquet(1).
             // String paths must always use raw tier (no aggregated value_avg exists)
-            const scalarEffectiveTier = isStringPath(pathSpec.path) ? 'raw' : effectiveTier;
+            const scalarEffectiveTier = isStringPath(pathSpec.path)
+              ? 'raw'
+              : effectiveTier;
             if (isStringPath(pathSpec.path) && effectiveTier !== 'raw') {
               // Rebuild fromClause pointing to raw tier for string paths
               localFilePath = path.join(
-                this.dataDir, 'tier=raw',
-                `context=${sanitizedContext}`, `path=${sanitizedSkPath}`,
-                '**', '*.parquet'
+                this.dataDir,
+                'tier=raw',
+                `context=${sanitizedContext}`,
+                `path=${sanitizedSkPath}`,
+                '**',
+                '*.parquet'
               );
               localFromClause = buildFromClause(localFilePath);
               fromClause = localFromClause;
             }
             const tsCol = getTierTimestampColumn(scalarEffectiveTier);
-            const whereClause = getTierWhereClause(scalarEffectiveTier, hasValueJson);
+            const whereClause = getTierWhereClause(
+              scalarEffectiveTier,
+              hasValueJson
+            );
             const bucketExpr = (col: string) =>
               `strftime(DATE_TRUNC('seconds', EPOCH_MS(CAST(FLOOR(EPOCH_MS(${col}::TIMESTAMP) / ${timeResolutionMillis}) * ${timeResolutionMillis} AS BIGINT))), '%Y-%m-%dT%H:%M:%SZ')`;
 
@@ -1686,7 +1780,14 @@ export class HistoryAPI {
               const subqueries: string[] = [];
 
               // Source 1: tier parquet (uses tier-native columns and aggregate)
-              const tierAggExpr = getTierAggregateExpression(pathSpec.aggregateMethod, pathSpec.path, scalarEffectiveTier, hasValueJson, app, context as string);
+              const tierAggExpr = getTierAggregateExpression(
+                pathSpec.aggregateMethod,
+                pathSpec.path,
+                scalarEffectiveTier,
+                hasValueJson,
+                app,
+                context as string
+              );
               subqueries.push(`
                 SELECT ${bucketExpr(tsCol)} as timestamp, ${tierAggExpr} as value, 1 as priority
                 FROM ${fc} AS source_data
@@ -1704,7 +1805,14 @@ export class HistoryAPI {
                   pathSpec.filters
                 );
                 if (bufferSubquery) {
-                  const bufferAggExpr = getTierAggregateExpression(pathSpec.aggregateMethod, pathSpec.path, 'raw', false, app, context as string);
+                  const bufferAggExpr = getTierAggregateExpression(
+                    pathSpec.aggregateMethod,
+                    pathSpec.path,
+                    'raw',
+                    false,
+                    app,
+                    context as string
+                  );
                   subqueries.push(`
                 SELECT ${bucketExpr('signalk_timestamp')} as timestamp, ${bufferAggExpr} as value, 2 as priority
                 FROM ${bufferSubquery} AS source_data
@@ -1731,18 +1839,20 @@ export class HistoryAPI {
             const result = await runQueryWithFallback(buildScalarQuery);
             const rows = result.getRowObjects();
 
-            const pathData: Array<[Timestamp, unknown]> = rows.map((row: any) => {
-              const rowData = row as {
-                timestamp: Timestamp;
-                value: unknown;
-                value_json?: string;
-              };
-              const { timestamp } = rowData;
-              const value = rowData.value_json
-                ? JSON.parse(String(rowData.value_json))
-                : rowData.value;
-              return [timestamp, value];
-            });
+            const pathData: Array<[Timestamp, unknown]> = rows.map(
+              (row: any) => {
+                const rowData = row as {
+                  timestamp: Timestamp;
+                  value: unknown;
+                  value_json?: string;
+                };
+                const { timestamp } = rowData;
+                const value = rowData.value_json
+                  ? JSON.parse(String(rowData.value_json))
+                  : rowData.value;
+                return [timestamp, value];
+              }
+            );
 
             allData[pathSpecKey(pathSpec)] = pathData;
           }
@@ -1759,7 +1869,9 @@ export class HistoryAPI {
             const fallbackToIso = to.toInstant().toString();
             const bufferConn = await DuckDBPool.getConnectionWithBuffer();
             try {
-              const fallbackKnownPaths = this.sqliteBuffer ? this.sqliteBuffer.getKnownPaths() : undefined;
+              const fallbackKnownPaths = this.sqliteBuffer
+                ? this.sqliteBuffer.getKnownPaths()
+                : undefined;
               const bufferSubquery = buildBufferScalarSubquery(
                 context,
                 pathSpec.path,
@@ -1789,13 +1901,17 @@ export class HistoryAPI {
                   row.timestamp as Timestamp,
                   row.value,
                 ]);
-                debug(`Buffer-only fallback: ${bufRows.length} rows for ${pathSpec.path}`);
+                debug(
+                  `Buffer-only fallback: ${bufRows.length} rows for ${pathSpec.path}`
+                );
               }
             } finally {
               bufferConn.disconnectSync();
             }
           } catch (bufErr) {
-            debug(`Buffer-only fallback also failed for ${pathSpec.path}: ${bufErr}`);
+            debug(
+              `Buffer-only fallback also failed for ${pathSpec.path}: ${bufErr}`
+            );
             allData[pathSpecKey(pathSpec)] = [];
           }
         } else {
@@ -1921,7 +2037,7 @@ export class HistoryAPI {
       columnStates.set(colIndex, new Map());
     });
 
-    return data.map((row, rowIndex) => {
+    return data.map((row, _rowIndex) => {
       const [timestamp, ...values] = row;
       const enhancedValues: unknown[] = [];
 
@@ -2294,7 +2410,11 @@ function getAggregateFunction(method: AggregateMethod): string {
   }
 }
 
-function getValueExpression(pathName: string, hasValueJson: boolean, forceRaw: boolean = false): string {
+function getValueExpression(
+  pathName: string,
+  hasValueJson: boolean,
+  forceRaw: boolean = false
+): string {
   // For position data or other complex objects, use value_json if the column exists
   if (pathName === 'navigation.position' && hasValueJson) {
     return 'value_json';
@@ -2377,7 +2497,14 @@ function getTierWhereClause(tier: string, hasValueJson: boolean): string {
 }
 
 // Root-level SignalK paths that are string properties, not numeric time series
-const STRING_PATHS = new Set(['name', 'mmsi', 'uuid', 'flag', 'port', 'callsignVhf']);
+const STRING_PATHS = new Set([
+  'name',
+  'mmsi',
+  'uuid',
+  'flag',
+  'port',
+  'callsignVhf',
+]);
 
 function isStringPath(pathName: string): boolean {
   // Root-level paths without dots are typically string properties

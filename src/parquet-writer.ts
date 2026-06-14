@@ -1,12 +1,7 @@
 import * as fs from 'fs-extra';
 import * as path from 'path';
 import { glob } from 'glob';
-import {
-  DataRecord,
-  ParquetWriterOptions,
-  ParquetField,
-  FileFormat,
-} from './types';
+import { DataRecord, ParquetWriterOptions, FileFormat } from './types';
 import { ServerAPI } from '@signalk/server-api';
 import { SchemaService } from './schema-service';
 import { DirectoryScanner } from './utils/directory-scanner';
@@ -15,6 +10,7 @@ import { DirectoryScanner } from './utils/directory-scanner';
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let parquet: any;
 try {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
   parquet = require('@dsnp/parquetjs');
 } catch (error) {
   parquet = null;
@@ -81,7 +77,7 @@ export class ParquetWriter {
   private findBaseDataDir(filePath: string): string {
     // Walk up the directory tree to find a reasonable cache boundary
     // Typically 2-3 levels up from the leaf file
-    let current = path.dirname(filePath);
+    const current = path.dirname(filePath);
     const parts = current.split(path.sep);
 
     // Go up to the path level (usually 2-3 directories up)
@@ -334,7 +330,7 @@ export class ParquetWriter {
     currentPath?: string,
     outputDirectory?: string,
     metadataCache?: Map<string, any>,
-    filenamePrefix?: string
+    _filenamePrefix?: string
   ): Promise<string> {
     this.app?.debug(
       `    🔍 Empty column fallback for: ${colName} (path: ${currentPath || 'unknown'})`
@@ -560,6 +556,7 @@ export class ParquetWriter {
     );
 
     try {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
       const glob = require('glob');
       const prefix = filenamePrefix || 'signalk_data';
       const pathPattern = path.join(
@@ -934,15 +931,10 @@ export async function quarantineEmptyParquetFiles(
       await fs.move(file, quarantinePath, { overwrite: true });
 
       const logLine = `${new Date().toISOString()} | startup-sweep | ${stats.size} bytes | Undersized parquet (likely crash between openFile and close) | ${quarantinePath}\n`;
-      await fs.appendFile(
-        path.join(quarantineDir, 'quarantine.log'),
-        logLine
-      );
+      await fs.appendFile(path.join(quarantineDir, 'quarantine.log'), logLine);
 
       quarantined++;
-      app.debug(
-        `Quarantined undersized parquet (${stats.size}B): ${file}`
-      );
+      app.debug(`Quarantined undersized parquet (${stats.size}B): ${file}`);
     } catch (err) {
       failed++;
       app.error(

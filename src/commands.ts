@@ -19,7 +19,6 @@ import {
 } from '@signalk/server-api';
 import * as fs from 'fs-extra';
 import * as path from 'path';
-import { degreesToRadians, radiansToDegrees } from './utils/angle-converter';
 import {
   calculateDistance,
   isPointInBoundingBox,
@@ -259,6 +258,7 @@ export function initializeCommandState(
       true // skipThresholdSetup - let startThresholdMonitoring handle it
     );
     if (result.state === 'COMPLETED') {
+      /* no-op: restored successfully, only the failure case needs logging */
     } else {
       app.error(
         `❌ Failed to restore command: ${commandConfig.command} - ${result.message}`
@@ -913,7 +913,7 @@ export function updatePluginConfig(config: PluginConfig): void {
             // Level-triggered: set to activateOnMatch when condition met, opposite when not met
             const desiredState = conditionMet
               ? Boolean(threshold.activateOnMatch)
-              : !Boolean(threshold.activateOnMatch);
+              : !threshold.activateOnMatch;
 
             // Get current command state
             const currentCommandValue = appInstance?.getSelfPath(
@@ -1174,37 +1174,37 @@ function processThresholdValue(
     );
 
     // Better debug logging for different threshold types
-    let thresholdDesc = '';
+    let _thresholdDesc = '';
     if (
       threshold.operator === 'inBoundingBox' ||
       threshold.operator === 'outsideBoundingBox'
     ) {
       if (threshold.useHomePort && threshold.boxSize && threshold.boxAnchor) {
-        thresholdDesc = `homePort-based box: size=${threshold.boxSize}m anchor=${threshold.boxAnchor} homePort=${JSON.stringify(homePort)}`;
+        _thresholdDesc = `homePort-based box: size=${threshold.boxSize}m anchor=${threshold.boxAnchor} homePort=${JSON.stringify(homePort)}`;
       } else if (threshold.boundingBox) {
-        thresholdDesc = `manual box: ${JSON.stringify(threshold.boundingBox)}`;
+        _thresholdDesc = `manual box: ${JSON.stringify(threshold.boundingBox)}`;
       } else {
-        thresholdDesc = 'NO BOX CONFIGURED';
+        _thresholdDesc = 'NO BOX CONFIGURED';
       }
     } else if (
       threshold.operator === 'withinRadius' ||
       threshold.operator === 'outsideRadius'
     ) {
-      thresholdDesc = `radius=${threshold.radius}m useHomePort=${threshold.useHomePort} lat=${threshold.latitude} lon=${threshold.longitude}`;
+      _thresholdDesc = `radius=${threshold.radius}m useHomePort=${threshold.useHomePort} lat=${threshold.latitude} lon=${threshold.longitude}`;
     } else {
-      thresholdDesc = `value=${threshold.value}`;
+      _thresholdDesc = `value=${threshold.value}`;
     }
 
     // Verbose: logs on every value update
     // appInstance?.debug(
-    //   `📉 Threshold evaluation for ${commandName}:${threshold.watchPath} operator=${threshold.operator} ${thresholdDesc} conditionMet=${conditionMet}`
+    //   `📉 Threshold evaluation for ${commandName}:${threshold.watchPath} operator=${threshold.operator} ${_thresholdDesc} conditionMet=${conditionMet}`
     // );
 
     if (!conditionMet) {
       // For position-based operators, we need bidirectional triggering:
       // When condition becomes FALSE, set command to opposite of activateOnMatch
       if (isPositionOperator(threshold.operator)) {
-        const desiredState = !Boolean(threshold.activateOnMatch);
+        const desiredState = !threshold.activateOnMatch;
 
         // Get current command state
         const currentCommandValue = appInstance?.getSelfPath(
@@ -1390,7 +1390,7 @@ function evaluateThreshold(
 
     // Position operators
     case 'withinRadius':
-    case 'outsideRadius':
+    case 'outsideRadius': {
       if (
         !currentValue ||
         typeof currentValue.latitude !== 'number' ||
@@ -1435,9 +1435,10 @@ function evaluateThreshold(
       return threshold.operator === 'withinRadius'
         ? distance <= threshold.radius
         : distance > threshold.radius;
+    }
 
     case 'inBoundingBox':
-    case 'outsideBoundingBox':
+    case 'outsideBoundingBox': {
       if (
         !currentValue ||
         typeof currentValue.latitude !== 'number' ||
@@ -1489,6 +1490,7 @@ function evaluateThreshold(
       );
 
       return threshold.operator === 'inBoundingBox' ? inBox : !inBox;
+    }
 
     default:
       appInstance?.error(

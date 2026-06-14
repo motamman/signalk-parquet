@@ -183,7 +183,9 @@ export function clearSchemaCache(): void {
 /**
  * Infer data type category from DuckDB type string
  */
-function inferDataTypeCategory(duckdbType: string): ComponentInfo['dataType'] {
+export function inferDataTypeCategory(
+  duckdbType: string
+): ComponentInfo['dataType'] {
   const typeUpper = duckdbType.toUpperCase();
 
   // Numeric types

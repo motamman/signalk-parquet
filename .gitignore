@@ -30,6 +30,12 @@ ANALYSIS_REPORT_FILES.txt
 build/
 dist/
 
+# Test coverage and mutation testing output
+coverage/
+coverage.log
+.stryker-tmp/
+reports/
+
 
 # Package files
 *.tgz

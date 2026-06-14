@@ -4,7 +4,6 @@ import { glob } from 'glob';
 import express, { Router } from 'express';
 import multer from 'multer';
 import { getAvailablePaths } from './utils/path-discovery';
-import { DuckDBInstance } from '@duckdb/node-api';
 import { DuckDBPool } from './utils/duckdb-pool';
 import {
   TypedRequest,
@@ -18,23 +17,18 @@ import {
   S3TestApiResponse,
   QueryRequest,
   PathConfigRequest,
-  PathInfo,
   CommandApiResponse,
   CommandRegistrationRequest,
   CommandExecutionRequest,
   CommandExecutionResponse,
   PluginState,
-  PluginConfig,
-  PathConfig,
   AnalysisApiResponse,
   ClaudeConnectionTestResponse,
   ValidationApiResponse,
   ValidationViolation,
 } from './types';
-import { SchemaService } from './schema-service';
 import {
   ProcessType,
-  ProcessState,
   ProcessStatusApiResponse,
   ProcessCancelApiResponse,
 } from './types';
@@ -71,11 +65,7 @@ import {
 import { updateDataSubscriptions } from './data-handler';
 import { toContextFilePath, toParquetFilePath } from './utils/path-helpers';
 import { ServerAPI, Context } from '@signalk/server-api';
-import {
-  ClaudeAnalyzer,
-  AnalysisRequest,
-  FollowUpRequest,
-} from './claude-analyzer';
+import { ClaudeAnalyzer, AnalysisRequest } from './claude-analyzer';
 import {
   AnalysisTemplateManager,
   TEMPLATE_CATEGORIES,
@@ -198,7 +188,7 @@ function migrateClaudeModel(model?: string, app?: ServerAPI): string {
 // PROCESS MANAGEMENT UTILITIES
 // ===========================================
 
-function startProcess(
+function _startProcess(
   state: PluginState,
   type: ProcessType,
   totalFiles?: number
@@ -222,7 +212,7 @@ function startProcess(
   return true;
 }
 
-function updateProcessProgress(
+function _updateProcessProgress(
   state: PluginState,
   processedFiles: number,
   currentFile?: string
@@ -233,7 +223,7 @@ function updateProcessProgress(
   }
 }
 
-function finishProcess(state: PluginState): void {
+function _finishProcess(state: PluginState): void {
   if (state.currentProcess) {
     state.currentProcess.isRunning = false;
     // Keep the process data for a short time for status queries
@@ -896,7 +886,7 @@ export function registerApiRoutes(
 
       (async () => {
         try {
-          let filesToSync: Array<{ key: string; localPath: string }> = [];
+          const filesToSync: Array<{ key: string; localPath: string }> = [];
 
           if (keys && keys.length > 0) {
             for (const key of keys) {
@@ -2989,13 +2979,16 @@ export function registerApiRoutes(
       lastValidationViolations = [];
 
       const runValidationJob = async () => {
-        let violationFiles: ValidationViolation[] = [];
+        const violationFiles: ValidationViolation[] = [];
         try {
           app.debug('🔍 Starting schema validation...');
           app.debug(`📋 Created validation job: ${jobId}`);
 
+          // eslint-disable-next-line @typescript-eslint/no-require-imports
           const parquet = require('@dsnp/parquetjs');
+          // eslint-disable-next-line @typescript-eslint/no-require-imports
           const glob = require('glob');
+          // eslint-disable-next-line @typescript-eslint/no-require-imports
           const path = require('path');
 
           const configOutputDir =
@@ -3406,7 +3399,9 @@ export function registerApiRoutes(
     try {
       app.debug('🔧 Starting schema repair...');
 
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
       const parquet = require('@dsnp/parquetjs');
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
       const path = require('path');
 
       const configOutputDir = state.currentConfig?.outputDirectory || 'data';
@@ -3751,6 +3746,7 @@ export function registerApiRoutes(
                 records.push(record);
               }
               await reader.close();
+              // eslint-disable-next-line @typescript-eslint/no-require-imports
               const { ParquetWriter } = require('./parquet-writer');
               const writer = new ParquetWriter({ format: 'parquet', app });
               const correctedSchema = await writer.createParquetSchema(
@@ -4588,7 +4584,7 @@ export function registerApiRoutes(
     filename: (_req, file, cb) => {
       // Preserve original filename so the import log is informative; strip
       // path components to defeat any path-traversal via the upload name.
-      const safe = path.basename(file.originalname).replace(/[^\w.\-]/g, '_');
+      const safe = path.basename(file.originalname).replace(/[^\w.-]/g, '_');
       cb(null, safe);
     },
   });
