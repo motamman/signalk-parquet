@@ -108,10 +108,21 @@ export function createCloudClient(config: PluginConfig, app: ServerAPI): any {
     // S3 provider
     const s3Config: {
       region: string;
+      endpoint?: string;
+      forcePathStyle?: boolean;
       credentials?: { accessKeyId: string; secretAccessKey: string };
     } = {
       region: cloud.region || 'us-east-1',
     };
+
+    if (cloud.endpoint) {
+      s3Config.endpoint = cloud.endpoint;
+    }
+
+    s3Config.forcePathStyle =
+      cloud.forcePathStyle !== undefined
+        ? cloud.forcePathStyle
+        : !!cloud.endpoint;
 
     if (cloud.accessKeyId && cloud.secretAccessKey) {
       s3Config.credentials = {

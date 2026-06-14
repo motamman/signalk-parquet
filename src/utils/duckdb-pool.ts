@@ -26,7 +26,9 @@ export interface S3Config {
   accessKeyId: string;
   secretAccessKey: string;
   region: string;
-  endpoint?: string; // R2: '{accountId}.r2.cloudflarestorage.com'
+  endpoint?: string; // R2: '{accountId}.r2.cloudflarestorage.com', or host[:port] for self-hosted S3 (Garage, MinIO, etc.)
+  useSSL?: boolean; // Set to false for self-hosted endpoints served over plain HTTP
+  urlStyle?: 'path' | 'vhost'; // R2 and most self-hosted S3-compatible services require 'path'
 }
 
 export class DuckDBPool {
@@ -174,10 +176,17 @@ export class DuckDBPool {
       await connection.runAndReadAll('INSTALL httpfs;');
       await connection.runAndReadAll('LOAD httpfs;');
 
-      // Create S3 secret — R2 needs ENDPOINT and URL_STYLE 'path'
-      const endpointClause = config.endpoint
-        ? `,\n          ENDPOINT '${config.endpoint.replace(/'/g, "''")}',\n          URL_STYLE 'path'`
+      // Create S3 secret — R2 and self-hosted S3-compatible services (Garage, MinIO)
+      // typically need ENDPOINT and URL_STYLE 'path'
+      let endpointClause = config.endpoint
+        ? `,\n          ENDPOINT '${config.endpoint.replace(/'/g, "''")}'`
         : '';
+      if (config.urlStyle) {
+        endpointClause += `,\n          URL_STYLE '${config.urlStyle}'`;
+      }
+      if (config.endpoint && config.useSSL !== undefined) {
+        endpointClause += `,\n          USE_SSL ${config.useSSL ? 'true' : 'false'}`;
+      }
       const secretSql = `
         CREATE OR REPLACE SECRET s3_credentials (
           TYPE S3,

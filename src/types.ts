@@ -275,7 +275,9 @@ export interface WebAppPathConfig {
 export interface CloudUploadConfig {
   provider: 'none' | 's3' | 'r2';
   bucket?: string;
-  region?: string; // S3 only
+  region?: string; // S3 only (e.g. 'us-east-1', or 'garage' for Garage)
+  endpoint?: string; // S3 only - custom endpoint URL for self-hosted S3-compatible services (Garage, MinIO, etc.)
+  forcePathStyle?: boolean; // S3 only - use path-style addressing instead of virtual-hosted-style (often required by self-hosted S3-compatible services)
   accountId?: string; // R2 only (Cloudflare account ID)
   keyPrefix?: string;
   accessKeyId?: string;
