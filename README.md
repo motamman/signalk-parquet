@@ -1,5 +1,9 @@
 # <img src="public/parquet.png" alt="SignalK Parquet Data Store" width="72" height="72" style="vertical-align: middle; margin-right: 20px;"> SignalK Parquet Data Store
 
+[![CI](https://github.com/motamman/signalk-parquet/actions/workflows/ci.yml/badge.svg)](https://github.com/motamman/signalk-parquet/actions/workflows/ci.yml)
+[![npm version](https://img.shields.io/npm/v/signalk-parquet.svg)](https://www.npmjs.com/package/signalk-parquet)
+[![License](https://img.shields.io/npm/l/signalk-parquet.svg)](https://github.com/motamman/signalk-parquet/blob/main/LICENSE)
+
 Vessel data Parquet file archive with automated value and geospatial triggers. History API compliant with cloud backups and queries.
 
 ## Features
@@ -16,49 +20,49 @@ Vessel data Parquet file archive with automated value and geospatial triggers. H
   - 48-hour retention for federated queries
   - Per-path tables (`buffer_navigation_position`, etc.) for partition-aligned access
   - `buffer_tables` metadata table tracks path→table mapping
-- **NEW Hive-Partitioned Storage**: Efficient file organization for query performance
+- **Hive-Partitioned Storage**: Efficient file organization for query performance
   - Structure: `tier=raw/context={ctx}/path={path}/year={year}/day={day}/`
   - Aggregation tiers: `raw`, `5s`, `60s`, `1h`
   - Automatic partition pruning for time-range queries
   - **Bulk Aggregation**: `POST /api/aggregate/bulk` builds all tiers from raw data in one background job
   - **Post-Migration Aggregation**: Migration automatically builds tiers after moving files to hive structure
-  - **NEW Position Aggregation Migration**: `POST /api/migrate/position-aggregation` re-aggregates position paths (`value_latitude`/`value_longitude`) into 5s/60s/1h tiers
+  - **Position Aggregation Migration**: `POST /api/migrate/position-aggregation` re-aggregates position paths (`value_latitude`/`value_longitude`) into 5s/60s/1h tiers
     - Auto-detects position paths in the raw tier by schema
     - GPS outlier rejection via `POSITION_MAX_SPEED_MPS` (25 m/s ≈ 48.6 kn) to discard single-point glitches
     - Supports `dryRun` for previewing
-- **NEW Batched Parquet Writing**: Streams records to Parquet in pull-based batches instead of loading all rows into memory
+- **Batched Parquet Writing**: Streams records to Parquet in pull-based batches instead of loading all rows into memory
   - Reduces peak memory during large exports from the SQLite buffer
-- **NEW Cloud Federated Querying**: Query historical data directly from S3 or Cloudflare R2 using DuckDB's native support
+- **Cloud Federated Querying**: Query historical data directly from S3 or Cloudflare R2 using DuckDB's native support
   - Three-tier query hierarchy: local parquet → cloud supplement → SQLite buffer
   - Automatic partition pruning reduces data transfer by 70-90%
   - Predicate pushdown filters data at source before transfer
-- **NEW Auto-Discovery**: Automatically configure paths when first queried
+- **Auto-Discovery**: Automatically configure paths when first queried
   - On-demand path configuration when History API queries unconfigured paths
   - Include/exclude glob patterns for fine-grained control
   - Optional live data requirement before configuration
-- **NEW Vector Averaging**: Correct aggregation of angular data (headings, bearings, wind angles)
+- **Vector Averaging**: Correct aggregation of angular data (headings, bearings, wind angles)
   - Automatic detection of angular paths via SignalK metadata (`units === 'rad'`)
   - Uses `atan2(mean(sin), mean(cos))` instead of arithmetic mean
   - Lossless re-aggregation across tiers via stored sin/cos averages
-- **NEW Buffer Bucketing**: SQLite buffer data bucketed to match Parquet query resolution
+- **Buffer Bucketing**: SQLite buffer data bucketed to match Parquet query resolution
   - Prevents raw per-second records from flooding bucketed query results
   - Supports all aggregate methods including vector averaging for angular paths
-- **NEW Dynamic Regimen Control**: Data subscriptions update in real-time when regimen commands are received
+- **Dynamic Regimen Control**: Data subscriptions update in real-time when regimen commands are received
   - No plugin restart needed to activate/deactivate recording regimens
   - Regimen state changes via SignalK commands immediately start/stop path recording
-- **NEW GPX Track Import**: Load historical GPX tracks (other vessels, handhelds, archived logs) directly into the Hive-partitioned parquet store, bypassing the live SignalK subscription path
+- **GPX Track Import**: Load historical GPX tracks (other vessels, handhelds, archived logs) directly into the Hive-partitioned parquet store, bypassing the live SignalK subscription path
   - Drag-and-drop browser upload from the Status tab, or "Advanced" server-directory mode for USB-drive bulk imports on the host
   - Dependency-free GPX 1.0 / 1.1 parser extracts `<trkpt>` lat/lon/time plus optional `<ele>`, `<speed>`, `<course>`; `<course>` is converted from degrees to radians to match `navigation.courseOverGroundTrue`
   - Job-based with per-`jobId` cancellation, progress polling, and 30-minute TTL on finished jobs
   - Browser upload caps: 50 MB per file, 500 files per request
 
 ### Data Validation & Schema Repair
-- **NEW Schema Validation**: Comprehensive validation of Parquet file schemas against SignalK metadata standards
-- **NEW Automated Repair**: One-click repair of schema violations with proper data type conversion
-- **NEW Type Correction**: Automatic conversion of incorrectly stored data types (e.g., numeric strings → DOUBLE, boolean strings → BOOLEAN)
-- **NEW Metadata Integration**: Uses SignalK metadata (units, types) to determine correct data types for marine measurements
-- **NEW Safe Operations**: Creates backups before repair and quarantines corrupted files for safety
-- *NEW *Progress Tracking**: Real-time progress monitoring with cancellation support for large datasets
+- **Schema Validation**: Comprehensive validation of Parquet file schemas against SignalK metadata standards
+- **Automated Repair**: One-click repair of schema violations with proper data type conversion
+- **Type Correction**: Automatic conversion of incorrectly stored data types (e.g., numeric strings → DOUBLE, boolean strings → BOOLEAN)
+- **Metadata Integration**: Uses SignalK metadata (units, types) to determine correct data types for marine measurements
+- **Safe Operations**: Creates backups before repair and quarantines corrupted files for safety
+- **Progress Tracking**: Real-time progress monitoring with cancellation support for large datasets
 
 #### Benefits of Proper Data Types
 Using correct data types in Parquet files provides significant advantages:
@@ -92,11 +96,11 @@ The validation system checks each Parquet file for:
   - **Proximity Detection**: Multi-vessel distance calculations and collision risk analysis
   - **Geographic Visualization**: Generate movement boundaries, centroids, and spatial statistics
   - **Route Planning**: Historical track analysis for route optimization and performance analysis
-  - **NEW Spatial Correlation**: Filter any sensor data by vessel location
+  - **Spatial Correlation**: Filter any sensor data by vessel location
     - Query "wind data when vessel was within this area"
     - Bounding box (`bbox`) and radius filters work on all paths
     - Automatically correlates timestamps with position data
-  - **NEW Spatial Context Discovery**: Find vessels by geographic area
+  - **Spatial Context Discovery**: Find vessels by geographic area
     - `GET /api/history/contexts/spatial?bbox=...` or `radius=...`
     - Single DuckDB query on `navigation__position` files with hive partition pruning
 
@@ -110,7 +114,7 @@ The validation system checks each Parquet file for:
 
 ### User Interface & Integration
 - **Responsive Web Interface**: Complete web-based management interface
-- **NEW Map Explorer**: Interactive spatial query and visualization tab
+- **Map Explorer**: Interactive spatial query and visualization tab
   - Draw bounding box or radius areas on a Leaflet map to query vessel data geographically
   - Multi-path overlay (up to 3 paths) with color-coded track, chart, and data table
   - Searchable path selector with checkbox list and removable chips
@@ -132,13 +136,13 @@ The validation system checks each Parquet file for:
 - **Contextual Data Collection**: Link SignalK paths to regimens for targeted data analysis during specific operations
 - **Web Interface Management**: Create, edit, and manage regimens and command keywords through the web UI
 
-### NEW Threshold Automation
-- **NEW Per-Command Conditions**: Each regimen/command can define one or more thresholds that watch a single SignalK path.
-- **NEW True-Only Actions**: On every path update the condition is evaluated; when it is true the command is set to the threshold's `activateOnMatch` state (ON/OFF). False evaluations leave the command untouched, so use a second threshold if you want a different level to switch it back.
-- **NEW Stable Triggers**: Optional hysteresis (seconds) suppresses re-firing while the condition remains true, preventing rapid toggling in noisy data.
-- **NEW Multiple Thresholds Per Path**: Unique monitor keys allow several thresholds to observe the same SignalK path without cancelling each other.
-- **NEW Unit Handling**: Threshold values must match the live SignalK units (e.g., fractional 0–1 SoC values). Angular thresholds are entered in degrees in the UI and stored as radians automatically.
-- **NEW Automation State Machine**: When enabling automation, command is set to OFF then all thresholds are immediately evaluated. When disabling automation, threshold monitoring stops and command state remains unchanged. Default state is hardcoded to OFF on server side.
+### Threshold Automation
+- **Per-Command Conditions**: Each regimen/command can define one or more thresholds that watch a single SignalK path.
+- **True-Only Actions**: On every path update the condition is evaluated; when it is true the command is set to the threshold's `activateOnMatch` state (ON/OFF). False evaluations leave the command untouched, so use a second threshold if you want a different level to switch it back.
+- **Stable Triggers**: Optional hysteresis (seconds) suppresses re-firing while the condition remains true, preventing rapid toggling in noisy data.
+- **Multiple Thresholds Per Path**: Unique monitor keys allow several thresholds to observe the same SignalK path without cancelling each other.
+- **Unit Handling**: Threshold values must match the live SignalK units (e.g., fractional 0–1 SoC values). Angular thresholds are entered in degrees in the UI and stored as radians automatically.
+- **Automation State Machine**: When enabling automation, command is set to OFF then all thresholds are immediately evaluated. When disabling automation, threshold monitoring stops and command state remains unchanged. Default state is hardcoded to OFF on server side.
 
 - **Custom Analysis**: Create custom analysis prompts for specific operational needs
 
@@ -989,7 +993,7 @@ curl "http://localhost:3000/signalk/v1/history/paths"
 - `2h` - 2 hours
 - `1d` - 1 day
 
-#### Spatial Filtering (NEW)
+#### Spatial Filtering
 
 Filter data by geographic location using bounding boxes or radius queries:
 
@@ -1187,7 +1191,7 @@ These fields are extensions and may not be present in responses from other Signa
 
 The plugin calculates **Exponential Moving Average (EMA)** and **Simple Moving Average (SMA)** for numeric values, providing enhanced trend analysis capabilities. There are two ways to enable smoothing:
 
-### Per-Path Smoothing Syntax (NEW in v0.6.5)
+### Per-Path Smoothing Syntax
 
 Apply smoothing directly in the path specification using the `path:method:smoothing:param` syntax:
 
@@ -1566,29 +1570,18 @@ output_directory/
 
 Use the Migration API to convert legacy files to Hive partitioning.
 
-## TODO
-
-- [x] Implement daily export pipeline (replaced consolidation)
-- [x] Add history API integration
-- [x] S3 federated querying with DuckDB
-- [x] Spatial correlation for non-position paths
-- [x] SQLite WAL buffering for crash-safe data ingestion
-- [x] Hive-partitioned storage with aggregation tiers
-- [x] Migration service for flat-to-Hive conversion
-- [x] Auto-discovery for on-demand path configuration
-- [ ] Incorporate user preferences from units-preference in the regimen filter system
-- [ ] Expose recorded spatial event via api endpoint (geojson)
-- [ ] Add Grafana integration
-- [ ] Dedicated WebSocket endpoint for historical data streaming (current delta interceptor approach doesn't work — needs a separate `ws://` endpoint that streams historical data on demand)
-
 ## Contributing
+
+For new features, open an issue first to discuss the approach with the maintainer before starting work.
 
 1. Fork the repository
 2. Create a feature branch
 3. Add TypeScript types for new features
-4. Include tests and documentation
+4. Add unit and integration tests covering your changes, and update the documentation
 5. Follow the testing procedures in `TESTING.md`
-6. Submit a pull request
+6. Ensure linting and tests pass locally before submitting the PR (run `npm run ci` for lint and format checks)
+7. Submit a pull request
+8. Address CodeRabbit review comments on the PR before human review
 
 ## Changelog
 
