@@ -28,6 +28,7 @@ import {
   NormalizedDelta,
 } from './types';
 import { extractCommandName } from './commands';
+import { resolveCustomS3Endpoint } from './utils/cloud-endpoint';
 import {
   Context,
   Delta,
@@ -116,13 +117,16 @@ export function createCloudClient(config: PluginConfig, app: ServerAPI): any {
     };
 
     if (cloud.endpoint) {
-      s3Config.endpoint = cloud.endpoint;
+      const custom = resolveCustomS3Endpoint(
+        cloud.endpoint,
+        cloud.forcePathStyle
+      );
+      s3Config.endpoint = custom.url;
+      s3Config.forcePathStyle = custom.forcePathStyle;
+    } else {
+      s3Config.forcePathStyle =
+        cloud.forcePathStyle !== undefined ? cloud.forcePathStyle : false;
     }
-
-    s3Config.forcePathStyle =
-      cloud.forcePathStyle !== undefined
-        ? cloud.forcePathStyle
-        : !!cloud.endpoint;
 
     if (cloud.accessKeyId && cloud.secretAccessKey) {
       s3Config.credentials = {
@@ -904,16 +908,16 @@ async function putToCloud(
 ): Promise<boolean> {
   if (!target.client || !PutObjectCommand) return false;
 
-  try {
-    const relativePath = path.relative(config.outputDirectory, filePath);
-    let cloudKey = relativePath;
-    if (target.keyPrefix) {
-      const prefix = target.keyPrefix.endsWith('/')
-        ? target.keyPrefix
-        : `${target.keyPrefix}/`;
-      cloudKey = `${prefix}${relativePath}`;
-    }
+  const relativePath = path.relative(config.outputDirectory, filePath);
+  let cloudKey = relativePath;
+  if (target.keyPrefix) {
+    const prefix = target.keyPrefix.endsWith('/')
+      ? target.keyPrefix
+      : `${target.keyPrefix}/`;
+    cloudKey = `${prefix}${relativePath}`;
+  }
 
+  try {
     const fileContent = await fs.readFile(filePath);
     await target.client.send(
       new PutObjectCommand({
@@ -928,7 +932,10 @@ async function putToCloud(
       await fs.unlink(filePath);
     }
     return true;
-  } catch {
+  } catch (err) {
+    appInstance?.error(
+      `[CloudSync] Upload failed for ${cloudKey}: ${(err as Error).message}`
+    );
     return false;
   }
 }
