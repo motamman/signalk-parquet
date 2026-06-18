@@ -364,13 +364,13 @@ export default function (app: ServerAPI): SignalKPlugin {
             urlStyle = 'path';
           } else if (state.currentConfig.cloudUpload.endpoint) {
             // Self-hosted S3-compatible endpoint (e.g. Garage, MinIO)
-            const resolved = resolveCustomS3Endpoint(
+            const custom = resolveCustomS3Endpoint(
               state.currentConfig.cloudUpload.endpoint,
               state.currentConfig.cloudUpload.forcePathStyle
             );
-            endpoint = resolved.host;
-            useSSL = resolved.useSSL;
-            urlStyle = resolved.forcePathStyle ? 'path' : 'vhost';
+            endpoint = custom.host;
+            useSSL = custom.useSSL;
+            urlStyle = custom.forcePathStyle ? 'path' : 'vhost';
           }
           await DuckDBPool.initializeS3({
             accessKeyId: state.currentConfig.cloudUpload.accessKeyId,

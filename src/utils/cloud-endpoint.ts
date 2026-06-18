@@ -30,6 +30,16 @@ export function resolveCustomS3Endpoint(
     throw new Error(`cloudUpload.endpoint is missing a host: "${endpoint}"`);
   }
 
+  if (
+    (parsed.pathname && parsed.pathname !== '/') ||
+    parsed.search ||
+    parsed.hash
+  ) {
+    throw new Error(
+      `cloudUpload.endpoint must be an origin only (scheme + host[:port]), with no path, query, or fragment: "${endpoint}"`
+    );
+  }
+
   return {
     url: endpoint,
     host: parsed.host,
