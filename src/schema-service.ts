@@ -6,6 +6,7 @@ import { DataRecord } from './types';
 // Import parquet dynamically
 let parquet: any;
 try {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
   parquet = require('@dsnp/parquetjs');
 } catch (error) {
   console.warn('ParquetJS not available, some features will be disabled');
@@ -442,7 +443,7 @@ export class SchemaService {
    */
   async repairFileSchema(
     filePath: string,
-    filenamePrefix: string = 'signalk_data'
+    _filenamePrefix: string = 'signalk_data'
   ): Promise<RepairResult> {
     try {
       if (!parquet) {

@@ -25,10 +25,7 @@ import {
   availableFilterColumns,
   filterEcho,
 } from './utils/path-filters';
-import {
-  getAvailablePathsArray,
-  getAvailablePathsForTimeRange,
-} from './utils/path-discovery';
+import { getAvailablePathsArray } from './utils/path-discovery';
 import { getAvailableContextsForTimeRange } from './utils/context-discovery';
 import { DuckDBPool } from './utils/duckdb-pool';
 import { getPathComponentSchema } from './utils/schema-cache';
@@ -145,7 +142,10 @@ function pathSpecKey(ps: SignalKPathSpec): string {
  * History API Provider implementation
  */
 export class HistoryProvider implements HistoryApi {
-  private sqliteBuffer?: { getKnownPaths(): Set<string>; getTableColumns(path: string): Set<string> | undefined };
+  private sqliteBuffer?: {
+    getKnownPaths(): Set<string>;
+    getTableColumns(path: string): Set<string> | undefined;
+  };
 
   constructor(
     private selfId: string,
@@ -154,7 +154,10 @@ export class HistoryProvider implements HistoryApi {
     private debug: (msg: string) => void
   ) {}
 
-  setSqliteBuffer(buffer: { getKnownPaths(): Set<string>; getTableColumns(path: string): Set<string> | undefined }): void {
+  setSqliteBuffer(buffer: {
+    getKnownPaths(): Set<string>;
+    getTableColumns(path: string): Set<string> | undefined;
+  }): void {
     this.sqliteBuffer = buffer;
   }
 
@@ -163,8 +166,9 @@ export class HistoryProvider implements HistoryApi {
    */
   async getValues(query: ValuesRequest): Promise<ValuesResponse> {
     this.debug(
-      `[HistoryProvider] getValues called with: ${JSON.stringify(query, (_, v) =>
-        typeof v === 'bigint' ? v.toString() : v
+      `[HistoryProvider] getValues called with: ${JSON.stringify(
+        query,
+        (_, v) => (typeof v === 'bigint' ? v.toString() : v)
       )}`
     );
     const { from, to } = parseTimeRange(query);
@@ -270,9 +274,11 @@ export class HistoryProvider implements HistoryApi {
     // Extract context if present (PathsRequest type doesn't include context, but callers may pass it)
     const queryContext = (query as any).context;
     const context = queryContext
-      ? (!queryContext || queryContext === 'vessels.self' || queryContext === 'self'
-          ? `vessels.${this.selfId}`
-          : queryContext.replace(/ /gi, ''))
+      ? !queryContext ||
+        queryContext === 'vessels.self' ||
+        queryContext === 'self'
+        ? `vessels.${this.selfId}`
+        : queryContext.replace(/ /gi, '')
       : undefined;
     const paths = getAvailablePathsArray(this.dataDir, this.app, context);
     return paths as PathsResponse;
@@ -302,7 +308,10 @@ export class HistoryProvider implements HistoryApi {
 
     // Use connection with buffer attached if available
     const hasBuffer = DuckDBPool.isSQLiteBufferInitialized();
-    const knownBufferPaths = hasBuffer && this.sqliteBuffer ? this.sqliteBuffer.getKnownPaths() : undefined;
+    const knownBufferPaths =
+      hasBuffer && this.sqliteBuffer
+        ? this.sqliteBuffer.getKnownPaths()
+        : undefined;
     const connection = hasBuffer
       ? await DuckDBPool.getConnectionWithBuffer()
       : await DuckDBPool.getConnection();
@@ -343,9 +352,10 @@ export class HistoryProvider implements HistoryApi {
           .map(([name, comp]) => {
             const compAggFunc = comp.dataType === 'numeric' ? aggFunc : 'FIRST';
             // TRY_CAST handles mixed-type parquet files (some store lat/lon as VARCHAR)
-            const colExpr = comp.dataType === 'numeric'
-              ? `TRY_CAST(${comp.columnName} AS DOUBLE)`
-              : comp.columnName;
+            const colExpr =
+              comp.dataType === 'numeric'
+                ? `TRY_CAST(${comp.columnName} AS DOUBLE)`
+                : comp.columnName;
             return `${compAggFunc}(${colExpr}) as ${name}`;
           })
           .join(', ');
@@ -356,12 +366,16 @@ export class HistoryProvider implements HistoryApi {
           .map(comp => `${comp.columnName} IS NOT NULL`)
           .join(' OR ');
 
-        const componentCols = Array.from(componentSchema.components.values()).map(c => c.columnName).join(', ');
+        const componentCols = Array.from(componentSchema.components.values())
+          .map(c => c.columnName)
+          .join(', ');
 
         // Build federated FROM: parquet UNION ALL buffer
         let federatedFrom: string;
         if (hasBuffer) {
-          const bufferTableCols = this.sqliteBuffer?.getTableColumns(pathSpec.path as string);
+          const bufferTableCols = this.sqliteBuffer?.getTableColumns(
+            pathSpec.path as string
+          );
           const bufferSubquery = buildBufferObjectSubquery(
             context,
             pathSpec.path,
@@ -550,7 +564,10 @@ export function registerHistoryApiProvider(
   selfId: string,
   dataDir: string,
   debug: (msg: string) => void,
-  sqliteBuffer?: { getKnownPaths(): Set<string>; getTableColumns(path: string): Set<string> | undefined }
+  sqliteBuffer?: {
+    getKnownPaths(): Set<string>;
+    getTableColumns(path: string): Set<string> | undefined;
+  }
 ): void {
   const provider = new HistoryProvider(selfId, dataDir, app, debug);
   if (sqliteBuffer) {

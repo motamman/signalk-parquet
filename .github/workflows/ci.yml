@@ -5,16 +5,31 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
+    name: Node ${{ matrix.node-version }}
     runs-on: ubuntu-latest
+    timeout-minutes: 20
 
     strategy:
+      fail-fast: false
       matrix:
-        node-version: [20.x]
+        # Covers the declared `engines.node` floor (22.5, required for
+        # node:sqlite) plus the current bleeding edge.
+        node-version: [22.x, 24.x]
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Use Node.js ${{ matrix.node-version }}
         uses: actions/setup-node@v4
@@ -28,5 +43,40 @@ jobs:
       - name: Run CI checks
         run: npm run ci
 
+      - name: Typecheck
+        run: npm run typecheck
+
       - name: Build project
         run: npm run build
+
+      - name: Run tests
+        if: matrix.node-version != '24.x'
+        run: npm test
+
+      - name: Run tests with coverage
+        if: matrix.node-version == '24.x'
+        shell: bash
+        run: |
+          set -eo pipefail
+          npm run coverage | tee coverage.log
+
+      - name: Coverage step summary
+        if: matrix.node-version == '24.x'
+        shell: bash
+        run: |
+          {
+            echo '## Test Coverage'
+            echo
+            echo '```'
+            cat coverage.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload coverage (lcov) as artifact
+        if: matrix.node-version == '24.x'
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-lcov
+          path: coverage/lcov.info
+          if-no-files-found: error
+          retention-days: 30

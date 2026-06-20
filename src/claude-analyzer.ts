@@ -228,10 +228,8 @@ export class ClaudeAnalyzer {
    */
   private async prepareDataForAnalysis(request: AnalysisRequest): Promise<any> {
     try {
-      let data: any[];
-
       // Load data from parquet files using existing method
-      data = await this.loadDataFromPath(
+      const data: any[] = await this.loadDataFromPath(
         request.dataPath,
         request.timeRange,
         request.aggregationMethod,
@@ -625,7 +623,7 @@ export class ClaudeAnalyzer {
 
     // Check for value_json presence
     const hasValueJson =
-      firstRecord.hasOwnProperty('value_json') &&
+      Object.prototype.hasOwnProperty.call(firstRecord, 'value_json') &&
       firstRecord.value_json !== null;
     const hasDirectValues = Object.keys(firstRecord).some(
       key => key.startsWith('value_') && key !== 'value_json'
@@ -687,7 +685,7 @@ export class ClaudeAnalyzer {
       'source',
     ];
     const presentColumns = standardColumns.filter(col =>
-      firstRecord.hasOwnProperty(col)
+      Object.prototype.hasOwnProperty.call(firstRecord, col)
     );
     if (presentColumns.length > 0) {
       notes.push(
@@ -1171,6 +1169,7 @@ Begin your analysis by querying relevant data within the specified time range.`;
       );
 
       // Save full prompt to file for debugging
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
       const fs = require('fs');
       const debugFile = `/tmp/claude-prompt-debug-${Date.now()}.txt`;
       fs.writeFileSync(
@@ -1414,7 +1413,7 @@ Focus on:
 Begin your analysis by querying relevant data within the specified time range.`;
 
       // Start conversation with Claude with function calling capability
-      let conversationMessages: Array<any> = [
+      const conversationMessages: Array<any> = [
         {
           role: 'user',
           content: userPrompt,
@@ -1424,7 +1423,7 @@ Begin your analysis by querying relevant data within the specified time range.`;
       let analysisResult = '';
       let queryCount = 0;
       const maxQueries = 10; // Allow more queries for thorough analysis
-      let totalTokenUsage = { input_tokens: 0, output_tokens: 0 };
+      const totalTokenUsage = { input_tokens: 0, output_tokens: 0 };
 
       // Check if user is requesting real-time data
       const needsRealTimeData = this.checkForRealTimeKeywords(
@@ -1875,7 +1874,7 @@ Begin your analysis by querying relevant data within the specified time range.`;
       let analysisResult = '';
       let queryCount = 0;
       const maxQueries = 10; // Allow thorough follow-up analysis
-      let totalTokenUsage = { input_tokens: 0, output_tokens: 0 };
+      const totalTokenUsage = { input_tokens: 0, output_tokens: 0 };
 
       // Check if follow-up question contains real-time keywords
       const needsRealTimeData = this.checkForRealTimeKeywords(
@@ -2301,8 +2300,9 @@ Begin your analysis by querying relevant data within the specified time range.`;
     );
     return [];
 
+    // eslint-disable-next-line no-unreachable
     const availablePaths: AvailablePathInfo[] = [];
-    // @ts-ignore - unreachable code
+    // @ts-expect-error unreachable code after early return
     const pathRegex = pathPattern ? new RegExp(pathPattern) : null;
 
     try {
@@ -2674,7 +2674,7 @@ Begin your analysis by querying relevant data within the specified time range.`;
 
     const currentData: any = {};
     let dataFound = false;
-    let matchingKeys: string[] = [];
+    const matchingKeys: string[] = [];
 
     // Iterate through data buffers to find matching context
     this.state.dataBuffers.forEach((buffer, bufferKey) => {
@@ -2839,6 +2839,7 @@ Begin your analysis by querying relevant data within the specified time range.`;
     conversationMessages?: Array<any>
   ): string[] {
     try {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
       const { getCurrentCommands } = require('./commands');
       const commands = getCurrentCommands();
       const queryLower = userQuery.toLowerCase();
@@ -2903,6 +2904,7 @@ Begin your analysis by querying relevant data within the specified time range.`;
    */
   private getPathsForRegimen(regimenName: string): string[] {
     try {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
       const { loadWebAppConfig } = require('./commands');
       const webAppConfig = loadWebAppConfig(this.app);
 

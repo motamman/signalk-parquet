@@ -11,10 +11,11 @@ import * as fs from 'fs-extra';
 import { DataRecord } from '../types';
 
 // Lazy-loaded: node:sqlite requires Node 22.5+
-// eslint-disable-next-line @typescript-eslint/no-var-requires
 let DatabaseSync: typeof import('node:sqlite').DatabaseSync;
 type StatementSync = import('node:sqlite').StatementSync;
+type SQLInputValue = import('node:sqlite').SQLInputValue;
 try {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
   ({ DatabaseSync } = require('node:sqlite'));
 } catch {
   // node:sqlite not available — SQLiteBuffer constructor will throw a clear error
@@ -496,7 +497,7 @@ export class SQLiteBuffer {
     }
     const tableInfo = this.ensureTable(record.path, record);
     const params = this.prepareRecord(record, tableInfo);
-    tableInfo.insertStmt.run(params);
+    tableInfo.insertStmt.run(params as Record<string, SQLInputValue>);
   }
 
   /**
@@ -510,7 +511,7 @@ export class SQLiteBuffer {
       for (const record of records) {
         const tableInfo = this.ensureTable(record.path, record);
         const params = this.prepareRecord(record, tableInfo);
-        tableInfo.insertStmt.run(params);
+        tableInfo.insertStmt.run(params as Record<string, SQLInputValue>);
       }
       this.db.exec('COMMIT');
     } catch (e) {
@@ -699,7 +700,7 @@ export class SQLiteBuffer {
           `DELETE FROM ${info.tableName} WHERE exported = 1 AND created_at < datetime('now', '-' || ? || ' hours')`
         )
         .run(this.retentionHours);
-      totalCleaned += result.changes;
+      totalCleaned += Number(result.changes);
     }
     return totalCleaned;
   }

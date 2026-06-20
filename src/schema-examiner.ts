@@ -5,6 +5,7 @@ import * as glob from 'glob';
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let parquet: any;
 try {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
   parquet = require('@dsnp/parquetjs');
 } catch (error) {
   parquet = null;

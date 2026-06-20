@@ -1,6 +1,6 @@
 import * as fs from 'fs-extra';
 import * as path from 'path';
-import e, { Router } from 'express';
+import { Router } from 'express';
 import { ParquetWriter, quarantineEmptyParquetFiles } from './parquet-writer';
 import { registerHistoryApiRoute } from './HistoryAPI';
 import { registerApiRoutes } from './api-routes';
@@ -16,7 +16,6 @@ import { Context, SourceRef, Timestamp, Path } from '@signalk/server-api';
 import {
   loadWebAppConfig,
   initializeCommandState,
-  getCurrentCommands,
   setCurrentCommands,
   startThresholdMonitoring,
   stopThresholdMonitoring,
@@ -315,9 +314,7 @@ export default function (app: ServerAPI): SignalKPlugin {
       app,
       state.currentConfig.outputDirectory
     ).catch(err => {
-      app.error(
-        `Compaction trash recovery failed: ${(err as Error).message}`
-      );
+      app.error(`Compaction trash recovery failed: ${(err as Error).message}`);
     });
 
     // Quarantine zero-byte parquet stubs left by a crash between

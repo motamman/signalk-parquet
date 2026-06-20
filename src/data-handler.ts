@@ -47,7 +47,7 @@ let S3Client: any,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   ListObjectsV2Command: any;
 
-let appInstance: ServerAPI;
+let _appInstance: ServerAPI;
 
 // Generic cloud target for S3-compatible uploads (S3, R2, etc.)
 export interface CloudTarget {
@@ -62,7 +62,7 @@ export async function initializeCloudSDK(
   config: PluginConfig,
   app: ServerAPI
 ): Promise<void> {
-  appInstance = app;
+  _appInstance = app;
 
   if (config.cloudUpload.provider !== 'none') {
     try {
@@ -202,7 +202,7 @@ export function subscribeToCommandPaths(
   app.subscriptionmanager.subscribe(
     commandSubscription,
     state.unsubscribes,
-    (subscriptionError: unknown) => {},
+    (_subscriptionError: unknown) => {},
     (delta: Delta) => {
       // Process each update in the delta
       const prevRegimens = new Set(state.activeRegimens);
@@ -227,8 +227,10 @@ export function subscribeToCommandPaths(
         });
       }
       // If active regimens changed, re-evaluate data subscriptions
-      if (state.activeRegimens.size !== prevRegimens.size ||
-          [...state.activeRegimens].some(r => !prevRegimens.has(r))) {
+      if (
+        state.activeRegimens.size !== prevRegimens.size ||
+        [...state.activeRegimens].some(r => !prevRegimens.has(r))
+      ) {
         const streamSubscriptions: any = (
           state as PluginState & { streamSubscriptions?: unknown }
         ).streamSubscriptions;
@@ -265,13 +267,18 @@ export function subscribeToCommandPaths(
         } else if (streamSubscriptions instanceof Set) {
           streamSubscriptions.forEach(disposeStreamSubscription);
           streamSubscriptions.clear();
-        } else if (streamSubscriptions && typeof streamSubscriptions === 'object') {
+        } else if (
+          streamSubscriptions &&
+          typeof streamSubscriptions === 'object'
+        ) {
           Object.values(streamSubscriptions as Record<string, unknown>).forEach(
             disposeStreamSubscription
           );
-          Object.keys(streamSubscriptions as Record<string, unknown>).forEach(key => {
-            delete (streamSubscriptions as Record<string, unknown>)[key];
-          });
+          Object.keys(streamSubscriptions as Record<string, unknown>).forEach(
+            key => {
+              delete (streamSubscriptions as Record<string, unknown>)[key];
+            }
+          );
         }
         updateDataSubscriptions(currentPaths, state, config, app);
       }
@@ -357,7 +364,7 @@ function handleWildcardContext(pathConfig: PathConfig): PathConfig {
 }
 
 // Helper function to check if a vessel should be excluded based on MMSI
-function shouldExcludeVessel(
+function _shouldExcludeVessel(
   vesselContext: string,
   pathConfig: PathConfig,
   app: ServerAPI
@@ -512,14 +519,14 @@ export function updateDataSubscriptions(
 
   // Use app.streambundle approach as recommended by SignalK developer
   // This avoids server arbitration and provides true source filtering
-  contextGroups.forEach((pathConfigs, context) => {
+  contextGroups.forEach((pathConfigs, _context) => {
     // Root-level paths (no dots, e.g., "name", "mmsi") arrive on the root bus ("")
     // as part of a bundled object update, not as individual path deltas
     const rootPaths = pathConfigs.filter(
       (pc: PathConfig) => !pc.path.includes('.')
     );
-    const normalPaths = pathConfigs.filter(
-      (pc: PathConfig) => pc.path.includes('.')
+    const normalPaths = pathConfigs.filter((pc: PathConfig) =>
+      pc.path.includes('.')
     );
 
     // Subscribe to root bus for root-level paths
@@ -558,9 +565,7 @@ export function updateDataSubscriptions(
 
       state.streamSubscriptions = state.streamSubscriptions || [];
       state.streamSubscriptions.push(rootStream);
-      rootPaths.forEach((pc: PathConfig) =>
-        state.subscribedPaths.add(pc.path)
-      );
+      rootPaths.forEach((pc: PathConfig) => state.subscribedPaths.add(pc.path));
     }
 
     // Normal dotted paths — individual stream per path
@@ -586,7 +591,7 @@ export function updateDataSubscriptions(
 function shouldSubscribeToPath(
   pathConfig: PathConfig,
   state: PluginState,
-  app: ServerAPI
+  _app: ServerAPI
 ): boolean {
   // Always subscribe if explicitly enabled
   if (pathConfig.enabled) {
@@ -734,8 +739,6 @@ function bufferData(
     // Find the separator between context and path - look for the last colon followed by a valid SignalK path
     const pathMatch = signalkPath.match(/^.*:([a-zA-Z][a-zA-Z0-9._]*)$/);
     const actualPath = pathMatch ? pathMatch[1] : signalkPath;
-    const urnMatch = signalkPath.match(/^([^:]+):/);
-    const urn = urnMatch ? urnMatch[1] : 'vessels.self';
     saveBufferToParquet(actualPath, buffer, config, state, app);
     state.dataBuffers.set(signalkPath, []); // Clear buffer
   }
@@ -753,8 +756,6 @@ export function saveAllBuffers(
       // Find the separator between context and path - look for the last colon followed by a valid SignalK path
       const pathMatch = signalkPath.match(/^.*:([a-zA-Z][a-zA-Z0-9._]*)$/);
       const actualPath = pathMatch ? pathMatch[1] : signalkPath;
-      const urnMatch = signalkPath.match(/^([^:]+):/);
-      const urn = urnMatch ? urnMatch[1] : 'vessels.self';
       saveBufferToParquet(actualPath, buffer, config, state, app);
       state.dataBuffers.delete(signalkPath); // Delete buffer to free memory
     }
@@ -813,7 +814,7 @@ async function saveBufferToParquet(
     const filepath = path.join(dirPath, filename);
 
     // Use ParquetWriter to save in the configured format
-    const savedPath = await state.parquetWriter!.writeRecords(filepath, buffer);
+    await state.parquetWriter!.writeRecords(filepath, buffer);
   } catch (error) {}
 }
 
@@ -860,6 +861,7 @@ export function initializeRegimenStates(
           }
         }
       } else {
+        /* no-op: no matching command for this regimen path */
       }
     } catch (error) {}
   });
@@ -941,7 +943,11 @@ async function putToCloud(
 }
 
 // Get cloud key for a local file path
-function getCloudKey(filePath: string, target: CloudTarget, config: PluginConfig): string {
+function getCloudKey(
+  filePath: string,
+  target: CloudTarget,
+  config: PluginConfig
+): string {
   const relativePath = path.relative(config.outputDirectory, filePath);
   if (target.keyPrefix) {
     const prefix = target.keyPrefix.endsWith('/')
@@ -961,15 +967,24 @@ async function uploadMissingFiles(
   app: ServerAPI,
   concurrency = 3
 ): Promise<number> {
-  const excludedDirs = ['/processed/', '/repaired/', '/failed/', '/quarantine/'];
-  const filtered = localFiles.filter(f => !excludedDirs.some(dir => f.includes(dir)));
+  const excludedDirs = [
+    '/processed/',
+    '/repaired/',
+    '/failed/',
+    '/quarantine/',
+  ];
+  const filtered = localFiles.filter(
+    f => !excludedDirs.some(dir => f.includes(dir))
+  );
   const missing = filtered.filter(
     f => !existingKeys.has(getCloudKey(f, target, config))
   );
 
   if (missing.length === 0) return 0;
 
-  app.debug(`[CloudSync] ${missing.length} files to upload (${concurrency} concurrent)`);
+  app.debug(
+    `[CloudSync] ${missing.length} files to upload (${concurrency} concurrent)`
+  );
 
   let uploaded = 0;
   for (let i = 0; i < missing.length; i += concurrency) {
@@ -1004,26 +1019,31 @@ export async function uploadAllConsolidatedFilesToS3(
       targetDate.setUTCDate(today.getUTCDate() - daysAgo);
       const year = targetDate.getUTCFullYear();
       const dayOfYear = String(
-        Math.floor(
-          (targetDate.getTime() - Date.UTC(year, 0, 1)) / 86400000
-        ) + 1
+        Math.floor((targetDate.getTime() - Date.UTC(year, 0, 1)) / 86400000) + 1
       ).padStart(3, '0');
 
-      const files = await glob(`tier=*/**/year=${year}/day=${dayOfYear}/*.parquet`, {
-        cwd: config.outputDirectory,
-        absolute: true,
-        nodir: true,
-      });
+      const files = await glob(
+        `tier=*/**/year=${year}/day=${dayOfYear}/*.parquet`,
+        {
+          cwd: config.outputDirectory,
+          absolute: true,
+          nodir: true,
+        }
+      );
       allLocalFiles.push(...files);
     }
 
-    app.debug(`[StartupSync] Found ${allLocalFiles.length} local files in last ${daysToCheck} days`);
+    app.debug(
+      `[StartupSync] Found ${allLocalFiles.length} local files in last ${daysToCheck} days`
+    );
     if (allLocalFiles.length === 0) return;
 
     // List only raw-tier prefixes in R2 to find which context/path/year/day combos are synced
     const prefixSet = new Set<string>();
     const basePrefix = target.keyPrefix
-      ? (target.keyPrefix.endsWith('/') ? target.keyPrefix : `${target.keyPrefix}/`)
+      ? target.keyPrefix.endsWith('/')
+        ? target.keyPrefix
+        : `${target.keyPrefix}/`
       : '';
     for (const file of allLocalFiles) {
       const rel = path.relative(config.outputDirectory, file);
@@ -1032,7 +1052,9 @@ export async function uploadAllConsolidatedFilesToS3(
       prefixSet.add(`${basePrefix}${dirPart}/`);
     }
 
-    app.debug(`[StartupSync] Listing ${target.label} objects for ${prefixSet.size} raw-tier prefixes...`);
+    app.debug(
+      `[StartupSync] Listing ${target.label} objects for ${prefixSet.size} raw-tier prefixes...`
+    );
 
     // Build set of synced directories (context/path/year/day) from raw tier
     // e.g. "context=X/path=Y/year=2026/day=073"
@@ -1049,10 +1071,17 @@ export async function uploadAllConsolidatedFilesToS3(
         syncedDirs.add(withoutTier);
       }
     }
-    app.debug(`[StartupSync] Found ${syncedDirs.size} synced directories in ${target.label}`);
+    app.debug(
+      `[StartupSync] Found ${syncedDirs.size} synced directories in ${target.label}`
+    );
 
     // Filter local files: skip any file whose context/path/year/day is already synced
-    const excludedDirs = ['/processed/', '/repaired/', '/failed/', '/quarantine/'];
+    const excludedDirs = [
+      '/processed/',
+      '/repaired/',
+      '/failed/',
+      '/quarantine/',
+    ];
     const filesToUpload = allLocalFiles.filter(f => {
       if (excludedDirs.some(dir => f.includes(dir))) return false;
       const rel = path.relative(config.outputDirectory, f);
@@ -1067,7 +1096,9 @@ export async function uploadAllConsolidatedFilesToS3(
       return;
     }
 
-    app.debug(`[CloudSync] ${filesToUpload.length} files to upload (3 concurrent)`);
+    app.debug(
+      `[CloudSync] ${filesToUpload.length} files to upload (3 concurrent)`
+    );
     let uploaded = 0;
     for (let i = 0; i < filesToUpload.length; i += 3) {
       const batch = filesToUpload.slice(i, i + 3);
@@ -1079,9 +1110,7 @@ export async function uploadAllConsolidatedFilesToS3(
     }
 
     if (uploaded > 0) {
-      app.debug(
-        `[StartupSync] Uploaded ${uploaded} files to ${target.label}`
-      );
+      app.debug(`[StartupSync] Uploaded ${uploaded} files to ${target.label}`);
     }
   } catch (error) {
     app.error(`[StartupSync] Failed: ${(error as Error).message}`);
@@ -1101,17 +1130,18 @@ export async function uploadConsolidatedFilesToS3(
   try {
     const year = date.getUTCFullYear();
     const dayOfYear = String(
-      Math.floor(
-        (date.getTime() - Date.UTC(year, 0, 1)) / 86400000
-      ) + 1
+      Math.floor((date.getTime() - Date.UTC(year, 0, 1)) / 86400000) + 1
     ).padStart(3, '0');
     const dateStr = date.toISOString().slice(0, 10);
 
-    const localFiles = await glob(`tier=*/**/year=${year}/day=${dayOfYear}/*.parquet`, {
-      cwd: config.outputDirectory,
-      absolute: true,
-      nodir: true,
-    });
+    const localFiles = await glob(
+      `tier=*/**/year=${year}/day=${dayOfYear}/*.parquet`,
+      {
+        cwd: config.outputDirectory,
+        absolute: true,
+        nodir: true,
+      }
+    );
 
     if (localFiles.length === 0) return;
 
@@ -1141,4 +1171,3 @@ export async function uploadConsolidatedFilesToS3(
     );
   }
 }
-
