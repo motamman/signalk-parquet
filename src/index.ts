@@ -34,6 +34,7 @@ import {
 import { ServerAPI } from '@signalk/server-api';
 import { DuckDBPool } from './utils/duckdb-pool';
 import { LRUCache } from './utils/lru-cache';
+import { resolveCustomS3Endpoint } from './utils/cloud-endpoint';
 import {
   registerHistoryApiProvider,
   unregisterHistoryApiProvider,
@@ -348,21 +349,45 @@ export default function (app: ServerAPI): SignalKPlugin {
       state.currentConfig.cloudUpload.accessKeyId &&
       state.currentConfig.cloudUpload.secretAccessKey
     ) {
-      try {
-        const isR2 = state.currentConfig.cloudUpload.provider === 'r2';
-        await DuckDBPool.initializeS3({
-          accessKeyId: state.currentConfig.cloudUpload.accessKeyId,
-          secretAccessKey: state.currentConfig.cloudUpload.secretAccessKey,
-          region: isR2
-            ? 'auto'
-            : state.currentConfig.cloudUpload.region || 'us-east-1',
-          endpoint: isR2
-            ? `${state.currentConfig.cloudUpload.accountId}.r2.cloudflarestorage.com`
-            : undefined,
-        });
-        app.debug('DuckDB S3 credentials initialized for federated queries');
-      } catch (error) {
-        app.error(`Failed to initialize DuckDB S3 credentials: ${error}`);
+      const isR2 = state.currentConfig.cloudUpload.provider === 'r2';
+      if (isR2 && !state.currentConfig.cloudUpload.accountId) {
+        app.error(
+          'R2 cloud upload enabled but no account ID configured; skipping DuckDB S3 credential setup'
+        );
+      } else {
+        try {
+          let endpoint: string | undefined;
+          let useSSL: boolean | undefined;
+          let urlStyle: 'path' | 'vhost' | undefined;
+          if (isR2) {
+            endpoint = `${state.currentConfig.cloudUpload.accountId}.r2.cloudflarestorage.com`;
+            urlStyle = 'path';
+          } else if (state.currentConfig.cloudUpload.endpoint) {
+            // Self-hosted S3-compatible endpoint (e.g. Garage, MinIO)
+            const custom = resolveCustomS3Endpoint(
+              state.currentConfig.cloudUpload.endpoint,
+              state.currentConfig.cloudUpload.forcePathStyle
+            );
+            endpoint = custom.host;
+            useSSL = custom.useSSL;
+            urlStyle = custom.forcePathStyle ? 'path' : 'vhost';
+          }
+          await DuckDBPool.initializeS3({
+            accessKeyId: state.currentConfig.cloudUpload.accessKeyId,
+            secretAccessKey: state.currentConfig.cloudUpload.secretAccessKey,
+            region: isR2
+              ? 'auto'
+              : state.currentConfig.cloudUpload.region || 'us-east-1',
+            endpoint,
+            useSSL,
+            urlStyle,
+          });
+          app.debug('DuckDB S3 credentials initialized for federated queries');
+        } catch (error) {
+          app.error(
+            `Failed to initialize DuckDB S3 credentials: ${(error as Error).message}`
+          );
+        }
       }
     }
 
@@ -1050,12 +1075,26 @@ export default function (app: ServerAPI): SignalKPlugin {
                   region: {
                     type: 'string',
                     title: 'AWS Region',
-                    description: 'AWS region where the S3 bucket is located',
+                    description:
+                      'AWS region where the S3 bucket is located.',
                     default: 'us-east-1',
+                  },
+                  endpoint: {
+                    type: 'string',
+                    title: 'Custom Endpoint URL (optional)',
+                    description:
+                      'Override the S3 endpoint for self-hosted S3-compatible storage (e.g. Garage, MinIO). Include the protocol and port, e.g. "https://garage.example.com:3900". Leave blank for AWS S3.',
+                    default: '',
+                  },
+                  forcePathStyle: {
+                    type: 'boolean',
+                    title: 'Use Path-Style Addressing',
+                    description:
+                      'Use path-style bucket addressing (https://endpoint/bucket) instead of virtual-hosted-style (https://bucket.endpoint). Often required by self-hosted S3-compatible services like Garage or MinIO. If left unset, defaults to enabled when a custom endpoint is configured.',
                   },
                 },
                 description:
-                  'NOTE: Querying S3 buckets incurs AWS data transfer costs that can rise quickly with large or frequent queries. Typically, R2 has no such fees.',
+                  'NOTE: Querying S3 buckets incurs AWS data transfer costs that can rise quickly with large or frequent queries. Typically, R2 has no such fees. Self-hosted services like Garage typically have no such fees either.',
               },
               {
                 properties: {
