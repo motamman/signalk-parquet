@@ -935,7 +935,7 @@ async function putToCloud(
     }
     return true;
   } catch (err) {
-    appInstance?.error(
+    _appInstance?.error(
       `[CloudSync] Upload failed for ${cloudKey}: ${(err as Error).message}`
     );
     return false;

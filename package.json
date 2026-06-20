@@ -98,7 +98,7 @@
     "@types/fs-extra": "^11.0.4",
     "@types/mocha": "^10.0.10",
     "@types/multer": "^2.1.0",
-    "@types/node": "^25.9.3",
+    "@types/node": "^25.9.4",
     "@types/ws": "^8.18.1",
     "@typescript-eslint/eslint-plugin": "^8.61.0",
     "@typescript-eslint/parser": "^8.61.0",
