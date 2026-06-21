@@ -498,8 +498,15 @@ export class AggregationService {
       `;
     }
 
-    // Re-aggregate from already-aggregated data using stored sin/cos averages
-    // weighted by sample count for correct vector re-aggregation
+    // Re-aggregate from already-aggregated data using the stored sin/cos
+    // averages, weighted by sample_count. COALESCE falls back to deriving
+    // sin/cos from value_avg when an upstream tier predates the sin/cos columns,
+    // or metadata flapped so the angular columns are absent: without it a
+    // missing value_sin_avg/value_cos_avg makes the whole bucket NULL. This
+    // mirrors the query-time fallback in HistoryAPI's tier aggregation.
+    // Example: two source buckets at 10deg (0.1745 rad) and 350deg (6.1087 rad)
+    // with NULL sin/cos -> COALESCE uses SIN/COS(value_avg) ->
+    // ATAN2(~0, ~0.985) -> ~0 rad (0/360deg), not a 180deg arithmetic mean.
     return `
       COPY (
         SELECT
@@ -507,18 +514,18 @@ export class AggregationService {
           context,
           path,
           ATAN2(
-            SUM(value_sin_avg * sample_count) / SUM(sample_count),
-            SUM(value_cos_avg * sample_count) / SUM(sample_count)
+            SUM(COALESCE(value_sin_avg, SIN(value_avg)) * sample_count) / SUM(sample_count),
+            SUM(COALESCE(value_cos_avg, COS(value_avg)) * sample_count) / SUM(sample_count)
           ) as value_avg,
           NULL::DOUBLE as value_min,
           NULL::DOUBLE as value_max,
           SUM(sample_count)::BIGINT as sample_count,
-          SUM(value_sin_avg * sample_count) / SUM(sample_count) as value_sin_avg,
-          SUM(value_cos_avg * sample_count) / SUM(sample_count) as value_cos_avg,
+          SUM(COALESCE(value_sin_avg, SIN(value_avg)) * sample_count) / SUM(sample_count) as value_sin_avg,
+          SUM(COALESCE(value_cos_avg, COS(value_avg)) * sample_count) / SUM(sample_count) as value_cos_avg,
           MIN(first_timestamp) as first_timestamp,
           MAX(last_timestamp) as last_timestamp
         FROM (
-          SELECT bucket_time as src_bucket_time, context, path, value_sin_avg, value_cos_avg, sample_count, first_timestamp, last_timestamp
+          SELECT bucket_time as src_bucket_time, context, path, value_avg, value_sin_avg, value_cos_avg, sample_count, first_timestamp, last_timestamp
           FROM read_parquet([${fileListStr}], union_by_name=true)
         ) src
         GROUP BY time_bucket(INTERVAL '${intervalSeconds} seconds', src_bucket_time::TIMESTAMP), context, path

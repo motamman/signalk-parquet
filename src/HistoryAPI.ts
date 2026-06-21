@@ -405,7 +405,15 @@ function hasTimezoneInfo(dateTimeStr: string): boolean {
 function parseDateTime(dateTimeStr: string): ZonedDateTime {
   // Normalize the datetime string to include seconds if missing
   let normalizedStr = dateTimeStr;
-  if (dateTimeStr.match(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/)) {
+  // Date-only 'YYYY-MM-DD' must be expanded to a full local-midnight datetime
+  // first. Without this, new Date('2025-08-13') parses as UTC midnight while
+  // new Date('2025-08-13T08:00:00') parses as LOCAL — an inconsistency that
+  // contradicts the "bare timestamp -> local -> UTC" contract below.
+  // Example (host TZ = UTC+2): '2025-08-13' -> '2025-08-13T00:00:00' ->
+  // 2025-08-12T22:00:00Z (local midnight), not the old UTC-midnight result.
+  if (dateTimeStr.match(/^\d{4}-\d{2}-\d{2}$/)) {
+    normalizedStr = dateTimeStr + 'T00:00:00';
+  } else if (dateTimeStr.match(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/)) {
     // Add seconds if only HH:MM is provided
     normalizedStr = dateTimeStr + ':00';
   }
@@ -795,7 +803,7 @@ export class HistoryAPI {
     _tier: AggregationTier | undefined,
     _querySource: QuerySource,
     debug: (k: string) => void
-  ): Promise<Set<string>> {
+  ): Promise<Set<string> | null> {
     const timestamps = new Set<string>();
 
     // Build file path for raw position data
@@ -934,7 +942,10 @@ export class HistoryAPI {
       }
     } catch (error) {
       debug(`[Spatial Correlation] Error querying position data: ${error}`);
-      // On error, return empty set (no filtering will occur)
+      // A query error must not masquerade as "no positions in area". Return null
+      // so the caller skips correlation and leaves non-position paths unfiltered,
+      // rather than clearing them from a fabricated empty set.
+      return null;
     }
 
     return timestamps;
@@ -953,10 +964,20 @@ export class HistoryAPI {
     res: Response<any, Record<string, any>>
   ) {
     try {
-      // Resolution now in SECONDS (breaking change from v0.7.0)
+      // Auto-resolution targets ~500 buckets across the range, computed in
+      // millis and clamped to >=1ms. Mirrors the V2 provider guard so a
+      // zero-duration range (from==to) can't yield a 0ms bucket size, which the
+      // DuckDB FLOOR(EPOCH_MS / <size>) bucketing would otherwise turn into x/0.
+      const autoResolutionMillis = Math.max(
+        1,
+        Math.round(
+          (to.toInstant().toEpochMilli() - from.toInstant().toEpochMilli()) /
+            500
+        )
+      );
       const timeResolutionMillis = req.query.resolution
         ? parseResolutionToMillis(req.query.resolution as string)
-        : ((to.toEpochSecond() - from.toEpochSecond()) / 500) * 1000;
+        : autoResolutionMillis;
       // Strip everything except path/aggregate characters, the filter
       // delimiters from PATH_FILTER_DEFS, and `-` (common in source
       // references). This is a coarse injection guard; values are also SQL-
@@ -1142,7 +1163,7 @@ export class HistoryAPI {
           debug
         );
         debug(
-          `[Spatial Correlation] Found ${spatialTimestamps.size} valid timestamps`
+          `[Spatial Correlation] Found ${spatialTimestamps?.size ?? '(query error)'} valid timestamps`
         );
       }
 
@@ -1318,8 +1339,13 @@ export class HistoryAPI {
           }
         } catch (error) {
           debug(`[Spatial] Error in fast position query: ${error}`);
+          // A query error is NOT "no positions in area". Leaving an empty Set
+          // here would make the consumer below treat it as an authoritative
+          // empty result and silently clear every correlated non-position path.
+          // Null means "skip correlation": correlated paths are returned
+          // unfiltered, the safe outcome for a recoverable hiccup.
           allData[pathSpecKey(posPathSpec)] = [];
-          spatialTimestamps = new Set<string>();
+          spatialTimestamps = null;
         }
       }
     }

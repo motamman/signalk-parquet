@@ -660,15 +660,17 @@ function handleStreamData(
       const valueObj = normalizedDelta.value as Record<string, unknown>;
       const objKeys = Object.keys(valueObj);
 
-      // Skip if this looks like a meta-only update (only has units, meta, description keys)
-      // These are metadata updates, not actual data values
+      // Skip if this looks like a meta-only update — every key is a SignalK
+      // metadata field, so the object carries no real value to store. 'timeout'
+      // is intentionally NOT in this set: it can appear as a real value field,
+      // and the worst outcome here is silently dropping archived data, so we
+      // err toward keeping an object whose only key is 'timeout'.
       const metaOnlyKeys = [
         'units',
         'meta',
         'description',
         'displayUnits',
         'zones',
-        'timeout',
       ];
       const isMetaOnly =
         objKeys.length > 0 && objKeys.every(k => metaOnlyKeys.includes(k));
