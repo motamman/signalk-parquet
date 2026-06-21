@@ -968,7 +968,7 @@ function flattenDeltaToRecord(context, skPath, timestamp, value, source, $source
   // Handle complex values — exact copy of data-handler.ts lines 528-568
   if (typeof value === 'object' && value !== null) {
     const objKeys = Object.keys(value);
-    const metaOnlyKeys = ['units', 'meta', 'description', 'displayUnits', 'zones', 'timeout'];
+    const metaOnlyKeys = ['units', 'meta', 'description', 'displayUnits', 'zones'];
     const isMetaOnly = objKeys.length > 0 && objKeys.every(k => metaOnlyKeys.includes(k));
     if (isMetaOnly) return null; // skip meta-only updates
 

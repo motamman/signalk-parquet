@@ -336,12 +336,27 @@ export default function (app: ServerAPI): SignalKPlugin {
     // on disk; without this, every restart would re-trigger the
     // legacy detection. Also writes the corrected retentionDays = 0.
     if (needsLegacyRetentionMigration) {
-      app.savePluginOptions(state.currentConfig, (err?: unknown) => {
-        if (err) {
-          app.error(
-            `[Retention] Failed to persist legacy migration: ${(err as Error).message}`
-          );
-        }
+      // savePluginOptions is callback-based; await the promisified call so the
+      // configSchemaVersion sentinel is actually confirmed on disk within start
+      // ordering. Resolve even on error (a persistence hiccup must not block
+      // startup) but log loudly: the sentinel won't have landed, so the
+      // migration re-runs on the next restart.
+      // Bind the config outside the callback: narrowing of the mutable
+      // state.currentConfig does not survive into the promise executor, and a
+      // non-null assertion there would only paper over that.
+      const configToPersist = state.currentConfig;
+      await new Promise<void>(resolve => {
+        app.savePluginOptions(configToPersist, (err?: unknown) => {
+          if (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            app.error(
+              `[Retention] Failed to persist legacy migration; the ` +
+                `configSchemaVersion stamp did not land and the migration will ` +
+                `re-run on next restart: ${msg}`
+            );
+          }
+          resolve();
+        });
       });
     }
 
