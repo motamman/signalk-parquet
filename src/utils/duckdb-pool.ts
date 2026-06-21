@@ -44,7 +44,11 @@ export class DuckDBPool {
    *
    * @throws Error if initialization fails
    */
-  static async initialize(): Promise<void> {
+  // Default DuckDB memory ceiling, overridable via initialize({ memoryLimit }).
+  // Conservative because DuckDB runs in-process alongside Node's heap.
+  static readonly DEFAULT_MEMORY_LIMIT = '512MB';
+
+  static async initialize(options?: { memoryLimit?: string }): Promise<void> {
     if (this.instance) {
       return; // Already initialized
     }
@@ -53,8 +57,13 @@ export class DuckDBPool {
 
     // Load spatial extension once for all future connections
     const setupConn = await this.instance.connect();
-    // Cap DuckDB memory to prevent OOM when combined with Node's heap
-    await setupConn.runAndReadAll("SET memory_limit = '512MB';");
+    // Cap DuckDB memory to prevent OOM when combined with Node's heap. The value
+    // is interpolated into SQL, so it must stay a trusted constant/config value
+    // (quote-escaped defensively), never user free-text.
+    const memoryLimit = options?.memoryLimit ?? DuckDBPool.DEFAULT_MEMORY_LIMIT;
+    await setupConn.runAndReadAll(
+      `SET memory_limit = '${memoryLimit.replace(/'/g, "''")}';`
+    );
     await setupConn.runAndReadAll('INSTALL spatial;');
     await setupConn.runAndReadAll('LOAD spatial;');
     // sqlite extension is auto-loaded by ATTACH ... (TYPE SQLITE) in getConnectionWithBuffer()
@@ -119,8 +128,11 @@ export class DuckDBPool {
           `ATTACH '${this.sqliteDbPath.replace(/'/g, "''")}' AS buffer (TYPE SQLITE, READ_ONLY)`
         );
       } catch (err: unknown) {
-        // If already attached (e.g. connection reuse), ignore
+        // If already attached (e.g. connection reuse), ignore. For any other
+        // ATTACH failure the connection is unusable, so release it before
+        // rethrowing to avoid leaking a DuckDB connection on every query.
         if (!(err instanceof Error && err.message.includes('already exists'))) {
+          connection.disconnectSync();
           throw err;
         }
       }

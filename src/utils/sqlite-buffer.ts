@@ -1066,7 +1066,10 @@ export class SQLiteBuffer {
     } catch {
       // Ignore checkpoint errors during shutdown
     }
-    this.db.close();
+    // Mark closed before db.close() so a throw there can't leave the buffer
+    // reporting isOpen() === true, which would let bufferData keep inserting
+    // into a half-closed database.
     this._open = false;
+    this.db.close();
   }
 }

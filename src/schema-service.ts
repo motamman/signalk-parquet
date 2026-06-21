@@ -211,8 +211,13 @@ export class SchemaService {
               );
             }
           } catch (metadataError) {
+            // Metadata lookup threw (not the benign "no numeric units" case);
+            // default to UTF8 but surface the path + error so a column silently
+            // widening to string is traceable as schema drift.
             schemaType = 'UTF8';
-            this.app?.debug(`  ✅ ${colName}: UTF8 (metadata error)`);
+            this.app?.debug(
+              `  ⚠️ ${colName}: UTF8 fallback after metadata lookup failed: ${(metadataError as Error).message}`
+            );
           }
         } else {
           schemaType = 'UTF8';

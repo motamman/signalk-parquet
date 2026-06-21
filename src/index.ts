@@ -110,6 +110,10 @@ export default function (app: ServerAPI): SignalKPlugin {
   plugin.start = async function (
     options: Partial<PluginConfig>
   ): Promise<void> {
+    // Reset the stop guard: Signal K calls stop() then start() on every
+    // reconfigure and `state` is reused across the cycle, so a deferred timer
+    // from a prior run must not see a stale stopped=true.
+    state.stopped = false;
     // Get vessel MMSI from SignalK
     // Cast to any for compatibility with different @signalk/server-api versions
     const vesselMMSI =
@@ -205,6 +209,8 @@ export default function (app: ServerAPI): SignalKPlugin {
       exportBatchSize: options?.exportBatchSize || 50000,
       // Enable raw SQL queries via /api/query endpoint
       enableRawSql: options?.enableRawSql || false,
+      // DuckDB memory ceiling (e.g. '256MB', '1GB'); undefined -> pool default
+      duckdbMemoryLimit: options?.duckdbMemoryLimit,
       // Daily export hour (0-23 UTC, default 2 AM)
       dailyExportHour: options?.dailyExportHour ?? 4,
     };
@@ -331,7 +337,9 @@ export default function (app: ServerAPI): SignalKPlugin {
     });
 
     // Initialize DuckDB connection pool once
-    await DuckDBPool.initialize();
+    await DuckDBPool.initialize({
+      memoryLimit: state.currentConfig?.duckdbMemoryLimit,
+    });
     app.debug('DuckDB connection pool initialized');
 
     // Register SQLite buffer path with DuckDB for federated queries
@@ -404,9 +412,16 @@ export default function (app: ServerAPI): SignalKPlugin {
     // Subscribe to data paths based on initial regimen states
     updateDataSubscriptions(currentPaths, state, state.currentConfig, app);
 
-    // Set up periodic save
+    // Set up periodic save. Under the LRU fallback this doubles as a liveness
+    // heartbeat: log how many path buffers were flushed so a stalled flush loop
+    // is visible. (The SQLite buffer flushes elsewhere, so this stays quiet by
+    // default and when idle.)
     state.saveInterval = setInterval(() => {
+      const before = state.dataBuffers.size;
       saveAllBuffers(state.currentConfig!, state, app);
+      if (!state.currentConfig!.useSqliteBuffer && before > 0) {
+        app.debug(`[Flush] periodic save processed ${before} path buffer(s)`);
+      }
     }, state.currentConfig.saveIntervalSeconds * 1000);
 
     // Set up daily export scheduling (new simplified pipeline)
@@ -550,8 +565,13 @@ export default function (app: ServerAPI): SignalKPlugin {
       }
     };
 
-    // Schedule first daily export
-    setTimeout(() => {
+    // Schedule first daily export. Store the handle so stop() can cancel a
+    // pending fire across a reconfigure, and guard against a timer that fires
+    // after stop() (it must not run the pipeline or create a leaked interval).
+    state.dailyExportTimeout = setTimeout(() => {
+      if (state.stopped) {
+        return;
+      }
       runDailyExport();
 
       // Then run daily export every 24 hours
@@ -562,7 +582,10 @@ export default function (app: ServerAPI): SignalKPlugin {
     }, msUntilDailyExport);
 
     // Run startup export for ALL unexported records (catches up after downtime)
-    setTimeout(async () => {
+    state.startupExportTimeout = setTimeout(async () => {
+      if (state.stopped) {
+        return;
+      }
       if (state.exportService) {
         try {
           const result = await state.exportService.exportAllUnexported();
@@ -745,6 +768,11 @@ export default function (app: ServerAPI): SignalKPlugin {
   };
 
   plugin.stop = async function (): Promise<void> {
+    // Mark stopped before any await so a deferred timer that fires during
+    // teardown (the daily-export bootstrap timer can be pending for up to ~24h)
+    // is a no-op and cannot run the export pipeline or create a leaked interval.
+    state.stopped = true;
+
     // Signal any running compaction jobs to cancel and wait for them
     // to land at a group boundary. A single in-flight DuckDB COPY is
     // uninterruptible, so a multi-GB year group still finishes before
@@ -771,20 +799,26 @@ export default function (app: ServerAPI): SignalKPlugin {
     // Stop threshold monitoring system
     stopThresholdMonitoring();
 
-    // Clear intervals
+    // Clear intervals and the deferred export timers
     if (state.saveInterval) {
       clearInterval(state.saveInterval);
+      state.saveInterval = undefined;
     }
     if (state.consolidationInterval) {
       clearInterval(state.consolidationInterval);
+      state.consolidationInterval = undefined;
+    }
+    if (state.dailyExportTimeout) {
+      clearTimeout(state.dailyExportTimeout);
+      state.dailyExportTimeout = undefined;
+    }
+    if (state.startupExportTimeout) {
+      clearTimeout(state.startupExportTimeout);
+      state.startupExportTimeout = undefined;
     }
 
-    // Save any remaining buffered data
-    if (state.currentConfig) {
-      saveAllBuffers(state.currentConfig, state, app);
-    }
-
-    // Unsubscribe from all paths FIRST to stop data flow before closing buffer
+    // Unsubscribe from all paths FIRST so no delta can arrive mid-flush and be
+    // lost between the final saveAllBuffers and the buffer close below.
     state.unsubscribes.forEach(unsubscribe => {
       if (typeof unsubscribe === 'function') {
         unsubscribe();
@@ -813,6 +847,12 @@ export default function (app: ServerAPI): SignalKPlugin {
         }
       });
       state.streamSubscriptions = [];
+    }
+
+    // Now that no data path can deliver, flush remaining LRU buffers. (The
+    // SQLite buffer is durable on its own; this matters for the LRU fallback.)
+    if (state.currentConfig) {
+      saveAllBuffers(state.currentConfig, state, app);
     }
 
     // Stop export service (pending records will be exported on next startup)
@@ -1072,8 +1112,7 @@ export default function (app: ServerAPI): SignalKPlugin {
                   region: {
                     type: 'string',
                     title: 'AWS Region',
-                    description:
-                      'AWS region where the S3 bucket is located.',
+                    description: 'AWS region where the S3 bucket is located.',
                     default: 'us-east-1',
                   },
                   endpoint: {
@@ -1115,6 +1154,12 @@ export default function (app: ServerAPI): SignalKPlugin {
         description:
           'Enable the /api/query endpoint for raw SQL queries. Use with caution.',
         default: false,
+      },
+      duckdbMemoryLimit: {
+        type: 'string',
+        title: 'DuckDB Memory Limit (Optional)',
+        description:
+          "Maximum memory DuckDB may use for queries (e.g. '256MB', '1GB'). Leave blank for the 512MB default; lower it on low-memory hosts.",
       },
       homePortLatitude: {
         type: 'number',
