@@ -37,6 +37,7 @@ export class DuckDBPool {
   private static s3Initialized: boolean = false;
   private static sqliteDbPath: string | null = null;
   private static sqliteInitialized: boolean = false;
+  private static sandboxInstance: DuckDBInstance | null = null;
 
   /**
    * Initialize the DuckDB instance and load extensions
@@ -77,6 +78,53 @@ export class DuckDBPool {
     }
 
     return await this.instance.connect();
+  }
+
+  /**
+   * Get a connection to a hardened sandbox instance for executing UNTRUSTED SQL
+   * (the raw-SQL `/api/query` endpoint and LLM-generated analysis SQL).
+   *
+   * The sandbox is a SEPARATE DuckDB instance scoped to the plugin data
+   * directory: `allowed_directories=[dataDir]` followed by
+   * `enable_external_access=false` confines all file access to the data dir, so
+   * reading arbitrary host files (read_text/read_csv/read_parquet outside the
+   * dir) and ATTACHing external databases are denied. It never loads httpfs and
+   * never holds the S3 secret, so it cannot be used for SSRF or credential
+   * exfiltration. Local parquet reads/globs under the data dir still work, which
+   * is all the untrusted-SQL paths need. DuckDB settings are instance-global and
+   * cannot be relaxed once the database is running, which is why the trusted
+   * upload/export path keeps using the separate, fully-capable pool instance.
+   *
+   * @param dataDir Absolute path to the plugin data directory. Used on the first
+   *   call to scope the sandbox; ignored thereafter while the instance lives.
+   */
+  static async getSandboxConnection(dataDir: string) {
+    if (!this.sandboxInstance) {
+      const instance = await DuckDBInstance.create();
+      const setup = await instance.connect();
+      // Cap memory on this untrusted-SQL instance, matching the main pool, so a
+      // heavy query can't exhaust the Node process.
+      await setup.runAndReadAll("SET memory_limit = '512MB';");
+      // Spatial must be available before access is locked down (extensions
+      // cannot load once external access is disabled). It is already installed
+      // globally by the main instance, so LOAD normally succeeds without network.
+      try {
+        await setup.runAndReadAll('LOAD spatial;');
+      } catch {
+        await setup.runAndReadAll('INSTALL spatial;');
+        await setup.runAndReadAll('LOAD spatial;');
+      }
+      // Order matters: allowed_directories can only be set while external access
+      // is still enabled; disabling it afterwards confines file access to that
+      // directory and cannot be re-enabled for the life of the instance.
+      await setup.runAndReadAll(
+        `SET allowed_directories=['${dataDir.replace(/'/g, "''")}'];`
+      );
+      await setup.runAndReadAll('SET enable_external_access=false;');
+      setup.disconnectSync();
+      this.sandboxInstance = instance;
+    }
+    return await this.sandboxInstance.connect();
   }
 
   /**
@@ -142,6 +190,9 @@ export class DuckDBPool {
       this.sqliteDbPath = null;
       this.sqliteInitialized = false;
     }
+    // Drop the sandbox instance too so a reconfigure rebuilds it against the
+    // (possibly changed) data directory.
+    this.sandboxInstance = null;
   }
 
   /**
@@ -187,6 +238,10 @@ export class DuckDBPool {
       if (config.endpoint && config.useSSL !== undefined) {
         endpointClause += `,\n          USE_SSL ${config.useSSL ? 'true' : 'false'}`;
       }
+      // SECURITY: this secret lives on the main pool instance. Any code path that
+      // executes untrusted (user- or LLM-supplied) SQL must use
+      // getSandboxConnection() instead of getConnection(), so the secret and
+      // httpfs are unreachable from that SQL.
       const secretSql = `
         CREATE OR REPLACE SECRET s3_credentials (
           TYPE S3,

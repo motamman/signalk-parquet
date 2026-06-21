@@ -28,6 +28,11 @@ import {
 import { getAvailablePathsArray } from './utils/path-discovery';
 import { getAvailableContextsForTimeRange } from './utils/context-discovery';
 import { DuckDBPool } from './utils/duckdb-pool';
+import { escapeSqlString } from './utils/sql-escape';
+import {
+  validateContext,
+  validateSignalKPath,
+} from './utils/signalk-validation';
 import { getPathComponentSchema } from './utils/schema-cache';
 import { HivePathBuilder } from './utils/hive-path-builder';
 import { isAngularPath } from './utils/angular-paths';
@@ -178,7 +183,7 @@ export class HistoryProvider implements HistoryApi {
       query.context === 'vessels.self' ||
       query.context === ('self' as Context)
         ? (`vessels.${this.selfId}` as Context)
-        : query.context;
+        : validateContext(query.context as string);
     // query.resolution is in seconds per the SignalK History API spec;
     // the DuckDB bucketing SQL below works in milliseconds. Reject 0,
     // negative, NaN, and Infinity here so they don't reach SQL as a
@@ -278,7 +283,7 @@ export class HistoryProvider implements HistoryApi {
         queryContext === 'vessels.self' ||
         queryContext === 'self'
         ? `vessels.${this.selfId}`
-        : queryContext.replace(/ /gi, '')
+        : validateContext(queryContext.replace(/ /gi, ''))
       : undefined;
     const paths = getAvailablePathsArray(this.dataDir, this.app, context);
     return paths as PathsResponse;
@@ -294,6 +299,9 @@ export class HistoryProvider implements HistoryApi {
     toIso: string,
     resolutionMs: number
   ): Promise<Array<[Timestamp, unknown]>> {
+    // Reject a malformed path before it reaches the read_parquet glob.
+    validateSignalKPath(pathSpec.path as string);
+
     // Use HivePathBuilder for correct Hive-partitioned paths
     const hiveBuilder = new HivePathBuilder();
 
@@ -342,7 +350,7 @@ export class HistoryProvider implements HistoryApi {
       const sourceFilter = buildParquetFilterClause(filters, available);
 
       // Build parquet FROM clause with filename filtering
-      const parquetFrom = `(SELECT * FROM read_parquet('${filePath}', union_by_name=true, filename=true) WHERE filename NOT LIKE '%/processed/%' AND filename NOT LIKE '%/quarantine/%' AND filename NOT LIKE '%/failed/%' AND filename NOT LIKE '%/repaired/%'${sourceFilter})`;
+      const parquetFrom = `(SELECT * FROM read_parquet('${escapeSqlString(filePath)}', union_by_name=true, filename=true) WHERE filename NOT LIKE '%/processed/%' AND filename NOT LIKE '%/quarantine/%' AND filename NOT LIKE '%/failed/%' AND filename NOT LIKE '%/repaired/%'${sourceFilter})`;
 
       if (componentSchema && componentSchema.components.size > 0) {
         // Object path - aggregate each component

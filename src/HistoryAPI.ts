@@ -10,6 +10,11 @@ import { Context, Path, Timestamp } from '@signalk/server-api';
 import { ParamsDictionary } from 'express-serve-static-core';
 import { ParsedQs } from 'qs';
 import { DuckDBPool } from './utils/duckdb-pool';
+import { escapeSqlString } from './utils/sql-escape';
+import {
+  validateContext,
+  validateSignalKPath,
+} from './utils/signalk-validation';
 import path from 'path';
 import {
   getAvailablePathsArray,
@@ -446,7 +451,10 @@ function getContext(
   ) {
     return `vessels.${selfId}` as Context;
   }
-  return contextFromQuery.replace(/ /gi, '') as Context;
+  // The context is interpolated into read_parquet() globs and filesystem paths;
+  // reject anything that is not a well-formed SignalK context before it can
+  // inject a glob wildcard, path separator, or SQL quote.
+  return validateContext(contextFromQuery.replace(/ /gi, ''));
 }
 
 type QuerySource = 'local' | 's3' | 'hybrid' | 'auto';
@@ -828,7 +836,7 @@ export class HistoryAPI {
 
         // Build FROM: parquet UNION ALL buffer
         const parquetFrom = `SELECT signalk_timestamp, value_latitude, value_longitude FROM (
-          SELECT * FROM read_parquet('${localFilePath}', union_by_name=true, filename=true)
+          SELECT * FROM read_parquet('${escapeSqlString(localFilePath)}', union_by_name=true, filename=true)
           WHERE filename NOT LIKE '%/processed/%'
           AND filename NOT LIKE '%/quarantine/%'
           AND filename NOT LIKE '%/failed/%'
@@ -964,7 +972,11 @@ export class HistoryAPI {
       // automatically.
       const pathExpressions = ((req.query.paths as string) || '')
         .replace(PATHS_SANITIZER, '')
-        .split(',');
+        .split(',')
+        // Drop empty expressions so a missing `paths` query (which splits to
+        // ['']) doesn't reach validateSignalKPath and throw; the empty-result
+        // branch downstream still handles the no-path case.
+        .filter(Boolean);
       const pathSpecs: PathSpec[] = pathExpressions.map(splitPathExpression);
 
       // Auto-select tier based on resolution (provider selects automatically)
@@ -1194,7 +1206,7 @@ export class HistoryAPI {
 
             // Build FROM: parquet UNION ALL buffer (for today's unexported data)
             const parquetFrom = `SELECT signalk_timestamp, value_latitude, value_longitude FROM (
-              SELECT * FROM read_parquet('${posFilePath}', union_by_name=true, filename=true)
+              SELECT * FROM read_parquet('${escapeSqlString(posFilePath)}', union_by_name=true, filename=true)
               WHERE filename NOT LIKE '%/processed/%'
               AND filename NOT LIKE '%/quarantine/%'
               AND filename NOT LIKE '%/failed/%'
@@ -1444,12 +1456,14 @@ export class HistoryAPI {
           // For hybrid queries, we UNION local and S3 sources
           // Local files need filename filter to exclude processed/quarantine/etc directories
           const buildFromClause = (filePath: string): string => {
+            // Escape the path before splicing it into the SQL string literal.
+            const fp = escapeSqlString(filePath);
             const isS3 = filePath.startsWith('s3://');
             if (isS3) {
-              return `read_parquet('${filePath}', union_by_name=true, filename=true)`;
+              return `read_parquet('${fp}', union_by_name=true, filename=true)`;
             }
             // Local files: exclude processed, quarantine, failed, repaired directories
-            return `(SELECT * FROM read_parquet('${filePath}', union_by_name=true, filename=true) WHERE filename NOT LIKE '%/processed/%' AND filename NOT LIKE '%/quarantine/%' AND filename NOT LIKE '%/failed/%' AND filename NOT LIKE '%/repaired/%')`;
+            return `(SELECT * FROM read_parquet('${fp}', union_by_name=true, filename=true) WHERE filename NOT LIKE '%/processed/%' AND filename NOT LIKE '%/quarantine/%' AND filename NOT LIKE '%/failed/%' AND filename NOT LIKE '%/repaired/%')`;
           };
 
           // Build FROM clause: local-only by default, hybrid only if S3 has data
@@ -1721,7 +1735,7 @@ export class HistoryAPI {
             let hasValueJson = false;
             if (localFilePath) {
               try {
-                const schemaQuery = `SELECT * FROM parquet_schema('${localFilePath}') WHERE name = 'value_json'`;
+                const schemaQuery = `SELECT * FROM parquet_schema('${escapeSqlString(localFilePath)}') WHERE name = 'value_json'`;
                 const schemaResult =
                   await connection.runAndReadAll(schemaQuery);
                 hasValueJson = schemaResult.getRowObjects().length > 0;
@@ -2349,6 +2363,10 @@ function splitPathExpression(pathExpression: string): PathSpec {
       }
     }
   }
+
+  // The bare path is interpolated into read_parquet() globs and filesystem
+  // paths; reject anything that is not a well-formed SignalK path.
+  validateSignalKPath(parts[0]);
 
   return {
     path: parts[0] as Path,

@@ -5,6 +5,11 @@ import express, { Router } from 'express';
 import multer from 'multer';
 import { getAvailablePaths } from './utils/path-discovery';
 import { DuckDBPool } from './utils/duckdb-pool';
+import { escapeSqlString } from './utils/sql-escape';
+import {
+  validateSignalKPath,
+  assertWithinDataDir,
+} from './utils/signalk-validation';
 import {
   TypedRequest,
   TypedResponse,
@@ -403,7 +408,7 @@ export function registerApiRoutes(
         }
 
         const sampleFile = result.files[0];
-        const query = `SELECT * FROM read_parquet('${sampleFile.path}', union_by_name=true) LIMIT ${limit}`;
+        const query = `SELECT * FROM read_parquet('${escapeSqlString(sampleFile.path)}', union_by_name=true) LIMIT ${limit}`;
 
         // Get connection from pool (spatial extension already loaded)
         const connection = await DuckDBPool.getConnection();
@@ -505,8 +510,11 @@ export function registerApiRoutes(
           });
         }
 
-        // Get connection from pool (spatial extension already loaded)
-        const connection = await DuckDBPool.getConnection();
+        // Run user-supplied SQL on the hardened sandbox connection: file access
+        // is confined to the data dir and httpfs/S3 are unavailable, so the raw
+        // SQL cannot read arbitrary host files, reach the network, or use the S3
+        // secret. Legitimate read_parquet of the data dir still works.
+        const connection = await DuckDBPool.getSandboxConnection(dataDir);
 
         try {
           const reader = await connection.runAndReadAll(processedQuery);
@@ -600,9 +608,12 @@ export function registerApiRoutes(
           keyPrefix: cloud.keyPrefix || 'none',
         });
       } catch (error) {
+        // AWS SDK messages can disclose bucket/region/endpoint topology; keep the
+        // detail in the server log and return a generic message to the client.
+        app.error(`Cloud connection test failed: ${(error as Error).message}`);
         return res.status(500).json({
           success: false,
-          error: (error as Error).message || 'Cloud connection failed',
+          error: 'Cloud connection failed',
         });
       }
     }
@@ -795,8 +806,9 @@ export function registerApiRoutes(
 
           setTimeout(() => cloudCompareJobs.delete(jobId), 5 * 60 * 1000);
         } catch (error) {
+          app.error(`Cloud compare failed: ${(error as Error).message}`);
           job.status = 'error';
-          job.error = (error as Error).message;
+          job.error = 'Cloud compare failed';
         }
       })();
 
@@ -894,6 +906,14 @@ export function registerApiRoutes(
                 ? key.replace(new RegExp(`^${cloud.keyPrefix}/?`), '')
                 : key;
               const localPath = path.join(dataDir, relativePath);
+              // Reject keys that escape the data dir (e.g. '../'), so a sync
+              // request can't read arbitrary local files and push them to the bucket.
+              try {
+                assertWithinDataDir(dataDir, localPath);
+              } catch {
+                app.error(`Rejecting cloud sync key outside data dir: ${key}`);
+                continue;
+              }
               if (await fs.pathExists(localPath)) {
                 filesToSync.push({ key, localPath });
               }
@@ -1061,6 +1081,20 @@ export function registerApiRoutes(
           return;
         }
 
+        // The path is persisted and later becomes a filesystem directory under
+        // the data dir, so reject anything that is not a plain SignalK path
+        // (blocks '..' traversal and absolute/separator-laden values).
+        try {
+          validateSignalKPath(newPath.path);
+        } catch {
+          res.status(400).json({
+            success: false,
+            error:
+              'Invalid path: must be a plain SignalK path (e.g. navigation.position).',
+          });
+          return;
+        }
+
         // Load current configuration
         const webAppConfig = loadWebAppConfig(app);
         const currentPaths = webAppConfig.paths;
@@ -1122,6 +1156,19 @@ export function registerApiRoutes(
           res.status(400).json({
             success: false,
             error: 'Path is required',
+          });
+          return;
+        }
+
+        // The path is persisted and later becomes a filesystem directory under
+        // the data dir, so reject anything that is not a plain SignalK path.
+        try {
+          validateSignalKPath(updatedPath.path);
+        } catch {
+          res.status(400).json({
+            success: false,
+            error:
+              'Invalid path: must be a plain SignalK path (e.g. navigation.position).',
           });
           return;
         }
@@ -1923,16 +1970,8 @@ export function registerApiRoutes(
           timeRange,
           aggregationMethod,
           resolution,
-          claudeModel,
           useDatabaseAccess,
         } = req.body;
-
-        console.log(
-          `🧠 ANALYSIS REQUEST: dataPath=${dataPath}, templateId=${templateId}, analysisType=${analysisType}, aggregationMethod=${aggregationMethod}, model=${claudeModel || 'config-default'}`
-        );
-        console.log(
-          `🔍 CUSTOM PROMPT DEBUG: "${customPrompt}" (type: ${typeof customPrompt}, length: ${customPrompt?.length || 0})`
-        );
 
         if (!dataPath) {
           return res.status(400).json({
@@ -2060,10 +2099,6 @@ export function registerApiRoutes(
             error: 'Both conversationId and question are required',
           });
         }
-
-        console.log(
-          `🔄 FOLLOW-UP REQUEST: conversationId=${conversationId}, question=${question.substring(0, 100)}...`
-        );
 
         // Use shared analyzer instance to access stored conversations
         const analyzer = getSharedAnalyzer(
