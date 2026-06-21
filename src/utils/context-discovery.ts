@@ -6,6 +6,7 @@ import { debugLogger } from './debug-logger';
 import { CACHE_TTL } from '../config/cache-defaults';
 import { HivePathBuilder } from './hive-path-builder';
 import { DuckDBPool } from './duckdb-pool';
+import { escapeSqlString } from './sql-escape';
 import { SpatialFilter, buildSpatialSqlClause } from './spatial-queries';
 
 // Cache for context list
@@ -249,7 +250,7 @@ export async function getContextsInSpatialFilter(
 
   const query = `
     SELECT DISTINCT context
-    FROM read_parquet('${glob}', hive_partitioning=true, union_by_name=true)
+    FROM read_parquet('${escapeSqlString(glob)}', hive_partitioning=true, union_by_name=true)
     WHERE signalk_timestamp >= '${fromIso}'
       AND signalk_timestamp < '${toIso}'
       AND ${spatialClause}
