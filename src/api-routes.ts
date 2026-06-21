@@ -64,6 +64,7 @@ import {
 } from './commands';
 import { updateDataSubscriptions } from './data-handler';
 import { toContextFilePath, toParquetFilePath } from './utils/path-helpers';
+import { newJobId } from './utils/job-id';
 import { ServerAPI, Context } from '@signalk/server-api';
 import { ClaudeAnalyzer, AnalysisRequest } from './claude-analyzer';
 import {
@@ -2964,7 +2965,7 @@ export function registerApiRoutes(
         ValidationApiResponse & { jobId: string; status?: string }
       >
     ) => {
-      const jobId = `val_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+      const jobId = newJobId('val');
       const progressJob: ValidationProgress = {
         jobId,
         status: 'running',
@@ -3462,7 +3463,7 @@ export function registerApiRoutes(
 
       targetFiles.sort((a, b) => a.relative.localeCompare(b.relative));
 
-      const jobId = `rep_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+      const jobId = newJobId('rep');
       const job: RepairProgress = {
         jobId,
         status: 'running',
@@ -4566,7 +4567,7 @@ export function registerApiRoutes(
       try {
         let session = uploadSessions.get(req);
         if (!session) {
-          const sessionId = `upload_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+          const sessionId = newJobId('upload');
           const dir = path.join(
             state.getDataDirPath(),
             'gpx-uploads',
@@ -5231,7 +5232,7 @@ export function registerApiRoutes(
   router.post('/api/migrate/vector-averaging', async (req, res) => {
     try {
       const { dryRun = false } = req.body || {};
-      const jobId = `vecavg_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+      const jobId = newJobId('vecavg');
 
       const job: {
         id: string;
@@ -5427,7 +5428,7 @@ export function registerApiRoutes(
   router.post('/api/migrate/position-aggregation', async (req, res) => {
     try {
       const { dryRun = false } = req.body || {};
-      const jobId = `posagg_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+      const jobId = newJobId('posagg');
 
       const job = {
         id: jobId,
