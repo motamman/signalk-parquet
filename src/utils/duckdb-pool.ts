@@ -41,15 +41,23 @@ export class DuckDBPool {
   private static sqliteInitialized: boolean = false;
   private static spatialAvailable: boolean = false;
 
+  // Default DuckDB memory ceiling, overridable via the initialize() memoryLimit
+  // argument. Conservative because DuckDB runs in-process alongside Node's heap.
+  static readonly DEFAULT_MEMORY_LIMIT = '512MB';
+
   /**
    * Initialize the DuckDB instance and load extensions
    * Call this once during plugin startup
    *
+   * @param homeBaseDir Writable base dir for DuckDB's extension/home directory
+   * @param warn Callback for non-fatal setup warnings (e.g. offline spatial)
+   * @param memoryLimit DuckDB memory ceiling; defaults to DEFAULT_MEMORY_LIMIT
    * @throws Error if initialization fails
    */
   static async initialize(
     homeBaseDir?: string,
-    warn?: (message: string) => void
+    warn?: (message: string) => void,
+    memoryLimit?: string
   ): Promise<void> {
     if (this.instance) {
       return; // Already initialized
@@ -79,8 +87,13 @@ export class DuckDBPool {
 
     const setupConn = await instance.connect();
     try {
-      // Cap DuckDB memory to prevent OOM when combined with Node's heap
-      await setupConn.runAndReadAll("SET memory_limit = '512MB';");
+      // Cap DuckDB memory to prevent OOM when combined with Node's heap. The
+      // value is interpolated into SQL, so it must stay a trusted constant/config
+      // value (quote-escaped defensively), never user free-text.
+      const limit = memoryLimit ?? DuckDBPool.DEFAULT_MEMORY_LIMIT;
+      await setupConn.runAndReadAll(
+        `SET memory_limit = '${limit.replace(/'/g, "''")}';`
+      );
 
       // Spatial is a downloadable extension: the first load fetches it from
       // DuckDB's extension repo, then caches it under extension_directory. If

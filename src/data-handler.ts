@@ -47,6 +47,11 @@ let S3Client: any,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   ListObjectsV2Command: any;
 
+// Bound network waits for cloud (S3/R2) calls so a stalled endpoint can't block
+// the upload/daily-export pipeline indefinitely (a real risk on a vessel uplink).
+const CLOUD_CONNECTION_TIMEOUT_MS = 10000;
+const CLOUD_REQUEST_TIMEOUT_MS = 60000;
+
 let _appInstance: ServerAPI;
 
 // Generic cloud target for S3-compatible uploads (S3, R2, etc.)
@@ -73,7 +78,13 @@ export async function initializeCloudSDK(
         ListObjectsV2Command = awsS3.ListObjectsV2Command;
       }
     } catch (importError) {
+      // Cloud upload is configured but the AWS SDK failed to load; leave the
+      // client undefined (uploads become no-ops) but make the misconfiguration
+      // visible instead of silently disabling sync forever.
       S3Client = undefined;
+      app.error(
+        `[CloudSync] Cloud upload provider '${config.cloudUpload.provider}' is configured but @aws-sdk/client-s3 failed to load: ${(importError as Error).message}`
+      );
     }
   }
 }
@@ -96,6 +107,10 @@ export function createCloudClient(config: PluginConfig, app: ServerAPI): any {
       return new S3Client({
         region: 'auto',
         endpoint: `https://${cloud.accountId}.r2.cloudflarestorage.com`,
+        requestHandler: {
+          connectionTimeout: CLOUD_CONNECTION_TIMEOUT_MS,
+          requestTimeout: CLOUD_REQUEST_TIMEOUT_MS,
+        },
         credentials:
           cloud.accessKeyId && cloud.secretAccessKey
             ? {
@@ -112,8 +127,13 @@ export function createCloudClient(config: PluginConfig, app: ServerAPI): any {
       endpoint?: string;
       forcePathStyle?: boolean;
       credentials?: { accessKeyId: string; secretAccessKey: string };
+      requestHandler?: { connectionTimeout: number; requestTimeout: number };
     } = {
       region: cloud.region || 'us-east-1',
+      requestHandler: {
+        connectionTimeout: CLOUD_CONNECTION_TIMEOUT_MS,
+        requestTimeout: CLOUD_REQUEST_TIMEOUT_MS,
+      },
     };
 
     if (cloud.endpoint) {
@@ -343,7 +363,11 @@ function handleCommandMessage(
         app
       );
     }
-  } catch (error) {}
+  } catch (error) {
+    app.error(
+      `[DataHandler] Failed to handle command message for ${pathConfig.path}: ${(error as Error).message}`
+    );
+  }
 }
 
 // Helper function to handle wildcard contexts
@@ -697,7 +721,11 @@ function handleStreamData(
     // Use actual context + path as buffer key to separate data from different vessels
     const bufferKey = `${normalizedDelta.context}:${pathConfig.path}`;
     bufferData(bufferKey, record, config, state, app);
-  } catch (error) {}
+  } catch (error) {
+    app.error(
+      `[DataHandler] Failed to buffer delta for ${normalizedDelta.context}:${pathConfig.path}: ${(error as Error).message}`
+    );
+  }
 }
 
 // Buffer data and trigger save if buffer is full
@@ -736,7 +764,6 @@ function bufferData(
 
   if (buffer.length >= config.bufferSize) {
     // Extract the actual SignalK path from the buffer key (context:path format)
-    // Find the separator between context and path - look for the last colon followed by a valid SignalK path
     const pathMatch = signalkPath.match(/^.*:([a-zA-Z][a-zA-Z0-9._]*)$/);
     const actualPath = pathMatch ? pathMatch[1] : signalkPath;
     saveBufferToParquet(actualPath, buffer, config, state, app);
@@ -753,7 +780,6 @@ export function saveAllBuffers(
   state.dataBuffers.forEach((buffer, signalkPath) => {
     if (buffer.length > 0) {
       // Extract the actual SignalK path from the buffer key (context:path format)
-      // Find the separator between context and path - look for the last colon followed by a valid SignalK path
       const pathMatch = signalkPath.match(/^.*:([a-zA-Z][a-zA-Z0-9._]*)$/);
       const actualPath = pathMatch ? pathMatch[1] : signalkPath;
       saveBufferToParquet(actualPath, buffer, config, state, app);
@@ -815,7 +841,11 @@ async function saveBufferToParquet(
 
     // Use ParquetWriter to save in the configured format
     await state.parquetWriter!.writeRecords(filepath, buffer);
-  } catch (error) {}
+  } catch (error) {
+    app.error(
+      `[DataHandler] Failed to write buffer for ${signalkPath} to ${config.fileFormat}: ${(error as Error).message}`
+    );
+  }
 }
 
 // Initialize regimen states from current API values at startup
