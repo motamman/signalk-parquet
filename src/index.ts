@@ -10,7 +10,6 @@ import {
   recoverStrandedCompactionTrash,
 } from './services/compaction-service';
 import { CACHE_SIZE } from './config/cache-defaults';
-// import { HistoricalStreamingService } from './historical-streaming';
 import { SignalKPlugin, PluginConfig, PluginState, PathConfig } from './types';
 import { Context, SourceRef, Timestamp, Path } from '@signalk/server-api';
 import {
@@ -189,7 +188,6 @@ export default function (app: ServerAPI): SignalKPlugin {
       setCurrentLocationAction: options?.setCurrentLocationAction || {
         setCurrentLocation: false,
       },
-      // enableStreaming: options?.enableStreaming ?? false,
       // SQLite buffer options
       useSqliteBuffer: true, // Always use SQLite buffer
       bufferRetentionHours: options?.bufferRetentionHours || 48,
@@ -701,30 +699,6 @@ export default function (app: ServerAPI): SignalKPlugin {
       app.error(`Failed to register as History API provider: ${error}`);
     }
 
-    // Historical streaming service disabled — all routes are commented out
-    // and the timeout accumulation bug causes unbounded memory growth.
-    // See devdocs/SQLITE_NODE_SQLITE_MIGRATION.md for context.
-    // try {
-    //   state.historicalStreamingService = new HistoricalStreamingService(
-    //     app,
-    //     state.currentConfig.outputDirectory
-    //   );
-    // } catch (error) {
-    //   app.error(`Failed to initialize historical streaming service: ${error}`);
-    // }
-
-    // Initialize runtime streaming service if enabled in configuration
-    // if (state.currentConfig.enableStreaming) {
-    //   try {
-    //     const result = await initializeStreamingService(state, app);
-    //     if (!result.success) {
-    //       app.error(`Failed to initialize runtime streaming service: ${result.error}`);
-    //     }
-    //   } catch (error) {
-    //     app.error(`Error initializing runtime streaming service: ${error}`);
-    //   }
-    // }
-
     // Handle "Set Current Location" action
     handleSetCurrentLocationAction(state.currentConfig).catch(err => {
       app.error(`Error handling set current location action: ${err}`);
@@ -832,25 +806,6 @@ export default function (app: ServerAPI): SignalKPlugin {
         app.debug('SQLite buffer closed');
       } catch (error) {
         app.error(`Error closing SQLite buffer: ${error}`);
-      }
-    }
-
-    // Shutdown runtime streaming service
-    if (state.streamingService) {
-      try {
-        shutdownStreamingService(state, app);
-      } catch (error) {
-        app.error(`Error shutting down runtime streaming service: ${error}`);
-      }
-    }
-
-    // Shutdown historical streaming service
-    if (state.historicalStreamingService) {
-      try {
-        state.historicalStreamingService.shutdown();
-        state.historicalStreamingService = undefined;
-      } catch (error) {
-        app.error(`Error shutting down historical streaming service: ${error}`);
       }
     }
 
@@ -1072,8 +1027,7 @@ export default function (app: ServerAPI): SignalKPlugin {
                   region: {
                     type: 'string',
                     title: 'AWS Region',
-                    description:
-                      'AWS region where the S3 bucket is located.',
+                    description: 'AWS region where the S3 bucket is located.',
                     default: 'us-east-1',
                   },
                   endpoint: {
@@ -1144,12 +1098,6 @@ export default function (app: ServerAPI): SignalKPlugin {
           },
         },
       },
-      // enableStreaming: {
-      //   type: 'boolean',
-      //   title: 'Enable WebSocket Streaming',
-      //   description: 'Enable real-time streaming of historical data via WebSocket connections',
-      //   default: false,
-      // },
     },
   };
 
@@ -1268,71 +1216,6 @@ export default function (app: ServerAPI): SignalKPlugin {
   }
 
   return plugin;
-}
-
-// Streaming service lifecycle functions for runtime control
-export async function initializeStreamingService(
-  state: PluginState,
-  app: ServerAPI
-): Promise<{ success: boolean; error?: string }> {
-  try {
-    if (state.streamingService) {
-      return { success: true, error: 'Streaming service is already running' };
-    }
-
-    if (!state.currentConfig?.enableStreaming) {
-      return {
-        success: false,
-        error:
-          'Streaming is disabled in plugin configuration. Enable it in settings first.',
-      };
-    }
-
-    // Historical streaming disabled — see comment at init above
-    // state.streamingService = state.historicalStreamingService;
-    // state.streamingEnabled = true;
-
-    // Restore any previous subscriptions if available
-    // The historical streaming service will automatically handle incoming subscriptions
-
-    return { success: true };
-  } catch (error) {
-    app.error(`Failed to initialize streaming service: ${error}`);
-    return { success: false, error: (error as Error).message };
-  }
-}
-
-export function shutdownStreamingService(
-  state: PluginState,
-  app: ServerAPI
-): { success: boolean; error?: string } {
-  try {
-    if (!state.streamingService) {
-      return { success: true, error: 'Streaming service is not running' };
-    }
-
-    // Store active subscriptions for potential restoration
-    if (state.streamingService.getActiveSubscriptions) {
-      const activeSubscriptions =
-        state.streamingService.getActiveSubscriptions();
-      if (activeSubscriptions.length > 0) {
-        state.restoredSubscriptions = new Map();
-        activeSubscriptions.forEach((sub: any, index: number) => {
-          state.restoredSubscriptions!.set(`sub_${index}`, sub);
-        });
-      }
-    }
-
-    // Shutdown the streaming service
-    state.streamingService.shutdown();
-    state.streamingService = undefined;
-    state.streamingEnabled = false;
-
-    return { success: true };
-  } catch (error) {
-    app.error(`Error shutting down streaming service: ${error}`);
-    return { success: false, error: (error as Error).message };
-  }
 }
 
 // Re-export utility functions for backward compatibility
