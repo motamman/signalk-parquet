@@ -13,7 +13,14 @@ import { DuckDBPool } from './duckdb-pool';
 export function getAvailablePaths(
   dataDir: string,
   app: ServerAPI,
-  context?: string
+  context?: string,
+  // When false, a path is included as soon as one parquet file is found rather
+  // than counting every file. countParquetFilesRecursive descends every
+  // year=/day= partition and stats every file — on a large store that is
+  // millions of synchronous calls that block the event loop. Callers that
+  // display the count (UI, analyzer) keep the default; the History API path
+  // list, which discards the count, passes false. Both return the same paths.
+  countFiles: boolean = true
 ): PathInfo[] {
   const paths: PathInfo[] = [];
   const hiveBuilder = new HivePathBuilder();
@@ -60,8 +67,14 @@ export function getAvailablePaths(
         const sanitizedPath = pathDir.replace('path=', '');
         const unsanitizedPath = hiveBuilder.unsanitizePath(sanitizedPath);
 
-        // Count parquet files across all year=/day=/ subdirs
-        const fileCount = countParquetFilesRecursive(pathPath);
+        // Count parquet files across all year=/day=/ subdirs, or just confirm
+        // at least one exists when the count is not needed (far cheaper, same
+        // inclusion result).
+        const fileCount = countFiles
+          ? countParquetFilesRecursive(pathPath)
+          : hasParquetFilesRecursiveSync(pathPath)
+            ? 1
+            : 0;
 
         if (fileCount > 0) {
           paths.push({
@@ -106,6 +119,32 @@ function countParquetFilesRecursive(dir: string): number {
 }
 
 /**
+ * Return true as soon as a single parquet file is found anywhere under `dir`.
+ * Mirrors countParquetFilesRecursive's traversal exactly (recurses every
+ * subdirectory, no special-dir skipping) so it includes the same paths, but
+ * short-circuits on the first hit and uses Dirent types instead of a statSync
+ * per entry — turning a full census into a handful of readdirs.
+ */
+function hasParquetFilesRecursiveSync(dir: string): boolean {
+  try {
+    const entries = fs.readdirSync(dir, { withFileTypes: true });
+
+    for (const entry of entries) {
+      if (entry.isDirectory()) {
+        if (hasParquetFilesRecursiveSync(path.join(dir, entry.name))) {
+          return true;
+        }
+      } else if (entry.name.endsWith('.parquet')) {
+        return true;
+      }
+    }
+  } catch (error) {
+    // Error reading directory - skip
+  }
+  return false;
+}
+
+/**
  * Get available SignalK paths as simple string array
  * Useful for SignalK history API compliance
  */
@@ -114,7 +153,9 @@ export function getAvailablePathsArray(
   app: ServerAPI,
   context?: string
 ): string[] {
-  const pathInfos = getAvailablePaths(dataDir, app, context);
+  // Path names only — skip the per-file count so this stays cheap even on a
+  // store with millions of parquet files (this is the History API hot path).
+  const pathInfos = getAvailablePaths(dataDir, app, context, false);
   return pathInfos.map(pathInfo => pathInfo.path);
 }
 
