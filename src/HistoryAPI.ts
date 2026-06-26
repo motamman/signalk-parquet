@@ -633,8 +633,8 @@ function convertToLocalTime(result: DataResult): DataResult {
 
 /**
  * Returns true when `res` exposes the Node stream methods streamDataResult
- * relies on. The plugin's HTTP routes pass a real Express Response, but
- * historical-streaming.ts reuses getValues with a mock that only implements
+ * relies on. The plugin's HTTP routes pass a real Express Response; an internal
+ * caller may instead reuse getValues with a mock that only implements
  * res.json / res.status().json — those callers go through the buffered path.
  */
 function canStreamResponse(res: Response): boolean {
@@ -1058,9 +1058,9 @@ export class HistoryAPI {
       if (canStreamResponse(res)) {
         await streamDataResult(res, allResult, debug);
       } else {
-        // Internal callers (historical-streaming.ts) pass a mock res with
-        // only json()/status().json(); fall back to the buffered shape so
-        // they keep working without an Express Response.
+        // An internal caller may pass a mock res with only
+        // json()/status().json(); fall back to the buffered shape so it keeps
+        // working without an Express Response.
         res.json(convertToLocalTime(allResult));
       }
     } catch (error) {

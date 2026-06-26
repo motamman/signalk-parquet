@@ -66,7 +66,6 @@ export interface PluginConfig {
   fileFormat: 'json' | 'csv' | 'parquet';
   vesselMMSI: string;
   cloudUpload: CloudUploadConfig;
-  enableStreaming?: boolean; // Enable WebSocket streaming functionality
   claudeIntegration?: ClaudeIntegrationConfig;
   homePortLatitude?: number;
   homePortLongitude?: number;
@@ -611,10 +610,6 @@ export interface PluginState {
   unsubscribes: Array<() => void>;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   streamSubscriptions?: any[]; // Store streambundle stream references for cleanup
-  historicalStreamingService?: any; // HistoricalStreamingService - avoiding circular import
-  streamingService?: any; // WebSocket streaming service for runtime control
-  streamingEnabled?: boolean; // Runtime control separate from config
-  restoredSubscriptions?: Map<string, any>; // Track active subscriptions
   dataBuffers: LRUCache<string, DataRecord[]>;
   activeRegimens: Set<string>;
   subscribedPaths: Set<string>;
