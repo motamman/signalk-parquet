@@ -295,18 +295,18 @@ export class ClaudeAnalyzer {
       // Set resolution if provided (empty string = auto/let HistoryAPI choose)
       if (resolution && resolution.trim() !== '') {
         params.set('resolution', resolution);
-        console.log(
+        this.app?.debug(
           `📊 CLAUDE ANALYZER: Using custom resolution: ${resolution}ms`
         );
       } else {
-        console.log(
+        this.app?.debug(
           `📊 CLAUDE ANALYZER: Using auto resolution (HistoryAPI will choose optimal bucketing)`
         );
       }
 
       const url = `${baseUrl}/api/history/values?${params}`;
-      console.log(`🌐 CLAUDE ANALYZER: Making REST API call to ${url}`);
-      console.log(
+      this.app?.debug(`🌐 CLAUDE ANALYZER: Making REST API call to ${url}`);
+      this.app?.debug(
         `📊 CLAUDE ANALYZER: Using paths "${pathsWithAggregation}" ${aggregationMethod ? `with aggregation method "${aggregationMethod}"` : 'with default aggregation'}`
       );
 
@@ -317,8 +317,10 @@ export class ClaudeAnalyzer {
       }
 
       const apiResult = (await response.json()) as any;
-      console.log(
-        `📊 CLAUDE ANALYZER (REST API): Raw API result:`,
+      // Pass the value as a separate arg so app.debug only serializes it when
+      // the debug namespace is enabled (the debug module formats lazily).
+      this.app?.debug(
+        '📊 CLAUDE ANALYZER (REST API): Raw API result keys:',
         Object.keys(apiResult)
       );
 
@@ -332,10 +334,13 @@ export class ClaudeAnalyzer {
         apiResult.values &&
         Array.isArray(apiResult.values)
       ) {
-        console.log(
+        this.app?.debug(
           `🔍 CLAUDE ANALYZER: Processing ${apiResult.data.length} data rows with ${apiResult.values.length} value columns`
         );
-        console.log(`🔍 CLAUDE ANALYZER: Value column info:`, apiResult.values);
+        this.app?.debug(
+          '🔍 CLAUDE ANALYZER: Value column info:',
+          apiResult.values
+        );
 
         // Safety limit to prevent stack overflow
         const maxRows = Math.min(apiResult.data.length, 10000);
@@ -357,7 +362,7 @@ export class ClaudeAnalyzer {
               const valueInfo = apiResult.values[colIndex - 1]; // values array is 0-indexed
 
               if (rowIndex < 3) {
-                console.log(
+                this.app?.debug(
                   `🔍 Sample row ${rowIndex}, col ${colIndex}: timestamp=${timestamp}, path=${valueInfo?.path}, method=${valueInfo?.method}, value=${value}`
                 );
               }
@@ -376,12 +381,11 @@ export class ClaudeAnalyzer {
           }
         }
       } else {
-        console.log(`🔍 CLAUDE ANALYZER: No data array found in API result`);
+        this.app?.debug(
+          `🔍 CLAUDE ANALYZER: No data array found in API result`
+        );
       }
 
-      console.log(
-        `📊 CLAUDE ANALYZER (REST API): Loaded ${records.length} records for analysis from ${pathsWithAggregation}`
-      );
       this.app?.debug(
         `REST API loaded ${records.length} records for analysis from ${pathsWithAggregation}`
       );
@@ -1045,7 +1049,7 @@ Please structure your response as JSON with the following format:
       // Build time range guidance for Claude
       let timeRangeGuidance = '';
       if (request.timeRange) {
-        console.log(`🔍 REQUEST TIME RANGE DEBUG:`, {
+        this.app?.debug('🔍 REQUEST TIME RANGE DEBUG:', {
           userRequested: request.customPrompt || request.analysisType,
           actualStart: request.timeRange.start.toISOString(),
           actualEnd: request.timeRange.end.toISOString(),
@@ -3022,8 +3026,8 @@ Begin your analysis by querying relevant data within the specified time range.`;
 
         // Debug: Log the actual data structure and size
         const dataStr = JSON.stringify(currentData, null, 2);
-        console.log(`🔍 DATA SIZE: ${dataStr.length} characters`);
-        console.log(`🔍 DATA STRUCTURE:`, currentData);
+        this.app?.debug(`🔍 DATA SIZE: ${dataStr.length} characters`);
+        this.app?.debug('🔍 DATA STRUCTURE:', dataStr);
 
         const resultSummary = `Current SignalK data "${purpose}":\n\n${dataStr}`;
 
