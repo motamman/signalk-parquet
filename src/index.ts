@@ -363,7 +363,8 @@ export default function (app: ServerAPI): SignalKPlugin {
             // Self-hosted S3-compatible endpoint (e.g. Garage, MinIO)
             const custom = resolveCustomS3Endpoint(
               state.currentConfig.cloudUpload.endpoint,
-              state.currentConfig.cloudUpload.forcePathStyle
+              state.currentConfig.cloudUpload.forcePathStyle,
+              state.currentConfig.cloudUpload.allowPrivateEndpoint
             );
             endpoint = custom.host;
             useSSL = custom.useSSL;
@@ -1072,8 +1073,7 @@ export default function (app: ServerAPI): SignalKPlugin {
                   region: {
                     type: 'string',
                     title: 'AWS Region',
-                    description:
-                      'AWS region where the S3 bucket is located.',
+                    description: 'AWS region where the S3 bucket is located.',
                     default: 'us-east-1',
                   },
                   endpoint: {
@@ -1088,6 +1088,13 @@ export default function (app: ServerAPI): SignalKPlugin {
                     title: 'Use Path-Style Addressing',
                     description:
                       'Use path-style bucket addressing (https://endpoint/bucket) instead of virtual-hosted-style (https://bucket.endpoint). Often required by self-hosted S3-compatible services like Garage or MinIO. If left unset, defaults to enabled when a custom endpoint is configured.',
+                  },
+                  allowPrivateEndpoint: {
+                    type: 'boolean',
+                    title: 'Allow Private/Local Endpoints',
+                    description:
+                      'Permit custom S3 endpoints on private, loopback, or link-local addresses (e.g. 192.168.x.x, localhost). Required for self-hosted services on the local network, but disabled by default to prevent SSRF.',
+                    default: false,
                   },
                 },
                 description:

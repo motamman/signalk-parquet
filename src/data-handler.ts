@@ -119,7 +119,8 @@ export function createCloudClient(config: PluginConfig, app: ServerAPI): any {
     if (cloud.endpoint) {
       const custom = resolveCustomS3Endpoint(
         cloud.endpoint,
-        cloud.forcePathStyle
+        cloud.forcePathStyle,
+        cloud.allowPrivateEndpoint
       );
       s3Config.endpoint = custom.url;
       s3Config.forcePathStyle = custom.forcePathStyle;

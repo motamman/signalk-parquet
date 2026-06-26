@@ -12,6 +12,7 @@ import { getAvailablePaths } from './utils/path-discovery';
 import * as fs from 'fs-extra';
 import * as path from 'path';
 import { DuckDBPool } from './utils/duckdb-pool';
+import { escapeSqlString } from './utils/sql-escape';
 import { ClaudeModel } from './claude-models';
 import { shouldSkipDirectory } from './utils/path-helpers';
 
@@ -1167,16 +1168,6 @@ Begin your analysis by querying relevant data within the specified time range.`;
       this.app?.debug(
         `📝 Full prompt for Claude (${initialPrompt.length} chars):\n${initialPrompt.substring(0, 2000)}${initialPrompt.length > 2000 ? '...[TRUNCATED]' : ''}`
       );
-
-      // Save full prompt to file for debugging
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const fs = require('fs');
-      const debugFile = `/tmp/claude-prompt-debug-${Date.now()}.txt`;
-      fs.writeFileSync(
-        debugFile,
-        `FULL CLAUDE PROMPT (${initialPrompt.length} chars):\n\n${initialPrompt}`
-      );
-      this.app?.debug(`📄 Full prompt saved to: ${debugFile}`);
 
       // Extract system context and user prompt
       const systemContext = `You are an expert maritime data analyst with direct access to a comprehensive database.
@@ -3081,7 +3072,7 @@ Begin your analysis by querying relevant data within the specified time range.`;
         return {
           type: 'tool_result',
           tool_use_id: toolCall.id,
-          content: `Path discovery failed: ${(pathDiscoveryError as Error).message}`,
+          content: 'Path discovery failed.',
         };
       }
     } else if (toolCall.name === 'get_available_signalk_sources') {
@@ -3109,7 +3100,7 @@ Begin your analysis by querying relevant data within the specified time range.`;
         return {
           type: 'tool_result',
           tool_use_id: toolCall.id,
-          content: `Source discovery failed: ${(sourceDiscoveryError as Error).message}`,
+          content: 'Source discovery failed.',
         };
       }
     } else if (toolCall.name === 'find_regimen_episodes') {
@@ -3209,7 +3200,7 @@ Begin your analysis by querying relevant data within the specified time range.`;
           signalk_timestamp,
           CAST(value AS BOOLEAN) as current_value,
           LAG(CAST(value AS BOOLEAN)) OVER (ORDER BY signalk_timestamp) as previous_value
-        FROM read_parquet('${this.dataDirectory}/vessels/*/commands/${regimenName}/*.parquet', union_by_name=true)
+        FROM read_parquet('${escapeSqlString(this.dataDirectory || '')}/vessels/*/commands/${escapeSqlString(regimenName)}/*.parquet', union_by_name=true)
         ${timeConstraint}
         ORDER BY signalk_timestamp
       ),
@@ -3367,8 +3358,16 @@ Begin your analysis by querying relevant data within the specified time range.`;
       }
     }
 
-    // Use shared pool - spatial extension is already loaded at startup
-    const connection = await DuckDBPool.getConnection();
+    if (!this.dataDirectory) {
+      throw new Error('Data directory is not configured');
+    }
+    // Run LLM-generated SQL on the hardened sandbox connection: file access is
+    // confined to the data dir and httpfs/S3 are unavailable, so a prompt-steered
+    // query cannot read arbitrary host files, reach the network, or use the S3
+    // secret. The keyword checks above remain as defence in depth.
+    const connection = await DuckDBPool.getSandboxConnection(
+      this.dataDirectory
+    );
 
     try {
       this.app?.debug(`🔍 Executing SQL query for: ${purpose}`);
@@ -3398,8 +3397,10 @@ Begin your analysis by querying relevant data within the specified time range.`;
       this.app?.debug(`✅ Query returned ${limitedData.length} rows`);
       return limitedData;
     } catch (error) {
+      // Keep the detailed DuckDB error (absolute paths, schema) server-side only;
+      // the thrown message reaches the LLM tool_result and HTTP responses.
       this.app?.error(`SQL query failed: ${(error as Error).message}`);
-      throw new Error(`Database query failed: ${(error as Error).message}`);
+      throw new Error('Database query failed.');
     } finally {
       connection.disconnectSync();
     }

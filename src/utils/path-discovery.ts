@@ -5,6 +5,7 @@ import { PathInfo } from '../types';
 import { ZonedDateTime } from '@js-joda/core';
 import { HivePathBuilder } from './hive-path-builder';
 import { DuckDBPool } from './duckdb-pool';
+import { escapeSqlString } from './sql-escape';
 
 /**
  * Get available SignalK paths from Hive directory structure
@@ -261,7 +262,7 @@ async function checkPathHasDataInRangeHive(
       // Fast query: just check if ANY row exists in time range
       const query = `
         SELECT 1 as found
-        FROM read_parquet('${filePath}', union_by_name=true, filename=true)
+        FROM read_parquet('${escapeSqlString(filePath)}', union_by_name=true, filename=true)
         WHERE signalk_timestamp >= '${fromIso}'
           AND signalk_timestamp < '${toIso}'
           AND filename NOT LIKE '%/processed/%'
