@@ -213,12 +213,23 @@ export default function (app: ServerAPI): SignalKPlugin {
     // on disk; without this, every restart would re-trigger the
     // legacy detection. Also writes the corrected retentionDays = 0.
     if (needsLegacyRetentionMigration) {
-      app.savePluginOptions(state.currentConfig, (err?: unknown) => {
-        if (err) {
-          app.error(
-            `[Retention] Failed to persist legacy migration: ${(err as Error).message}`
-          );
-        }
+      // savePluginOptions is callback-based; await the promisified call so the
+      // configSchemaVersion sentinel is actually confirmed on disk within start
+      // ordering. Resolve even on error (a persistence hiccup must not block
+      // startup) but log loudly: the sentinel won't have landed, so the
+      // migration re-runs on the next restart.
+      await new Promise<void>(resolve => {
+        app.savePluginOptions(state.currentConfig!, (err?: unknown) => {
+          if (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            app.error(
+              `[Retention] Failed to persist legacy migration; the ` +
+                `configSchemaVersion stamp did not land and the migration will ` +
+                `re-run on next restart: ${msg}`
+            );
+          }
+          resolve();
+        });
       });
     }
 
@@ -1072,8 +1083,7 @@ export default function (app: ServerAPI): SignalKPlugin {
                   region: {
                     type: 'string',
                     title: 'AWS Region',
-                    description:
-                      'AWS region where the S3 bucket is located.',
+                    description: 'AWS region where the S3 bucket is located.',
                     default: 'us-east-1',
                   },
                   endpoint: {
