@@ -995,10 +995,18 @@ export async function quarantineEmptyParquetFiles(
 
   await walk(baseDirectory);
 
-  // Record this sweep's start as the next run's cutoff. Using the start time
-  // (not end) means files written while the sweep ran are re-checked next time.
+  // Record the next run's cutoff: the sweep's start (not end, so files written
+  // while it ran are re-checked), minus a slack margin so a coarse-resolution
+  // filesystem (1s mtime) or a same-second write can't round a just-created
+  // directory below the watermark and skip it. The overlap only re-inspects
+  // directories touched in the ~2s around this sweep.
+  const WATERMARK_SLACK_MS = 2000;
   try {
-    await fs.writeFile(stateFile, String(sweepStart), 'utf8');
+    await fs.writeFile(
+      stateFile,
+      String(sweepStart - WATERMARK_SLACK_MS),
+      'utf8'
+    );
   } catch (err) {
     app.error(
       `Failed to persist empty-sweep watermark ${stateFile}: ${(err as Error).message}`

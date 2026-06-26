@@ -122,19 +122,38 @@ function countParquetFilesRecursive(dir: string): number {
  * Return true as soon as a single parquet file is found anywhere under `dir`.
  * Mirrors countParquetFilesRecursive's traversal exactly (recurses every
  * subdirectory, no special-dir skipping) so it includes the same paths, but
- * short-circuits on the first hit and uses Dirent types instead of a statSync
- * per entry — turning a full census into a handful of readdirs.
+ * short-circuits on the first hit and uses Dirent types (falling back to stat
+ * only for symlinks/unknown entries) instead of a statSync per entry — turning
+ * a full census into a handful of readdirs.
  */
 function hasParquetFilesRecursiveSync(dir: string): boolean {
   try {
     const entries = fs.readdirSync(dir, { withFileTypes: true });
 
     for (const entry of entries) {
-      if (entry.isDirectory()) {
+      let isDir = entry.isDirectory();
+      let isParquet =
+        !isDir && entry.isFile() && entry.name.endsWith('.parquet');
+
+      // Dirent types are unreliable for symlinks (reported as the link, not its
+      // target) and on filesystems that return unknown types. For those rare
+      // entries fall back to stat (which follows the link) so traversal matches
+      // countParquetFilesRecursive. The data tree has no symlinks in practice,
+      // so the fast Dirent path covers essentially everything.
+      if (!isDir && !isParquet && !entry.isFile()) {
+        try {
+          isDir = fs.statSync(path.join(dir, entry.name)).isDirectory();
+          isParquet = !isDir && entry.name.endsWith('.parquet');
+        } catch {
+          // broken symlink / unreadable entry — skip
+        }
+      }
+
+      if (isDir) {
         if (hasParquetFilesRecursiveSync(path.join(dir, entry.name))) {
           return true;
         }
-      } else if (entry.name.endsWith('.parquet')) {
+      } else if (isParquet) {
         return true;
       }
     }
