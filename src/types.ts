@@ -81,6 +81,7 @@ export interface PluginConfig {
   dailyExportHour?: number; // Hour (0-23 UTC) to run daily export (default 4 = 4 AM UTC)
   autoDiscovery?: AutoDiscoveryConfig; // Auto-discovery configuration
   enableRawSql?: boolean; // Enable raw SQL queries via /api/query endpoint
+  duckdbMemoryLimit?: string; // DuckDB memory_limit (e.g. '256MB', '1GB'); default '512MB'
 }
 
 import type { ClaudeModel } from './claude-models';
@@ -620,6 +621,9 @@ export interface PluginState {
   subscribedPaths: Set<string>;
   saveInterval?: NodeJS.Timeout;
   consolidationInterval?: NodeJS.Timeout;
+  dailyExportTimeout?: NodeJS.Timeout; // first daily-export bootstrap timer
+  startupExportTimeout?: NodeJS.Timeout; // 10s startup export/sync timer
+  stopped?: boolean; // set in stop(), reset in start(); guards deferred timers
   parquetWriter?: ParquetWriter;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   cloudClient?: any; // S3 or R2 client (S3-compatible)
