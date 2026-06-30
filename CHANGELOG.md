@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.7.41-beta.3] - 2026-06-30
+
+### Fixed
+
+- **Multi-minute startup freeze on large stores** (PR #88) — `quarantineEmptyParquetFiles` ran on every plugin start and globbed the _entire_ data directory (`**/*.parquet`), statting every match. On installs with millions of parquet files this froze `plugin.start` for 6–20 minutes — event loop pegged at 100% CPU, RSS climbing to ~4 GB — before reaching DuckDB initialization. The sweep is now **incremental**: it persists a last-sweep timestamp in `<dataDir>/.last-empty-sweep` and only inspects directories whose mtime is newer than the watermark (a 0-byte stub is a newly _created_ file, which bumps its parent directory's mtime). The first start after upgrading scans once to catch any pre-existing stub, then every later start is O(directories changed since the previous start). The `glob`/micromatch pass is replaced with a plain async `readdir`/`stat` walk, so even the one-time first scan no longer blocks the event loop. The watermark carries a 2 s slack so coarse-resolution filesystems can't round a just-created directory below the cutoff, and the walk falls back to `stat` for symlinked/unknown directory entries.
+- **Slow History API path listing on large stores** (PR #88) — the History API path list (`getPaths` and the legacy `/signalk/v1/history/paths` branch) counted _every_ parquet file under each path just to test `> 0`, then discarded the count — a synchronous stat-walk of the whole store on the first request after a restart. It now short-circuits on the first parquet file found per path. Callers that display the count (`GET /api/paths`, the analyzer prompt) are unchanged.
+
+---
+
 ## [0.7.40-beta.1] - 2026-05-01
 
 ### Breaking

@@ -1541,6 +1541,10 @@ curl "http://localhost:3000/signalk/v1/history/contexts"
 
 ## Legacy Notes
 
+### Upgrading to 0.7.41-beta.3: Faster Startup Sweep
+
+The startup sweep that quarantines crash-truncated (0-byte) parquet files is now incremental, keyed to a watermark file at `<dataDir>/.last-empty-sweep`. The **first** start after upgrading does one full scan of the store to establish the watermark (on very large stores this can take a minute or two), and **every start after that only inspects directories changed since the previous start** — typically near-instant. No action is required; the watermark file is created automatically. See [CHANGELOG.md](CHANGELOG.md) for details.
+
 ### Upgrading from 0.5.0-beta.3: Consolidation Bug Fix
 
 If upgrading from versions prior to 0.5.0-beta.4, you may have nested `processed` directories from a recursive consolidation bug:
