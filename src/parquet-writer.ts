@@ -1,6 +1,5 @@
 import * as fs from 'fs-extra';
 import * as path from 'path';
-import { glob } from 'glob';
 import { DataRecord, ParquetWriterOptions, FileFormat } from './types';
 import { ServerAPI } from '@signalk/server-api';
 import { SchemaService } from './schema-service';
@@ -899,6 +898,13 @@ export class ParquetWriter {
  * on plugin start. Files are moved to a sibling `quarantine/` dir, matching
  * the in-flight quarantine layout; the History API already excludes those
  * paths from queries.
+ *
+ * The sweep is incremental: a stub is a newly *created* file, which bumps its
+ * parent directory's mtime, so directories unchanged since the last sweep are
+ * skipped. The last-sweep time is persisted in `<baseDirectory>/.last-empty-
+ * sweep`; the first run (no watermark) scans everything once to catch any
+ * pre-existing stub, then later runs cost O(directories changed since the
+ * previous start) and still catch a stub of any age after long downtime.
  */
 export async function quarantineEmptyParquetFiles(
   app: ServerAPI,
@@ -908,39 +914,103 @@ export async function quarantineEmptyParquetFiles(
     return { quarantined: 0, failed: 0 };
   }
 
-  const candidates = await glob(path.join(baseDirectory, '**', '*.parquet'), {
-    ignore: [
-      path.join(baseDirectory, '**', 'quarantine', '**'),
-      path.join(baseDirectory, '**', 'failed', '**'),
-      path.join(baseDirectory, '**', 'repaired', '**'),
-      path.join(baseDirectory, '**', '.compaction-trash-*', '**'),
-    ],
-  });
+  // Persisted last-sweep timestamp. Missing/unparseable (first run after this
+  // change) leaves the watermark at 0, so everything is scanned once to catch
+  // pre-existing stubs; subsequent runs only inspect directories changed since.
+  const stateFile = path.join(baseDirectory, '.last-empty-sweep');
+  let watermark = 0;
+  try {
+    const parsed = Number((await fs.readFile(stateFile, 'utf8')).trim());
+    if (Number.isFinite(parsed)) watermark = parsed;
+  } catch {
+    // No prior sweep recorded — proceed with watermark = 0 (full scan once).
+  }
+
+  const sweepStart = Date.now();
+  const ignoredDir = (name: string): boolean =>
+    name === 'quarantine' ||
+    name === 'failed' ||
+    name === 'repaired' ||
+    name.startsWith('.compaction-trash-');
 
   let quarantined = 0;
   let failed = 0;
 
-  for (const file of candidates) {
+  const walk = async (dir: string): Promise<void> => {
+    let entries: import('fs').Dirent[];
     try {
-      const stats = await fs.stat(file);
-      if (stats.size >= 100) continue;
-
-      const quarantineDir = path.join(path.dirname(file), 'quarantine');
-      await fs.ensureDir(quarantineDir);
-      const quarantinePath = path.join(quarantineDir, path.basename(file));
-      await fs.move(file, quarantinePath, { overwrite: true });
-
-      const logLine = `${new Date().toISOString()} | startup-sweep | ${stats.size} bytes | Undersized parquet (likely crash between openFile and close) | ${quarantinePath}\n`;
-      await fs.appendFile(path.join(quarantineDir, 'quarantine.log'), logLine);
-
-      quarantined++;
-      app.debug(`Quarantined undersized parquet (${stats.size}B): ${file}`);
-    } catch (err) {
-      failed++;
-      app.error(
-        `Failed to quarantine undersized parquet ${file}: ${(err as Error).message}`
-      );
+      entries = await fs.readdir(dir, { withFileTypes: true });
+    } catch {
+      return; // unreadable directory — skip
     }
+
+    // A new stub bumps the mtime of the directory it was created in, so a
+    // directory unchanged since the last sweep has no new files to check.
+    // Subdirectories are always descended: an ancestor's mtime does NOT change
+    // when a file is added deep in the tree.
+    let inspectFiles = true;
+    if (watermark > 0) {
+      try {
+        inspectFiles = (await fs.stat(dir)).mtimeMs > watermark;
+      } catch {
+        inspectFiles = true;
+      }
+    }
+
+    for (const entry of entries) {
+      if (entry.isDirectory()) {
+        if (!ignoredDir(entry.name)) {
+          await walk(path.join(dir, entry.name));
+        }
+        continue;
+      }
+      if (!inspectFiles || !entry.name.endsWith('.parquet')) continue;
+
+      const file = path.join(dir, entry.name);
+      try {
+        const stats = await fs.stat(file);
+        if (stats.size >= 100) continue;
+
+        const quarantineDir = path.join(dir, 'quarantine');
+        await fs.ensureDir(quarantineDir);
+        const quarantinePath = path.join(quarantineDir, entry.name);
+        await fs.move(file, quarantinePath, { overwrite: true });
+
+        const logLine = `${new Date().toISOString()} | startup-sweep | ${stats.size} bytes | Undersized parquet (likely crash between openFile and close) | ${quarantinePath}\n`;
+        await fs.appendFile(
+          path.join(quarantineDir, 'quarantine.log'),
+          logLine
+        );
+
+        quarantined++;
+        app.debug(`Quarantined undersized parquet (${stats.size}B): ${file}`);
+      } catch (err) {
+        failed++;
+        app.error(
+          `Failed to quarantine undersized parquet ${file}: ${(err as Error).message}`
+        );
+      }
+    }
+  };
+
+  await walk(baseDirectory);
+
+  // Record the next run's cutoff: the sweep's start (not end, so files written
+  // while it ran are re-checked), minus a slack margin so a coarse-resolution
+  // filesystem (1s mtime) or a same-second write can't round a just-created
+  // directory below the watermark and skip it. The overlap only re-inspects
+  // directories touched in the ~2s around this sweep.
+  const WATERMARK_SLACK_MS = 2000;
+  try {
+    await fs.writeFile(
+      stateFile,
+      String(sweepStart - WATERMARK_SLACK_MS),
+      'utf8'
+    );
+  } catch (err) {
+    app.error(
+      `Failed to persist empty-sweep watermark ${stateFile}: ${(err as Error).message}`
+    );
   }
 
   if (quarantined > 0) {
