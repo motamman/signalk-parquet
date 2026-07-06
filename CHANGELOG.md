@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.7.41] - 2026-07-06
+
+Stable release — promotes the 0.7.41-beta line (beta.2, beta.3) to a tagged npm release. No code changes since beta.3; see the beta entries below for the full set of fixes (incremental startup sweep and faster History API path listing, PR #88).
+
+---
+
 ## [0.7.41-beta.3] - 2026-06-30
 
 ### Fixed
