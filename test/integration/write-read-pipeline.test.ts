@@ -17,6 +17,11 @@ import { SQLiteBuffer } from '../../src/utils/sqlite-buffer';
 import { ParquetWriter } from '../../src/parquet-writer';
 import { ParquetExportService } from '../../src/services/parquet-export-service';
 import { DuckDBPool } from '../../src/utils/duckdb-pool';
+import { stageBufferTable } from '../../src/utils/buffer-staging';
+import {
+  buildBufferScalarSubquery,
+  buildBufferObjectSubquery,
+} from '../../src/utils/buffer-sql-builder';
 import { HivePathBuilder } from '../../src/utils/hive-path-builder';
 import { createFakeSignalK, FakeSignalK } from './helpers/fake-signalk';
 import { makeScalarRecord, makePositionRecord } from './helpers/records';
@@ -221,27 +226,142 @@ describe('storage pipeline (SQLite buffer -> Parquet -> DuckDB)', function () {
     expect(second.filesCreated).to.deep.equal([]);
   });
 
-  it('queries not-yet-exported records through the SQLite buffer federation', async () => {
+  it('queries not-yet-exported records through the staged buffer federation', async () => {
     // Live data still in the buffer must be queryable before any export
-    // runs; this is the path the History API uses for "today".
+    // runs; this is the path the History API uses for "today". Buffer rows
+    // reach DuckDB via a staged temp table — never via ATTACH of the live
+    // buffer.db (two in-process SQLite libraries corrupt each other's WAL).
     buffer.insert(
       scalarRecord('navigation.speedOverGround', 9, '2024-06-01T10:00:00.000Z')
     );
     buffer.insert(
       scalarRecord('navigation.speedOverGround', 11, '2024-06-01T10:01:00.000Z')
     );
-    buffer.checkpoint(); // flush WAL so the read-only ATTACH sees the rows
 
-    DuckDBPool.initializeSQLiteBuffer(buffer.getDbPath());
-    const conn = await DuckDBPool.getConnectionWithBuffer();
+    const fromIso = '2024-06-01T00:00:00.000Z';
+    const toIso = '2024-06-02T00:00:00.000Z';
+    const conn = await DuckDBPool.getConnection();
     try {
+      const staged = await stageBufferTable(
+        conn,
+        buffer,
+        CONTEXT,
+        'navigation.speedOverGround',
+        fromIso,
+        toIso
+      );
+      expect(staged).to.be.a('string');
+
+      const subquery = buildBufferScalarSubquery(
+        staged as string,
+        CONTEXT,
+        'navigation.speedOverGround',
+        fromIso,
+        toIso
+      );
       const res = await conn.runAndReadAll(
-        `SELECT AVG(TRY_CAST(value AS DOUBLE)) AS avg_value
-         FROM buffer.buffer_navigation_speedOverGround
-         WHERE exported = 0`
+        `SELECT AVG(value) AS avg_value FROM ${subquery} AS b`
       );
       const row = res.getRowObjects()[0] as { avg_value: number };
       expect(Number(row.avg_value)).to.equal(10);
+    } finally {
+      conn.disconnectSync();
+    }
+  });
+
+  it('staging returns null for unknown paths and empty time windows', async () => {
+    buffer.insert(
+      scalarRecord('navigation.speedOverGround', 9, '2024-06-01T10:00:00.000Z')
+    );
+
+    const conn = await DuckDBPool.getConnection();
+    try {
+      // Path with no buffer table
+      expect(
+        await stageBufferTable(
+          conn,
+          buffer,
+          CONTEXT,
+          'environment.wind.speedApparent',
+          '2024-06-01T00:00:00.000Z',
+          '2024-06-02T00:00:00.000Z'
+        )
+      ).to.equal(null);
+
+      // Known path, but the window holds no rows
+      expect(
+        await stageBufferTable(
+          conn,
+          buffer,
+          CONTEXT,
+          'navigation.speedOverGround',
+          '2024-07-01T00:00:00.000Z',
+          '2024-07-02T00:00:00.000Z'
+        )
+      ).to.equal(null);
+    } finally {
+      conn.disconnectSync();
+    }
+  });
+
+  it('round-trips object (position) records through the staged federation', async () => {
+    buffer.insert(positionRecord(47.5, 8.7, '2024-06-01T10:00:00.000Z'));
+    buffer.insert(positionRecord(47.6, 8.8, '2024-06-01T10:01:00.000Z'));
+
+    const fromIso = '2024-06-01T00:00:00.000Z';
+    const toIso = '2024-06-02T00:00:00.000Z';
+    const conn = await DuckDBPool.getConnection();
+    try {
+      const staged = await stageBufferTable(
+        conn,
+        buffer,
+        CONTEXT,
+        'navigation.position',
+        fromIso,
+        toIso
+      );
+      expect(staged).to.be.a('string');
+
+      const subquery = buildBufferObjectSubquery(
+        staged as string,
+        CONTEXT,
+        fromIso,
+        toIso,
+        new Map([
+          [
+            'latitude',
+            {
+              name: 'latitude',
+              columnName: 'value_latitude',
+              dataType: 'numeric' as const,
+            },
+          ],
+          [
+            'longitude',
+            {
+              name: 'longitude',
+              columnName: 'value_longitude',
+              dataType: 'numeric' as const,
+            },
+          ],
+        ]),
+        buffer.getTableColumns('navigation.position')
+      );
+      const res = await conn.runAndReadAll(
+        `SELECT
+           COUNT(*) AS n,
+           MIN(value_latitude) AS min_lat,
+           MAX(value_longitude) AS max_lon
+         FROM ${subquery} AS b`
+      );
+      const row = res.getRowObjects()[0] as {
+        n: bigint;
+        min_lat: number;
+        max_lon: number;
+      };
+      expect(Number(row.n)).to.equal(2);
+      expect(Number(row.min_lat)).to.be.closeTo(47.5, 1e-9);
+      expect(Number(row.max_lon)).to.be.closeTo(8.8, 1e-9);
     } finally {
       conn.disconnectSync();
     }

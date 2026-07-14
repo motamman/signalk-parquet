@@ -45,6 +45,7 @@ import {
   buildBufferScalarSubquery,
   buildBufferObjectSubquery,
 } from './utils/buffer-sql-builder';
+import { stageBufferTable } from './utils/buffer-staging';
 import {
   parseDurationToMillis,
   parseResolutionToMillis,
@@ -815,9 +816,7 @@ export class HistoryAPI {
 
     try {
       const hasBuffer = DuckDBPool.isSQLiteBufferInitialized();
-      const connection = hasBuffer
-        ? await DuckDBPool.getConnectionWithBuffer()
-        : await DuckDBPool.getConnection();
+      const connection = await DuckDBPool.getConnection();
       try {
         // Bucket-lookup approach: instead of scanning all raw position data,
         // bucket by time resolution, grab FIRST lat/lon per bucket, then filter by bbox/radius.
@@ -836,35 +835,44 @@ export class HistoryAPI {
 
         let fromSource = `(${parquetFrom})`;
         if (hasBuffer && this.sqliteBuffer) {
-          const knownPaths = this.sqliteBuffer.getKnownPaths();
           const bufferTableCols =
             this.sqliteBuffer.getTableColumns(positionPath);
-          const bufferSubquery = buildBufferObjectSubquery(
-            context,
+          const stagedTable = await stageBufferTable(
+            connection,
+            this.sqliteBuffer,
+            String(context),
             positionPath,
             fromIso,
             toIso,
-            new Map([
-              [
-                'latitude',
-                {
-                  name: 'latitude',
-                  columnName: 'value_latitude',
-                  dataType: 'numeric' as const,
-                },
-              ],
-              [
-                'longitude',
-                {
-                  name: 'longitude',
-                  columnName: 'value_longitude',
-                  dataType: 'numeric' as const,
-                },
-              ],
-            ]),
-            knownPaths,
-            bufferTableCols
+            debug
           );
+          const bufferSubquery = stagedTable
+            ? buildBufferObjectSubquery(
+                stagedTable,
+                context,
+                fromIso,
+                toIso,
+                new Map([
+                  [
+                    'latitude',
+                    {
+                      name: 'latitude',
+                      columnName: 'value_latitude',
+                      dataType: 'numeric' as const,
+                    },
+                  ],
+                  [
+                    'longitude',
+                    {
+                      name: 'longitude',
+                      columnName: 'value_longitude',
+                      dataType: 'numeric' as const,
+                    },
+                  ],
+                ]),
+                bufferTableCols
+              )
+            : null;
           if (bufferSubquery) {
             fromSource = `(${parquetFrom} UNION ALL SELECT signalk_timestamp, TRY_CAST(value_latitude AS DOUBLE) as value_latitude, TRY_CAST(value_longitude AS DOUBLE) as value_longitude FROM ${bufferSubquery})`;
           }
@@ -1171,9 +1179,7 @@ export class HistoryAPI {
 
         try {
           const hasBuffer = DuckDBPool.isSQLiteBufferInitialized();
-          const connection = hasBuffer
-            ? await DuckDBPool.getConnectionWithBuffer()
-            : await DuckDBPool.getConnection();
+          const connection = await DuckDBPool.getConnection();
           try {
             const bucketExpr = `strftime(DATE_TRUNC('seconds',
               EPOCH_MS(CAST(FLOOR(EPOCH_MS(signalk_timestamp::TIMESTAMP) / ${timeResolutionMillis}) * ${timeResolutionMillis} AS BIGINT))
@@ -1205,33 +1211,43 @@ export class HistoryAPI {
               const bufferTableCols = this.sqliteBuffer.getTableColumns(
                 posPathSpec.path
               );
-              const bufferSubquery = buildBufferObjectSubquery(
-                context,
+              const stagedTable = await stageBufferTable(
+                connection,
+                this.sqliteBuffer,
+                String(context),
                 posPathSpec.path,
                 fromIso,
                 toIso,
-                new Map([
-                  [
-                    'latitude',
-                    {
-                      name: 'latitude',
-                      columnName: 'value_latitude',
-                      dataType: 'numeric' as const,
-                    },
-                  ],
-                  [
-                    'longitude',
-                    {
-                      name: 'longitude',
-                      columnName: 'value_longitude',
-                      dataType: 'numeric' as const,
-                    },
-                  ],
-                ]),
-                this.sqliteBuffer.getKnownPaths(),
-                bufferTableCols,
-                posPathSpec.filters
+                debug
               );
+              const bufferSubquery = stagedTable
+                ? buildBufferObjectSubquery(
+                    stagedTable,
+                    context,
+                    fromIso,
+                    toIso,
+                    new Map([
+                      [
+                        'latitude',
+                        {
+                          name: 'latitude',
+                          columnName: 'value_latitude',
+                          dataType: 'numeric' as const,
+                        },
+                      ],
+                      [
+                        'longitude',
+                        {
+                          name: 'longitude',
+                          columnName: 'value_longitude',
+                          dataType: 'numeric' as const,
+                        },
+                      ],
+                    ]),
+                    bufferTableCols,
+                    posPathSpec.filters
+                  )
+                : null;
               if (bufferSubquery) {
                 fromSource = `(${parquetFrom} UNION ALL SELECT signalk_timestamp, TRY_CAST(value_latitude AS DOUBLE) as value_latitude, TRY_CAST(value_longitude AS DOUBLE) as value_longitude FROM ${bufferSubquery})`;
               }
@@ -1429,17 +1445,24 @@ export class HistoryAPI {
         const fromIso = from.toInstant().toString();
         const toIso = to.toInstant().toString();
 
-        // Get connection from pool with SQLite buffer attached (spatial extension already loaded)
+        // Get connection from pool (spatial extension already loaded), then
+        // stage this path's buffer rows into a temp table for federation
         const hasBuffer = DuckDBPool.isSQLiteBufferInitialized();
-        const knownBufferPaths =
-          hasBuffer && this.sqliteBuffer
-            ? this.sqliteBuffer.getKnownPaths()
-            : undefined;
-        const connection = hasBuffer
-          ? await DuckDBPool.getConnectionWithBuffer()
-          : await DuckDBPool.getConnection();
+        const connection = await DuckDBPool.getConnection();
 
         try {
+          const stagedBufferTable =
+            hasBuffer && this.sqliteBuffer
+              ? await stageBufferTable(
+                  connection,
+                  this.sqliteBuffer,
+                  String(context),
+                  pathSpec.path,
+                  fromIso,
+                  toIso,
+                  debug
+                )
+              : null;
           // Build FROM clause based on available sources
           // For hybrid queries, we UNION local and S3 sources
           // Local files need filename filter to exclude processed/quarantine/etc directories
@@ -1653,27 +1676,24 @@ export class HistoryAPI {
                 GROUP BY timestamp`);
 
               // Source 2: SQLite buffer (today's live data not yet exported)
-              if (hasBuffer) {
+              if (stagedBufferTable) {
                 const bufferTableCols = this.sqliteBuffer?.getTableColumns(
                   pathSpec.path
                 );
                 const bufferSubquery = buildBufferObjectSubquery(
+                  stagedBufferTable,
                   context,
-                  pathSpec.path,
                   fromIso,
                   toIso,
                   componentSchema.components,
-                  knownBufferPaths,
                   bufferTableCols,
                   pathSpec.filters
                 );
-                if (bufferSubquery) {
-                  subqueries.push(`
+                subqueries.push(`
                 SELECT ${objBucketExpr('signalk_timestamp')} as timestamp, ${componentSelects}, 2 as priority
                 FROM ${bufferSubquery} AS source_data
                 WHERE (${componentWhereConditions})${spatialWhereClause}
                 GROUP BY timestamp`);
-                }
               }
 
               if (subqueries.length === 1) {
@@ -1795,30 +1815,28 @@ export class HistoryAPI {
                 GROUP BY timestamp`);
 
               // Source 2: SQLite buffer (today's live data not yet exported)
-              if (hasBuffer) {
+              if (stagedBufferTable) {
                 const bufferSubquery = buildBufferScalarSubquery(
+                  stagedBufferTable,
                   context,
                   pathSpec.path,
                   fromIso,
                   toIso,
-                  knownBufferPaths,
                   pathSpec.filters
                 );
-                if (bufferSubquery) {
-                  const bufferAggExpr = getTierAggregateExpression(
-                    pathSpec.aggregateMethod,
-                    pathSpec.path,
-                    'raw',
-                    false,
-                    app,
-                    context as string
-                  );
-                  subqueries.push(`
+                const bufferAggExpr = getTierAggregateExpression(
+                  pathSpec.aggregateMethod,
+                  pathSpec.path,
+                  'raw',
+                  false,
+                  app,
+                  context as string
+                );
+                subqueries.push(`
                 SELECT ${bucketExpr('signalk_timestamp')} as timestamp, ${bufferAggExpr} as value, 2 as priority
                 FROM ${bufferSubquery} AS source_data
                 WHERE value IS NOT NULL
                 GROUP BY timestamp`);
-                }
               }
 
               if (subqueries.length === 1) {
@@ -1867,19 +1885,29 @@ export class HistoryAPI {
           try {
             const fallbackFromIso = from.toInstant().toString();
             const fallbackToIso = to.toInstant().toString();
-            const bufferConn = await DuckDBPool.getConnectionWithBuffer();
+            const bufferConn = await DuckDBPool.getConnection();
             try {
-              const fallbackKnownPaths = this.sqliteBuffer
-                ? this.sqliteBuffer.getKnownPaths()
-                : undefined;
-              const bufferSubquery = buildBufferScalarSubquery(
-                context,
-                pathSpec.path,
-                fallbackFromIso,
-                fallbackToIso,
-                fallbackKnownPaths,
-                pathSpec.filters
-              );
+              const stagedFallbackTable = this.sqliteBuffer
+                ? await stageBufferTable(
+                    bufferConn,
+                    this.sqliteBuffer,
+                    String(context),
+                    pathSpec.path,
+                    fallbackFromIso,
+                    fallbackToIso,
+                    debug
+                  )
+                : null;
+              const bufferSubquery = stagedFallbackTable
+                ? buildBufferScalarSubquery(
+                    stagedFallbackTable,
+                    context,
+                    pathSpec.path,
+                    fallbackFromIso,
+                    fallbackToIso,
+                    pathSpec.filters
+                  )
+                : null;
               if (bufferSubquery) {
                 const fallbackAggExpr = isStringPath(pathSpec.path)
                   ? 'FIRST(value)'

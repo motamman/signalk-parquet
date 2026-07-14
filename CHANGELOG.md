@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.7.42-beta.1] - 2026-07-14
+
+### Fixed
+
+- **Nightly SIGBUS crash at midnight (server "Bus error", core dump)** — Federated history queries ATTACHed the live `buffer.db` into DuckDB (`ATTACH ... (TYPE SQLITE, READ_ONLY)`). DuckDB bundles its own SQLite, so two independent SQLite libraries opened the same WAL-mode database inside one process. POSIX advisory locks never conflict within a single process, so DuckDB's copy could take "exclusive" recovery locks while node:sqlite was live, and truncate `buffer.db-shm` (96 KB → 32 KB) under node:sqlite's active mmap. The next large write transaction — the midnight empty sweep, which balloons the WAL past the first 32 KB shm region — then wrote through the stale mapping and died with SIGBUS in `walIndexAppend`, taking the whole SignalK server down at 00:00.
+  - DuckDB no longer opens `buffer.db` at all: `DuckDBPool.getConnectionWithBuffer()` and the ATTACH are gone.
+  - New `stageBufferTable()` (`src/utils/buffer-staging.ts`) reads the rows a query needs (one path, one context, time-windowed, unexported only) through the buffer's own node:sqlite connection — keyset-paginated in 5,000-row batches so JS heap stays bounded — and copies them into a per-connection DuckDB TEMP table via the appender, with a 1M-row sanity cap (logged when hit).
+  - The federated SQL is unchanged in shape: `read_parquet(...) UNION ALL <buffer subquery>` now reads the staged temp table instead of `buffer.<table>`, so aggregation semantics (time buckets, priority merge, filters) and freshness are identical.
+  - `buildBufferScalarSubquery` / `buildBufferObjectSubquery` take the staged table name and always return SQL; the existence check moved to staging (returns null for unknown paths or empty windows, skipping the UNION as before).
+
+---
+
 ## [0.7.41] - 2026-07-06
 
 Stable release — promotes the 0.7.41-beta line (beta.2, beta.3) to a tagged npm release. No code changes since beta.3; see the beta entries below for the full set of fixes (incremental startup sweep and faster History API path listing, PR #88).

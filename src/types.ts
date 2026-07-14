@@ -543,6 +543,17 @@ export interface SQLiteBufferInterface {
   getPendingCount(): number;
   getKnownPaths(): Set<string>;
   getTableColumns(signalkPath: string): Set<string> | undefined;
+  getTableSchema(
+    signalkPath: string
+  ): Array<{ name: string; type: string }> | undefined;
+  getRowsForFederation(
+    signalkPath: string,
+    context: string,
+    fromIso: string,
+    toIso: string,
+    afterId: number,
+    limit: number
+  ): Array<Record<string, unknown>>;
   hasTable(signalkPath: string): boolean;
   getDbPath(): string;
   close(): void;
