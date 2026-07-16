@@ -88,10 +88,12 @@ export function generateQueryForSelectedPath() {
 }
 
 export function generateQueryForPath(signalkPath, directory) {
-  // Use **/*.parquet for Hive paths (path= directories have year/day subdirs)
-  // Use *.parquet for flat paths
+  // Hive paths (path= dirs) nest as year=*/day=*/. Match only the day-partition
+  // data files — NOT ** — so we never descend into sibling quarantine/, failed/,
+  // processed/, or repaired/ dirs, whose files break read_parquet ("too small").
+  // Use *.parquet for flat paths.
   const isHivePath = directory.includes('path=');
-  const globPattern = isHivePath ? '**/*.parquet' : '*.parquet';
+  const globPattern = isHivePath ? 'year=*/day=*/*.parquet' : '*.parquet';
   const query = `SELECT * FROM read_parquet('${directory}/${globPattern}', union_by_name=true) ORDER BY received_timestamp DESC LIMIT 10`;
   setDataPathsQuery(query);
 }
@@ -111,9 +113,9 @@ export function generateExampleQueries() {
   let html = '';
 
   availablePaths.slice(0, 4).forEach(pathInfo => {
-    // Use **/*.parquet for Hive paths (path= directories have year/day subdirs)
+    // year=*/day=*/*.parquet, NOT ** — avoids quarantine/failed/processed dirs.
     const isHivePath = pathInfo.directory.includes('path=');
-    const globPattern = isHivePath ? '**/*.parquet' : '*.parquet';
+    const globPattern = isHivePath ? 'year=*/day=*/*.parquet' : '*.parquet';
 
     const examples = [
       `SELECT * FROM read_parquet('${pathInfo.directory}/${globPattern}', union_by_name=true) ORDER BY received_timestamp DESC LIMIT 10`,

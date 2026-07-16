@@ -35,6 +35,13 @@ import {
   buildBufferScalarSubquery,
   buildBufferObjectSubquery,
 } from './utils/buffer-sql-builder';
+import { stageBufferTable, BufferStagingSource } from './utils/buffer-staging';
+
+/** The slice of SQLiteBuffer the provider needs: staging plus schema lookups. */
+type ProviderBufferSource = BufferStagingSource & {
+  getKnownPaths(): Set<string>;
+  getTableColumns(path: string): Set<string> | undefined;
+};
 
 /**
  * Convert Temporal.Instant or ISO string to ZonedDateTime (UTC)
@@ -142,10 +149,7 @@ function pathSpecKey(ps: SignalKPathSpec): string {
  * History API Provider implementation
  */
 export class HistoryProvider implements HistoryApi {
-  private sqliteBuffer?: {
-    getKnownPaths(): Set<string>;
-    getTableColumns(path: string): Set<string> | undefined;
-  };
+  private sqliteBuffer?: ProviderBufferSource;
 
   constructor(
     private selfId: string,
@@ -154,10 +158,7 @@ export class HistoryProvider implements HistoryApi {
     private debug: (msg: string) => void
   ) {}
 
-  setSqliteBuffer(buffer: {
-    getKnownPaths(): Set<string>;
-    getTableColumns(path: string): Set<string> | undefined;
-  }): void {
+  setSqliteBuffer(buffer: ProviderBufferSource): void {
     this.sqliteBuffer = buffer;
   }
 
@@ -306,17 +307,23 @@ export class HistoryProvider implements HistoryApi {
     );
     this.debug(`[HistoryProvider] Querying Hive path: ${filePath}`);
 
-    // Use connection with buffer attached if available
+    // Stage this path's buffer rows into a temp table if the buffer is available
     const hasBuffer = DuckDBPool.isSQLiteBufferInitialized();
-    const knownBufferPaths =
-      hasBuffer && this.sqliteBuffer
-        ? this.sqliteBuffer.getKnownPaths()
-        : undefined;
-    const connection = hasBuffer
-      ? await DuckDBPool.getConnectionWithBuffer()
-      : await DuckDBPool.getConnection();
+    const connection = await DuckDBPool.getConnection();
 
     try {
+      const stagedBufferTable =
+        hasBuffer && this.sqliteBuffer
+          ? await stageBufferTable(
+              connection,
+              this.sqliteBuffer,
+              String(context),
+              String(pathSpec.path),
+              fromIso,
+              toIso,
+              (msg: string) => this.debug(msg)
+            )
+          : null;
       // Check if this is an object path (has value_* columns)
       const componentSchema = await getPathComponentSchema(
         this.dataDir,
@@ -372,29 +379,24 @@ export class HistoryProvider implements HistoryApi {
 
         // Build federated FROM: parquet UNION ALL buffer
         let federatedFrom: string;
-        if (hasBuffer) {
+        if (stagedBufferTable) {
           const bufferTableCols = this.sqliteBuffer?.getTableColumns(
             pathSpec.path as string
           );
           const bufferSubquery = buildBufferObjectSubquery(
+            stagedBufferTable,
             context,
-            pathSpec.path,
             fromIso,
             toIso,
             componentSchema.components,
-            knownBufferPaths,
             bufferTableCols,
             filters
           );
-          if (bufferSubquery) {
-            federatedFrom = `(
+          federatedFrom = `(
               SELECT signalk_timestamp, ${componentCols} FROM ${parquetFrom}
               UNION ALL
               SELECT signalk_timestamp, ${componentCols} FROM ${bufferSubquery}
             )`;
-          } else {
-            federatedFrom = parquetFrom;
-          }
         } else {
           federatedFrom = parquetFrom;
         }
@@ -451,24 +453,20 @@ export class HistoryProvider implements HistoryApi {
 
         // Build federated FROM: parquet UNION ALL buffer
         let federatedFrom: string;
-        if (hasBuffer) {
+        if (stagedBufferTable) {
           const bufferSubquery = buildBufferScalarSubquery(
+            stagedBufferTable,
             context,
             pathSpec.path,
             fromIso,
             toIso,
-            knownBufferPaths,
             filters
           );
-          if (bufferSubquery) {
-            federatedFrom = `(
+          federatedFrom = `(
               SELECT signalk_timestamp, value FROM ${parquetFrom}
               UNION ALL
               SELECT signalk_timestamp, value FROM ${bufferSubquery}
             )`;
-          } else {
-            federatedFrom = parquetFrom;
-          }
         } else {
           federatedFrom = parquetFrom;
         }
@@ -564,10 +562,7 @@ export function registerHistoryApiProvider(
   selfId: string,
   dataDir: string,
   debug: (msg: string) => void,
-  sqliteBuffer?: {
-    getKnownPaths(): Set<string>;
-    getTableColumns(path: string): Set<string> | undefined;
-  }
+  sqliteBuffer?: ProviderBufferSource
 ): void {
   const provider = new HistoryProvider(selfId, dataDir, app, debug);
   if (sqliteBuffer) {

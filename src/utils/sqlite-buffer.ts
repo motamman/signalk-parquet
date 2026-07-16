@@ -1051,6 +1051,59 @@ export class SQLiteBuffer {
   }
 
   /**
+   * Get the column schema (name + declared SQLite type) for a path's buffer table.
+   * Returns undefined if no table exists for this path.
+   */
+  getTableSchema(
+    signalkPath: string
+  ): Array<{ name: string; type: string }> | undefined {
+    if (!this._open) return undefined;
+
+    const info = this.tableMap.get(signalkPath);
+    if (!info) return undefined;
+
+    const rows = this.db
+      .prepare(`PRAGMA table_info(${info.tableName})`)
+      .all() as Array<{ name: string; type: string }>;
+    return rows.map(r => ({ name: r.name, type: r.type }));
+  }
+
+  /**
+   * Read a batch of unexported rows for federated history queries, keyset-paginated
+   * by id so callers can stream large windows without materializing them all.
+   * Rows are raw table rows (all columns), matching the table schema.
+   */
+  getRowsForFederation(
+    signalkPath: string,
+    context: string,
+    fromIso: string,
+    toIso: string,
+    afterId: number,
+    limit: number
+  ): Array<Record<string, unknown>> {
+    if (!this._open) return [];
+
+    const tableInfo = this.tableMap.get(signalkPath);
+    if (!tableInfo) return [];
+
+    return this.db
+      .prepare(
+        `
+      SELECT * FROM ${tableInfo.tableName}
+      WHERE context = ?
+        AND signalk_timestamp >= ? AND signalk_timestamp < ?
+        AND exported = 0
+        AND id > ?
+      ORDER BY id ASC
+      LIMIT ?
+    `
+      )
+      .all(context, fromIso, toIso, afterId, limit) as Array<
+      Record<string, unknown>
+    >;
+  }
+
+  /**
    * Get the database path
    */
   getDbPath(): string {

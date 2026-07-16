@@ -57,7 +57,6 @@ export class DuckDBPool {
     await setupConn.runAndReadAll("SET memory_limit = '512MB';");
     await setupConn.runAndReadAll('INSTALL spatial;');
     await setupConn.runAndReadAll('LOAD spatial;');
-    // sqlite extension is auto-loaded by ATTACH ... (TYPE SQLITE) in getConnectionWithBuffer()
     this.initialized = true;
     // Connection closes automatically when no longer referenced
   }
@@ -83,6 +82,10 @@ export class DuckDBPool {
    * Store the SQLite buffer database path for federated queries.
    * Call this after initialize() and after the SQLiteBuffer is created.
    *
+   * The path is used only as a "buffer exists" signal and for diagnostics —
+   * DuckDB must NEVER open buffer.db itself (see buffer-staging.ts for why
+   * the old ATTACH approach crashed the server).
+   *
    * @param dbPath Absolute path to the SQLite buffer.db file
    */
   static initializeSQLiteBuffer(dbPath: string): void {
@@ -102,31 +105,6 @@ export class DuckDBPool {
    */
   static getSQLiteBufferPath(): string | null {
     return this.sqliteDbPath;
-  }
-
-  /**
-   * Get a connection with the SQLite buffer ATTACHed as 'buffer' (READ_ONLY).
-   * Falls back to a plain connection if no buffer path is configured.
-   *
-   * @returns A DuckDB connection with buffer attached
-   */
-  static async getConnectionWithBuffer() {
-    const connection = await this.getConnection();
-
-    if (this.sqliteDbPath) {
-      try {
-        await connection.runAndReadAll(
-          `ATTACH '${this.sqliteDbPath.replace(/'/g, "''")}' AS buffer (TYPE SQLITE, READ_ONLY)`
-        );
-      } catch (err: unknown) {
-        // If already attached (e.g. connection reuse), ignore
-        if (!(err instanceof Error && err.message.includes('already exists'))) {
-          throw err;
-        }
-      }
-    }
-
-    return connection;
   }
 
   /**
