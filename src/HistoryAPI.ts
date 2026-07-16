@@ -1898,16 +1898,86 @@ export class HistoryAPI {
                     debug
                   )
                 : null;
-              const bufferSubquery = stagedFallbackTable
-                ? buildBufferScalarSubquery(
-                    stagedFallbackTable,
-                    context,
-                    pathSpec.path,
-                    fallbackFromIso,
-                    fallbackToIso,
-                    pathSpec.filters
+              // Object buffer tables have value_json/value_* columns and no
+              // `value` column — the scalar builder would fail against them
+              const fallbackSchema = this.sqliteBuffer?.getTableSchema(
+                pathSpec.path
+              );
+              const fallbackComponents = new Map<string, ComponentInfo>();
+              if (fallbackSchema?.some(col => col.name === 'value_json')) {
+                for (const col of fallbackSchema) {
+                  if (
+                    col.name.startsWith('value_') &&
+                    col.name !== 'value_json'
+                  ) {
+                    const name = col.name.slice('value_'.length);
+                    fallbackComponents.set(name, {
+                      name,
+                      columnName: col.name,
+                      dataType: col.type.toUpperCase().includes('REAL')
+                        ? 'numeric'
+                        : 'string',
+                    });
+                  }
+                }
+              }
+
+              if (stagedFallbackTable && fallbackComponents.size > 0) {
+                const bufferSubquery = buildBufferObjectSubquery(
+                  stagedFallbackTable,
+                  context,
+                  fallbackFromIso,
+                  fallbackToIso,
+                  fallbackComponents,
+                  undefined,
+                  pathSpec.filters
+                );
+                const componentSelects = Array.from(fallbackComponents.values())
+                  .map(
+                    comp =>
+                      `${getComponentAggregateFunction(pathSpec.aggregateMethod, comp.dataType)}(${comp.columnName}) as ${comp.name}`
                   )
-                : null;
+                  .join(', ');
+                const bufferQuery = `
+                  SELECT
+                    strftime(DATE_TRUNC('seconds',
+                      EPOCH_MS(CAST(FLOOR(EPOCH_MS(signalk_timestamp::TIMESTAMP) / ${timeResolutionMillis}) * ${timeResolutionMillis} AS BIGINT))
+                    ), '%Y-%m-%dT%H:%M:%SZ') as timestamp,
+                    ${componentSelects}
+                  FROM ${bufferSubquery} AS source_data
+                  GROUP BY timestamp
+                  ORDER BY timestamp
+                `;
+                const bufResult = await bufferConn.runAndReadAll(bufferQuery);
+                const bufRows = bufResult.getRowObjects();
+                objectPaths.add(pathSpec.path);
+                allData[pathSpecKey(pathSpec)] = bufRows.map((row: any) => {
+                  const reconstructedObject: Record<string, unknown> = {};
+                  fallbackComponents.forEach((_comp, componentName) => {
+                    const value = row[componentName];
+                    if (value !== null && value !== undefined) {
+                      reconstructedObject[componentName] = value;
+                    }
+                  });
+                  return [row.timestamp as Timestamp, reconstructedObject];
+                });
+                debug(
+                  `Buffer-only fallback (object): ${bufRows.length} rows for ${pathSpec.path}`
+                );
+                return;
+              }
+
+              const bufferSubquery =
+                stagedFallbackTable && fallbackComponents.size === 0
+                  ? buildBufferScalarSubquery(
+                      stagedFallbackTable,
+                      context,
+                      pathSpec.path,
+                      fallbackFromIso,
+                      fallbackToIso,
+                      pathSpec.filters
+                    )
+                  : null;
               if (bufferSubquery) {
                 const fallbackAggExpr = isStringPath(pathSpec.path)
                   ? 'FIRST(value)'

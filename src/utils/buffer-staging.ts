@@ -128,11 +128,24 @@ export async function stageBufferTable(
       afterId = Number(rows[rows.length - 1].id);
 
       if (totalRows >= MAX_STAGED_ROWS) {
+        // Only fail on genuine overflow — landing exactly on the cap is fine
+        const overflow = buffer.getRowsForFederation(
+          signalkPath,
+          context,
+          fromIso,
+          toIso,
+          afterId,
+          1
+        );
+        if (overflow.length === 0) break;
         warn?.(
           `[buffer-staging] ${signalkPath}: staged row cap reached (${MAX_STAGED_ROWS}); ` +
-            `buffer data after id ${afterId} omitted from this query`
+            `buffer data after id ${afterId} would be omitted from this query`
         );
-        break;
+        throw new Error(
+          `[buffer-staging] ${signalkPath}: buffer rows exceed the staged row cap ` +
+            `(${MAX_STAGED_ROWS}); refusing to answer with incomplete data`
+        );
       }
       if (rows.length < STAGING_BATCH_SIZE) break;
     }
