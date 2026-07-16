@@ -639,6 +639,8 @@ This provides better compression, faster queries, and proper type safety for dat
 
 ### Query Examples
 
+> **Globbing the Hive-partitioned store:** paths under `tier=.../context=.../path=.../` are partitioned as `year=*/day=*/`. Glob them with `year=*/day=*/*.parquet` — **not** `**/*.parquet`. The recursive `**` descends into the sibling `quarantine/`, `failed/`, `processed/`, and `repaired/` directories, and DuckDB will abort the whole query if it hits a quarantined 0-byte file (`too small to be a Parquet file`). The Query Database "Generate Query" button produces the correct glob automatically.
+
 #### Basic Queries
 ```sql
 -- Get latest 10 records from navigation position

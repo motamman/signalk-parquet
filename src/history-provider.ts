@@ -35,10 +35,7 @@ import {
   buildBufferScalarSubquery,
   buildBufferObjectSubquery,
 } from './utils/buffer-sql-builder';
-import {
-  stageBufferTable,
-  BufferStagingSource,
-} from './utils/buffer-staging';
+import { stageBufferTable, BufferStagingSource } from './utils/buffer-staging';
 
 /** The slice of SQLiteBuffer the provider needs: staging plus schema lookups. */
 type ProviderBufferSource = BufferStagingSource & {

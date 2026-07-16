@@ -1911,12 +1911,23 @@ export class HistoryAPI {
                     col.name !== 'value_json'
                   ) {
                     const name = col.name.slice('value_'.length);
+                    // Per-path buffer tables currently declare every value_*
+                    // column REAL, but don't couple this to that: match all
+                    // numeric SQLite affinities so an integer-typed column can
+                    // never silently degrade to a string aggregation.
+                    const sqliteType = col.type.toUpperCase();
+                    const isNumeric = [
+                      'INT',
+                      'REAL',
+                      'FLOA',
+                      'DOUB',
+                      'NUM',
+                      'DEC',
+                    ].some(token => sqliteType.includes(token));
                     fallbackComponents.set(name, {
                       name,
                       columnName: col.name,
-                      dataType: col.type.toUpperCase().includes('REAL')
-                        ? 'numeric'
-                        : 'string',
+                      dataType: isNumeric ? 'numeric' : 'string',
                     });
                   }
                 }
