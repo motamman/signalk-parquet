@@ -43,8 +43,8 @@ export function buildBufferScalarSubquery(
     NULL::VARCHAR AS value_json
   FROM ${stagedTable}
   WHERE context = '${escapeSqlString(String(context))}'
-    AND received_timestamp >= '${escapeSqlString(fromIso)}'
-    AND received_timestamp < '${escapeSqlString(toIso)}'
+    AND signalk_timestamp >= '${escapeSqlString(fromIso)}'
+    AND signalk_timestamp < '${escapeSqlString(toIso)}'
     AND exported = 0
     AND value IS NOT NULL${buildBufferFilterClause(filters)})`;
 }
@@ -84,8 +84,8 @@ export function buildBufferObjectSubquery(
     ${componentSelects}
   FROM ${stagedTable}
   WHERE context = '${escapeSqlString(String(context))}'
-    AND received_timestamp >= '${escapeSqlString(fromIso)}'
-    AND received_timestamp < '${escapeSqlString(toIso)}'
+    AND signalk_timestamp >= '${escapeSqlString(fromIso)}'
+    AND signalk_timestamp < '${escapeSqlString(toIso)}'
     AND exported = 0
     AND value_json IS NOT NULL${buildBufferFilterClause(filters)})`;
 }

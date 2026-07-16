@@ -1091,7 +1091,7 @@ export class SQLiteBuffer {
         `
       SELECT * FROM ${tableInfo.tableName}
       WHERE context = ?
-        AND received_timestamp >= ? AND received_timestamp < ?
+        AND signalk_timestamp >= ? AND signalk_timestamp < ?
         AND exported = 0
         AND id > ?
       ORDER BY id ASC
