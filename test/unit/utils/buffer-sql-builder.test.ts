@@ -107,8 +107,8 @@ describe('buildBufferScalarSubquery', () => {
     const sql = scalarSql('navigation.speedOverGround');
 
     expect(sql).to.contain(`WHERE context = '${CONTEXT}'`);
-    expect(sql).to.contain(`received_timestamp >= '${FROM_ISO}'`);
-    expect(sql).to.contain(`received_timestamp < '${TO_ISO}'`);
+    expect(sql).to.contain(`signalk_timestamp >= '${FROM_ISO}'`);
+    expect(sql).to.contain(`signalk_timestamp < '${TO_ISO}'`);
     expect(sql).to.contain('exported = 0');
     expect(sql).to.contain('value IS NOT NULL');
     expect(sql).to.contain('signalk_timestamp');
@@ -127,7 +127,7 @@ describe('buildBufferScalarSubquery', () => {
       fromIso: "2024-06-01' OR '1'='1",
     });
 
-    expect(sql).to.contain("received_timestamp >= '2024-06-01'' OR ''1''=''1'");
+    expect(sql).to.contain("signalk_timestamp >= '2024-06-01'' OR ''1''=''1'");
   });
 });
 
@@ -215,8 +215,8 @@ describe('buildBufferObjectSubquery', () => {
     });
 
     expect(sql).to.contain("WHERE context = 'vessels.o''brien'");
-    expect(sql).to.contain(`received_timestamp >= '${FROM_ISO}'`);
-    expect(sql).to.contain(`received_timestamp < '${TO_ISO}'`);
+    expect(sql).to.contain(`signalk_timestamp >= '${FROM_ISO}'`);
+    expect(sql).to.contain(`signalk_timestamp < '${TO_ISO}'`);
     expect(sql).to.contain('exported = 0');
     expect(sql).to.contain('signalk_timestamp');
   });
