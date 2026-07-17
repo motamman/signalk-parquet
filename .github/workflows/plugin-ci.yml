@@ -1,0 +1,24 @@
+name: Plugin CI (App Store)
+
+# Runs Signal K's reusable plugin-CI workflow so per-platform install / load /
+# activate results show up in the App Store "Indicators" tab. This is separate
+# from ./ci.yml, which is the project's own lint / typecheck / test / coverage CI.
+#
+# armv7 (Venus OS / Cerbo GX, 32-bit ARM) is disabled because DuckDB's native
+# bindings (@duckdb/node-bindings) ship no 32-bit ARM build — the plugin cannot
+# run there, so the platform is reported grey (skipped) rather than red.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  plugin-ci:
+    uses: SignalK/signalk-server/.github/workflows/plugin-ci.yml@f664fa97d0cd2ffcd5bd2e21a375a95d695f190b # master 2026-07-17
+    with:
+      test-command: 'npm test'
+      build-command: 'npm run build'
+      format-check-command: 'npm run format:check'
+      enable-armv7: false
+      enable-signalk-integration: true

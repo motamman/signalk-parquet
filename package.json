@@ -1,6 +1,6 @@
 {
   "name": "signalk-parquet",
-  "version": "0.7.42-beta.1",
+  "version": "0.7.42-beta.2",
   "description": "Vessel data Parquet file archive with automated value and geospatial triggers. History API compliant with cloud backups and queries.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -16,10 +16,10 @@
     "coverage": "c8 --reporter=text --reporter=lcov npm test",
     "mutation": "stryker run",
     "typecheck": "tsc -p tsconfig.test.json",
-    "lint": "eslint src/**/*.ts",
-    "lint:fix": "eslint src/**/*.ts --fix",
-    "format": "prettier --write src/**/*.ts *.json --ignore-unknown",
-    "format:check": "prettier --check src/**/*.ts *.json --ignore-unknown",
+    "lint": "eslint \"src/**/*.ts\"",
+    "lint:fix": "eslint \"src/**/*.ts\" --fix",
+    "format": "prettier --write \"src/**/*.ts\" \"*.json\" --ignore-unknown",
+    "format:check": "prettier --check \"src/**/*.ts\" \"*.json\" --ignore-unknown",
     "ci": "npm run format:check && npm run lint"
   },
   "c8": {
@@ -89,6 +89,11 @@
     "minimatch": "^10.2.5",
     "multer": "^2.1.1",
     "ws": "^8.21.0"
+  },
+  "overrides": {
+    "diff": "^8.0.3",
+    "qs": "^6.15.3",
+    "serialize-javascript": "^7.0.7"
   },
   "devDependencies": {
     "@stryker-mutator/core": "^9.6.1",

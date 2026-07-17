@@ -1,0 +1,4 @@
+# Force LF in the working tree on all platforms. GitHub's Windows runners set
+# core.autocrlf=true, which rewrites checkouts to CRLF and makes prettier
+# (endOfLine: lf) fail on every line; this overrides that.
+* text=auto eol=lf

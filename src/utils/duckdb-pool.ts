@@ -1,4 +1,6 @@
 import { DuckDBInstance } from '@duckdb/node-api';
+import * as path from 'path';
+import * as fs from 'fs-extra';
 
 /**
  * Singleton DuckDB instance with connection pooling
@@ -44,21 +46,45 @@ export class DuckDBPool {
    *
    * @throws Error if initialization fails
    */
-  static async initialize(): Promise<void> {
+  static async initialize(homeBaseDir?: string): Promise<void> {
     if (this.instance) {
       return; // Already initialized
     }
 
-    this.instance = await DuckDBInstance.create();
+    // DuckDB defaults its extension/home directory to `$HOME/.duckdb`. On hosts
+    // where $HOME is read-only — e.g. the Signal K App Store CI sandbox, which
+    // fails activation with `IO Error: Failed to create directory
+    // "$HOME/.duckdb": Read-only file system` — the `INSTALL spatial`
+    // below then aborts. Point DuckDB at a writable dir under the plugin's own
+    // data directory instead; this also caches downloaded extensions across
+    // restarts. Falls back to DuckDB's default when no directory is provided.
+    const config: Record<string, string> = {};
+    if (homeBaseDir) {
+      const duckdbHome = path.join(homeBaseDir, '.duckdb');
+      await fs.ensureDir(duckdbHome);
+      config.home_directory = duckdbHome;
+      config.extension_directory = path.join(duckdbHome, 'extensions');
+      config.temp_directory = path.join(duckdbHome, 'tmp');
+    }
+
+    // Fully set up on a local variable and only publish to this.instance on
+    // success, so a failure here (e.g. INSTALL spatial with no network) leaves
+    // the pool uninitialized and a later initialize() can retry cleanly.
+    const instance = await DuckDBInstance.create(':memory:', config);
 
     // Load spatial extension once for all future connections
-    const setupConn = await this.instance.connect();
-    // Cap DuckDB memory to prevent OOM when combined with Node's heap
-    await setupConn.runAndReadAll("SET memory_limit = '512MB';");
-    await setupConn.runAndReadAll('INSTALL spatial;');
-    await setupConn.runAndReadAll('LOAD spatial;');
-    this.initialized = true;
-    // Connection closes automatically when no longer referenced
+    const setupConn = await instance.connect();
+    try {
+      // Cap DuckDB memory to prevent OOM when combined with Node's heap
+      await setupConn.runAndReadAll("SET memory_limit = '512MB';");
+      await setupConn.runAndReadAll('INSTALL spatial;');
+      await setupConn.runAndReadAll('LOAD spatial;');
+
+      this.instance = instance;
+      this.initialized = true;
+    } finally {
+      setupConn.disconnectSync();
+    }
   }
 
   /**
