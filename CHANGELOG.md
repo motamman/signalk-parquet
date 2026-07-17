@@ -1,5 +1,13 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- **Plugin failed to activate where `$HOME` is read-only (App Store CI sandbox)** — `DuckDBPool.initialize()` created its instance with no config, so DuckDB defaulted its extension/home directory to `$HOME/.duckdb`. On the Signal K App Store test runner `$HOME` (`/home/runner`) is read-only, so `INSTALL spatial` aborted activation with `IO Error: Failed to create directory "/home/runner/.duckdb": Read-only file system` — which is why recent versions showed red in the App Store while `0.7.15` (pre-spatial) passed. DuckDB is now pointed at `<outputDirectory>/.duckdb` (a writable path under the plugin's own data directory) via `home_directory`/`extension_directory`/`temp_directory`, so activation no longer depends on `$HOME` and the downloaded extensions are cached across restarts. Added `.github/workflows/plugin-ci.yml` (Signal K's reusable plugin-CI workflow) so install/load/activate results populate the App Store "Indicators" tab; armv7 is disabled there because DuckDB ships no 32-bit ARM binding.
+
+---
+
 ## [0.7.42-beta.1] - 2026-07-14
 
 ### Fixed

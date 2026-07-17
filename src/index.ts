@@ -330,8 +330,10 @@ export default function (app: ServerAPI): SignalKPlugin {
       );
     });
 
-    // Initialize DuckDB connection pool once
-    await DuckDBPool.initialize();
+    // Initialize DuckDB connection pool once. Pass the (writable) plugin data
+    // directory so DuckDB puts its extension/home dir there instead of the
+    // default `$HOME/.duckdb`, which is read-only in the App Store CI sandbox.
+    await DuckDBPool.initialize(state.currentConfig.outputDirectory);
     app.debug('DuckDB connection pool initialized');
 
     // Register SQLite buffer path with DuckDB for federated queries
