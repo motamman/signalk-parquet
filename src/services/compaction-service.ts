@@ -730,8 +730,8 @@ export class CompactionService {
     // union_by_name=true: a column added partway through the year (e.g.
     // a new value_<key> exploded from value_json) merges cleanly. The
     // result has the union of columns; older rows have NULL where the
-    // newer column is absent. Snappy compression matches the existing
-    // consolidate-parquet.sh convention.
+    // newer column is absent. Snappy compression matches the files the
+    // plugin writes elsewhere.
     const query = `
       COPY (
         SELECT * FROM read_parquet([${fileListSql}], union_by_name=true)

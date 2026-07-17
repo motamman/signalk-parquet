@@ -54,7 +54,7 @@ export class DuckDBPool {
     // DuckDB defaults its extension/home directory to `$HOME/.duckdb`. On hosts
     // where $HOME is read-only — e.g. the Signal K App Store CI sandbox, which
     // fails activation with `IO Error: Failed to create directory
-    // "/home/runner/.duckdb": Read-only file system` — the `INSTALL spatial`
+    // "$HOME/.duckdb": Read-only file system` — the `INSTALL spatial`
     // below then aborts. Point DuckDB at a writable dir under the plugin's own
     // data directory instead; this also caches downloaded extensions across
     // restarts. Falls back to DuckDB's default when no directory is provided.
