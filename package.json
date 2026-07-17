@@ -16,10 +16,10 @@
     "coverage": "c8 --reporter=text --reporter=lcov npm test",
     "mutation": "stryker run",
     "typecheck": "tsc -p tsconfig.test.json",
-    "lint": "eslint src/**/*.ts",
-    "lint:fix": "eslint src/**/*.ts --fix",
-    "format": "prettier --write src/**/*.ts *.json --ignore-unknown",
-    "format:check": "prettier --check src/**/*.ts *.json --ignore-unknown",
+    "lint": "eslint \"src/**/*.ts\"",
+    "lint:fix": "eslint \"src/**/*.ts\" --fix",
+    "format": "prettier --write \"src/**/*.ts\" \"*.json\" --ignore-unknown",
+    "format:check": "prettier --check \"src/**/*.ts\" \"*.json\" --ignore-unknown",
     "ci": "npm run format:check && npm run lint"
   },
   "c8": {

@@ -1074,8 +1074,7 @@ export default function (app: ServerAPI): SignalKPlugin {
                   region: {
                     type: 'string',
                     title: 'AWS Region',
-                    description:
-                      'AWS region where the S3 bucket is located.',
+                    description: 'AWS region where the S3 bucket is located.',
                     default: 'us-east-1',
                   },
                   endpoint: {
