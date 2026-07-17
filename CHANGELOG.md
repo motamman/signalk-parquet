@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.7.42-beta.2]  - 2026-07-17
 
 ### Fixed
 
