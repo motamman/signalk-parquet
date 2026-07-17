@@ -90,6 +90,11 @@
     "multer": "^2.1.1",
     "ws": "^8.21.0"
   },
+  "overrides": {
+    "diff": "^8.0.3",
+    "qs": "^6.15.3",
+    "serialize-javascript": "^7.0.7"
+  },
   "devDependencies": {
     "@stryker-mutator/core": "^9.6.1",
     "@stryker-mutator/mocha-runner": "^9.6.1",
