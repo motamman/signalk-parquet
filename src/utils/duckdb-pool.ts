@@ -67,14 +67,19 @@ export class DuckDBPool {
       config.temp_directory = path.join(duckdbHome, 'tmp');
     }
 
-    this.instance = await DuckDBInstance.create(':memory:', config);
+    // Fully set up on a local variable and only publish to this.instance on
+    // success, so a failure here (e.g. INSTALL spatial with no network) leaves
+    // the pool uninitialized and a later initialize() can retry cleanly.
+    const instance = await DuckDBInstance.create(':memory:', config);
 
     // Load spatial extension once for all future connections
-    const setupConn = await this.instance.connect();
+    const setupConn = await instance.connect();
     // Cap DuckDB memory to prevent OOM when combined with Node's heap
     await setupConn.runAndReadAll("SET memory_limit = '512MB';");
     await setupConn.runAndReadAll('INSTALL spatial;');
     await setupConn.runAndReadAll('LOAD spatial;');
+
+    this.instance = instance;
     this.initialized = true;
     // Connection closes automatically when no longer referenced
   }
