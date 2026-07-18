@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.7.42] - 2026-07-18
+
+Stable release — promotes the `0.7.42-beta` line (beta.1, beta.2) to a tagged npm release. No code changes since beta.2; see the beta entries below for the full set of fixes (App Store activation fix, the buffer-staging SIGBUS crash fix, and the PR #96 review fixes).
+
+---
+
 ## [0.7.42-beta.2]  - 2026-07-17
 
 ### Fixed
