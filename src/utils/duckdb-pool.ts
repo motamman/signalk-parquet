@@ -39,6 +39,7 @@ export class DuckDBPool {
   private static s3Initialized: boolean = false;
   private static sqliteDbPath: string | null = null;
   private static sqliteInitialized: boolean = false;
+  private static spatialAvailable: boolean = false;
 
   /**
    * Initialize the DuckDB instance and load extensions
@@ -46,7 +47,10 @@ export class DuckDBPool {
    *
    * @throws Error if initialization fails
    */
-  static async initialize(homeBaseDir?: string): Promise<void> {
+  static async initialize(
+    homeBaseDir?: string,
+    warn?: (message: string) => void
+  ): Promise<void> {
     if (this.instance) {
       return; // Already initialized
     }
@@ -67,18 +71,38 @@ export class DuckDBPool {
       config.temp_directory = path.join(duckdbHome, 'tmp');
     }
 
-    // Fully set up on a local variable and only publish to this.instance on
-    // success, so a failure here (e.g. INSTALL spatial with no network) leaves
-    // the pool uninitialized and a later initialize() can retry cleanly.
+    // Fully set up on a local variable and only publish to this.instance once
+    // the core (non-extension) setup succeeds, so a failure in instance
+    // creation or the memory-limit PRAGMA leaves the pool uninitialized and a
+    // later initialize() can retry cleanly.
     const instance = await DuckDBInstance.create(':memory:', config);
 
-    // Load spatial extension once for all future connections
     const setupConn = await instance.connect();
     try {
       // Cap DuckDB memory to prevent OOM when combined with Node's heap
       await setupConn.runAndReadAll("SET memory_limit = '512MB';");
-      await setupConn.runAndReadAll('INSTALL spatial;');
-      await setupConn.runAndReadAll('LOAD spatial;');
+
+      // Spatial is a downloadable extension: the first load fetches it from
+      // DuckDB's extension repo, then caches it under extension_directory. If
+      // the plugin is first enabled offline (installed while online but never
+      // started with connectivity), that download fails. Treat spatial as
+      // best-effort — a failure here must NOT reject plugin.start(), which
+      // would take down parquet writing and the history API with it. Warn and
+      // continue; spatial-dependent queries fail individually until a later
+      // start (a fresh process) with connectivity caches the extension.
+      try {
+        await setupConn.runAndReadAll('INSTALL spatial;');
+        await setupConn.runAndReadAll('LOAD spatial;');
+        this.spatialAvailable = true;
+      } catch (err) {
+        this.spatialAvailable = false;
+        warn?.(
+          `DuckDB spatial extension unavailable (likely no network on first ` +
+            `start): ${(err as Error).message}. Position and bbox/radius ` +
+            `history queries will be degraded until the plugin next starts ` +
+            `with connectivity to cache the extension.`
+        );
+      }
 
       this.instance = instance;
       this.initialized = true;
@@ -154,6 +178,15 @@ export class DuckDBPool {
    */
   static isInitialized(): boolean {
     return this.initialized;
+  }
+
+  /**
+   * Whether the DuckDB spatial extension loaded successfully. False when the
+   * plugin was first started with no network and could not download it, in
+   * which case spatial queries fail until a later start caches the extension.
+   */
+  static isSpatialAvailable(): boolean {
+    return this.spatialAvailable;
   }
 
   /**
