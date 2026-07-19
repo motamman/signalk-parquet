@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.7.43-beta.1] - 2026-07-19
+
+### Fixed
+
+- **Plugin failed to start when first enabled offline** — `INSTALL spatial` runs on the critical startup path, and the first load downloads the extension from DuckDB's repo (it is only cached under `extension_directory` after a successful start with connectivity). If the plugin was installed while online but first *enabled* with no network, that download threw and — because the call was unguarded — rejected `plugin.start()` entirely, taking parquet writing and the history API down with it (not just spatial). Spatial setup is now best-effort: a load failure is logged via `app.error` and startup continues, so everything except spatial queries works offline. A new `DuckDBPool.isSpatialAvailable()` exposes the state. The extension still downloads and caches normally on the next start with connectivity, restoring full spatial support. Instance creation and the memory-limit PRAGMA remain fatal (clean retry), unchanged.
+
+---
+
 ## [0.7.42] - 2026-07-18
 
 Stable release — promotes the `0.7.42-beta` line (beta.1, beta.2) to a tagged npm release. No code changes since beta.2; see the beta entries below for the full set of fixes (App Store activation fix, the buffer-staging SIGBUS crash fix, and the PR #96 review fixes).
