@@ -336,7 +336,10 @@ export default function (app: ServerAPI): SignalKPlugin {
     await DuckDBPool.initialize(state.currentConfig.outputDirectory, msg =>
       app.error(msg)
     );
-    app.debug('DuckDB connection pool initialized');
+    app.debug(
+      `DuckDB connection pool initialized (sqlite lockdown: ` +
+        `${DuckDBPool.getLockdownSummary()})`
+    );
 
     // Register SQLite buffer path with DuckDB for federated queries
     if (state.sqliteBuffer) {

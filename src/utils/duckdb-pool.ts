@@ -40,6 +40,9 @@ export class DuckDBPool {
   private static sqliteDbPath: string | null = null;
   private static sqliteInitialized: boolean = false;
   private static spatialAvailable: boolean = false;
+  private static sqliteAutoloadDisabled: boolean = false;
+  private static sqliteExtensionRemoved: boolean = false;
+  private static lockdownSummary: string = 'not applied';
 
   /**
    * Initialize the DuckDB instance and load extensions
@@ -104,11 +107,140 @@ export class DuckDBPool {
         );
       }
 
+      await this.lockDownSqliteExtension(setupConn, homeBaseDir, warn);
+
       this.instance = instance;
       this.initialized = true;
     } finally {
       setupConn.disconnectSync();
     }
+  }
+
+  /**
+   * Raise the cost of DuckDB's bundled SQLite ever opening the live write
+   * buffer: doing so truncates buffer.db-shm under node:sqlite's active mmap
+   * and kills the server with SIGBUS (see buffer-staging.ts).
+   *
+   * What each measure actually buys, since the boundaries are easy to
+   * overestimate:
+   * - Removing a cached sqlite_scanner is what stops `ATTACH ... (TYPE
+   *   SQLITE)`. A cached extension loads on ATTACH regardless of the autoload
+   *   setting, and every installation that ran the old federation code has one
+   *   cached here.
+   * - Disabling autoinstall/autoload stops SQL that merely references
+   *   sqlite_scan() from pulling the extension in, and stops a re-download.
+   * - Locking the configuration stops a later query flipping those toggles
+   *   back on. Explicit INSTALL/LOAD (spatial above, httpfs in initializeS3)
+   *   and CREATE SECRET still work once the config is locked.
+   *
+   * These do NOT stop an explicit `INSTALL sqlite; LOAD sqlite;`, which
+   * re-populates the cache and makes sqlite_scan() live again. Only the SQL
+   * guard's read-only statement whitelist rejects that, so the two layers are
+   * complementary rather than redundant: the guard blocks the statements, this
+   * blocks the implicit loads the guard's function check might miss.
+   *
+   * Hardening failures must not take down the plugin — parquet writing and the
+   * history API matter more. isSqliteLockedDown() reports the outcome so the
+   * degraded state is visible rather than assumed.
+   */
+  private static async lockDownSqliteExtension(
+    setupConn: Awaited<ReturnType<DuckDBInstance['connect']>>,
+    homeBaseDir: string | undefined,
+    warn?: (message: string) => void
+  ): Promise<void> {
+    let cachedExtensionsRemoved = 0;
+
+    if (homeBaseDir) {
+      const extensionDir = path.join(homeBaseDir, '.duckdb', 'extensions');
+      try {
+        const entries: string[] = (await fs.pathExists(extensionDir))
+          ? await fs.readdir(extensionDir, {
+              recursive: true,
+              encoding: 'utf8',
+            })
+          : [];
+        for (const entry of entries) {
+          if (path.basename(entry).startsWith('sqlite_scanner')) {
+            await fs.remove(path.join(extensionDir, entry));
+            cachedExtensionsRemoved += 1;
+          }
+        }
+        this.sqliteExtensionRemoved = true;
+      } catch (err) {
+        warn?.(
+          `Could not remove a cached DuckDB sqlite extension from ` +
+            `${extensionDir}: ${(err as Error).message}. Raw SQL and ` +
+            `AI-generated queries remain guarded, but avoid enabling raw SQL ` +
+            `until the file is gone.`
+        );
+      }
+    } else {
+      // No plugin-owned extension directory: DuckDB uses its default home and
+      // there is nothing here that we own well enough to delete.
+      this.sqliteExtensionRemoved = true;
+    }
+
+    // Applied one at a time: a failure on the first (e.g. a future DuckDB
+    // renaming the option) must not skip the other two.
+    const settings: [string, string][] = [
+      ['autoinstall_known_extensions', 'false'],
+      ['autoload_known_extensions', 'false'],
+      // Must come last — it freezes every option above.
+      ['lock_configuration', 'true'],
+    ];
+    const failed: string[] = [];
+    for (const [name, value] of settings) {
+      try {
+        await setupConn.runAndReadAll(`SET GLOBAL ${name} = ${value};`);
+      } catch (err) {
+        failed.push(`${name} (${(err as Error).message})`);
+      }
+    }
+
+    // Read back rather than trusting the SET calls, so a silently ineffective
+    // option is reported as unlocked instead of assumed applied.
+    let verified = false;
+    try {
+      const reader = await setupConn.runAndReadAll(
+        `SELECT value FROM duckdb_settings() ` +
+          `WHERE name = 'autoload_known_extensions';`
+      );
+      const rows = reader.getRowObjects();
+      verified = String(rows[0]?.value).toLowerCase() === 'false';
+    } catch (err) {
+      failed.push(`read-back (${(err as Error).message})`);
+    }
+
+    this.sqliteAutoloadDisabled = verified;
+
+    if (failed.length > 0 || !verified) {
+      warn?.(
+        `Could not fully lock down DuckDB extension loading ` +
+          `(${failed.join('; ') || 'settings did not take effect'}). The SQL ` +
+          `guard still rejects the statements that could open the write ` +
+          `buffer, but avoid enabling raw SQL on this instance.`
+      );
+    }
+
+    this.lockdownSummary =
+      `removed ${cachedExtensionsRemoved} cached sqlite extension file(s), ` +
+      `autoload disabled: ${verified}`;
+  }
+
+  /**
+   * Whether the SQLite extension lockdown fully applied. False means DuckDB
+   * could still load its sqlite extension on this instance, so raw SQL should
+   * be treated as unsafe even though the SQL guard remains in force.
+   */
+  static isSqliteLockedDown(): boolean {
+    return this.sqliteAutoloadDisabled && this.sqliteExtensionRemoved;
+  }
+
+  /**
+   * One-line description of what the lockdown did, for startup logging.
+   */
+  static getLockdownSummary(): string {
+    return this.lockdownSummary;
   }
 
   /**
@@ -159,16 +291,27 @@ export class DuckDBPool {
 
   /**
    * Cleanup on plugin shutdown
-   * Sets the instance to null to allow garbage collection
+   *
+   * Closes the native instance rather than waiting for a finalizer: a plugin
+   * disable/enable cycle would otherwise leave the previous DuckDB instance
+   * (and its own memory budget) alive on hardware that has little to spare.
    */
   static async shutdown(): Promise<void> {
     if (this.instance) {
-      // DuckDB instances handle cleanup automatically
+      try {
+        this.instance.closeSync();
+      } catch {
+        // Close is best-effort; dropping the reference still allows GC and a
+        // failure here must not break plugin.stop().
+      }
       this.instance = null;
       this.initialized = false;
       this.s3Initialized = false;
       this.sqliteDbPath = null;
       this.sqliteInitialized = false;
+      this.sqliteAutoloadDisabled = false;
+      this.sqliteExtensionRemoved = false;
+      this.lockdownSummary = 'not applied';
     }
   }
 

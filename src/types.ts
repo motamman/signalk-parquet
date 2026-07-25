@@ -370,6 +370,8 @@ export interface FilesApiResponse extends ApiResponse {
 export interface QueryApiResponse extends ApiResponse {
   query?: string;
   rowCount?: number;
+  /** True when the result set was cut off at the row cap. */
+  truncated?: boolean;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   data?: any[];
 }

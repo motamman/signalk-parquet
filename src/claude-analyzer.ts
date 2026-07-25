@@ -12,6 +12,7 @@ import { getAvailablePaths } from './utils/path-discovery';
 import * as fs from 'fs-extra';
 import * as path from 'path';
 import { DuckDBPool } from './utils/duckdb-pool';
+import { findUnsafeSqlReason } from './utils/sql-guard';
 import { ClaudeModel } from './claude-models';
 import { shouldSkipDirectory } from './utils/path-helpers';
 
@@ -3345,26 +3346,16 @@ Begin your analysis by querying relevant data within the specified time range.`;
     // Auto-correct common column usage patterns
     const correctedSQL = this.correctColumnUsage(sql);
 
-    // Validate query is read-only (starts with SELECT or WITH for CTEs)
-    const trimmedSQL = correctedSQL.trim().toUpperCase();
-    if (!trimmedSQL.startsWith('SELECT') && !trimmedSQL.startsWith('WITH')) {
-      throw new Error('Only SELECT and WITH queries are allowed for security');
-    }
-
-    // Additional safety checks
-    const dangerousKeywords = [
-      'DROP',
-      'DELETE',
-      'UPDATE',
-      'INSERT',
-      'CREATE',
-      'ALTER',
-      'TRUNCATE',
-    ];
-    for (const keyword of dangerousKeywords) {
-      if (trimmedSQL.includes(keyword)) {
-        throw new Error(`Dangerous SQL keyword '${keyword}' is not allowed`);
-      }
+    // Validate every statement is read-only and touches no database- or
+    // file-opening table function. The reason is thrown back to the model as a
+    // tool result so it can rewrite the query; log it too, since a model
+    // looping on rejected SQL is otherwise invisible from the server side.
+    const unsafeReason = findUnsafeSqlReason(correctedSQL);
+    if (unsafeReason) {
+      this.app?.debug(
+        `Rejected AI-generated SQL for ${purpose}: ${unsafeReason} — query: ${correctedSQL.slice(0, 200)}`
+      );
+      throw new Error(`Query rejected for security: ${unsafeReason}`);
     }
 
     // Use shared pool - spatial extension is already loaded at startup
