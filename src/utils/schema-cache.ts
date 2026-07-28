@@ -100,10 +100,14 @@ export async function getPathComponentSchema(
       } catch (describeErr) {
         // No day-partition parquet files under this path (e.g. only
         // quarantined files) — read_parquet raises "No files found". Treat as
-        // "no schema", matching the old empty-file-list behaviour.
-        debugLogger.warn(
-          `[Schema Cache] No schema for ${pathStr}: ${(describeErr as Error).message}`
-        );
+        // "no schema", matching the old empty-file-list behaviour. Any other
+        // failure (binding, corruption, permissions) is rethrown so the
+        // outer handler logs it as an error.
+        const message = (describeErr as Error).message ?? '';
+        if (!message.includes('No files found')) {
+          throw describeErr;
+        }
+        debugLogger.warn(`[Schema Cache] No schema for ${pathStr}: ${message}`);
         return null;
       }
 
