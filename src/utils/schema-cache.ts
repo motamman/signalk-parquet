@@ -4,7 +4,6 @@ import * as path from 'path';
 import * as fs from 'fs-extra';
 import { debugLogger } from './debug-logger';
 import { CACHE_TTL } from '../config/cache-defaults';
-import { DirectoryScanner } from './directory-scanner';
 import { HivePathBuilder } from './hive-path-builder';
 
 /**
@@ -26,12 +25,6 @@ export interface ComponentInfo {
  * Key: `${context}:${path}`
  */
 const schemaCache = new Map<string, PathComponentSchema>();
-
-/**
- * Directory scanner for finding parquet files
- * Reused across multiple schema discovery operations
- */
-const directoryScanner = new DirectoryScanner();
 
 /**
  * Hive path builder for constructing Hive-style paths
@@ -73,77 +66,64 @@ export async function getPathComponentSchema(
       return null;
     }
 
-    // Recursively find all .parquet files
-    const parquetFiles = await findParquetFiles(pathDir);
+    // Read the column union straight from DuckDB rather than listing every
+    // file in JS and querying each one. `year=*/day=*` matches only real
+    // day-partition files (never quarantine/failed/processed siblings), and
+    // union_by_name reconciles schema evolution across the day-files — the
+    // same component union the old per-file loop produced, in one native
+    // query, with no retained filename list to leak.
+    const glob = path
+      .join(pathDir, 'year=*', 'day=*', '*.parquet')
+      .replace(/'/g, "''");
 
-    if (parquetFiles.length === 0) {
-      return null;
-    }
+    // Metadata columns that are not object components.
+    const EXCLUDED = new Set([
+      'value_json',
+      'value_units',
+      'value_description',
+      'value_age',
+    ]);
 
-    // Query schemas from all files to get union of components
     const allComponents = new Map<string, ComponentInfo>();
-
-    // Get connection from pool
     const connection = await DuckDBPool.getConnection();
 
     try {
-      for (const filePath of parquetFiles) {
-        try {
-          // First check if this file has a 'value' column
-          const valueColQuery = `
-            SELECT name
-            FROM parquet_schema('${filePath.replace(/'/g, "''")}')
-            WHERE name = 'value'
-          `;
-          const valueColResult = await connection.runAndReadAll(valueColQuery);
-          const hasValueColumn = valueColResult.getRowObjects().length > 0;
+      let rows: Array<{ column_name: string; column_type: string }>;
+      try {
+        const result = await connection.runAndReadAll(
+          `DESCRIBE SELECT * FROM read_parquet('${glob}', union_by_name=true)`
+        );
+        rows = result.getRowObjects() as Array<{
+          column_name: string;
+          column_type: string;
+        }>;
+      } catch (describeErr) {
+        // No day-partition parquet files under this path (e.g. only
+        // quarantined files) — read_parquet raises "No files found". Treat as
+        // "no schema", matching the old empty-file-list behaviour.
+        debugLogger.warn(
+          `[Schema Cache] No schema for ${pathStr}: ${(describeErr as Error).message}`
+        );
+        return null;
+      }
 
-          // If 'value' column exists, skip this file - it's a scalar path
-          if (hasValueColumn) {
-            continue;
-          }
-
-          // Query the parquet schema for data component columns
-          // Exclude metadata columns like value_units, value_description, value_json
-          const schemaQuery = `
-            SELECT name, type
-            FROM parquet_schema('${filePath.replace(/'/g, "''")}')
-            WHERE name LIKE 'value_%'
-              AND name NOT IN ('value_json', 'value_units', 'value_description', 'value_age')
-          `;
-
-          const result = await connection.runAndReadAll(schemaQuery);
-          const rows = result.getRowObjects() as Array<{
-            name: string;
-            type: string;
-          }>;
-
-          rows.forEach(row => {
-            const columnName = row.name;
-            const columnType = row.type;
-            const componentName = columnName.replace(/^value_/, '');
-
-            // Skip if we already have this component
-            if (allComponents.has(componentName)) {
-              return;
-            }
-
-            // Determine data type category
-            const dataType = inferDataTypeCategory(columnType);
-
-            allComponents.set(componentName, {
-              name: componentName,
-              columnName: columnName,
-              dataType: dataType,
-            });
-          });
-        } catch (error) {
-          // Skip files with errors (corrupted, etc.)
-          debugLogger.warn(
-            `[Schema Cache] Error reading schema from ${filePath}:`,
-            error
-          );
+      for (const row of rows) {
+        const columnName = row.column_name;
+        // Object components are the flattened value_* columns; a bare `value`
+        // column (scalar files) is skipped because it lacks the `value_`
+        // prefix, so a purely scalar path yields no components (returns null).
+        if (!columnName.startsWith('value_') || EXCLUDED.has(columnName)) {
+          continue;
         }
+        const componentName = columnName.replace(/^value_/, '');
+        if (allComponents.has(componentName)) {
+          continue;
+        }
+        allComponents.set(componentName, {
+          name: componentName,
+          columnName,
+          dataType: inferDataTypeCategory(row.column_type),
+        });
       }
     } finally {
       connection.disconnectSync();
@@ -221,16 +201,4 @@ export function inferDataTypeCategory(
   }
 
   return 'unknown';
-}
-
-/**
- * Recursively find all .parquet files in a directory
- * Uses DirectoryScanner for cached, efficient file discovery
- */
-async function findParquetFiles(dir: string): Promise<string[]> {
-  // Use DirectoryScanner with pattern matching for .parquet files
-  const fileInfos = await directoryScanner.scanDirectory(dir, /\.parquet$/);
-
-  // Convert FileInfo[] to string[] for compatibility
-  return fileInfos.map(f => f.path);
 }
