@@ -1,5 +1,6 @@
 import * as fs from 'fs-extra';
 import * as path from 'path';
+import { fork } from 'child_process';
 import { Router } from 'express';
 import { ParquetWriter, quarantineEmptyParquetFiles } from './parquet-writer';
 import { registerHistoryApiRoute } from './HistoryAPI';
@@ -42,6 +43,8 @@ import { SQLiteBuffer } from './utils/sqlite-buffer';
 import { ParquetExportService } from './services/parquet-export-service';
 import {
   AggregationService,
+  AggregationConfig,
+  AggregationResult,
   buildPerTierRetention,
 } from './services/aggregation-service';
 import {
@@ -66,6 +69,90 @@ function parsePathRetentionOverrides(
     app.error(`[Retention] Dropping invalid override: ${err}`);
   }
   return rules.length > 0 ? rules : undefined;
+}
+
+/**
+ * Run the daily aggregation in a short-lived forked process.
+ *
+ * The aggregation makes tens of thousands of DuckDB `read_parquet` calls whose
+ * memory the allocator never returns to the OS in-process, so doing it in the
+ * long-lived server ratchets ~¾ GB that sticks until restart (the midnight
+ * OOM). A forked worker does the identical work and EXITS, so the OS reclaims
+ * all of it. The worker's results are returned unchanged; a crash/timeout is
+ * surfaced as a failed result so the caller skips retention cleanup (as it
+ * already does when in-process aggregation fails).
+ */
+function runAggregationInWorker(
+  input: {
+    config: AggregationConfig;
+    dataDir: string;
+    dateISO: string;
+    angularPathNames: string[];
+  },
+  app: ServerAPI
+): Promise<AggregationResult[]> {
+  return new Promise(resolve => {
+    const workerPath = path.join(__dirname, 'aggregation-worker.js');
+    const child = fork(workerPath);
+    let settled = false;
+    const TIMEOUT_MS = 30 * 60 * 1000;
+
+    const finishFailure = (reason: string): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      app.error(`[DailyExport] Aggregation worker ${reason}`);
+      try {
+        child.kill('SIGKILL');
+      } catch {
+        // already gone
+      }
+      resolve([
+        {
+          sourceTier: 'raw',
+          targetTier: '5s',
+          filesProcessed: 0,
+          recordsAggregated: 0,
+          filesCreated: 0,
+          duration: 0,
+          errors: [`aggregation worker ${reason}`],
+        },
+      ]);
+    };
+
+    const timer = setTimeout(() => finishFailure('timed out'), TIMEOUT_MS);
+
+    child.on(
+      'message',
+      (msg: {
+        type?: string;
+        level?: string;
+        msg?: string;
+        message?: string;
+        results?: AggregationResult[];
+      }) => {
+        if (!msg || typeof msg !== 'object') return;
+        if (msg.type === 'log') {
+          if (msg.level === 'error') app.error(msg.msg || '');
+          else app.debug(msg.msg || '');
+        } else if (msg.type === 'result') {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          resolve(msg.results || []);
+        } else if (msg.type === 'error') {
+          finishFailure(`errored: ${msg.message}`);
+        }
+      }
+    );
+
+    child.on('exit', code => {
+      if (!settled) finishFailure(`exited early (code ${code})`);
+    });
+    child.on('error', err => finishFailure(`spawn error: ${err.message}`));
+
+    child.send(input);
+  });
 }
 
 export default function (app: ServerAPI): SignalKPlugin {
@@ -441,18 +528,15 @@ export default function (app: ServerAPI): SignalKPlugin {
 
     // Initialize aggregation service if Hive partitioning is enabled
     let aggregationService: AggregationService | undefined;
+    let aggregationConfig: AggregationConfig | undefined;
     if (state.currentConfig.useHivePartitioning) {
-      aggregationService = new AggregationService(
-        {
-          outputDirectory: state.currentConfig.outputDirectory,
-          filenamePrefix: state.currentConfig.filenamePrefix,
-          retentionDays: buildPerTierRetention(
-            state.currentConfig.retentionDays
-          ),
-          pathRetentionOverrides: state.currentConfig.pathRetentionOverrides,
-        },
-        app
-      );
+      aggregationConfig = {
+        outputDirectory: state.currentConfig.outputDirectory,
+        filenamePrefix: state.currentConfig.filenamePrefix,
+        retentionDays: buildPerTierRetention(state.currentConfig.retentionDays),
+        pathRetentionOverrides: state.currentConfig.pathRetentionOverrides,
+      };
+      aggregationService = new AggregationService(aggregationConfig, app);
       app.debug('Aggregation service initialized');
     }
 
@@ -484,7 +568,37 @@ export default function (app: ServerAPI): SignalKPlugin {
           let uploadOk = false;
           if (aggregationService) {
             try {
-              const aggResults = await aggregationService.runDailyAggregation();
+              // Angular paths (units === 'rad': heading, COG, wind direction)
+              // must keep vector averaging in the aggregated tiers. The worker
+              // has no live metadata, so compute the set here (from the live
+              // server) and pass it in; getPaths() is the small set of recorded
+              // path names.
+              const angularPathNames = state.sqliteBuffer
+                ? state.sqliteBuffer.getPaths().filter(p => {
+                    try {
+                      return (
+                        (
+                          app as unknown as {
+                            getMetadata?: (
+                              x: string
+                            ) => { units?: string } | undefined;
+                          }
+                        ).getMetadata?.(`vessels.self.${p}`)?.units === 'rad'
+                      );
+                    } catch {
+                      return false;
+                    }
+                  })
+                : [];
+              const aggResults = await runAggregationInWorker(
+                {
+                  config: aggregationConfig!,
+                  dataDir: state.currentConfig!.outputDirectory,
+                  dateISO: yesterday.toISOString(),
+                  angularPathNames,
+                },
+                app
+              );
               const aggHadErrors = aggResults.some(r => r.errors.length > 0);
               aggregationOk = !aggHadErrors;
               app.debug(

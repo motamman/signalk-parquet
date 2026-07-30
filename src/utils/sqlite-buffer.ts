@@ -1042,6 +1042,15 @@ export class SQLiteBuffer {
   }
 
   /**
+   * All SignalK path names the buffer has a table for. Tables are keyed by
+   * path (not context), so this is the small set of distinct recorded paths —
+   * used to compute the angular-path set for the aggregation worker.
+   */
+  getPaths(): string[] {
+    return Array.from(this.tableMap.keys());
+  }
+
+  /**
    * Get the set of columns for a given path's buffer table.
    * Returns undefined if no table exists for this path.
    */
