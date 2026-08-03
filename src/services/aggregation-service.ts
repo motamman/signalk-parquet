@@ -361,6 +361,14 @@ export class AggregationService {
       `${this.config.filenamePrefix}_${date.toISOString().slice(0, 10)}_aggregated.parquet`
     );
 
+    // COPY into a temp name and rename into place once complete. A process
+    // killed mid-COPY (shutdown grace period expired, crash) then leaves
+    // only a *.tmp straggler — invisible to the read path's '*.parquet'
+    // globs — instead of a truncated parquet file at the final name. The
+    // next aggregation of this date reuses the same temp name, so
+    // stragglers are overwritten rather than accumulating.
+    const tempFile = outputFile + '.tmp';
+
     // Use different query depending on source tier schema and whether the path is angular/position
     // Raw tier has: received_timestamp, value (or value_latitude/value_longitude for position)
     // Aggregated tiers have: bucket_time, value_avg/value_latitude, value_min, value_max, sample_count, first_timestamp, last_timestamp
@@ -371,24 +379,28 @@ export class AggregationService {
           fileListStr,
           intervalSeconds,
           isSourceRaw,
-          outputFile
+          tempFile
         )
       : this.buildAggregationQuery(
           fileListStr,
           intervalSeconds,
           isSourceRaw,
           angular,
-          outputFile
+          tempFile
         );
 
     try {
       await connection.runAndReadAll(query);
 
       // Get record count from output
-      const countQuery = `SELECT COUNT(*) as cnt FROM read_parquet('${outputFile}')`;
+      const countQuery = `SELECT COUNT(*) as cnt FROM read_parquet('${tempFile}')`;
       const countResult = await connection.runAndReadAll(countQuery);
       const rows = countResult.getRowObjects();
       const recordCount = rows[0]?.cnt || 0;
+
+      // Publish: the count above doubles as a validity check on the temp
+      // file before it becomes query-visible.
+      await fs.move(tempFile, outputFile, { overwrite: true });
 
       return {
         recordsAggregated: Number(recordCount),

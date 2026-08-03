@@ -14,7 +14,11 @@
  * host process changes.
  *
  * Protocol (parent ⇄ this worker, over child_process IPC):
- *   parent → worker: one WorkerInput message with config + date + angular paths.
+ *   parent → worker: one WorkerInput message with config + date + angular paths,
+ *                    optionally followed by {type:'shutdown'} (cooperative
+ *                    cancellation from plugin.stop(): finish the in-flight
+ *                    COPY, stop at the next group boundary, report the run
+ *                    as an error so the caller skips retention cleanup).
  *   worker → parent: {type:'log'} lines (relayed to app.debug/error),
  *                    then exactly one {type:'result'} or {type:'error'}, then exit.
  */
@@ -39,6 +43,11 @@ interface WorkerInput {
 function send(msg: unknown): void {
   process.send?.(msg);
 }
+
+// Set by the shutdown message handler below; run() checks it after the
+// service returns so a cancelled run never masquerades as a clean one.
+let shutdownRequested = false;
+let service: AggregationService | undefined;
 
 async function run(input: WorkerInput): Promise<void> {
   const angular = new Set(input.angularPathNames);
@@ -66,12 +75,21 @@ async function run(input: WorkerInput): Promise<void> {
     // its accumulated catalog/allocator state dies with this process on exit.
     await DuckDBPool.initialize(input.dataDir);
 
-    const service = new AggregationService(input.config, shimApp);
+    service = new AggregationService(input.config, shimApp);
+    if (shutdownRequested) service.cancel();
     const results: AggregationResult[] = await service.aggregateDate(
       new Date(input.dateISO)
     );
 
-    send({ type: 'result', results });
+    if (shutdownRequested) {
+      // Cancelled at a group boundary: the tiers are incomplete, so report
+      // as an error — the parent then treats the day as failed and skips
+      // retention cleanup, same as a crashed worker.
+      send({ type: 'error', message: 'cancelled by plugin shutdown' });
+      process.exitCode = 1;
+    } else {
+      send({ type: 'result', results });
+    }
   } catch (err) {
     send({ type: 'error', message: (err as Error).message });
     process.exitCode = 1;
@@ -82,6 +100,16 @@ async function run(input: WorkerInput): Promise<void> {
   }
 }
 
-process.once('message', (input: WorkerInput) => {
-  void run(input);
+let started = false;
+process.on('message', (msg: WorkerInput | { type: 'shutdown' }) => {
+  if (msg && typeof msg === 'object' && 'type' in msg) {
+    if (msg.type === 'shutdown') {
+      shutdownRequested = true;
+      service?.cancel();
+    }
+    return;
+  }
+  if (started) return;
+  started = true;
+  void run(msg);
 });

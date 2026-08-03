@@ -53,6 +53,12 @@ import {
 } from './utils/retention-rules';
 import { AutoDiscoveryService } from './services/auto-discovery';
 
+// How long plugin.stop() waits for an aggregation worker to finish its
+// in-flight COPY and exit after a cooperative shutdown request, before
+// resorting to SIGKILL. Per-group COPYs normally take seconds; a worker
+// still alive after this is stuck.
+const AGGREGATION_WORKER_SHUTDOWN_GRACE_MS = 15_000;
+
 /**
  * Validate `pathRetentionOverrides` from the persisted config. Bad
  * entries are dropped (with a logged error) rather than crashing
@@ -961,18 +967,47 @@ export default function (app: ServerAPI): SignalKPlugin {
       state.startupExportTimeout = undefined;
     }
 
-    // Terminate any in-flight aggregation workers. The kill triggers each
-    // worker's 'exit' handler, which resolves its promise as a failed run —
-    // so the daily-export caller skips retention cleanup, same as any other
-    // worker failure.
-    if (state.activeAggregationWorkers) {
-      for (const worker of state.activeAggregationWorkers) {
+    // Wind down any in-flight aggregation workers cooperatively: a shutdown
+    // message makes the worker cancel at the next group boundary, so the
+    // COPY currently writing finishes and no final Parquet file is left
+    // half-written. The worker then reports the run as an error, which makes
+    // the daily-export caller skip retention cleanup, same as any other
+    // worker failure. Workers still alive after the grace period are
+    // SIGKILLed so a stuck COPY can't hang shutdown.
+    if (state.activeAggregationWorkers?.size) {
+      const workers = Array.from(state.activeAggregationWorkers);
+      for (const worker of workers) {
         try {
-          worker.kill('SIGKILL');
+          worker.send({ type: 'shutdown' });
         } catch {
-          // already gone
+          // IPC channel already closed — the exit wait below still applies
         }
       }
+      await Promise.all(
+        workers.map(
+          worker =>
+            new Promise<void>(resolve => {
+              if (worker.exitCode !== null || worker.signalCode !== null) {
+                resolve();
+                return;
+              }
+              const killTimer = setTimeout(() => {
+                app.error(
+                  '[DailyExport] Aggregation worker did not exit within shutdown grace period; killing'
+                );
+                try {
+                  worker.kill('SIGKILL');
+                } catch {
+                  // already gone
+                }
+              }, AGGREGATION_WORKER_SHUTDOWN_GRACE_MS);
+              worker.once('exit', () => {
+                clearTimeout(killTimer);
+                resolve();
+              });
+            })
+        )
+      );
       state.activeAggregationWorkers.clear();
     }
 

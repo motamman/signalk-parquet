@@ -637,8 +637,11 @@ export interface PluginState {
   // that hasn't fired yet.
   dailyExportTimeout?: NodeJS.Timeout;
   startupExportTimeout?: NodeJS.Timeout;
-  // Forked aggregation workers currently running; stop() SIGKILLs them so
-  // shutdown doesn't leave orphan processes churning on DuckDB files.
+  // Forked aggregation workers currently running; stop() asks each to
+  // cancel cooperatively (the in-flight COPY finishes, the run reports as
+  // failed), waits a bounded grace period for exit, then SIGKILLs
+  // stragglers so shutdown doesn't leave orphan processes churning on
+  // DuckDB files.
   activeAggregationWorkers?: Set<import('child_process').ChildProcess>;
   // Set at the top of stop(); scheduled callbacks check it so no new
   // export/aggregation work starts once shutdown has begun.

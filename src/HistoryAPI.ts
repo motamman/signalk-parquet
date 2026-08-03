@@ -124,18 +124,18 @@ export function registerHistoryApiRoute(
           selfId
         );
 
+        // Capture the directory once so the lookup, the query, and the
+        // stored result all use the same directory even if setDataDir()
+        // runs while the query is in flight.
+        const dataDir = historyApi.getDataDir();
         // Check cache first
-        let contexts = getCachedContexts(from, to);
+        let contexts = getCachedContexts(dataDir, from, to);
 
         if (!contexts) {
           // Cache miss - query the parquet files
-          contexts = await getAvailableContextsForTimeRange(
-            historyApi.getDataDir(),
-            from,
-            to
-          );
+          contexts = await getAvailableContextsForTimeRange(dataDir, from, to);
           // Cache the result
-          setCachedContexts(from, to, contexts);
+          setCachedContexts(dataDir, from, to, contexts);
         }
 
         res.json(contexts);
@@ -167,19 +167,23 @@ export function registerHistoryApiRoute(
           selfId
         );
 
+        // Capture the directory once so the lookup, the query, and the
+        // stored result all use the same directory even if setDataDir()
+        // runs while the query is in flight.
+        const dataDir = historyApi.getDataDir();
         // Check cache first
-        let paths = getCachedPaths(context, from, to);
+        let paths = getCachedPaths(dataDir, context, from, to);
 
         if (!paths) {
           // Cache miss - query the parquet files
           paths = await getAvailablePathsForTimeRange(
-            historyApi.getDataDir(),
+            dataDir,
             context,
             from,
             to
           );
           // Cache the result
-          setCachedPaths(context, from, to, paths);
+          setCachedPaths(dataDir, context, from, to, paths);
         }
 
         res.json(paths);
@@ -234,18 +238,18 @@ export function registerHistoryApiRoute(
           selfId
         );
 
+        // Capture the directory once so the lookup, the query, and the
+        // stored result all use the same directory even if setDataDir()
+        // runs while the query is in flight.
+        const dataDir = historyApi.getDataDir();
         // Check cache first
-        let contexts = getCachedContexts(from, to);
+        let contexts = getCachedContexts(dataDir, from, to);
 
         if (!contexts) {
           // Cache miss - query the parquet files
-          contexts = await getAvailableContextsForTimeRange(
-            historyApi.getDataDir(),
-            from,
-            to
-          );
+          contexts = await getAvailableContextsForTimeRange(dataDir, from, to);
           // Cache the result
-          setCachedContexts(from, to, contexts);
+          setCachedContexts(dataDir, from, to, contexts);
         }
 
         res.json(contexts);
@@ -306,19 +310,23 @@ export function registerHistoryApiRoute(
           selfId
         );
 
+        // Capture the directory once so the lookup, the query, and the
+        // stored result all use the same directory even if setDataDir()
+        // runs while the query is in flight.
+        const dataDir = historyApi.getDataDir();
         // Check cache first
-        let paths = getCachedPaths(context, from, to);
+        let paths = getCachedPaths(dataDir, context, from, to);
 
         if (!paths) {
           // Cache miss - query the parquet files
           paths = await getAvailablePathsForTimeRange(
-            historyApi.getDataDir(),
+            dataDir,
             context,
             from,
             to
           );
           // Cache the result
-          setCachedPaths(context, from, to, paths);
+          setCachedPaths(dataDir, context, from, to, paths);
         }
 
         res.json(paths);
@@ -790,7 +798,8 @@ export class HistoryAPI {
    * Falls back through tiers if preferred tier doesn't exist
    */
   private selectOptimalTier(
-    resolutionMillis: number
+    resolutionMillis: number,
+    dataDir: string
   ): AggregationTier | undefined {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const fs = require('fs');
@@ -811,7 +820,7 @@ export class HistoryAPI {
 
     // Check which tiers exist and return the best available
     for (const tier of preferredTiers) {
-      const tierPath = path.join(this.dataDir, `tier=${tier}`);
+      const tierPath = path.join(dataDir, `tier=${tier}`);
       try {
         if (fs.existsSync(tierPath)) {
           return tier;
@@ -831,6 +840,7 @@ export class HistoryAPI {
    */
   private async getSpatialTimestamps(
     context: Context,
+    dataDir: string,
     from: ZonedDateTime,
     to: ZonedDateTime,
     timeResolutionMillis: number,
@@ -846,7 +856,7 @@ export class HistoryAPI {
     const sanitizedContext = this.hivePathBuilder.sanitizeContext(context);
     const sanitizedPath = this.hivePathBuilder.sanitizePath(positionPath);
     const localFilePath = path.join(
-      this.dataDir,
+      dataDir,
       'tier=raw',
       `context=${sanitizedContext}`,
       `path=${sanitizedPath}`,
@@ -1004,6 +1014,10 @@ export class HistoryAPI {
     res: Response<any, Record<string, any>>
   ) {
     try {
+      // Snapshot the data directory before any await: setDataDir() may run
+      // mid-request on a plugin reconfigure, and tier selection here must
+      // agree with the directory getNumericValues queries.
+      const dataDir = this.dataDir;
       // Resolution now in SECONDS (breaking change from v0.7.0)
       const timeResolutionMillis = req.query.resolution
         ? parseResolutionToMillis(req.query.resolution as string)
@@ -1019,7 +1033,7 @@ export class HistoryAPI {
       const pathSpecs: PathSpec[] = pathExpressions.map(splitPathExpression);
 
       // Auto-select tier based on resolution (provider selects automatically)
-      const tier = this.selectOptimalTier(timeResolutionMillis);
+      const tier = this.selectOptimalTier(timeResolutionMillis, dataDir);
       if (tier) {
         debug(
           `Auto-selected tier=${tier} for resolution=${timeResolutionMillis}ms`
@@ -1158,6 +1172,12 @@ export class HistoryAPI {
     positionPath: string = 'navigation.position',
     app?: any
   ): Promise<DataResult> {
+    // Snapshot the mutable instance config once, before the first await.
+    // setDataDir()/setPathRetentionOverrides() may run mid-request on a
+    // plugin reconfigure; every query and branch below must see the same
+    // directory and rule set for the whole request.
+    const dataDir = this.dataDir;
+    const retentionRules = this.retentionRules;
     // Keyed by pathSpecKey(spec), not bare path, so the same path requested
     // with different sources/aggregates keeps separate series.
     const allData: { [key: string]: Array<[Timestamp, unknown]> } = {};
@@ -1183,6 +1203,7 @@ export class HistoryAPI {
         );
         spatialTimestamps = await this.getSpatialTimestamps(
           context,
+          dataDir,
           from,
           to,
           timeResolutionMillis,
@@ -1210,7 +1231,7 @@ export class HistoryAPI {
           posPathSpec.path
         );
         const posFilePath = path.join(
-          this.dataDir,
+          dataDir,
           'tier=raw',
           `context=${sanitizedCtx}`,
           `path=${sanitizedPos}`,
@@ -1409,7 +1430,7 @@ export class HistoryAPI {
         // cases and run after this.
         if (
           effectiveTier !== 'raw' &&
-          this.retentionRules.shouldSkipAggregation(pathSpec.path)
+          retentionRules.shouldSkipAggregation(pathSpec.path)
         ) {
           debug(
             `Path ${pathSpec.path}: skipAggregation rule matched — overriding tier=${effectiveTier} to raw`
@@ -1433,7 +1454,7 @@ export class HistoryAPI {
           pathSpec.path
         );
         localFilePath = path.join(
-          this.dataDir,
+          dataDir,
           `tier=${effectiveTier}`,
           `context=${sanitizedContext}`,
           `path=${sanitizedSkPath}`,
@@ -1446,7 +1467,7 @@ export class HistoryAPI {
         if (this.s3Config?.enabled) {
           // Find the earliest local data date
           const localEarliestDate = this.hivePathBuilder.findEarliestDate(
-            this.dataDir,
+            dataDir,
             effectiveTier,
             sanitizedContext,
             sanitizedSkPath
@@ -1565,7 +1586,7 @@ export class HistoryAPI {
           // Use local path for schema check (S3 schema should match)
           const schemaCheckPath = localFilePath || s3FilePath;
           const componentSchema = schemaCheckPath
-            ? await getPathComponentSchema(this.dataDir, context, pathSpec.path)
+            ? await getPathComponentSchema(dataDir, context, pathSpec.path)
             : null;
 
           if (componentSchema && componentSchema.components.size > 0) {
@@ -1577,7 +1598,7 @@ export class HistoryAPI {
                 `Path ${pathSpec.path}: Object path — overriding tier=${effectiveTier} to raw`
               );
               localFilePath = path.join(
-                this.dataDir,
+                dataDir,
                 'tier=raw',
                 `context=${sanitizedContext}`,
                 `path=${sanitizedSkPath}`,
@@ -1588,7 +1609,7 @@ export class HistoryAPI {
               let rawS3FilePath: string | null = null;
               if (this.s3Config?.enabled) {
                 const rawEarliestDate = this.hivePathBuilder.findEarliestDate(
-                  this.dataDir,
+                  dataDir,
                   'raw',
                   sanitizedContext,
                   sanitizedSkPath
@@ -1821,7 +1842,7 @@ export class HistoryAPI {
             if (isStringPath(pathSpec.path) && effectiveTier !== 'raw') {
               // Rebuild fromClause pointing to raw tier for string paths
               localFilePath = path.join(
-                this.dataDir,
+                dataDir,
                 'tier=raw',
                 `context=${sanitizedContext}`,
                 `path=${sanitizedSkPath}`,
