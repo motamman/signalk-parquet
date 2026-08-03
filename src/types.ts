@@ -633,6 +633,16 @@ export interface PluginState {
   subscribedPaths: Set<string>;
   saveInterval?: NodeJS.Timeout;
   consolidationInterval?: NodeJS.Timeout;
+  // One-shot timers armed in start(); tracked so stop() can cancel work
+  // that hasn't fired yet.
+  dailyExportTimeout?: NodeJS.Timeout;
+  startupExportTimeout?: NodeJS.Timeout;
+  // Forked aggregation workers currently running; stop() SIGKILLs them so
+  // shutdown doesn't leave orphan processes churning on DuckDB files.
+  activeAggregationWorkers?: Set<import('child_process').ChildProcess>;
+  // Set at the top of stop(); scheduled callbacks check it so no new
+  // export/aggregation work starts once shutdown has begun.
+  isStopping?: boolean;
   parquetWriter?: ParquetWriter;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   cloudClient?: any; // S3 or R2 client (S3-compatible)

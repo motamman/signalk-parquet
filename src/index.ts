@@ -1,6 +1,6 @@
 import * as fs from 'fs-extra';
 import * as path from 'path';
-import { fork } from 'child_process';
+import { fork, ChildProcess } from 'child_process';
 import { Router } from 'express';
 import { ParquetWriter, quarantineEmptyParquetFiles } from './parquet-writer';
 import { registerHistoryApiRoute } from './HistoryAPI';
@@ -89,11 +89,13 @@ function runAggregationInWorker(
     dateISO: string;
     angularPathNames: string[];
   },
-  app: ServerAPI
+  app: ServerAPI,
+  activeWorkers?: Set<ChildProcess>
 ): Promise<AggregationResult[]> {
   return new Promise(resolve => {
     const workerPath = path.join(__dirname, 'aggregation-worker.js');
     const child = fork(workerPath);
+    activeWorkers?.add(child);
     let settled = false;
     const TIMEOUT_MS = 30 * 60 * 1000;
 
@@ -147,9 +149,13 @@ function runAggregationInWorker(
     );
 
     child.on('exit', code => {
+      activeWorkers?.delete(child);
       if (!settled) finishFailure(`exited early (code ${code})`);
     });
-    child.on('error', err => finishFailure(`spawn error: ${err.message}`));
+    child.on('error', err => {
+      activeWorkers?.delete(child);
+      finishFailure(`spawn error: ${err.message}`);
+    });
 
     child.send(input);
   });
@@ -197,6 +203,10 @@ export default function (app: ServerAPI): SignalKPlugin {
   plugin.start = async function (
     options: Partial<PluginConfig>
   ): Promise<void> {
+    // Reconfigure runs stop() then start(); re-arm scheduled work.
+    state.isStopping = false;
+    state.activeAggregationWorkers ??= new Set<ChildProcess>();
+
     // Get vessel MMSI from SignalK
     // Cast to any for compatibility with different @signalk/server-api versions
     const vesselMMSI =
@@ -542,6 +552,7 @@ export default function (app: ServerAPI): SignalKPlugin {
 
     // Daily export function - exports yesterday's data from SQLite to Parquet
     const runDailyExport = async () => {
+      if (state.isStopping) return;
       const yesterday = new Date();
       yesterday.setUTCDate(yesterday.getUTCDate() - 1);
       yesterday.setUTCHours(0, 0, 0, 0);
@@ -573,23 +584,40 @@ export default function (app: ServerAPI): SignalKPlugin {
               // has no live metadata, so compute the set here (from the live
               // server) and pass it in; getPaths() is the small set of recorded
               // path names.
-              const angularPathNames = state.sqliteBuffer
-                ? state.sqliteBuffer.getPaths().filter(p => {
-                    try {
-                      return (
-                        (
-                          app as unknown as {
-                            getMetadata?: (
-                              x: string
-                            ) => { units?: string } | undefined;
-                          }
-                        ).getMetadata?.(`vessels.self.${p}`)?.units === 'rad'
-                      );
-                    } catch {
-                      return false;
-                    }
-                  })
-                : [];
+              let angularPathNames: string[] = [];
+              const appWithMetadata = app as unknown as {
+                getMetadata?: (x: string) => { units?: string } | undefined;
+              };
+              if (!state.sqliteBuffer) {
+                app.debug(
+                  '[DailyExport] No SQLite buffer — cannot enumerate recorded paths, angular path set is empty'
+                );
+              } else if (typeof appWithMetadata.getMetadata !== 'function') {
+                app.error(
+                  '[DailyExport] app.getMetadata unavailable — angular paths cannot be detected; aggregation will linear-average all paths'
+                );
+              } else {
+                const recordedPaths = state.sqliteBuffer.getPaths();
+                angularPathNames = recordedPaths.filter(p => {
+                  try {
+                    return (
+                      appWithMetadata.getMetadata!(`vessels.self.${p}`)
+                        ?.units === 'rad'
+                    );
+                  } catch {
+                    return false;
+                  }
+                });
+                if (angularPathNames.length === 0 && recordedPaths.length > 0) {
+                  app.error(
+                    `[DailyExport] No angular paths detected among ${recordedPaths.length} recorded paths — any heading/bearing paths will be linear-averaged in aggregated tiers`
+                  );
+                } else {
+                  app.debug(
+                    `[DailyExport] Angular paths for aggregation: ${JSON.stringify(angularPathNames)}`
+                  );
+                }
+              }
               const aggResults = await runAggregationInWorker(
                 {
                   config: aggregationConfig!,
@@ -597,7 +625,8 @@ export default function (app: ServerAPI): SignalKPlugin {
                   dateISO: yesterday.toISOString(),
                   angularPathNames,
                 },
-                app
+                app,
+                state.activeAggregationWorkers
               );
               const aggHadErrors = aggResults.some(r => r.errors.length > 0);
               aggregationOk = !aggHadErrors;
@@ -669,7 +698,9 @@ export default function (app: ServerAPI): SignalKPlugin {
     };
 
     // Schedule first daily export
-    setTimeout(() => {
+    state.dailyExportTimeout = setTimeout(() => {
+      state.dailyExportTimeout = undefined;
+      if (state.isStopping) return;
       runDailyExport();
 
       // Then run daily export every 24 hours
@@ -680,7 +711,9 @@ export default function (app: ServerAPI): SignalKPlugin {
     }, msUntilDailyExport);
 
     // Run startup export for ALL unexported records (catches up after downtime)
-    setTimeout(async () => {
+    state.startupExportTimeout = setTimeout(async () => {
+      state.startupExportTimeout = undefined;
+      if (state.isStopping) return;
       if (state.exportService) {
         try {
           const result = await state.exportService.exportAllUnexported();
@@ -805,6 +838,10 @@ export default function (app: ServerAPI): SignalKPlugin {
         state.historyApi.setSqliteBuffer(state.sqliteBuffer);
         state.historyApi.setS3Config(s3QueryConfig);
         state.historyApi.setAutoDiscoveryService(state.autoDiscoveryService);
+        state.historyApi.setDataDir(state.currentConfig.outputDirectory);
+        state.historyApi.setPathRetentionOverrides(
+          state.currentConfig.pathRetentionOverrides
+        );
       }
       app.debug(
         `[AutoDiscovery] History API registered with autoDiscoveryService: ${!!state.autoDiscoveryService}`
@@ -878,6 +915,10 @@ export default function (app: ServerAPI): SignalKPlugin {
   };
 
   plugin.stop = async function (): Promise<void> {
+    // Flag first so any timer/interval callback that fires during this
+    // async teardown becomes a no-op instead of starting a new export.
+    state.isStopping = true;
+
     // Signal any running compaction jobs to cancel and wait for them
     // to land at a group boundary. A single in-flight DuckDB COPY is
     // uninterruptible, so a multi-GB year group still finishes before
@@ -904,12 +945,35 @@ export default function (app: ServerAPI): SignalKPlugin {
     // Stop threshold monitoring system
     stopThresholdMonitoring();
 
-    // Clear intervals
+    // Clear intervals and pending one-shot export timers
     if (state.saveInterval) {
       clearInterval(state.saveInterval);
     }
     if (state.consolidationInterval) {
       clearInterval(state.consolidationInterval);
+    }
+    if (state.dailyExportTimeout) {
+      clearTimeout(state.dailyExportTimeout);
+      state.dailyExportTimeout = undefined;
+    }
+    if (state.startupExportTimeout) {
+      clearTimeout(state.startupExportTimeout);
+      state.startupExportTimeout = undefined;
+    }
+
+    // Terminate any in-flight aggregation workers. The kill triggers each
+    // worker's 'exit' handler, which resolves its promise as a failed run —
+    // so the daily-export caller skips retention cleanup, same as any other
+    // worker failure.
+    if (state.activeAggregationWorkers) {
+      for (const worker of state.activeAggregationWorkers) {
+        try {
+          worker.kill('SIGKILL');
+        } catch {
+          // already gone
+        }
+      }
+      state.activeAggregationWorkers.clear();
     }
 
     // Save any remaining buffered data

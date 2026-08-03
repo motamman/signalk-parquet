@@ -129,7 +129,11 @@ export function registerHistoryApiRoute(
 
         if (!contexts) {
           // Cache miss - query the parquet files
-          contexts = await getAvailableContextsForTimeRange(dataDir, from, to);
+          contexts = await getAvailableContextsForTimeRange(
+            historyApi.getDataDir(),
+            from,
+            to
+          );
           // Cache the result
           setCachedContexts(from, to, contexts);
         }
@@ -169,7 +173,7 @@ export function registerHistoryApiRoute(
         if (!paths) {
           // Cache miss - query the parquet files
           paths = await getAvailablePathsForTimeRange(
-            dataDir,
+            historyApi.getDataDir(),
             context,
             from,
             to
@@ -184,7 +188,11 @@ export function registerHistoryApiRoute(
         const context = req.query.context
           ? getContext(req.query.context as string, selfId)
           : undefined;
-        const paths = getAvailablePathsArray(dataDir, app, context);
+        const paths = getAvailablePathsArray(
+          historyApi.getDataDir(),
+          app,
+          context
+        );
         res.json(paths);
       }
     } catch (error) {
@@ -231,7 +239,11 @@ export function registerHistoryApiRoute(
 
         if (!contexts) {
           // Cache miss - query the parquet files
-          contexts = await getAvailableContextsForTimeRange(dataDir, from, to);
+          contexts = await getAvailableContextsForTimeRange(
+            historyApi.getDataDir(),
+            from,
+            to
+          );
           // Cache the result
           setCachedContexts(from, to, contexts);
         }
@@ -269,7 +281,7 @@ export function registerHistoryApiRoute(
         }
 
         const contexts = await getContextsInSpatialFilter(
-          dataDir,
+          historyApi.getDataDir(),
           from,
           to,
           spatialFilter
@@ -300,7 +312,7 @@ export function registerHistoryApiRoute(
         if (!paths) {
           // Cache miss - query the parquet files
           paths = await getAvailablePathsForTimeRange(
-            dataDir,
+            historyApi.getDataDir(),
             context,
             from,
             to
@@ -315,7 +327,11 @@ export function registerHistoryApiRoute(
         const context = req.query.context
           ? getContext(req.query.context as string, selfId)
           : undefined;
-        const paths = getAvailablePathsArray(dataDir, app, context);
+        const paths = getAvailablePathsArray(
+          historyApi.getDataDir(),
+          app,
+          context
+        );
         res.json(paths);
       }
     } catch (error) {
@@ -738,6 +754,27 @@ export class HistoryAPI {
    */
   setSqliteBuffer(buffer: SQLiteBufferInterface | undefined): void {
     this.sqliteBuffer = buffer;
+  }
+
+  /**
+   * Set the data directory queries read from. The express routes registered
+   * in registerHistoryApiRoute read it back via getDataDir(), so a
+   * reconfigured outputDirectory takes effect without re-registering routes.
+   */
+  setDataDir(dataDir: string): void {
+    this.dataDir = dataDir;
+  }
+
+  getDataDir(): string {
+    return this.dataDir;
+  }
+
+  /**
+   * Replace the per-path retention overrides (skipAggregation read-path
+   * fallback) after a reconfigure.
+   */
+  setPathRetentionOverrides(overrides: PathRetentionRule[] | undefined): void {
+    this.retentionRules = new RetentionRuleSet(overrides || []);
   }
 
   /**
