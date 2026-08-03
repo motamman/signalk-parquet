@@ -36,6 +36,12 @@ import {
   buildBufferObjectSubquery,
 } from './utils/buffer-sql-builder';
 import { stageBufferTable, BufferStagingSource } from './utils/buffer-staging';
+import {
+  smoothLinear,
+  smoothCircularRad,
+  smoothCircularDeg,
+  SmoothMethod,
+} from './utils/smoothing';
 
 /** The slice of SQLiteBuffer the provider needs: staging plus schema lookups. */
 type ProviderBufferSource = BufferStagingSource & {
@@ -211,13 +217,19 @@ export class HistoryProvider implements HistoryApi {
       // times with different sourceRef/aggregate and must stay separate.
       const key = pathSpecKey(pathSpec);
       try {
-        const pathData = await this.queryPath(
+        let pathData = await this.queryPath(
           context,
           pathSpec,
           fromIso,
           toIso,
           resolutionMs
         );
+        // Apply the sma/ema moving window on this path's time-ordered,
+        // federated (parquet + buffer) bucket series, before mergePathData
+        // combines paths into columns.
+        if (pathSpec.aggregate === 'sma' || pathSpec.aggregate === 'ema') {
+          pathData = this.applySmoothing(pathData, pathSpec, context);
+        }
         allData[key] = pathData;
       } catch (error) {
         this.debug(
@@ -446,8 +458,15 @@ export class HistoryProvider implements HistoryApi {
           this.app,
           context as string
         );
+        // sma/ema bucket like average, so angular paths need the same
+        // circular-mean bucket value before the moving window is applied.
+        const averageLike =
+          !pathSpec.aggregate ||
+          pathSpec.aggregate === 'average' ||
+          pathSpec.aggregate === 'sma' ||
+          pathSpec.aggregate === 'ema';
         const valueExpression =
-          angular && (pathSpec.aggregate === 'average' || !pathSpec.aggregate)
+          angular && averageLike
             ? 'ATAN2(AVG(SIN(TRY_CAST(value AS DOUBLE))), AVG(COS(TRY_CAST(value AS DOUBLE))))'
             : `${aggFunc}(TRY_CAST(value AS DOUBLE))`;
 
@@ -515,9 +534,97 @@ export class HistoryProvider implements HistoryApi {
         return 'MEDIAN';
       case 'middle_index':
         return 'FIRST'; // Fallback
+      case 'sma':
+      case 'ema':
+        // Moving averages bucket identically to `average`; the sma/ema window
+        // is then applied in TS post-processing (see applySmoothing).
+        return 'AVG';
       default:
         return 'AVG';
     }
+  }
+
+  /**
+   * Apply the sma/ema moving window to one path's already-bucketed,
+   * time-ordered series (post-bucket, post parquet+buffer federation, before
+   * mergePathData). Buckets were computed identically to `average`.
+   *
+   *  - Scalar numbers: smoothed angular-aware — angular paths (units=rad) use
+   *    the circular (sin/cos) variant so the 0/2π wrap doesn't corrupt the mean.
+   *  - navigation.position ([lon, lat] array): latitude smoothed linearly;
+   *    longitude smoothed on the circle (degrees) so the ±180° antimeridian is
+   *    handled instead of linear-averaging 179°/−179° toward 0°.
+   *  - Other object paths: each component numeric in every row is smoothed
+   *    linearly; components missing/non-numeric in any row pass through
+   *    untouched (keeps index alignment, avoids NaN contamination).
+   *  - Non-numeric values pass through unchanged.
+   */
+  private applySmoothing(
+    rows: Array<[Timestamp, unknown]>,
+    pathSpec: SignalKPathSpec,
+    context: Context
+  ): Array<[Timestamp, unknown]> {
+    if (rows.length === 0) return rows;
+    const method = pathSpec.aggregate as SmoothMethod;
+    const param = pathSpec.parameter;
+    const timestamps = rows.map(r => r[0]);
+    const sample = rows.find(r => r[1] !== null && r[1] !== undefined)?.[1];
+
+    // Scalar numeric series
+    if (typeof sample === 'number') {
+      const nums = rows.map(r => Number(r[1]));
+      const angular = isAngularPath(pathSpec.path, this.app, context as string);
+      const smoothed = angular
+        ? smoothCircularRad(nums, method, param)
+        : smoothLinear(nums, method, param);
+      return timestamps.map((ts, i) => [ts, smoothed[i]]);
+    }
+
+    // navigation.position — queryPath returns [longitude, latitude]
+    if (
+      pathSpec.path === 'navigation.position' &&
+      Array.isArray(sample) &&
+      sample.length >= 2
+    ) {
+      const lon = smoothCircularDeg(
+        rows.map(r => Number((r[1] as number[])[0])),
+        method,
+        param
+      );
+      const lat = smoothLinear(
+        rows.map(r => Number((r[1] as number[])[1])),
+        method,
+        param
+      );
+      return timestamps.map((ts, i) => [ts, [lon[i], lat[i]]]);
+    }
+
+    // Other object paths — smooth each component numeric in every row.
+    if (sample && typeof sample === 'object' && !Array.isArray(sample)) {
+      const keys = Object.keys(sample as Record<string, unknown>).filter(k =>
+        rows.every(
+          r => typeof (r[1] as Record<string, unknown>)?.[k] === 'number'
+        )
+      );
+      const smoothedByKey: Record<string, number[]> = {};
+      for (const k of keys) {
+        smoothedByKey[k] = smoothLinear(
+          rows.map(r => (r[1] as Record<string, number>)[k]),
+          method,
+          param
+        );
+      }
+      return timestamps.map((ts, i) => {
+        const obj: Record<string, unknown> = {
+          ...(rows[i][1] as Record<string, unknown>),
+        };
+        for (const k of keys) obj[k] = smoothedByKey[k][i];
+        return [ts, obj];
+      });
+    }
+
+    // Non-numeric — cannot smooth.
+    return rows;
   }
 
   /**
