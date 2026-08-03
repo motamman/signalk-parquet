@@ -345,6 +345,14 @@ export class HistoryProvider implements HistoryApi {
 
       const aggFunc = this.getAggregateFunction(pathSpec.aggregate);
 
+      // sma/ema bucket like average, so angular data needs the same
+      // circular-mean bucket value before the moving window is applied.
+      const averageLike =
+        !pathSpec.aggregate ||
+        pathSpec.aggregate === 'average' ||
+        pathSpec.aggregate === 'sma' ||
+        pathSpec.aggregate === 'ema';
+
       // Inline filters (e.g. sourceRef) come from the server-parsed PathSpec.
       // The fields are populated by a newer @signalk/server-api than this plugin
       // pins, so they are read defensively via the registry. This provider only
@@ -369,13 +377,31 @@ export class HistoryProvider implements HistoryApi {
           componentSchema.components.entries()
         )
           .map(([name, comp]) => {
-            const compAggFunc = comp.dataType === 'numeric' ? aggFunc : 'FIRST';
+            if (comp.dataType !== 'numeric') {
+              return `FIRST(${comp.columnName}) as ${name}`;
+            }
             // TRY_CAST handles mixed-type parquet files (some store lat/lon as VARCHAR)
-            const colExpr =
-              comp.dataType === 'numeric'
-                ? `TRY_CAST(${comp.columnName} AS DOUBLE)`
-                : comp.columnName;
-            return `${compAggFunc}(${colExpr}) as ${name}`;
+            const colExpr = `TRY_CAST(${comp.columnName} AS DOUBLE)`;
+            if (averageLike) {
+              // Longitude wraps at the ±180° antimeridian, so a plain AVG
+              // pulls 179°/−179° toward 0°; use the circular mean in degrees.
+              if (
+                pathSpec.path === 'navigation.position' &&
+                name === 'longitude'
+              ) {
+                return `DEGREES(ATAN2(AVG(SIN(RADIANS(${colExpr}))), AVG(COS(RADIANS(${colExpr}))))) as ${name}`;
+              }
+              if (
+                isAngularPath(
+                  `${pathSpec.path}.${name}`,
+                  this.app,
+                  context as string
+                )
+              ) {
+                return `ATAN2(AVG(SIN(${colExpr})), AVG(COS(${colExpr}))) as ${name}`;
+              }
+            }
+            return `${aggFunc}(${colExpr}) as ${name}`;
           })
           .join(', ');
 
@@ -458,13 +484,6 @@ export class HistoryProvider implements HistoryApi {
           this.app,
           context as string
         );
-        // sma/ema bucket like average, so angular paths need the same
-        // circular-mean bucket value before the moving window is applied.
-        const averageLike =
-          !pathSpec.aggregate ||
-          pathSpec.aggregate === 'average' ||
-          pathSpec.aggregate === 'sma' ||
-          pathSpec.aggregate === 'ema';
         const valueExpression =
           angular && averageLike
             ? 'ATAN2(AVG(SIN(TRY_CAST(value AS DOUBLE))), AVG(COS(TRY_CAST(value AS DOUBLE))))'
@@ -570,14 +589,29 @@ export class HistoryProvider implements HistoryApi {
     const timestamps = rows.map(r => r[0]);
     const sample = rows.find(r => r[1] !== null && r[1] !== undefined)?.[1];
 
-    // Scalar numeric series
+    // Scalar numeric series. Only finite values enter the moving window —
+    // a null/NaN bucket (e.g. AVG over values that failed TRY_CAST) would
+    // otherwise coerce to 0 or poison the recursive EMA; such rows pass
+    // through unchanged instead.
     if (typeof sample === 'number') {
-      const nums = rows.map(r => Number(r[1]));
+      const validIdx: number[] = [];
+      const nums: number[] = [];
+      rows.forEach((r, i) => {
+        const v = r[1] === null || r[1] === undefined ? NaN : Number(r[1]);
+        if (Number.isFinite(v)) {
+          validIdx.push(i);
+          nums.push(v);
+        }
+      });
       const angular = isAngularPath(pathSpec.path, this.app, context as string);
       const smoothed = angular
         ? smoothCircularRad(nums, method, param)
         : smoothLinear(nums, method, param);
-      return timestamps.map((ts, i) => [ts, smoothed[i]]);
+      const out: Array<[Timestamp, unknown]> = rows.map(r => [r[0], r[1]]);
+      validIdx.forEach((rowIdx, j) => {
+        out[rowIdx] = [timestamps[rowIdx], smoothed[j]];
+      });
+      return out;
     }
 
     // navigation.position — queryPath returns [longitude, latitude]
@@ -586,17 +620,30 @@ export class HistoryProvider implements HistoryApi {
       Array.isArray(sample) &&
       sample.length >= 2
     ) {
-      const lon = smoothCircularDeg(
-        rows.map(r => Number((r[1] as number[])[0])),
-        method,
-        param
-      );
-      const lat = smoothLinear(
-        rows.map(r => Number((r[1] as number[])[1])),
-        method,
-        param
-      );
-      return timestamps.map((ts, i) => [ts, [lon[i], lat[i]]]);
+      // Same finite-value guard as the scalar branch: rows with a null/NaN
+      // longitude or latitude pass through unchanged rather than entering
+      // the moving window.
+      const validIdx: number[] = [];
+      const lons: number[] = [];
+      const lats: number[] = [];
+      rows.forEach((r, i) => {
+        const v = r[1];
+        if (!Array.isArray(v)) return;
+        const lonV = v[0] === null || v[0] === undefined ? NaN : Number(v[0]);
+        const latV = v[1] === null || v[1] === undefined ? NaN : Number(v[1]);
+        if (Number.isFinite(lonV) && Number.isFinite(latV)) {
+          validIdx.push(i);
+          lons.push(lonV);
+          lats.push(latV);
+        }
+      });
+      const lon = smoothCircularDeg(lons, method, param);
+      const lat = smoothLinear(lats, method, param);
+      const out: Array<[Timestamp, unknown]> = rows.map(r => [r[0], r[1]]);
+      validIdx.forEach((rowIdx, j) => {
+        out[rowIdx] = [timestamps[rowIdx], [lon[j], lat[j]]];
+      });
+      return out;
     }
 
     // Other object paths — smooth each component numeric in every row.
