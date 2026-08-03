@@ -648,6 +648,10 @@ export interface PluginState {
   // Auto-discovery service
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   autoDiscoveryService?: any; // AutoDiscoveryService - avoiding circular import
+  // History API (V1 routes). Registered once and reused across reconfigure so
+  // the express routes are never left bound to a closed SQLite buffer.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  historyApi?: any; // HistoryAPI - avoiding circular import
 }
 
 // Parquet Writer Class Interface

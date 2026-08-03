@@ -813,13 +813,30 @@ export class SQLiteBuffer {
   }
 
   /**
-   * Get distinct dates that have unexported records, excluding today.
+   * Get distinct dates (UTC) that have unexported records, excluding the
+   * current export window.
+   *
+   * `exportHourUtc` is the scheduler's daily export hour (UTC). A UTC day only
+   * becomes eligible for the startup catch-up once its scheduled export time —
+   * `exportHourUtc` on the following day — has passed. Shifting `now` back by
+   * `exportHourUtc` hours aligns the catch-up with the scheduled daily export,
+   * so a restart between UTC-midnight and `exportHourUtc` no longer exports the
+   * current local day early. Multi-day backlogs are still fully vacuumed; only
+   * the single most-recent day whose scheduled time hasn't yet arrived is
+   * briefly deferred (and picked up by the scheduled run or the next boot).
+   * Default `0` preserves the plain-UTC "before today" behaviour.
    * Scans all per-path tables.
    */
-  getDatesWithUnexportedRecords(excludeToday: boolean = true): string[] {
+  getDatesWithUnexportedRecords(
+    excludeToday: boolean = true,
+    exportHourUtc: number = 0
+  ): string[] {
     if (!this._open) {
       return [];
     }
+
+    // Clamp to a safe integer 0–23 so it can be inlined into the SQL modifier.
+    const h = Math.max(0, Math.min(23, Math.trunc(Number(exportHourUtc)) || 0));
 
     const allDates = new Set<string>();
     for (const [, info] of this.tableMap) {
@@ -829,7 +846,7 @@ export class SQLiteBuffer {
         WHERE exported = 0
       `;
       if (excludeToday) {
-        query += ` AND date(received_timestamp) < date('now')`;
+        query += ` AND date(received_timestamp) < date('now', '-${h} hours')`;
       }
 
       const rows = this.db.prepare(query).all() as Array<{

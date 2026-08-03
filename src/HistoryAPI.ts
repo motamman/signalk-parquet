@@ -80,7 +80,7 @@ export function registerHistoryApiRoute(
   autoDiscoveryService?: AutoDiscoveryService,
   s3Config?: S3QueryConfig,
   pathRetentionOverrides?: PathRetentionRule[]
-) {
+): HistoryAPI {
   const historyApi = new HistoryAPI(
     selfId,
     dataDir,
@@ -323,6 +323,12 @@ export function registerHistoryApiRoute(
       res.status(500).json({ error: (error as Error).message });
     }
   });
+
+  // Returned so the caller can hold a single instance and re-point it at a
+  // fresh SQLite buffer on reconfigure — the express routes above stay bound
+  // to this instance, so updating it in place avoids stranding them on a
+  // closed buffer (which fails federation silently).
+  return historyApi;
 }
 
 const getRequestParams = ({ query }: FromToContextRequest, selfId: string) => {

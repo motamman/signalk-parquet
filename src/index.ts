@@ -780,17 +780,32 @@ export default function (app: ServerAPI): SignalKPlugin {
             }
           : undefined;
 
-      registerHistoryApiRoute(
-        app as unknown as Router,
-        app.selfId,
-        state.currentConfig.outputDirectory,
-        app.debug,
-        app,
-        state.sqliteBuffer, // Pass SQLite buffer for federated queries
-        state.autoDiscoveryService, // Pass auto-discovery service
-        s3QueryConfig, // S3 config for federated queries
-        state.currentConfig.pathRetentionOverrides // skipAggregation read-path fallback
-      );
+      if (!state.historyApi) {
+        // First start: register the V1 express routes and keep the instance.
+        state.historyApi = registerHistoryApiRoute(
+          app as unknown as Router,
+          app.selfId,
+          state.currentConfig.outputDirectory,
+          app.debug,
+          app,
+          state.sqliteBuffer, // Pass SQLite buffer for federated queries
+          state.autoDiscoveryService, // Pass auto-discovery service
+          s3QueryConfig, // S3 config for federated queries
+          state.currentConfig.pathRetentionOverrides // skipAggregation read-path fallback
+        );
+      } else {
+        // Reconfigure (stop→start without a full process restart): the V1 express
+        // routes registered on the first start are still live and bound to this
+        // same HistoryAPI instance, but stop() closed the previous SQLite buffer.
+        // Express has no clean route-removal, so instead of registering a
+        // duplicate route bound to a now-closed buffer, re-point the existing
+        // instance at the fresh buffer/config. A closed buffer makes federation
+        // return nothing with NO error, silently dropping all live (unexported)
+        // data from history reads until a full restart — this keeps it live.
+        state.historyApi.setSqliteBuffer(state.sqliteBuffer);
+        state.historyApi.setS3Config(s3QueryConfig);
+        state.historyApi.setAutoDiscoveryService(state.autoDiscoveryService);
+      }
       app.debug(
         `[AutoDiscovery] History API registered with autoDiscoveryService: ${!!state.autoDiscoveryService}`
       );

@@ -192,8 +192,15 @@ export class ParquetExportService {
     const allFilesCreated: string[] = [];
     const allErrors: string[] = [];
 
-    // Get dates with unexported records (excludes today to avoid partial files)
-    const dates = this.sqliteBuffer.getDatesWithUnexportedRecords(true);
+    // Get dates with unexported records. Excludes the current export window:
+    // a UTC day is only eligible once its scheduled export time (dailyExportHour
+    // UTC on the following day) has passed, so a restart between UTC-midnight and
+    // dailyExportHour doesn't export the current local day early. Multi-day
+    // backlogs are still fully caught up.
+    const dates = this.sqliteBuffer.getDatesWithUnexportedRecords(
+      true,
+      this.config.dailyExportHour
+    );
 
     if (dates.length === 0) {
       this.app.debug('[StartupExport] No unexported records found');
