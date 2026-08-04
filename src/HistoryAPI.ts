@@ -841,6 +841,9 @@ export class HistoryAPI {
   private async getSpatialTimestamps(
     context: Context,
     dataDir: string,
+    // The caller's request-scoped buffer snapshot, so a reconfigure can't
+    // pair a new buffer with this request's directory.
+    sqliteBuffer: SQLiteBufferInterface | undefined,
     from: ZonedDateTime,
     to: ZonedDateTime,
     timeResolutionMillis: number,
@@ -887,12 +890,11 @@ export class HistoryAPI {
           AND filename NOT LIKE '%/repaired/%')`;
 
         let fromSource = `(${parquetFrom})`;
-        if (hasBuffer && this.sqliteBuffer) {
-          const bufferTableCols =
-            this.sqliteBuffer.getTableColumns(positionPath);
+        if (hasBuffer && sqliteBuffer) {
+          const bufferTableCols = sqliteBuffer.getTableColumns(positionPath);
           const stagedTable = await stageBufferTable(
             connection,
-            this.sqliteBuffer,
+            sqliteBuffer,
             String(context),
             positionPath,
             fromIso,
@@ -1016,8 +1018,10 @@ export class HistoryAPI {
     try {
       // Snapshot the data directory before any await: setDataDir() may run
       // mid-request on a plugin reconfigure, and tier selection here must
-      // agree with the directory getNumericValues queries.
+      // agree with the directory getNumericValues queries. Same for the
+      // auto-discovery service used after the query returns.
       const dataDir = this.dataDir;
+      const autoDiscoveryService = this.autoDiscoveryService;
       // Resolution now in SECONDS (breaking change from v0.7.0)
       const timeResolutionMillis = req.query.resolution
         ? parseResolutionToMillis(req.query.resolution as string)
@@ -1075,9 +1079,9 @@ export class HistoryAPI {
 
       // Check for auto-discovery on paths with no data
       debug(
-        `[AutoDiscovery] Checking auto-discovery: service=${!!this.autoDiscoveryService}, pathSpecs.length=${pathSpecs.length}`
+        `[AutoDiscovery] Checking auto-discovery: service=${!!autoDiscoveryService}, pathSpecs.length=${pathSpecs.length}`
       );
-      if (this.autoDiscoveryService && pathSpecs.length > 0) {
+      if (autoDiscoveryService && pathSpecs.length > 0) {
         const autoConfiguredPaths: AutoDiscoveryResult[] = [];
 
         for (let i = 0; i < pathSpecs.length; i++) {
@@ -1095,7 +1099,7 @@ export class HistoryAPI {
               `[AutoDiscovery] No data found for path ${pathSpec.path}, checking auto-discovery`
             );
             const result =
-              await this.autoDiscoveryService.maybeAutoConfigurePath(
+              await autoDiscoveryService.maybeAutoConfigurePath(
                 pathSpec.path as Path,
                 context
               );
@@ -1178,6 +1182,11 @@ export class HistoryAPI {
     // directory and rule set for the whole request.
     const dataDir = this.dataDir;
     const retentionRules = this.retentionRules;
+    // Snapshot the data sources for the same reason: a reconfigure that
+    // swaps the buffer or S3 config mid-request must not be mixed with the
+    // snapshotted directory's parquet data.
+    const sqliteBuffer = this.sqliteBuffer;
+    const s3Config = this.s3Config;
     // Keyed by pathSpecKey(spec), not bare path, so the same path requested
     // with different sources/aggregates keeps separate series.
     const allData: { [key: string]: Array<[Timestamp, unknown]> } = {};
@@ -1204,6 +1213,7 @@ export class HistoryAPI {
         spatialTimestamps = await this.getSpatialTimestamps(
           context,
           dataDir,
+          sqliteBuffer,
           from,
           to,
           timeResolutionMillis,
@@ -1271,13 +1281,13 @@ export class HistoryAPI {
               AND filename NOT LIKE '%/repaired/%'${posSourceFilter})`;
 
             let fromSource = `(${parquetFrom})`;
-            if (hasBuffer && this.sqliteBuffer) {
-              const bufferTableCols = this.sqliteBuffer.getTableColumns(
+            if (hasBuffer && sqliteBuffer) {
+              const bufferTableCols = sqliteBuffer.getTableColumns(
                 posPathSpec.path
               );
               const stagedTable = await stageBufferTable(
                 connection,
-                this.sqliteBuffer,
+                sqliteBuffer,
                 String(context),
                 posPathSpec.path,
                 fromIso,
@@ -1464,7 +1474,7 @@ export class HistoryAPI {
         debug(`Querying local Hive tier=${effectiveTier} at: ${localFilePath}`);
 
         // S3 supplements local for dates before the earliest local data
-        if (this.s3Config?.enabled) {
+        if (s3Config?.enabled) {
           // Find the earliest local data date
           const localEarliestDate = this.hivePathBuilder.findEarliestDate(
             dataDir,
@@ -1478,8 +1488,8 @@ export class HistoryAPI {
             const s3ToDate = new Date(localEarliestDate.getTime() - 86400000); // day before local starts
             if (fromDate <= s3ToDate) {
               s3FilePath = this.hivePathBuilder.buildS3Glob(
-                this.s3Config.bucket,
-                this.s3Config.keyPrefix || '',
+                s3Config.bucket,
+                s3Config.keyPrefix || '',
                 effectiveTier,
                 context,
                 pathSpec.path,
@@ -1493,8 +1503,8 @@ export class HistoryAPI {
           } else if (!localEarliestDate) {
             // No local data at all — query S3 for full range
             s3FilePath = this.hivePathBuilder.buildS3Glob(
-              this.s3Config.bucket,
-              this.s3Config.keyPrefix || '',
+              s3Config.bucket,
+              s3Config.keyPrefix || '',
               effectiveTier,
               context,
               pathSpec.path,
@@ -1516,10 +1526,10 @@ export class HistoryAPI {
 
         try {
           const stagedBufferTable =
-            hasBuffer && this.sqliteBuffer
+            hasBuffer && sqliteBuffer
               ? await stageBufferTable(
                   connection,
-                  this.sqliteBuffer,
+                  sqliteBuffer,
                   String(context),
                   pathSpec.path,
                   fromIso,
@@ -1607,7 +1617,7 @@ export class HistoryAPI {
               );
               // Rebuild S3 path with raw tier too
               let rawS3FilePath: string | null = null;
-              if (this.s3Config?.enabled) {
+              if (s3Config?.enabled) {
                 const rawEarliestDate = this.hivePathBuilder.findEarliestDate(
                   dataDir,
                   'raw',
@@ -1620,8 +1630,8 @@ export class HistoryAPI {
                   );
                   if (fromDate <= s3ToDate) {
                     rawS3FilePath = this.hivePathBuilder.buildS3Glob(
-                      this.s3Config.bucket,
-                      this.s3Config.keyPrefix || '',
+                      s3Config.bucket,
+                      s3Config.keyPrefix || '',
                       'raw',
                       context,
                       pathSpec.path,
@@ -1631,8 +1641,8 @@ export class HistoryAPI {
                   }
                 } else if (!rawEarliestDate) {
                   rawS3FilePath = this.hivePathBuilder.buildS3Glob(
-                    this.s3Config.bucket,
-                    this.s3Config.keyPrefix || '',
+                    s3Config.bucket,
+                    s3Config.keyPrefix || '',
                     'raw',
                     context,
                     pathSpec.path,
@@ -1741,7 +1751,7 @@ export class HistoryAPI {
 
               // Source 2: SQLite buffer (today's live data not yet exported)
               if (stagedBufferTable) {
-                const bufferTableCols = this.sqliteBuffer?.getTableColumns(
+                const bufferTableCols = sqliteBuffer?.getTableColumns(
                   pathSpec.path
                 );
                 const bufferSubquery = buildBufferObjectSubquery(
@@ -1951,10 +1961,10 @@ export class HistoryAPI {
             const fallbackToIso = to.toInstant().toString();
             const bufferConn = await DuckDBPool.getConnection();
             try {
-              const stagedFallbackTable = this.sqliteBuffer
+              const stagedFallbackTable = sqliteBuffer
                 ? await stageBufferTable(
                     bufferConn,
-                    this.sqliteBuffer,
+                    sqliteBuffer,
                     String(context),
                     pathSpec.path,
                     fallbackFromIso,
@@ -1964,7 +1974,7 @@ export class HistoryAPI {
                 : null;
               // Object buffer tables have value_json/value_* columns and no
               // `value` column — the scalar builder would fail against them
-              const fallbackSchema = this.sqliteBuffer?.getTableSchema(
+              const fallbackSchema = sqliteBuffer?.getTableSchema(
                 pathSpec.path
               );
               const fallbackComponents = new Map<string, ComponentInfo>();

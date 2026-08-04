@@ -573,9 +573,10 @@ export class HistoryProvider implements HistoryApi {
    *  - navigation.position ([lon, lat] array): latitude smoothed linearly;
    *    longitude smoothed on the circle (degrees) so the ±180° antimeridian is
    *    handled instead of linear-averaging 179°/−179° toward 0°.
-   *  - Other object paths: each component numeric in every row is smoothed
-   *    linearly; components missing/non-numeric in any row pass through
-   *    untouched (keeps index alignment, avoids NaN contamination).
+   *  - Other object paths: each component that is a finite number in every
+   *    row is smoothed — circularly for angular (units=rad) components,
+   *    linearly otherwise; components missing/non-finite in any row pass
+   *    through untouched (keeps index alignment, avoids NaN contamination).
    *  - Non-numeric values pass through unchanged.
    */
   private applySmoothing(
@@ -646,20 +647,29 @@ export class HistoryProvider implements HistoryApi {
       return out;
     }
 
-    // Other object paths — smooth each component numeric in every row.
+    // Other object paths — smooth each component that is a finite number in
+    // every row (NaN/Infinity would poison the recursive EMA, same as the
+    // scalar branch); other components pass through untouched.
     if (sample && typeof sample === 'object' && !Array.isArray(sample)) {
       const keys = Object.keys(sample as Record<string, unknown>).filter(k =>
-        rows.every(
-          r => typeof (r[1] as Record<string, unknown>)?.[k] === 'number'
-        )
+        rows.every(r => {
+          const v = (r[1] as Record<string, unknown>)?.[k];
+          return typeof v === 'number' && Number.isFinite(v);
+        })
       );
       const smoothedByKey: Record<string, number[]> = {};
       for (const k of keys) {
-        smoothedByKey[k] = smoothLinear(
-          rows.map(r => (r[1] as Record<string, number>)[k]),
-          method,
-          param
-        );
+        const series = rows.map(r => (r[1] as Record<string, number>)[k]);
+        // Angular components bucket as circular means (see queryPath); the
+        // moving window must stay on the circle too, or a 0/2π wrap smooths
+        // through a false midpoint.
+        smoothedByKey[k] = isAngularPath(
+          `${pathSpec.path}.${k}`,
+          this.app,
+          context as string
+        )
+          ? smoothCircularRad(series, method, param)
+          : smoothLinear(series, method, param);
       }
       return timestamps.map((ts, i) => {
         const obj: Record<string, unknown> = {

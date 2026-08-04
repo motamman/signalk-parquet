@@ -36,10 +36,11 @@ export function parseEmaAlpha(parameter?: string[]): number {
 /**
  * Trailing simple moving average: `out[i]` is the mean of up to the last
  * `window` values ending at `i` (fewer than `window` near the start). `window`
- * is clamped to an integer >= 1. Matches the v1 rolling-window behaviour.
+ * is clamped to an integer >= 1; a non-finite window degrades to 1 (identity)
+ * instead of propagating NaN. Matches the v1 rolling-window behaviour.
  */
 export function sma(values: number[], window: number): number[] {
-  const n = Math.max(1, Math.trunc(window));
+  const n = Number.isFinite(window) ? Math.max(1, Math.trunc(window)) : 1;
   const out: number[] = [];
   let sum = 0;
   for (let i = 0; i < values.length; i++) {
@@ -52,10 +53,11 @@ export function sma(values: number[], window: number): number[] {
 
 /**
  * Exponential moving average: `out[0] = values[0]`,
- * `out[i] = alpha*values[i] + (1-alpha)*out[i-1]`. `alpha` is clamped to (0, 1].
+ * `out[i] = alpha*values[i] + (1-alpha)*out[i-1]`. `alpha` is clamped to
+ * (0, 1]; a non-finite alpha degrades to 1 (identity) instead of NaN.
  */
 export function ema(values: number[], alpha: number): number[] {
-  const a = Math.min(1, Math.max(Number.EPSILON, alpha));
+  const a = Number.isFinite(alpha) ? Math.min(1, Math.max(Number.EPSILON, alpha)) : 1;
   const out: number[] = [];
   let prev = 0;
   for (let i = 0; i < values.length; i++) {

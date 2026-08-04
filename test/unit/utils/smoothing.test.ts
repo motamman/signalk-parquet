@@ -123,3 +123,16 @@ describe('smoothing: circular degrees (longitude / antimeridian)', () => {
     expect(Math.abs(out[1] - 15)).to.be.lessThan(1e-6);
   });
 });
+
+describe('smoothing: non-finite window/alpha degrade to identity', () => {
+  // The parse* helpers never emit non-finite parameters, but sma/ema are
+  // exported directly — a NaN window/alpha must not smear NaN over the output.
+  it('sma with a NaN or Infinite window returns the input unchanged', () => {
+    expect(sma([1, 2, 3], NaN)).to.deep.equal([1, 2, 3]);
+    expect(sma([1, 2, 3], Infinity)).to.deep.equal([1, 2, 3]);
+  });
+
+  it('ema with a NaN alpha returns the input unchanged', () => {
+    expect(ema([1, 2, 3], NaN)).to.deep.equal([1, 2, 3]);
+  });
+});

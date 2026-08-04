@@ -22,7 +22,9 @@ export interface ComponentInfo {
 
 /**
  * Cache for path component schemas
- * Key: `${context}:${path}`
+ * Key: `${dataDir}:${context}:${path}` — the data directory is part of the
+ * key so a runtime reconfigure to a different store can't serve schemas
+ * discovered in the old one.
  */
 const schemaCache = new Map<string, PathComponentSchema>();
 
@@ -41,7 +43,7 @@ export async function getPathComponentSchema(
   context: Context,
   pathStr: Path
 ): Promise<PathComponentSchema | null> {
-  const cacheKey = `${context}:${pathStr}`;
+  const cacheKey = `${dataDir}:${context}:${pathStr}`;
   const now = Date.now();
 
   // Check cache first
@@ -102,7 +104,9 @@ export async function getPathComponentSchema(
         // quarantined files) — read_parquet raises "No files found". Treat as
         // "no schema", matching the old empty-file-list behaviour. Any other
         // failure (binding, corruption, permissions) is rethrown so the
-        // outer handler logs it as an error.
+        // outer handler logs it and propagates it to the caller — null is
+        // reserved for "path has no object schema", so corruption can't be
+        // silently treated as a scalar path.
         const message = (describeErr as Error).message ?? '';
         if (!message.includes('No files found')) {
           throw describeErr;
@@ -152,7 +156,10 @@ export async function getPathComponentSchema(
       `[Schema Cache] Error getting schema for ${pathStr}:`,
       error
     );
-    return null;
+    // Null means "no object schema"; real failures (corruption, permissions,
+    // binding) propagate so callers' per-path error handling can act instead
+    // of misreading the path as scalar.
+    throw error;
   }
 }
 

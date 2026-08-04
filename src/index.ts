@@ -615,7 +615,10 @@ export default function (app: ServerAPI): SignalKPlugin {
                   }
                 });
                 if (angularPathNames.length === 0 && recordedPaths.length > 0) {
-                  app.error(
+                  // A legitimate state for vessels recording no rad-unit
+                  // paths — debug, not error (metadata-unavailable above
+                  // stays an error).
+                  app.debug(
                     `[DailyExport] No angular paths detected among ${recordedPaths.length} recorded paths — any heading/bearing paths will be linear-averaged in aggregated tiers`
                   );
                 } else {
@@ -1000,6 +1003,9 @@ export default function (app: ServerAPI): SignalKPlugin {
                 } catch {
                   // already gone
                 }
+                // Stop waiting here so the bound on plugin.stop() holds even
+                // if the worker can't be reaped (e.g. uninterruptible I/O).
+                resolve();
               }, AGGREGATION_WORKER_SHUTDOWN_GRACE_MS);
               worker.once('exit', () => {
                 clearTimeout(killTimer);

@@ -559,7 +559,10 @@ export interface SQLiteBufferInterface {
   close(): void;
   checkpoint(): void;
   // Daily export methods
-  getDatesWithUnexportedRecords(excludeToday?: boolean): string[];
+  getDatesWithUnexportedRecords(
+    excludeToday?: boolean,
+    exportHourUtc?: number
+  ): string[];
   /** All recorded path names (buffer tables are keyed by path). */
   getPaths(): string[];
   getPathsForDate(date: Date): Array<{ context: string; path: string }>;
