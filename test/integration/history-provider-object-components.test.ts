@@ -101,12 +101,15 @@ describe('History API v2 provider: non-numeric object components', function () {
   });
 
   it('retains a late non-NULL string component within a bucket', async () => {
-    // Both rows land in the same 60s bucket. The first (earlier) row has no
+    // All rows land in the same 60s bucket. The first (earlier) row has no
     // `state` yet while `temperature` is already populated; the second row
     // supplies state='running'. FIRST() on the string column picked the
     // leading NULL and the component vanished from the response object.
+    // A third row with a different state ('stopping') pins the ordering:
+    // the earliest non-NULL state by signalk_timestamp must win.
     buffer.insert(makeEngineRecord('2024-06-01T10:00:10.000Z', 80, null));
     buffer.insert(makeEngineRecord('2024-06-01T10:00:40.000Z', 82, 'running'));
+    buffer.insert(makeEngineRecord('2024-06-01T10:00:55.000Z', 81, 'stopping'));
     await exportService.exportDayToParquet(DAY);
 
     const res = await provider.getValues({
@@ -119,9 +122,10 @@ describe('History API v2 provider: non-numeric object components', function () {
 
     expect(res.data).to.have.lengthOf(1);
     const obj = res.data[0][1] as Record<string, unknown>;
-    expect(obj.state, 'late non-NULL state must survive bucketing').to.equal(
-      'running'
-    );
+    expect(
+      obj.state,
+      'earliest non-NULL state by signalk_timestamp must survive bucketing'
+    ).to.equal('running');
     expect(obj.temperature as number).to.be.closeTo(81, 1e-9);
   });
 });
