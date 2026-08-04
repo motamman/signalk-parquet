@@ -246,6 +246,28 @@ export default function (app: ServerAPI): SignalKPlugin {
       );
     }
 
+    // Normalise dailyExportHour once at intake and let the single validated
+    // value feed every consumer: Date.UTC scheduling rolls an out-of-range 24
+    // over to next-day midnight while the SQLite catch-up clamps it to 23, so
+    // an unvalidated value from a hand-edited config makes the scheduler and
+    // the catch-up disagree about which day is eligible for export.
+    const rawDailyExportHour = options?.dailyExportHour;
+    const dailyExportHour =
+      typeof rawDailyExportHour === 'number' &&
+      Number.isInteger(rawDailyExportHour) &&
+      rawDailyExportHour >= 0 &&
+      rawDailyExportHour <= 23
+        ? rawDailyExportHour
+        : 4;
+    if (
+      rawDailyExportHour !== undefined &&
+      rawDailyExportHour !== dailyExportHour
+    ) {
+      app.error(
+        `[DailyExport] Invalid dailyExportHour ${JSON.stringify(rawDailyExportHour)}; using default 4 (must be an integer 0-23, UTC)`
+      );
+    }
+
     state.currentConfig = {
       bufferSize: options?.bufferSize || 1000,
       saveIntervalSeconds: options?.saveIntervalSeconds || 30,
@@ -308,8 +330,8 @@ export default function (app: ServerAPI): SignalKPlugin {
       exportBatchSize: options?.exportBatchSize || 50000,
       // Enable raw SQL queries via /api/query endpoint
       enableRawSql: options?.enableRawSql || false,
-      // Daily export hour (0-23 UTC, default 2 AM)
-      dailyExportHour: options?.dailyExportHour ?? 4,
+      // Daily export hour (0-23 UTC, default 4 AM), validated above
+      dailyExportHour,
     };
 
     // Persist the migration so the configSchemaVersion sentinel lands
@@ -516,8 +538,9 @@ export default function (app: ServerAPI): SignalKPlugin {
       saveAllBuffers(state.currentConfig!, state, app);
     }, state.currentConfig.saveIntervalSeconds * 1000);
 
-    // Set up daily export scheduling (new simplified pipeline)
-    const dailyExportHour = state.currentConfig.dailyExportHour ?? 4;
+    // Set up daily export scheduling (new simplified pipeline).
+    // dailyExportHour is the 0-23 integer validated at config intake above,
+    // so this Date.UTC schedule and the SQLite catch-up cutoff agree.
     const now = new Date();
 
     // Calculate next daily export time (at configured hour UTC)

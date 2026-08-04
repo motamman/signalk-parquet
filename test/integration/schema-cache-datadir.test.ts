@@ -100,6 +100,53 @@ describe('schema cache: data-directory scoping', function () {
     );
   });
 
+  it('keeps colon-bearing dataDir/context tuples on distinct cache keys', async () => {
+    // Contexts routinely contain colons (vessel URNs). Under the old
+    // ':'-joined cache key, (dir, 'vessels.urn:mrn:imo:mmsi:N') and
+    // (dir + ':vessels.urn', 'mrn:imo:mmsi:N') collapsed to the same key,
+    // so the second tuple — a directory that doesn't even exist — was
+    // answered from the first tuple's cached schema.
+    const colonContext = 'vessels.urn:mrn:imo:mmsi:123456789';
+    const writer = new ParquetWriter({ format: 'parquet', app: host.app });
+    const exportService = new ParquetExportService(
+      buffer,
+      writer,
+      {
+        outputDirectory: host.dataDir,
+        filenamePrefix: 'signalk_data',
+        useHivePartitioning: true,
+        dailyExportHour: 4,
+      },
+      host.app
+    );
+    buffer.insert(
+      makePositionRecord(colonContext, 42.1, -70.5, '2024-06-01T11:00:00.000Z')
+    );
+    await exportService.exportDayToParquet(DAY);
+
+    const schemaA = await getPathComponentSchema(
+      host.dataDir,
+      colonContext as Context,
+      POSITION as Path
+    );
+    expect(schemaA, 'colon-context fixture should yield a schema').to.not.equal(
+      null
+    );
+
+    // Structurally different tuple whose ':'-join is identical to tuple A.
+    // The directory doesn't exist, so the only way to get a schema back is
+    // a cache-key collision.
+    const schemaB = await getPathComponentSchema(
+      `${host.dataDir}:vessels.urn`,
+      'mrn:imo:mmsi:123456789' as Context,
+      POSITION as Path
+    );
+    expect(
+      schemaB,
+      "colliding colon-join tuple must not reuse A's cached schema"
+    ).to.equal(null);
+  });
+
   it('propagates non-missing-file errors instead of returning null', async () => {
     const hive = new HivePathBuilder();
     const corruptStore = path.join(host.dataDir, 'corrupt-store');

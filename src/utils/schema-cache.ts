@@ -22,9 +22,11 @@ export interface ComponentInfo {
 
 /**
  * Cache for path component schemas
- * Key: `${dataDir}:${context}:${path}` — the data directory is part of the
- * key so a runtime reconfigure to a different store can't serve schemas
- * discovered in the old one.
+ * Key: JSON-encoded [dataDir, context, path] tuple — the data directory is
+ * part of the key so a runtime reconfigure to a different store can't serve
+ * schemas discovered in the old one, and the structural encoding keeps
+ * colon-bearing values (vessel URN contexts, Windows drive paths) from
+ * colliding the way a ':'-joined string would.
  */
 const schemaCache = new Map<string, PathComponentSchema>();
 
@@ -43,7 +45,7 @@ export async function getPathComponentSchema(
   context: Context,
   pathStr: Path
 ): Promise<PathComponentSchema | null> {
-  const cacheKey = `${dataDir}:${context}:${pathStr}`;
+  const cacheKey = JSON.stringify([dataDir, context, pathStr]);
   const now = Date.now();
 
   // Check cache first

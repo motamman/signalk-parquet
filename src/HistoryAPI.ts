@@ -844,6 +844,9 @@ export class HistoryAPI {
     // The caller's request-scoped buffer snapshot, so a reconfigure can't
     // pair a new buffer with this request's directory.
     sqliteBuffer: SQLiteBufferInterface | undefined,
+    // Request-start snapshot of DuckDBPool.isSQLiteBufferInitialized(),
+    // captured alongside sqliteBuffer for the same reason.
+    hasBuffer: boolean,
     from: ZonedDateTime,
     to: ZonedDateTime,
     timeResolutionMillis: number,
@@ -871,7 +874,6 @@ export class HistoryAPI {
     const toIso = to.toInstant().toString();
 
     try {
-      const hasBuffer = DuckDBPool.isSQLiteBufferInitialized();
       const connection = await DuckDBPool.getConnection();
       try {
         // Bucket-lookup approach: instead of scanning all raw position data,
@@ -1098,11 +1100,10 @@ export class HistoryAPI {
             debug(
               `[AutoDiscovery] No data found for path ${pathSpec.path}, checking auto-discovery`
             );
-            const result =
-              await autoDiscoveryService.maybeAutoConfigurePath(
-                pathSpec.path as Path,
-                context
-              );
+            const result = await autoDiscoveryService.maybeAutoConfigurePath(
+              pathSpec.path as Path,
+              context
+            );
             if (result.configured) {
               autoConfiguredPaths.push(result);
               debug(`[AutoDiscovery] Auto-configured path: ${pathSpec.path}`);
@@ -1187,6 +1188,11 @@ export class HistoryAPI {
     // snapshotted directory's parquet data.
     const sqliteBuffer = this.sqliteBuffer;
     const s3Config = this.s3Config;
+    // The DuckDB-side buffer attachment is process-global mutable state that
+    // a reconfigure flips mid-request; capture it once, paired with the
+    // sqliteBuffer snapshot above, so later branches can't mix a fresh
+    // attachment state with this request's buffer snapshot.
+    const hasBuffer = DuckDBPool.isSQLiteBufferInitialized();
     // Keyed by pathSpecKey(spec), not bare path, so the same path requested
     // with different sources/aggregates keeps separate series.
     const allData: { [key: string]: Array<[Timestamp, unknown]> } = {};
@@ -1214,6 +1220,7 @@ export class HistoryAPI {
           context,
           dataDir,
           sqliteBuffer,
+          hasBuffer,
           from,
           to,
           timeResolutionMillis,
@@ -1252,7 +1259,6 @@ export class HistoryAPI {
         const toIso = to.toInstant().toString();
 
         try {
-          const hasBuffer = DuckDBPool.isSQLiteBufferInitialized();
           const connection = await DuckDBPool.getConnection();
           try {
             const bucketExpr = `strftime(DATE_TRUNC('seconds',
@@ -1521,7 +1527,6 @@ export class HistoryAPI {
 
         // Get connection from pool (spatial extension already loaded), then
         // stage this path's buffer rows into a temp table for federation
-        const hasBuffer = DuckDBPool.isSQLiteBufferInitialized();
         const connection = await DuckDBPool.getConnection();
 
         try {
@@ -1955,7 +1960,7 @@ export class HistoryAPI {
         debug(`Error querying path ${pathSpec.path}: ${error}`);
 
         // Fallback: if parquet failed but buffer is available, query buffer only
-        if (DuckDBPool.isSQLiteBufferInitialized()) {
+        if (hasBuffer) {
           try {
             const fallbackFromIso = from.toInstant().toString();
             const fallbackToIso = to.toInstant().toString();

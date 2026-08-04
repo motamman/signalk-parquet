@@ -378,7 +378,11 @@ export class HistoryProvider implements HistoryApi {
         )
           .map(([name, comp]) => {
             if (comp.dataType !== 'numeric') {
-              return `FIRST(${comp.columnName}) as ${name}`;
+              // FIRST returns the physically-first row's value, which may be
+              // NULL even when a later row in the same bucket has one;
+              // ANY_VALUE skips NULLs and the ORDER BY makes "earliest
+              // non-NULL in the bucket" deterministic.
+              return `ANY_VALUE(${comp.columnName} ORDER BY signalk_timestamp) as ${name}`;
             }
             // TRY_CAST handles mixed-type parquet files (some store lat/lon as VARCHAR)
             const colExpr = `TRY_CAST(${comp.columnName} AS DOUBLE)`;

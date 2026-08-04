@@ -57,7 +57,9 @@ export function sma(values: number[], window: number): number[] {
  * (0, 1]; a non-finite alpha degrades to 1 (identity) instead of NaN.
  */
 export function ema(values: number[], alpha: number): number[] {
-  const a = Number.isFinite(alpha) ? Math.min(1, Math.max(Number.EPSILON, alpha)) : 1;
+  const a = Number.isFinite(alpha)
+    ? Math.min(1, Math.max(Number.EPSILON, alpha))
+    : 1;
   const out: number[] = [];
   let prev = 0;
   for (let i = 0; i < values.length; i++) {
