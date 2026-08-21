@@ -844,8 +844,8 @@ The History API supports 5 standard SignalK time query patterns:
 | `first` | First value in bucket | `path:first` |
 | `last` | Last value in bucket | `path:last` |
 | `mid` | Median value in bucket | `path:mid` |
-| `sma` | Simple Moving Average (returns only smoothed value) | `path:sma:5` |
-| `ema` | Exponential Moving Average (returns only smoothed value) | `path:ema:0.2` |
+| `sma` | Simple Moving Average, window default 5 samples (returns only smoothed value) | `path:sma:5` |
+| `ema` | Exponential Moving Average, alpha default 0.2 (returns only smoothed value) | `path:ema:0.2` |
 
 **SMA/EMA as aggregation methods (official SignalK syntax):**
 ```bash
@@ -855,6 +855,8 @@ curl "http://localhost:3000/signalk/v1/history/values?duration=1h&paths=navigati
 # EMA with alpha of 0.3 - returns ONLY the smoothed value (V1 with shorthand duration)
 curl "http://localhost:3000/signalk/v1/history/values?duration=1h&paths=environment.wind.speedApparent:ema:0.3"
 ```
+
+> **Angular-aware smoothing (v0.7.43+, V2 provider routes):** `sma`/`ema` first bucket values exactly like `average`, then apply the moving window. Paths with `rad` units (heading, COG, wind direction) are smoothed with a circular (vector) mean so the 0/2π wrap doesn't average 359°/1° toward 180°, and `navigation.position` longitude is smoothed across the ±180° antimeridian correctly (latitude linearly). Buckets with null/NaN values pass through unsmoothed rather than contaminating the moving average.
 
 #### Filtering by Source
 
