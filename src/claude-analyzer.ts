@@ -82,10 +82,7 @@ export interface DataSummary {
 export interface AvailablePathsFilter {
   vesselContext?: string; // 'vessels.self', 'vessels.*', 'vessels.urn:mrn:...'
   pathPattern?: string; // regex pattern for path filtering
-  source?: string; // filter by data source
-  hasValue?: boolean; // only paths with current values
   includeMetadata?: boolean; // include _sources, meta, etc.
-  maxDepth?: number; // maximum depth to traverse
 }
 
 export interface AvailablePathInfo {
@@ -1506,21 +1503,6 @@ Begin your analysis by querying relevant data within the specified time range.`;
                 description:
                   'Regex pattern to filter paths (e.g., "navigation.*" for navigation data, "electrical.*" for electrical data)',
               },
-              source: {
-                type: 'string',
-                description:
-                  'Filter by data source (e.g., "GPS", "AIS", "NMEA")',
-              },
-              hasValue: {
-                type: 'boolean',
-                description:
-                  'Only return paths that have current values. Defaults to false.',
-              },
-              maxDepth: {
-                type: 'number',
-                description:
-                  'Maximum depth to traverse SignalK tree. Defaults to 5.',
-              },
             },
           },
         });
@@ -1996,21 +1978,6 @@ Begin your analysis by querying relevant data within the specified time range.`;
                 description:
                   'Regex pattern to filter paths (e.g., "navigation.*" for navigation data, "electrical.*" for electrical data)',
               },
-              source: {
-                type: 'string',
-                description:
-                  'Filter by data source (e.g., "GPS", "AIS", "NMEA")',
-              },
-              hasValue: {
-                type: 'boolean',
-                description:
-                  'Only return paths that have current values. Defaults to false.',
-              },
-              maxDepth: {
-                type: 'number',
-                description:
-                  'Maximum depth to traverse SignalK tree. Defaults to 5.',
-              },
             },
           },
         });
@@ -2256,7 +2223,7 @@ Begin your analysis by querying relevant data within the specified time range.`;
   private getAvailableSignalKPaths(
     filter: AvailablePathsFilter = {}
   ): AvailablePathInfo[] {
-    const { vesselContext = 'vessels.self' } = filter;
+    const { vesselContext = 'vessels.self', pathPattern } = filter;
 
     // First try using StreamBundle.getAvailablePaths if available
     if (
@@ -2265,11 +2232,19 @@ Begin your analysis by querying relevant data within the specified time range.`;
     ) {
       this.app?.debug(`🚀 Using StreamBundle.getAvailablePaths() method`);
       try {
-        const streamPaths = this.app.streambundle.getAvailablePaths();
+        let streamPaths = this.app.streambundle.getAvailablePaths();
         this.app?.debug(
           `📋 StreamBundle returned ${streamPaths.length} paths: ${streamPaths.slice(0, 5).join(', ')}...`
         );
-        // TODO: Convert to AvailablePathInfo format and apply filters
+        if (pathPattern) {
+          const pattern = new RegExp(pathPattern);
+          streamPaths = streamPaths.filter((path: string) =>
+            pattern.test(path)
+          );
+          this.app?.debug(
+            `📋 ${streamPaths.length} paths match pattern "${pathPattern}"`
+          );
+        }
         return streamPaths.map((path: string) => ({
           path,
           fullPath: `${vesselContext}.${path}`,
@@ -2825,28 +2800,21 @@ Begin your analysis by querying relevant data within the specified time range.`;
         };
       }
     } else if (toolCall.name === 'get_available_signalk_paths') {
-      const { vesselContext, pathPattern, source, hasValue, maxDepth } =
-        toolCall.input as {
-          vesselContext?: string;
-          pathPattern?: string;
-          source?: string;
-          hasValue?: boolean;
-          maxDepth?: number;
-        };
+      const { vesselContext, pathPattern } = toolCall.input as {
+        vesselContext?: string;
+        pathPattern?: string;
+      };
 
       try {
         const availablePaths = this.getAvailableSignalKPaths({
           vesselContext,
           pathPattern,
-          source,
-          hasValue,
-          maxDepth,
         });
 
         const resultSummary = `Available SignalK paths (${availablePaths.length} found):\n\n${JSON.stringify(availablePaths, null, 2)}`;
 
         this.app?.debug(
-          `📋 Path discovery completed: ${availablePaths.length} paths found with filters: ${JSON.stringify({ vesselContext, pathPattern, source, hasValue })}`
+          `📋 Path discovery completed: ${availablePaths.length} paths found with filters: ${JSON.stringify({ vesselContext, pathPattern })}`
         );
 
         return {
