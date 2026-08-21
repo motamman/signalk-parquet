@@ -3,7 +3,6 @@ import * as path from 'path';
 import { DataRecord, ParquetWriterOptions, FileFormat } from './types';
 import { ServerAPI } from '@signalk/server-api';
 import { SchemaService } from './schema-service';
-import { DirectoryScanner } from './utils/directory-scanner';
 
 // Try to import ParquetJS, fall back if not available
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -19,7 +18,6 @@ export class ParquetWriter {
   private format: FileFormat;
   private app?: ServerAPI;
   private schemaService?: SchemaService;
-  private directoryScanner: DirectoryScanner;
 
   constructor(options: ParquetWriterOptions = { format: 'json' }) {
     this.format = options.format || 'json';
@@ -29,9 +27,6 @@ export class ParquetWriter {
     if (this.app) {
       this.schemaService = new SchemaService(this.app);
     }
-
-    // Initialize directory scanner with 5-minute cache
-    this.directoryScanner = new DirectoryScanner(5 * 60 * 1000);
   }
 
   getSchemaService(): SchemaService | undefined {
@@ -58,34 +53,10 @@ export class ParquetWriter {
           throw new Error(`Unsupported format: ${this.format}`);
       }
 
-      // Invalidate directory cache since we just wrote a file
-      // Get the base data directory (go up until we find the root data dir)
-      const baseDir = this.findBaseDataDir(directory);
-      this.directoryScanner.invalidateCache(baseDir);
-
       return result;
     } catch (error) {
       throw new Error(`Failed to write records: ${(error as Error).message}`);
     }
-  }
-
-  /**
-   * Find the base data directory from a nested path
-   * This helps invalidate the right cache entry
-   */
-  private findBaseDataDir(filePath: string): string {
-    // Walk up the directory tree to find a reasonable cache boundary
-    // Typically 2-3 levels up from the leaf file
-    const current = path.dirname(filePath);
-    const parts = current.split(path.sep);
-
-    // Go up to the path level (usually 2-3 directories up)
-    // This provides a good balance between cache granularity and performance
-    if (parts.length > 3) {
-      return parts.slice(0, -2).join(path.sep);
-    }
-
-    return current;
   }
 
   async writeJSON(filepath: string, records: DataRecord[]): Promise<string> {

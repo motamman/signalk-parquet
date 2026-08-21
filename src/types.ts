@@ -559,7 +559,12 @@ export interface SQLiteBufferInterface {
   close(): void;
   checkpoint(): void;
   // Daily export methods
-  getDatesWithUnexportedRecords(excludeToday?: boolean): string[];
+  getDatesWithUnexportedRecords(
+    excludeToday?: boolean,
+    exportHourUtc?: number
+  ): string[];
+  /** All recorded path names (buffer tables are keyed by path). */
+  getPaths(): string[];
   getPathsForDate(date: Date): Array<{ context: string; path: string }>;
   getRecordsForPathAndDate(
     context: string,
@@ -631,6 +636,19 @@ export interface PluginState {
   subscribedPaths: Set<string>;
   saveInterval?: NodeJS.Timeout;
   consolidationInterval?: NodeJS.Timeout;
+  // One-shot timers armed in start(); tracked so stop() can cancel work
+  // that hasn't fired yet.
+  dailyExportTimeout?: NodeJS.Timeout;
+  startupExportTimeout?: NodeJS.Timeout;
+  // Forked aggregation workers currently running; stop() asks each to
+  // cancel cooperatively (the in-flight COPY finishes, the run reports as
+  // failed), waits a bounded grace period for exit, then SIGKILLs
+  // stragglers so shutdown doesn't leave orphan processes churning on
+  // DuckDB files.
+  activeAggregationWorkers?: Set<import('child_process').ChildProcess>;
+  // Set at the top of stop(); scheduled callbacks check it so no new
+  // export/aggregation work starts once shutdown has begun.
+  isStopping?: boolean;
   parquetWriter?: ParquetWriter;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   cloudClient?: any; // S3 or R2 client (S3-compatible)
@@ -646,6 +664,10 @@ export interface PluginState {
   // Auto-discovery service
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   autoDiscoveryService?: any; // AutoDiscoveryService - avoiding circular import
+  // History API (V1 routes). Registered once and reused across reconfigure so
+  // the express routes are never left bound to a closed SQLite buffer.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  historyApi?: any; // HistoryAPI - avoiding circular import
 }
 
 // Parquet Writer Class Interface

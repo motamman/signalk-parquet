@@ -35,15 +35,19 @@ function roundToMinute(dateTime: ZonedDateTime): string {
 }
 
 /**
- * Get cached paths for a specific context and time range
+ * Get cached paths for a specific data directory, context, and time range.
+ * Keys include the data directory so entries cached before a setDataDir()
+ * reconfigure (or by another HistoryAPI instance) are never served for a
+ * different directory.
  */
 export function getCachedPaths(
+  dataDir: string,
   context: Context,
   from: ZonedDateTime,
   to: ZonedDateTime
 ): Path[] | null {
   // Use rounded timestamps for cache key to improve hit rate
-  const key = `${context}:${roundToMinute(from)}:${roundToMinute(to)}`;
+  const key = `${dataDir}:${context}:${roundToMinute(from)}:${roundToMinute(to)}`;
   const cached = pathCache.get(key);
 
   if (cached && Date.now() - cached.timestamp < CACHE_TTL.PATH_CONTEXT) {
@@ -59,16 +63,20 @@ export function getCachedPaths(
 }
 
 /**
- * Cache paths for a specific context and time range
+ * Cache paths for a specific data directory, context, and time range.
+ * Pass the directory the query actually ran against (captured before the
+ * query started), so a result that resolves after a setDataDir() is stored
+ * under the directory it belongs to.
  */
 export function setCachedPaths(
+  dataDir: string,
   context: Context,
   from: ZonedDateTime,
   to: ZonedDateTime,
   paths: Path[]
 ): void {
   // Use rounded timestamps for cache key to improve hit rate
-  const key = `${context}:${roundToMinute(from)}:${roundToMinute(to)}`;
+  const key = `${dataDir}:${context}:${roundToMinute(from)}:${roundToMinute(to)}`;
 
   pathCache.set(key, {
     timeRange: { from: from.toString(), to: to.toString() },
@@ -108,14 +116,16 @@ export function getPathCacheStats() {
 // ============================================================================
 
 /**
- * Get cached contexts for a specific time range
+ * Get cached contexts for a specific data directory and time range.
+ * Keyed by directory for the same reason as getCachedPaths.
  */
 export function getCachedContexts(
+  dataDir: string,
   from: ZonedDateTime,
   to: ZonedDateTime
 ): Context[] | null {
   // Use rounded timestamps for cache key to improve hit rate
-  const key = `${roundToMinute(from)}:${roundToMinute(to)}`;
+  const key = `${dataDir}:${roundToMinute(from)}:${roundToMinute(to)}`;
   const cached = contextCache.get(key);
 
   if (cached && Date.now() - cached.timestamp < CACHE_TTL.PATH_CONTEXT) {
@@ -131,15 +141,17 @@ export function getCachedContexts(
 }
 
 /**
- * Cache contexts for a specific time range
+ * Cache contexts for a specific data directory and time range.
+ * Pass the directory the query actually ran against.
  */
 export function setCachedContexts(
+  dataDir: string,
   from: ZonedDateTime,
   to: ZonedDateTime,
   contexts: Context[]
 ): void {
   // Use rounded timestamps for cache key to improve hit rate
-  const key = `${roundToMinute(from)}:${roundToMinute(to)}`;
+  const key = `${dataDir}:${roundToMinute(from)}:${roundToMinute(to)}`;
 
   contextCache.set(key, {
     timeRange: { from: from.toString(), to: to.toString() },

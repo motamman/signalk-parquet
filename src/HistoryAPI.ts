@@ -80,7 +80,7 @@ export function registerHistoryApiRoute(
   autoDiscoveryService?: AutoDiscoveryService,
   s3Config?: S3QueryConfig,
   pathRetentionOverrides?: PathRetentionRule[]
-) {
+): HistoryAPI {
   const historyApi = new HistoryAPI(
     selfId,
     dataDir,
@@ -124,14 +124,18 @@ export function registerHistoryApiRoute(
           selfId
         );
 
+        // Capture the directory once so the lookup, the query, and the
+        // stored result all use the same directory even if setDataDir()
+        // runs while the query is in flight.
+        const dataDir = historyApi.getDataDir();
         // Check cache first
-        let contexts = getCachedContexts(from, to);
+        let contexts = getCachedContexts(dataDir, from, to);
 
         if (!contexts) {
           // Cache miss - query the parquet files
           contexts = await getAvailableContextsForTimeRange(dataDir, from, to);
           // Cache the result
-          setCachedContexts(from, to, contexts);
+          setCachedContexts(dataDir, from, to, contexts);
         }
 
         res.json(contexts);
@@ -163,8 +167,12 @@ export function registerHistoryApiRoute(
           selfId
         );
 
+        // Capture the directory once so the lookup, the query, and the
+        // stored result all use the same directory even if setDataDir()
+        // runs while the query is in flight.
+        const dataDir = historyApi.getDataDir();
         // Check cache first
-        let paths = getCachedPaths(context, from, to);
+        let paths = getCachedPaths(dataDir, context, from, to);
 
         if (!paths) {
           // Cache miss - query the parquet files
@@ -175,7 +183,7 @@ export function registerHistoryApiRoute(
             to
           );
           // Cache the result
-          setCachedPaths(context, from, to, paths);
+          setCachedPaths(dataDir, context, from, to, paths);
         }
 
         res.json(paths);
@@ -184,7 +192,11 @@ export function registerHistoryApiRoute(
         const context = req.query.context
           ? getContext(req.query.context as string, selfId)
           : undefined;
-        const paths = getAvailablePathsArray(dataDir, app, context);
+        const paths = getAvailablePathsArray(
+          historyApi.getDataDir(),
+          app,
+          context
+        );
         res.json(paths);
       }
     } catch (error) {
@@ -226,14 +238,18 @@ export function registerHistoryApiRoute(
           selfId
         );
 
+        // Capture the directory once so the lookup, the query, and the
+        // stored result all use the same directory even if setDataDir()
+        // runs while the query is in flight.
+        const dataDir = historyApi.getDataDir();
         // Check cache first
-        let contexts = getCachedContexts(from, to);
+        let contexts = getCachedContexts(dataDir, from, to);
 
         if (!contexts) {
           // Cache miss - query the parquet files
           contexts = await getAvailableContextsForTimeRange(dataDir, from, to);
           // Cache the result
-          setCachedContexts(from, to, contexts);
+          setCachedContexts(dataDir, from, to, contexts);
         }
 
         res.json(contexts);
@@ -269,7 +285,7 @@ export function registerHistoryApiRoute(
         }
 
         const contexts = await getContextsInSpatialFilter(
-          dataDir,
+          historyApi.getDataDir(),
           from,
           to,
           spatialFilter
@@ -294,8 +310,12 @@ export function registerHistoryApiRoute(
           selfId
         );
 
+        // Capture the directory once so the lookup, the query, and the
+        // stored result all use the same directory even if setDataDir()
+        // runs while the query is in flight.
+        const dataDir = historyApi.getDataDir();
         // Check cache first
-        let paths = getCachedPaths(context, from, to);
+        let paths = getCachedPaths(dataDir, context, from, to);
 
         if (!paths) {
           // Cache miss - query the parquet files
@@ -306,7 +326,7 @@ export function registerHistoryApiRoute(
             to
           );
           // Cache the result
-          setCachedPaths(context, from, to, paths);
+          setCachedPaths(dataDir, context, from, to, paths);
         }
 
         res.json(paths);
@@ -315,7 +335,11 @@ export function registerHistoryApiRoute(
         const context = req.query.context
           ? getContext(req.query.context as string, selfId)
           : undefined;
-        const paths = getAvailablePathsArray(dataDir, app, context);
+        const paths = getAvailablePathsArray(
+          historyApi.getDataDir(),
+          app,
+          context
+        );
         res.json(paths);
       }
     } catch (error) {
@@ -323,6 +347,12 @@ export function registerHistoryApiRoute(
       res.status(500).json({ error: (error as Error).message });
     }
   });
+
+  // Returned so the caller can hold a single instance and re-point it at a
+  // fresh SQLite buffer on reconfigure — the express routes above stay bound
+  // to this instance, so updating it in place avoids stranding them on a
+  // closed buffer (which fails federation silently).
+  return historyApi;
 }
 
 const getRequestParams = ({ query }: FromToContextRequest, selfId: string) => {
@@ -735,6 +765,27 @@ export class HistoryAPI {
   }
 
   /**
+   * Set the data directory queries read from. The express routes registered
+   * in registerHistoryApiRoute read it back via getDataDir(), so a
+   * reconfigured outputDirectory takes effect without re-registering routes.
+   */
+  setDataDir(dataDir: string): void {
+    this.dataDir = dataDir;
+  }
+
+  getDataDir(): string {
+    return this.dataDir;
+  }
+
+  /**
+   * Replace the per-path retention overrides (skipAggregation read-path
+   * fallback) after a reconfigure.
+   */
+  setPathRetentionOverrides(overrides: PathRetentionRule[] | undefined): void {
+    this.retentionRules = new RetentionRuleSet(overrides || []);
+  }
+
+  /**
    * Auto-select the optimal tier based on requested resolution
    * Returns undefined to use raw/flat data, or a tier name for aggregated data
    *
@@ -747,7 +798,8 @@ export class HistoryAPI {
    * Falls back through tiers if preferred tier doesn't exist
    */
   private selectOptimalTier(
-    resolutionMillis: number
+    resolutionMillis: number,
+    dataDir: string
   ): AggregationTier | undefined {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const fs = require('fs');
@@ -768,7 +820,7 @@ export class HistoryAPI {
 
     // Check which tiers exist and return the best available
     for (const tier of preferredTiers) {
-      const tierPath = path.join(this.dataDir, `tier=${tier}`);
+      const tierPath = path.join(dataDir, `tier=${tier}`);
       try {
         if (fs.existsSync(tierPath)) {
           return tier;
@@ -788,6 +840,13 @@ export class HistoryAPI {
    */
   private async getSpatialTimestamps(
     context: Context,
+    dataDir: string,
+    // The caller's request-scoped buffer snapshot, so a reconfigure can't
+    // pair a new buffer with this request's directory.
+    sqliteBuffer: SQLiteBufferInterface | undefined,
+    // Request-start snapshot of DuckDBPool.isSQLiteBufferInitialized(),
+    // captured alongside sqliteBuffer for the same reason.
+    hasBuffer: boolean,
     from: ZonedDateTime,
     to: ZonedDateTime,
     timeResolutionMillis: number,
@@ -803,7 +862,7 @@ export class HistoryAPI {
     const sanitizedContext = this.hivePathBuilder.sanitizeContext(context);
     const sanitizedPath = this.hivePathBuilder.sanitizePath(positionPath);
     const localFilePath = path.join(
-      this.dataDir,
+      dataDir,
       'tier=raw',
       `context=${sanitizedContext}`,
       `path=${sanitizedPath}`,
@@ -815,7 +874,6 @@ export class HistoryAPI {
     const toIso = to.toInstant().toString();
 
     try {
-      const hasBuffer = DuckDBPool.isSQLiteBufferInitialized();
       const connection = await DuckDBPool.getConnection();
       try {
         // Bucket-lookup approach: instead of scanning all raw position data,
@@ -834,12 +892,11 @@ export class HistoryAPI {
           AND filename NOT LIKE '%/repaired/%')`;
 
         let fromSource = `(${parquetFrom})`;
-        if (hasBuffer && this.sqliteBuffer) {
-          const bufferTableCols =
-            this.sqliteBuffer.getTableColumns(positionPath);
+        if (hasBuffer && sqliteBuffer) {
+          const bufferTableCols = sqliteBuffer.getTableColumns(positionPath);
           const stagedTable = await stageBufferTable(
             connection,
-            this.sqliteBuffer,
+            sqliteBuffer,
             String(context),
             positionPath,
             fromIso,
@@ -961,6 +1018,12 @@ export class HistoryAPI {
     res: Response<any, Record<string, any>>
   ) {
     try {
+      // Snapshot the data directory before any await: setDataDir() may run
+      // mid-request on a plugin reconfigure, and tier selection here must
+      // agree with the directory getNumericValues queries. Same for the
+      // auto-discovery service used after the query returns.
+      const dataDir = this.dataDir;
+      const autoDiscoveryService = this.autoDiscoveryService;
       // Resolution now in SECONDS (breaking change from v0.7.0)
       const timeResolutionMillis = req.query.resolution
         ? parseResolutionToMillis(req.query.resolution as string)
@@ -976,7 +1039,7 @@ export class HistoryAPI {
       const pathSpecs: PathSpec[] = pathExpressions.map(splitPathExpression);
 
       // Auto-select tier based on resolution (provider selects automatically)
-      const tier = this.selectOptimalTier(timeResolutionMillis);
+      const tier = this.selectOptimalTier(timeResolutionMillis, dataDir);
       if (tier) {
         debug(
           `Auto-selected tier=${tier} for resolution=${timeResolutionMillis}ms`
@@ -1018,9 +1081,9 @@ export class HistoryAPI {
 
       // Check for auto-discovery on paths with no data
       debug(
-        `[AutoDiscovery] Checking auto-discovery: service=${!!this.autoDiscoveryService}, pathSpecs.length=${pathSpecs.length}`
+        `[AutoDiscovery] Checking auto-discovery: service=${!!autoDiscoveryService}, pathSpecs.length=${pathSpecs.length}`
       );
-      if (this.autoDiscoveryService && pathSpecs.length > 0) {
+      if (autoDiscoveryService && pathSpecs.length > 0) {
         const autoConfiguredPaths: AutoDiscoveryResult[] = [];
 
         for (let i = 0; i < pathSpecs.length; i++) {
@@ -1037,11 +1100,10 @@ export class HistoryAPI {
             debug(
               `[AutoDiscovery] No data found for path ${pathSpec.path}, checking auto-discovery`
             );
-            const result =
-              await this.autoDiscoveryService.maybeAutoConfigurePath(
-                pathSpec.path as Path,
-                context
-              );
+            const result = await autoDiscoveryService.maybeAutoConfigurePath(
+              pathSpec.path as Path,
+              context
+            );
             if (result.configured) {
               autoConfiguredPaths.push(result);
               debug(`[AutoDiscovery] Auto-configured path: ${pathSpec.path}`);
@@ -1115,6 +1177,22 @@ export class HistoryAPI {
     positionPath: string = 'navigation.position',
     app?: any
   ): Promise<DataResult> {
+    // Snapshot the mutable instance config once, before the first await.
+    // setDataDir()/setPathRetentionOverrides() may run mid-request on a
+    // plugin reconfigure; every query and branch below must see the same
+    // directory and rule set for the whole request.
+    const dataDir = this.dataDir;
+    const retentionRules = this.retentionRules;
+    // Snapshot the data sources for the same reason: a reconfigure that
+    // swaps the buffer or S3 config mid-request must not be mixed with the
+    // snapshotted directory's parquet data.
+    const sqliteBuffer = this.sqliteBuffer;
+    const s3Config = this.s3Config;
+    // The DuckDB-side buffer attachment is process-global mutable state that
+    // a reconfigure flips mid-request; capture it once, paired with the
+    // sqliteBuffer snapshot above, so later branches can't mix a fresh
+    // attachment state with this request's buffer snapshot.
+    const hasBuffer = DuckDBPool.isSQLiteBufferInitialized();
     // Keyed by pathSpecKey(spec), not bare path, so the same path requested
     // with different sources/aggregates keeps separate series.
     const allData: { [key: string]: Array<[Timestamp, unknown]> } = {};
@@ -1140,6 +1218,9 @@ export class HistoryAPI {
         );
         spatialTimestamps = await this.getSpatialTimestamps(
           context,
+          dataDir,
+          sqliteBuffer,
+          hasBuffer,
           from,
           to,
           timeResolutionMillis,
@@ -1167,7 +1248,7 @@ export class HistoryAPI {
           posPathSpec.path
         );
         const posFilePath = path.join(
-          this.dataDir,
+          dataDir,
           'tier=raw',
           `context=${sanitizedCtx}`,
           `path=${sanitizedPos}`,
@@ -1178,7 +1259,6 @@ export class HistoryAPI {
         const toIso = to.toInstant().toString();
 
         try {
-          const hasBuffer = DuckDBPool.isSQLiteBufferInitialized();
           const connection = await DuckDBPool.getConnection();
           try {
             const bucketExpr = `strftime(DATE_TRUNC('seconds',
@@ -1207,13 +1287,13 @@ export class HistoryAPI {
               AND filename NOT LIKE '%/repaired/%'${posSourceFilter})`;
 
             let fromSource = `(${parquetFrom})`;
-            if (hasBuffer && this.sqliteBuffer) {
-              const bufferTableCols = this.sqliteBuffer.getTableColumns(
+            if (hasBuffer && sqliteBuffer) {
+              const bufferTableCols = sqliteBuffer.getTableColumns(
                 posPathSpec.path
               );
               const stagedTable = await stageBufferTable(
                 connection,
-                this.sqliteBuffer,
+                sqliteBuffer,
                 String(context),
                 posPathSpec.path,
                 fromIso,
@@ -1366,7 +1446,7 @@ export class HistoryAPI {
         // cases and run after this.
         if (
           effectiveTier !== 'raw' &&
-          this.retentionRules.shouldSkipAggregation(pathSpec.path)
+          retentionRules.shouldSkipAggregation(pathSpec.path)
         ) {
           debug(
             `Path ${pathSpec.path}: skipAggregation rule matched — overriding tier=${effectiveTier} to raw`
@@ -1390,7 +1470,7 @@ export class HistoryAPI {
           pathSpec.path
         );
         localFilePath = path.join(
-          this.dataDir,
+          dataDir,
           `tier=${effectiveTier}`,
           `context=${sanitizedContext}`,
           `path=${sanitizedSkPath}`,
@@ -1400,10 +1480,10 @@ export class HistoryAPI {
         debug(`Querying local Hive tier=${effectiveTier} at: ${localFilePath}`);
 
         // S3 supplements local for dates before the earliest local data
-        if (this.s3Config?.enabled) {
+        if (s3Config?.enabled) {
           // Find the earliest local data date
           const localEarliestDate = this.hivePathBuilder.findEarliestDate(
-            this.dataDir,
+            dataDir,
             effectiveTier,
             sanitizedContext,
             sanitizedSkPath
@@ -1414,8 +1494,8 @@ export class HistoryAPI {
             const s3ToDate = new Date(localEarliestDate.getTime() - 86400000); // day before local starts
             if (fromDate <= s3ToDate) {
               s3FilePath = this.hivePathBuilder.buildS3Glob(
-                this.s3Config.bucket,
-                this.s3Config.keyPrefix || '',
+                s3Config.bucket,
+                s3Config.keyPrefix || '',
                 effectiveTier,
                 context,
                 pathSpec.path,
@@ -1429,8 +1509,8 @@ export class HistoryAPI {
           } else if (!localEarliestDate) {
             // No local data at all — query S3 for full range
             s3FilePath = this.hivePathBuilder.buildS3Glob(
-              this.s3Config.bucket,
-              this.s3Config.keyPrefix || '',
+              s3Config.bucket,
+              s3Config.keyPrefix || '',
               effectiveTier,
               context,
               pathSpec.path,
@@ -1447,15 +1527,14 @@ export class HistoryAPI {
 
         // Get connection from pool (spatial extension already loaded), then
         // stage this path's buffer rows into a temp table for federation
-        const hasBuffer = DuckDBPool.isSQLiteBufferInitialized();
         const connection = await DuckDBPool.getConnection();
 
         try {
           const stagedBufferTable =
-            hasBuffer && this.sqliteBuffer
+            hasBuffer && sqliteBuffer
               ? await stageBufferTable(
                   connection,
-                  this.sqliteBuffer,
+                  sqliteBuffer,
                   String(context),
                   pathSpec.path,
                   fromIso,
@@ -1522,7 +1601,7 @@ export class HistoryAPI {
           // Use local path for schema check (S3 schema should match)
           const schemaCheckPath = localFilePath || s3FilePath;
           const componentSchema = schemaCheckPath
-            ? await getPathComponentSchema(this.dataDir, context, pathSpec.path)
+            ? await getPathComponentSchema(dataDir, context, pathSpec.path)
             : null;
 
           if (componentSchema && componentSchema.components.size > 0) {
@@ -1534,7 +1613,7 @@ export class HistoryAPI {
                 `Path ${pathSpec.path}: Object path — overriding tier=${effectiveTier} to raw`
               );
               localFilePath = path.join(
-                this.dataDir,
+                dataDir,
                 'tier=raw',
                 `context=${sanitizedContext}`,
                 `path=${sanitizedSkPath}`,
@@ -1543,9 +1622,9 @@ export class HistoryAPI {
               );
               // Rebuild S3 path with raw tier too
               let rawS3FilePath: string | null = null;
-              if (this.s3Config?.enabled) {
+              if (s3Config?.enabled) {
                 const rawEarliestDate = this.hivePathBuilder.findEarliestDate(
-                  this.dataDir,
+                  dataDir,
                   'raw',
                   sanitizedContext,
                   sanitizedSkPath
@@ -1556,8 +1635,8 @@ export class HistoryAPI {
                   );
                   if (fromDate <= s3ToDate) {
                     rawS3FilePath = this.hivePathBuilder.buildS3Glob(
-                      this.s3Config.bucket,
-                      this.s3Config.keyPrefix || '',
+                      s3Config.bucket,
+                      s3Config.keyPrefix || '',
                       'raw',
                       context,
                       pathSpec.path,
@@ -1567,8 +1646,8 @@ export class HistoryAPI {
                   }
                 } else if (!rawEarliestDate) {
                   rawS3FilePath = this.hivePathBuilder.buildS3Glob(
-                    this.s3Config.bucket,
-                    this.s3Config.keyPrefix || '',
+                    s3Config.bucket,
+                    s3Config.keyPrefix || '',
                     'raw',
                     context,
                     pathSpec.path,
@@ -1677,7 +1756,7 @@ export class HistoryAPI {
 
               // Source 2: SQLite buffer (today's live data not yet exported)
               if (stagedBufferTable) {
-                const bufferTableCols = this.sqliteBuffer?.getTableColumns(
+                const bufferTableCols = sqliteBuffer?.getTableColumns(
                   pathSpec.path
                 );
                 const bufferSubquery = buildBufferObjectSubquery(
@@ -1778,7 +1857,7 @@ export class HistoryAPI {
             if (isStringPath(pathSpec.path) && effectiveTier !== 'raw') {
               // Rebuild fromClause pointing to raw tier for string paths
               localFilePath = path.join(
-                this.dataDir,
+                dataDir,
                 'tier=raw',
                 `context=${sanitizedContext}`,
                 `path=${sanitizedSkPath}`,
@@ -1881,16 +1960,16 @@ export class HistoryAPI {
         debug(`Error querying path ${pathSpec.path}: ${error}`);
 
         // Fallback: if parquet failed but buffer is available, query buffer only
-        if (DuckDBPool.isSQLiteBufferInitialized()) {
+        if (hasBuffer) {
           try {
             const fallbackFromIso = from.toInstant().toString();
             const fallbackToIso = to.toInstant().toString();
             const bufferConn = await DuckDBPool.getConnection();
             try {
-              const stagedFallbackTable = this.sqliteBuffer
+              const stagedFallbackTable = sqliteBuffer
                 ? await stageBufferTable(
                     bufferConn,
-                    this.sqliteBuffer,
+                    sqliteBuffer,
                     String(context),
                     pathSpec.path,
                     fallbackFromIso,
@@ -1900,7 +1979,7 @@ export class HistoryAPI {
                 : null;
               // Object buffer tables have value_json/value_* columns and no
               // `value` column — the scalar builder would fail against them
-              const fallbackSchema = this.sqliteBuffer?.getTableSchema(
+              const fallbackSchema = sqliteBuffer?.getTableSchema(
                 pathSpec.path
               );
               const fallbackComponents = new Map<string, ComponentInfo>();

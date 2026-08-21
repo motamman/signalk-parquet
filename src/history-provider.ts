@@ -36,6 +36,12 @@ import {
   buildBufferObjectSubquery,
 } from './utils/buffer-sql-builder';
 import { stageBufferTable, BufferStagingSource } from './utils/buffer-staging';
+import {
+  smoothLinear,
+  smoothCircularRad,
+  smoothCircularDeg,
+  SmoothMethod,
+} from './utils/smoothing';
 
 /** The slice of SQLiteBuffer the provider needs: staging plus schema lookups. */
 type ProviderBufferSource = BufferStagingSource & {
@@ -211,13 +217,19 @@ export class HistoryProvider implements HistoryApi {
       // times with different sourceRef/aggregate and must stay separate.
       const key = pathSpecKey(pathSpec);
       try {
-        const pathData = await this.queryPath(
+        let pathData = await this.queryPath(
           context,
           pathSpec,
           fromIso,
           toIso,
           resolutionMs
         );
+        // Apply the sma/ema moving window on this path's time-ordered,
+        // federated (parquet + buffer) bucket series, before mergePathData
+        // combines paths into columns.
+        if (pathSpec.aggregate === 'sma' || pathSpec.aggregate === 'ema') {
+          pathData = this.applySmoothing(pathData, pathSpec, context);
+        }
         allData[key] = pathData;
       } catch (error) {
         this.debug(
@@ -333,6 +345,14 @@ export class HistoryProvider implements HistoryApi {
 
       const aggFunc = this.getAggregateFunction(pathSpec.aggregate);
 
+      // sma/ema bucket like average, so angular data needs the same
+      // circular-mean bucket value before the moving window is applied.
+      const averageLike =
+        !pathSpec.aggregate ||
+        pathSpec.aggregate === 'average' ||
+        pathSpec.aggregate === 'sma' ||
+        pathSpec.aggregate === 'ema';
+
       // Inline filters (e.g. sourceRef) come from the server-parsed PathSpec.
       // The fields are populated by a newer @signalk/server-api than this plugin
       // pins, so they are read defensively via the registry. This provider only
@@ -357,13 +377,35 @@ export class HistoryProvider implements HistoryApi {
           componentSchema.components.entries()
         )
           .map(([name, comp]) => {
-            const compAggFunc = comp.dataType === 'numeric' ? aggFunc : 'FIRST';
+            if (comp.dataType !== 'numeric') {
+              // FIRST returns the physically-first row's value, which may be
+              // NULL even when a later row in the same bucket has one;
+              // ANY_VALUE skips NULLs and the ORDER BY makes "earliest
+              // non-NULL in the bucket" deterministic.
+              return `ANY_VALUE(${comp.columnName} ORDER BY signalk_timestamp) as ${name}`;
+            }
             // TRY_CAST handles mixed-type parquet files (some store lat/lon as VARCHAR)
-            const colExpr =
-              comp.dataType === 'numeric'
-                ? `TRY_CAST(${comp.columnName} AS DOUBLE)`
-                : comp.columnName;
-            return `${compAggFunc}(${colExpr}) as ${name}`;
+            const colExpr = `TRY_CAST(${comp.columnName} AS DOUBLE)`;
+            if (averageLike) {
+              // Longitude wraps at the ±180° antimeridian, so a plain AVG
+              // pulls 179°/−179° toward 0°; use the circular mean in degrees.
+              if (
+                pathSpec.path === 'navigation.position' &&
+                name === 'longitude'
+              ) {
+                return `DEGREES(ATAN2(AVG(SIN(RADIANS(${colExpr}))), AVG(COS(RADIANS(${colExpr}))))) as ${name}`;
+              }
+              if (
+                isAngularPath(
+                  `${pathSpec.path}.${name}`,
+                  this.app,
+                  context as string
+                )
+              ) {
+                return `ATAN2(AVG(SIN(${colExpr})), AVG(COS(${colExpr}))) as ${name}`;
+              }
+            }
+            return `${aggFunc}(${colExpr}) as ${name}`;
           })
           .join(', ');
 
@@ -447,7 +489,7 @@ export class HistoryProvider implements HistoryApi {
           context as string
         );
         const valueExpression =
-          angular && (pathSpec.aggregate === 'average' || !pathSpec.aggregate)
+          angular && averageLike
             ? 'ATAN2(AVG(SIN(TRY_CAST(value AS DOUBLE))), AVG(COS(TRY_CAST(value AS DOUBLE))))'
             : `${aggFunc}(TRY_CAST(value AS DOUBLE))`;
 
@@ -515,9 +557,135 @@ export class HistoryProvider implements HistoryApi {
         return 'MEDIAN';
       case 'middle_index':
         return 'FIRST'; // Fallback
+      case 'sma':
+      case 'ema':
+        // Moving averages bucket identically to `average`; the sma/ema window
+        // is then applied in TS post-processing (see applySmoothing).
+        return 'AVG';
       default:
         return 'AVG';
     }
+  }
+
+  /**
+   * Apply the sma/ema moving window to one path's already-bucketed,
+   * time-ordered series (post-bucket, post parquet+buffer federation, before
+   * mergePathData). Buckets were computed identically to `average`.
+   *
+   *  - Scalar numbers: smoothed angular-aware — angular paths (units=rad) use
+   *    the circular (sin/cos) variant so the 0/2π wrap doesn't corrupt the mean.
+   *  - navigation.position ([lon, lat] array): latitude smoothed linearly;
+   *    longitude smoothed on the circle (degrees) so the ±180° antimeridian is
+   *    handled instead of linear-averaging 179°/−179° toward 0°.
+   *  - Other object paths: each component that is a finite number in every
+   *    row is smoothed — circularly for angular (units=rad) components,
+   *    linearly otherwise; components missing/non-finite in any row pass
+   *    through untouched (keeps index alignment, avoids NaN contamination).
+   *  - Non-numeric values pass through unchanged.
+   */
+  private applySmoothing(
+    rows: Array<[Timestamp, unknown]>,
+    pathSpec: SignalKPathSpec,
+    context: Context
+  ): Array<[Timestamp, unknown]> {
+    if (rows.length === 0) return rows;
+    const method = pathSpec.aggregate as SmoothMethod;
+    const param = pathSpec.parameter;
+    const timestamps = rows.map(r => r[0]);
+    const sample = rows.find(r => r[1] !== null && r[1] !== undefined)?.[1];
+
+    // Scalar numeric series. Only finite values enter the moving window —
+    // a null/NaN bucket (e.g. AVG over values that failed TRY_CAST) would
+    // otherwise coerce to 0 or poison the recursive EMA; such rows pass
+    // through unchanged instead.
+    if (typeof sample === 'number') {
+      const validIdx: number[] = [];
+      const nums: number[] = [];
+      rows.forEach((r, i) => {
+        const v = r[1] === null || r[1] === undefined ? NaN : Number(r[1]);
+        if (Number.isFinite(v)) {
+          validIdx.push(i);
+          nums.push(v);
+        }
+      });
+      const angular = isAngularPath(pathSpec.path, this.app, context as string);
+      const smoothed = angular
+        ? smoothCircularRad(nums, method, param)
+        : smoothLinear(nums, method, param);
+      const out: Array<[Timestamp, unknown]> = rows.map(r => [r[0], r[1]]);
+      validIdx.forEach((rowIdx, j) => {
+        out[rowIdx] = [timestamps[rowIdx], smoothed[j]];
+      });
+      return out;
+    }
+
+    // navigation.position — queryPath returns [longitude, latitude]
+    if (
+      pathSpec.path === 'navigation.position' &&
+      Array.isArray(sample) &&
+      sample.length >= 2
+    ) {
+      // Same finite-value guard as the scalar branch: rows with a null/NaN
+      // longitude or latitude pass through unchanged rather than entering
+      // the moving window.
+      const validIdx: number[] = [];
+      const lons: number[] = [];
+      const lats: number[] = [];
+      rows.forEach((r, i) => {
+        const v = r[1];
+        if (!Array.isArray(v)) return;
+        const lonV = v[0] === null || v[0] === undefined ? NaN : Number(v[0]);
+        const latV = v[1] === null || v[1] === undefined ? NaN : Number(v[1]);
+        if (Number.isFinite(lonV) && Number.isFinite(latV)) {
+          validIdx.push(i);
+          lons.push(lonV);
+          lats.push(latV);
+        }
+      });
+      const lon = smoothCircularDeg(lons, method, param);
+      const lat = smoothLinear(lats, method, param);
+      const out: Array<[Timestamp, unknown]> = rows.map(r => [r[0], r[1]]);
+      validIdx.forEach((rowIdx, j) => {
+        out[rowIdx] = [timestamps[rowIdx], [lon[j], lat[j]]];
+      });
+      return out;
+    }
+
+    // Other object paths — smooth each component that is a finite number in
+    // every row (NaN/Infinity would poison the recursive EMA, same as the
+    // scalar branch); other components pass through untouched.
+    if (sample && typeof sample === 'object' && !Array.isArray(sample)) {
+      const keys = Object.keys(sample as Record<string, unknown>).filter(k =>
+        rows.every(r => {
+          const v = (r[1] as Record<string, unknown>)?.[k];
+          return typeof v === 'number' && Number.isFinite(v);
+        })
+      );
+      const smoothedByKey: Record<string, number[]> = {};
+      for (const k of keys) {
+        const series = rows.map(r => (r[1] as Record<string, number>)[k]);
+        // Angular components bucket as circular means (see queryPath); the
+        // moving window must stay on the circle too, or a 0/2π wrap smooths
+        // through a false midpoint.
+        smoothedByKey[k] = isAngularPath(
+          `${pathSpec.path}.${k}`,
+          this.app,
+          context as string
+        )
+          ? smoothCircularRad(series, method, param)
+          : smoothLinear(series, method, param);
+      }
+      return timestamps.map((ts, i) => {
+        const obj: Record<string, unknown> = {
+          ...(rows[i][1] as Record<string, unknown>),
+        };
+        for (const k of keys) obj[k] = smoothedByKey[k][i];
+        return [ts, obj];
+      });
+    }
+
+    // Non-numeric — cannot smooth.
+    return rows;
   }
 
   /**

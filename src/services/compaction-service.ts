@@ -221,7 +221,10 @@ export async function quiesceAllCompactionJobs(
 /**
  * Remove stranded `*.tmp` files left behind by a SignalK crash mid-COPY.
  * Safe to call at every plugin start: only files matching the compaction
- * temp pattern under the data directory are removed.
+ * temp pattern (under year=) or the daily-aggregation temp pattern (under
+ * year=/day=) are removed. Aggregation temps are normally overwritten when
+ * their date is re-aggregated, but a date that never re-runs would leave
+ * one behind forever without this sweep.
  */
 export async function cleanupStrandedCompactionTempFiles(
   app: ServerAPI,
@@ -236,7 +239,19 @@ export async function cleanupStrandedCompactionTempFiles(
     'year=*',
     `${COMPACTION_OUTPUT_PREFIX}_*${COMPACTION_TEMP_SUFFIX}`
   );
-  const stragglers = await glob(pattern);
+  const aggregationPattern = path.join(
+    baseDirectory,
+    'tier=*',
+    'context=*',
+    'path=*',
+    'year=*',
+    'day=*',
+    '*_aggregated.parquet.tmp'
+  );
+  const stragglers = [
+    ...(await glob(pattern)),
+    ...(await glob(aggregationPattern)),
+  ];
   let removed = 0;
   for (const f of stragglers) {
     try {
