@@ -183,7 +183,7 @@ export class ClaudeAnalyzer {
       if (errorMessage.includes('Analysis failed:')) {
         throw error; // Re-throw original error to avoid nesting
       }
-      throw new Error(`Analysis failed: ${errorMessage}`);
+      throw new Error(`Analysis failed: ${errorMessage}`, { cause: error });
     }
   }
 
@@ -892,7 +892,9 @@ Please structure your response as JSON with the following format:
       this.app?.error(
         `Failed to parse Claude response: ${(error as Error).message}`
       );
-      throw new Error(`Response parsing failed: ${(error as Error).message}`);
+      throw new Error(`Response parsing failed: ${(error as Error).message}`, {
+        cause: error,
+      });
     }
   }
 
@@ -2254,14 +2256,7 @@ Begin your analysis by querying relevant data within the specified time range.`;
   private getAvailableSignalKPaths(
     filter: AvailablePathsFilter = {}
   ): AvailablePathInfo[] {
-    const {
-      vesselContext = 'vessels.self',
-      pathPattern,
-      source,
-      hasValue = false,
-      includeMetadata = false,
-      maxDepth = 10,
-    } = filter;
+    const { vesselContext = 'vessels.self' } = filter;
 
     // First try using StreamBundle.getAvailablePaths if available
     if (
@@ -2294,215 +2289,6 @@ Begin your analysis by querying relevant data within the specified time range.`;
       `🚫 StreamBundle.getAvailablePaths() not available, manual traversal disabled`
     );
     return [];
-
-    // eslint-disable-next-line no-unreachable
-    const availablePaths: AvailablePathInfo[] = [];
-    // @ts-expect-error unreachable code after early return
-    const pathRegex = pathPattern ? new RegExp(pathPattern) : null;
-
-    try {
-      if (vesselContext === 'vessels.*') {
-        // Get paths from all vessels
-        // Cast to Record<string, any> for compatibility with different @signalk/server-api versions
-        const allVessels = (this.app?.getPath('vessels') || {}) as Record<
-          string,
-          any
-        >;
-        for (const vesselId in allVessels) {
-          if (vesselId === 'self') continue; // Skip self since it's handled separately
-          this.traverseSignalKPaths(
-            allVessels[vesselId],
-            '',
-            `vessels.${vesselId}`,
-            vesselId,
-            availablePaths,
-            pathRegex,
-            source || '',
-            hasValue,
-            includeMetadata,
-            0,
-            maxDepth
-          );
-        }
-      } else if (vesselContext === 'vessels.self') {
-        // Resolve self to actual vessel ID
-        const actualVesselId = this.app?.selfId;
-        if (actualVesselId) {
-          const vesselData =
-            this.app?.getPath(`vessels.${actualVesselId}`) || {};
-          const dataKeys = Object.keys(vesselData);
-          this.app?.debug(
-            `DEBUG: selfId="${actualVesselId}", vessel data has keys: ${dataKeys.slice(0, 10).join(',')}`
-          );
-          this.traverseSignalKPaths(
-            vesselData,
-            '',
-            `vessels.${actualVesselId}`,
-            actualVesselId || '',
-            availablePaths,
-            pathRegex,
-            source || '',
-            hasValue,
-            includeMetadata,
-            0,
-            maxDepth
-          );
-        }
-      } else {
-        // Get specific vessel data
-        const vesselData = this.app?.getPath(vesselContext) || {};
-        const vesselId = vesselContext.replace('vessels.', '');
-        this.traverseSignalKPaths(
-          vesselData,
-          '',
-          vesselContext,
-          vesselId,
-          availablePaths,
-          pathRegex,
-          source,
-          hasValue,
-          includeMetadata,
-          0,
-          maxDepth
-        );
-      }
-
-      return availablePaths.sort((a, b) => a.path.localeCompare(b.path));
-    } catch (error) {
-      this.app?.error(
-        `Failed to get available SignalK paths: ${(error as Error).message}`
-      );
-      return [];
-    }
-  }
-
-  /**
-   * Recursively traverse SignalK data structure to find available paths
-   */
-  private traverseSignalKPaths(
-    obj: any,
-    currentPath: string,
-    fullContextPath: string,
-    vesselId: string,
-    paths: AvailablePathInfo[],
-    pathRegex: RegExp | null,
-    sourceFilter?: string,
-    hasValue: boolean = false,
-    includeMetadata: boolean = false,
-    currentDepth: number = 0,
-    maxDepth: number = 10
-  ): void {
-    if (currentDepth >= maxDepth || !obj || typeof obj !== 'object') {
-      return;
-    }
-
-    for (const [key, value] of Object.entries(obj)) {
-      // Skip metadata unless explicitly requested
-      if (
-        !includeMetadata &&
-        ['_updateTimes', '_sources', 'meta'].includes(key)
-      ) {
-        continue;
-      }
-
-      // Skip functions and circular references
-      if (typeof value === 'function') {
-        continue;
-      }
-
-      const newPath = currentPath ? `${currentPath}.${key}` : key;
-      const newFullPath = `${fullContextPath}.${newPath}`;
-
-      // Check if this is a leaf value (has 'value' property or is a primitive)
-      const isLeafValue =
-        value && typeof value === 'object' && 'value' in value;
-      const isPrimitive = typeof value !== 'object' || value === null;
-
-      if (isLeafValue || isPrimitive) {
-        // This is a data point
-        const actualValue = isLeafValue ? value.value : value;
-
-        // Apply filters
-        if (pathRegex && !pathRegex.test(newPath)) {
-          continue;
-        }
-
-        if (hasValue && (actualValue === null || actualValue === undefined)) {
-          continue;
-        }
-
-        // Check source filter
-        let sourceInfo: string | undefined;
-        let hasMatchingSource = false;
-
-        if (value && typeof value === 'object' && '$source' in value) {
-          sourceInfo = value.$source as string;
-          hasMatchingSource =
-            !sourceFilter ||
-            !!(sourceInfo && sourceInfo.includes(sourceFilter));
-        }
-
-        // Also check the values object for multiple sources
-        if (
-          !hasMatchingSource &&
-          sourceFilter &&
-          value &&
-          typeof value === 'object' &&
-          'values' in value
-        ) {
-          const valuesObj = value.values as any;
-          if (valuesObj && typeof valuesObj === 'object') {
-            hasMatchingSource = Object.keys(valuesObj).some(key =>
-              key.includes(sourceFilter)
-            );
-          }
-        }
-
-        if (sourceFilter && !hasMatchingSource) {
-          continue;
-        }
-
-        // Get last update time
-        let lastUpdate: string | undefined;
-        if (value && typeof value === 'object' && '_updateTimes' in value) {
-          const updateTimes = value._updateTimes;
-          if (updateTimes && typeof updateTimes === 'object') {
-            const timeKeys = Object.keys(updateTimes);
-            if (timeKeys.length > 0) {
-              const timestamp = (updateTimes as any)[timeKeys[0]];
-              lastUpdate = new Date(timestamp).toISOString();
-            }
-          }
-        }
-
-        this.app?.debug(
-          `FOUND PATH: ${newPath} | source: ${sourceInfo} | hasValue: ${hasValue} | actualValue: ${JSON.stringify(actualValue)?.substring(0, 50)}`
-        );
-        paths.push({
-          path: newPath,
-          fullPath: newFullPath,
-          vesselId,
-          currentValue: hasValue ? actualValue : undefined,
-          source: sourceInfo,
-          lastUpdate,
-        });
-      } else if (typeof value === 'object' && value !== null) {
-        // Recurse into nested objects
-        this.traverseSignalKPaths(
-          value,
-          newPath,
-          fullContextPath,
-          vesselId,
-          paths,
-          pathRegex,
-          sourceFilter,
-          hasValue,
-          includeMetadata,
-          currentDepth + 1,
-          maxDepth
-        );
-      }
-    }
   }
 
   /**
@@ -3404,7 +3190,9 @@ Begin your analysis by querying relevant data within the specified time range.`;
       // Keep the detailed DuckDB error (absolute paths, schema) server-side only;
       // the thrown message reaches the LLM tool_result and HTTP responses.
       this.app?.error(`SQL query failed: ${(error as Error).message}`);
-      throw new Error('Database query failed.');
+      // The opaque message is what reaches the LLM tool_result and HTTP
+      // responses; the cause stays server-side.
+      throw new Error('Database query failed.', { cause: error });
     } finally {
       connection.disconnectSync();
     }

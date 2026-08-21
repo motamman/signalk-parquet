@@ -55,7 +55,9 @@ export class ParquetWriter {
 
       return result;
     } catch (error) {
-      throw new Error(`Failed to write records: ${(error as Error).message}`);
+      throw new Error(`Failed to write records: ${(error as Error).message}`, {
+        cause: error,
+      });
     }
   }
 
@@ -197,7 +199,8 @@ export class ParquetWriter {
 
       // Throw error to alert system that Parquet writing is broken
       throw new Error(
-        `Parquet writing failed for ${filepath}. Data saved to ${failedPath} for recovery.`
+        `Parquet writing failed for ${filepath}. Data saved to ${failedPath} for recovery.`,
+        { cause: error }
       );
     }
   }

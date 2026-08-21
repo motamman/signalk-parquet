@@ -412,7 +412,8 @@ const getRequestParams = ({ query }: FromToContextRequest, selfId: string) => {
   } catch (e: unknown) {
     console.error('Full error details:', e);
     throw new Error(
-      `Error extracting query parameters from ${JSON.stringify(query)}: ${e instanceof Error ? e.stack : e}`
+      `Error extracting query parameters from ${JSON.stringify(query)}: ${e instanceof Error ? e.stack : e}`,
+      { cause: e }
     );
   }
 };
@@ -465,7 +466,8 @@ function parseDateTime(dateTimeStr: string): ZonedDateTime {
       return ZonedDateTime.parse(utcIsoString);
     } catch (e) {
       throw new Error(
-        `Unable to parse datetime '${dateTimeStr}': ${e}. Use format like '2025-08-13T08:00:00' or '2025-08-13T08:00:00Z'`
+        `Unable to parse datetime '${dateTimeStr}': ${e}. Use format like '2025-08-13T08:00:00' or '2025-08-13T08:00:00Z'`,
+        { cause: e }
       );
     }
   }
@@ -813,7 +815,7 @@ export class HistoryAPI {
     const fs = require('fs');
 
     // Determine preferred tier based on resolution
-    let preferredTiers: AggregationTier[] = [];
+    let preferredTiers: AggregationTier[];
 
     if (resolutionMillis >= 3600000) {
       preferredTiers = ['1h', '60s', '5s'];
