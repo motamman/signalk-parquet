@@ -623,11 +623,7 @@ export function registerApiRoutes(
   interface CloudCompareJob {
     id: string;
     status:
-      | 'scanning_local'
-      | 'scanning_cloud'
-      | 'comparing'
-      | 'completed'
-      | 'error';
+      'scanning_local' | 'scanning_cloud' | 'comparing' | 'completed' | 'error';
     phase: string;
     localFilesScanned: number;
     localFilesTotal: number;
