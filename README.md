@@ -363,7 +363,6 @@ interface PluginConfig {
   retentionDays: number;
   vesselMMSI: string;
   cloudUpload: CloudUploadConfig;
-  enableStreaming?: boolean;
   useSqliteBuffer?: boolean;
   exportBatchSize?: number;
   bufferRetentionHours?: number;
@@ -1389,7 +1388,6 @@ signalk-parquet/
 │   ├── HistoryAPI.ts           # SignalK History API implementation
 │   ├── HistoryAPI-types.ts     # History API type definitions
 │   ├── history-provider.ts     # SignalK HistoryApi provider (v2)
-│   ├── historical-streaming.ts # WebSocket historical data streaming (not yet functional)
 │   ├── services/
 │   │   ├── aggregation-service.ts  # Tier aggregation (raw→5s→60s→1h)
 │   │   └── parquet-export-service.ts # Daily export pipeline
@@ -1425,7 +1423,6 @@ The plugin uses a modular TypeScript architecture for maintainability:
 - **`commands.ts`**: SignalK command registration, execution, and management
 - **`data-handler.ts`**: Data subscriptions, buffering, and cloud upload operations
 - **`api-routes.ts`**: REST API endpoints for web interface
-- **`historical-streaming.ts`**: WebSocket historical streaming (not yet functional)
 - **`types.ts`**: Comprehensive TypeScript type definitions
 - **`services/`**: Aggregation and export pipeline services
 - **`utils/`**: SQLite buffer, DuckDB pool, spatial queries, path helpers, and more
