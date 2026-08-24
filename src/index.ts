@@ -1015,15 +1015,21 @@ export default function (app: ServerAPI): SignalKPlugin {
       state.activeAggregationWorkers.clear();
     }
 
-    // Save any remaining buffered data
-    if (state.currentConfig) {
-      saveAllBuffers(state.currentConfig, state, app);
-    }
-
-    // Unsubscribe from all paths FIRST to stop data flow before closing buffer
+    // Tear down every subscription before the final flush: a delta that lands
+    // after saveAllBuffers() has drained state.dataBuffers would be dropped by
+    // the dataBuffers.clear() below, so stopping the inflow first is what makes
+    // the flush the last word.
+    // Each teardown is isolated: one throwing callback must not abort the loop,
+    // because everything after it — including the final flush — would be
+    // skipped and the buffered data lost.
     state.unsubscribes.forEach(unsubscribe => {
-      if (typeof unsubscribe === 'function') {
+      if (typeof unsubscribe !== 'function') {
+        return;
+      }
+      try {
         unsubscribe();
+      } catch (error) {
+        app.error(`Error unsubscribing during shutdown: ${error}`);
       }
     });
     state.unsubscribes = [];
@@ -1031,24 +1037,35 @@ export default function (app: ServerAPI): SignalKPlugin {
     // Clean up stream subscriptions (new streambundle approach)
     if (state.streamSubscriptions) {
       state.streamSubscriptions.forEach(sub => {
-        if (typeof sub === 'function') {
-          sub();
-        } else if (sub && typeof sub === 'object') {
-          const candidate = sub as {
-            unsubscribe?: () => void;
-            dispose?: () => void;
-            end?: () => void;
-          };
-          if (typeof candidate.unsubscribe === 'function') {
-            candidate.unsubscribe();
-          } else if (typeof candidate.dispose === 'function') {
-            candidate.dispose();
-          } else if (typeof candidate.end === 'function') {
-            candidate.end();
+        try {
+          if (typeof sub === 'function') {
+            sub();
+          } else if (sub && typeof sub === 'object') {
+            const candidate = sub as {
+              unsubscribe?: () => void;
+              dispose?: () => void;
+              end?: () => void;
+            };
+            if (typeof candidate.unsubscribe === 'function') {
+              candidate.unsubscribe();
+            } else if (typeof candidate.dispose === 'function') {
+              candidate.dispose();
+            } else if (typeof candidate.end === 'function') {
+              candidate.end();
+            }
           }
+        } catch (error) {
+          app.error(
+            `Error tearing down stream subscription during shutdown: ${error}`
+          );
         }
       });
       state.streamSubscriptions = [];
+    }
+
+    // Save any remaining buffered data (inflow is stopped, so this is final)
+    if (state.currentConfig) {
+      saveAllBuffers(state.currentConfig, state, app);
     }
 
     // Stop export service (pending records will be exported on next startup)

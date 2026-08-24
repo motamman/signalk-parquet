@@ -504,6 +504,12 @@ export class SQLiteBuffer {
    * Insert multiple records in a single transaction (much faster)
    */
   insertBatch(records: DataRecord[]): void {
+    // Every other write path guards on _open; without the same check here a
+    // batch could still open a transaction on a database close() has already
+    // marked closed (and may have failed to actually close).
+    if (!this._open) {
+      throw new Error('SQLite buffer is closed');
+    }
     if (records.length === 0) return;
 
     this.db.exec('BEGIN');
@@ -1145,7 +1151,10 @@ export class SQLiteBuffer {
     } catch {
       // Ignore checkpoint errors during shutdown
     }
-    this.db.close();
+    // Mark closed before db.close() so a throw there can't leave the buffer
+    // reporting isOpen() === true, which would let writers keep inserting into
+    // a half-closed database.
     this._open = false;
+    this.db.close();
   }
 }

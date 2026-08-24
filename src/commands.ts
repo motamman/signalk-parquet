@@ -608,7 +608,11 @@ export function updateCommand(
       // Stop existing threshold monitoring for this command
       const existingThresholds = existingCommand.thresholds || [];
       existingThresholds.forEach(threshold => {
-        const monitorKey = `${commandName}_${threshold.watchPath}`;
+        // Must use the same key builder as setup; the ad-hoc
+        // `${commandName}_${watchPath}` format never matched
+        // buildThresholdMonitorKey, so the existing subscription was never
+        // found, never unsubscribed, and leaked on every threshold edit.
+        const monitorKey = buildThresholdMonitorKey(commandName, threshold);
         const state = thresholdState.get(monitorKey);
         if (state?.unsubscribe) {
           state.unsubscribe();
