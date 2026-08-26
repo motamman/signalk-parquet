@@ -36,6 +36,7 @@ export interface MigrationProgress {
   filesMigrated: number;
   filesSkipped: number;
   errors: string[];
+  cancelRequested?: boolean; // per-job cancel flag, set by cancel(jobId)
   aggregationDatesProcessed?: number;
   aggregationDatesTotal?: number;
   aggregationCurrentDate?: string;
@@ -64,7 +65,6 @@ function scheduleMigrationJobCleanup(jobId: string) {
 export class MigrationService {
   private readonly app: ServerAPI;
   private readonly hivePathBuilder: HivePathBuilder;
-  private cancelRequested: boolean = false;
 
   constructor(app: ServerAPI) {
     this.app = app;
@@ -164,7 +164,6 @@ export class MigrationService {
     };
 
     migrationJobs.set(jobId, progress);
-    this.cancelRequested = false;
 
     // Run migration in background
     this.runMigration(jobId, config).catch(error => {
@@ -230,7 +229,7 @@ export class MigrationService {
       progress.status = 'running';
 
       for (let i = 0; i < flatFiles.length; i++) {
-        if (this.cancelRequested) {
+        if (progress.cancelRequested) {
           progress.status = 'cancelled';
           progress.completedAt = new Date();
           scheduleMigrationJobCleanup(jobId);
@@ -288,7 +287,7 @@ export class MigrationService {
           progress.aggregationDatesProcessed = 0;
 
           for (let i = 0; i < dates.length; i++) {
-            if (this.cancelRequested) {
+            if (progress.cancelRequested) {
               progress.status = 'cancelled';
               progress.completedAt = new Date();
               scheduleMigrationJobCleanup(jobId);
@@ -440,8 +439,12 @@ export class MigrationService {
    */
   cancel(jobId: string): boolean {
     const job = migrationJobs.get(jobId);
-    if (job && job.status === 'running') {
-      this.cancelRequested = true;
+    // Accept 'scanning' as well as 'running': the scan phase runs before the
+    // migrate loop flips the status to 'running', and cancelRequested is checked
+    // inside that loop, so a cancel issued during scanning must take effect.
+    // Matches the cancel semantics in compaction and aggregation services.
+    if (job && (job.status === 'scanning' || job.status === 'running')) {
+      job.cancelRequested = true;
       return true;
     }
     return false;
