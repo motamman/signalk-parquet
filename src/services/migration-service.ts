@@ -179,6 +179,24 @@ export class MigrationService {
   }
 
   /**
+   * If cancellation has been requested, move the job to its terminal
+   * 'cancelled' state and return true so the caller can stop. Shared by every
+   * phase boundary so a cancel landing during scanning, migration, cleanup,
+   * or an empty/final aggregation pass can never be overwritten by the
+   * 'completed' transitions.
+   */
+  private finishIfCancelled(
+    progress: MigrationProgress,
+    jobId: string
+  ): boolean {
+    if (!progress.cancelRequested) return false;
+    progress.status = 'cancelled';
+    progress.completedAt = new Date();
+    scheduleMigrationJobCleanup(jobId);
+    return true;
+  }
+
+  /**
    * Run the migration process
    */
   private async runMigration(
@@ -218,6 +236,7 @@ export class MigrationService {
       progress.total = flatFiles.length;
 
       if (flatFiles.length === 0) {
+        if (this.finishIfCancelled(progress, jobId)) return;
         progress.status = 'completed';
         progress.completedAt = new Date();
         scheduleMigrationJobCleanup(jobId);
@@ -229,12 +248,7 @@ export class MigrationService {
       progress.status = 'running';
 
       for (let i = 0; i < flatFiles.length; i++) {
-        if (progress.cancelRequested) {
-          progress.status = 'cancelled';
-          progress.completedAt = new Date();
-          scheduleMigrationJobCleanup(jobId);
-          return;
-        }
+        if (this.finishIfCancelled(progress, jobId)) return;
 
         const file = flatFiles[i];
         progress.currentFile = path.basename(file);
@@ -263,6 +277,10 @@ export class MigrationService {
         }
       }
 
+      // A cancel during the final file's migration lands after the loop's
+      // last check; honour it before doing any cleanup work.
+      if (this.finishIfCancelled(progress, jobId)) return;
+
       // Phase 3: Cleanup empty directories
       if (config.deleteSourceAfterMigration) {
         progress.phase = 'cleanup';
@@ -287,12 +305,7 @@ export class MigrationService {
           progress.aggregationDatesProcessed = 0;
 
           for (let i = 0; i < dates.length; i++) {
-            if (progress.cancelRequested) {
-              progress.status = 'cancelled';
-              progress.completedAt = new Date();
-              scheduleMigrationJobCleanup(jobId);
-              return;
-            }
+            if (this.finishIfCancelled(progress, jobId)) return;
 
             const dateStr = dates[i].toISOString().slice(0, 10);
             progress.aggregationCurrentDate = dateStr;
@@ -314,6 +327,10 @@ export class MigrationService {
           );
         }
       }
+
+      // Covers a cancel during cleanup, an empty aggregation pass, or the
+      // final aggregation date — none of which pass a loop check again.
+      if (this.finishIfCancelled(progress, jobId)) return;
 
       progress.status = 'completed';
       progress.completedAt = new Date();

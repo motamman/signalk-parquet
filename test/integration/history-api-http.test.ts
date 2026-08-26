@@ -95,6 +95,17 @@ describe('History API over HTTP', function () {
         '2024-06-01T10:00:00.000Z'
       )
     );
+    // Four samples inside a single second — fixture for the sub-second
+    // resolution regression test below.
+    [1, 2, 3, 4].forEach((value, i) => {
+      buffer.insert(
+        scalarRecord(
+          'environment.wind.speedApparent',
+          value,
+          `2024-06-01T10:00:05.${String(i * 250).padStart(3, '0')}Z`
+        )
+      );
+    });
     await exportService.exportDayToParquet(DAY);
 
     // Mount the real routes on a bare Express app (no SQLite federation:
@@ -220,6 +231,29 @@ describe('History API over HTTP', function () {
     expect(row, 'expected a row with both path values').to.not.equal(undefined);
     expect(row![1]).to.be.closeTo(5, 1e-9); // speedOverGround average
     expect(row![2]).to.be.closeTo(12, 1e-9); // depth average
+  });
+
+  // Regression: the bucket expression must preserve milliseconds. A
+  // seconds-only timestamp format collapsed every sub-second bucket within
+  // the same second into one string, so GROUP BY silently merged samples the
+  // requested resolution should have kept apart.
+  it('keeps samples in the same second apart at sub-second resolution', async () => {
+    const res = await fetch(
+      valuesUrl({
+        from: '2024-06-01T10:00:00Z',
+        to: '2024-06-01T10:00:10Z',
+        paths: 'environment.wind.speedApparent',
+        context: 'vessels.self',
+        resolution: '0.25',
+      })
+    );
+    expect(res.status).to.equal(200);
+    const body = (await res.json()) as ValuesResponse;
+    const values = body.data
+      .map(row => row[1])
+      .filter(v => v !== null && v !== undefined);
+    // One row per 250ms bucket — not a single merged per-second average.
+    expect(values).to.deep.equal([1, 2, 3, 4]);
   });
 
   it('rejects a request with no time range parameters', async () => {

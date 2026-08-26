@@ -723,6 +723,29 @@ function utcToLocalTimestamp(utcTs: Timestamp): Timestamp {
   }
 }
 
+/**
+ * SQL expression bucketing `col` to `resolutionMillis` and formatting the
+ * bucket start as an ISO timestamp string. Every query path (scalar, object,
+ * buffer fallback, spatial) must share this expression: bucket strings are
+ * compared across queries (spatial correlation, cross-path row merging), so a
+ * format mismatch would silently drop matches.
+ *
+ * FLOOR(EPOCH_MS / resolution) * resolution preserves millisecond bucket
+ * boundaries, so the formatting must too: a seconds-only format would collapse
+ * distinct sub-second buckets (auto-resolution on short ranges, explicit
+ * resolutions like 0.2s) into one string and merge their samples in GROUP BY.
+ * Whole-second resolutions keep the fraction-free format for backward
+ * compatibility.
+ */
+function bucketExprSql(col: string, resolutionMillis: number): string {
+  const bucketStart = `EPOCH_MS(CAST(FLOOR(EPOCH_MS(${col}::TIMESTAMP) / ${resolutionMillis}) * ${resolutionMillis} AS BIGINT))`;
+  const format =
+    resolutionMillis % 1000 === 0
+      ? '%Y-%m-%dT%H:%M:%SZ'
+      : '%Y-%m-%dT%H:%M:%S.%gZ';
+  return `strftime(${bucketStart}, '${format}')`;
+}
+
 // A response `values` entry: path + aggregate method, optional smoothing
 // metadata, plus any echoed inline-filter fields (e.g. `sourceRef`). The index
 // signature keeps it open to new filters without a type change here.
@@ -897,9 +920,10 @@ export class HistoryAPI {
         // Bucket-lookup approach: instead of scanning all raw position data,
         // bucket by time resolution, grab FIRST lat/lon per bucket, then filter by bbox/radius.
         // This reads far less data than a full scan with spatial SQL.
-        const bucketExpr = `strftime(DATE_TRUNC('seconds',
-          EPOCH_MS(CAST(FLOOR(EPOCH_MS(signalk_timestamp::TIMESTAMP) / ${timeResolutionMillis}) * ${timeResolutionMillis} AS BIGINT))
-        ), '%Y-%m-%dT%H:%M:%SZ')`;
+        const bucketExpr = bucketExprSql(
+          'signalk_timestamp',
+          timeResolutionMillis
+        );
 
         // Build FROM: parquet UNION ALL buffer
         const parquetFrom = `SELECT signalk_timestamp, value_latitude, value_longitude FROM (
@@ -1296,9 +1320,10 @@ export class HistoryAPI {
         try {
           const connection = await DuckDBPool.getConnection();
           try {
-            const bucketExpr = `strftime(DATE_TRUNC('seconds',
-              EPOCH_MS(CAST(FLOOR(EPOCH_MS(signalk_timestamp::TIMESTAMP) / ${timeResolutionMillis}) * ${timeResolutionMillis} AS BIGINT))
-            ), '%Y-%m-%dT%H:%M:%SZ')`;
+            const bucketExpr = bucketExprSql(
+              'signalk_timestamp',
+              timeResolutionMillis
+            );
 
             // Optional filters for the position path (e.g. one of several GPS
             // receivers). This fast path is local-only (raw parquet + buffer),
@@ -1770,7 +1795,7 @@ export class HistoryAPI {
               .map(c => c.columnName)
               .join(', ');
             const objBucketExpr = (col: string) =>
-              `strftime(DATE_TRUNC('seconds', EPOCH_MS(CAST(FLOOR(EPOCH_MS(${col}::TIMESTAMP) / ${timeResolutionMillis}) * ${timeResolutionMillis} AS BIGINT))), '%Y-%m-%dT%H:%M:%SZ')`;
+              bucketExprSql(col, timeResolutionMillis);
 
             // When filtering, probe the (raw) parquet schema for the filter
             // columns so we either filter on them or exclude the parquet side
@@ -1915,7 +1940,7 @@ export class HistoryAPI {
               hasValueJson
             );
             const bucketExpr = (col: string) =>
-              `strftime(DATE_TRUNC('seconds', EPOCH_MS(CAST(FLOOR(EPOCH_MS(${col}::TIMESTAMP) / ${timeResolutionMillis}) * ${timeResolutionMillis} AS BIGINT))), '%Y-%m-%dT%H:%M:%SZ')`;
+              bucketExprSql(col, timeResolutionMillis);
 
             const buildScalarQuery = (fc: string) => {
               const subqueries: string[] = [];
@@ -2072,9 +2097,7 @@ export class HistoryAPI {
                   .join(', ');
                 const bufferQuery = `
                   SELECT
-                    strftime(DATE_TRUNC('seconds',
-                      EPOCH_MS(CAST(FLOOR(EPOCH_MS(signalk_timestamp::TIMESTAMP) / ${timeResolutionMillis}) * ${timeResolutionMillis} AS BIGINT))
-                    ), '%Y-%m-%dT%H:%M:%SZ') as timestamp,
+                    ${bucketExprSql('signalk_timestamp', timeResolutionMillis)} as timestamp,
                     ${componentSelects}
                   FROM ${bufferSubquery} AS source_data
                   GROUP BY timestamp
@@ -2116,9 +2139,7 @@ export class HistoryAPI {
                   : 'AVG(TRY_CAST(value AS DOUBLE))';
                 const bufferQuery = `
                   SELECT
-                    strftime(DATE_TRUNC('seconds',
-                      EPOCH_MS(CAST(FLOOR(EPOCH_MS(signalk_timestamp::TIMESTAMP) / ${timeResolutionMillis}) * ${timeResolutionMillis} AS BIGINT))
-                    ), '%Y-%m-%dT%H:%M:%SZ') as timestamp,
+                    ${bucketExprSql('signalk_timestamp', timeResolutionMillis)} as timestamp,
                     ${fallbackAggExpr} as value
                   FROM ${bufferSubquery} AS source_data
                   WHERE value IS NOT NULL

@@ -318,12 +318,21 @@ export class AggregationService {
     // or unsupported object-type (skip).
     const connection = await DuckDBPool.getConnection();
     let isPosition = false;
+    // Legacy aggregated files may predate the angular sin/cos columns
+    // entirely; referencing an absent column is a binder error (union_by_name
+    // only unions columns that exist somewhere), so the angular rollup query
+    // must know whether it can name them at all.
+    let hasSinAvg: boolean;
+    let hasCosAvg: boolean;
     try {
       const schemaQuery = `SELECT column_name FROM (DESCRIBE SELECT * FROM read_parquet([${fileListStr}], union_by_name=true))`;
       const schemaResult = await connection.runAndReadAll(schemaQuery);
       const columns = schemaResult
         .getRowObjects()
         .map((r: Record<string, unknown>) => r.column_name as string);
+
+      hasSinAvg = columns.includes('value_sin_avg');
+      hasCosAvg = columns.includes('value_cos_avg');
 
       const hasLatLon =
         columns.includes('value_latitude') &&
@@ -386,7 +395,9 @@ export class AggregationService {
           intervalSeconds,
           isSourceRaw,
           angular,
-          tempFile
+          tempFile,
+          hasSinAvg,
+          hasCosAvg
         );
 
     try {
@@ -419,14 +430,18 @@ export class AggregationService {
     intervalSeconds: number,
     isSourceRaw: boolean,
     isAngular: boolean,
-    outputFile: string
+    outputFile: string,
+    hasSinAvg: boolean = true,
+    hasCosAvg: boolean = true
   ): string {
     if (isAngular) {
       return this.buildAngularAggregationQuery(
         fileListStr,
         intervalSeconds,
         isSourceRaw,
-        outputFile
+        outputFile,
+        hasSinAvg,
+        hasCosAvg
       );
     }
 
@@ -481,7 +496,9 @@ export class AggregationService {
     fileListStr: string,
     intervalSeconds: number,
     isSourceRaw: boolean,
-    outputFile: string
+    outputFile: string,
+    hasSinAvg: boolean = true,
+    hasCosAvg: boolean = true
   ): string {
     if (isSourceRaw) {
       // Vector average from raw radian values
@@ -519,6 +536,27 @@ export class AggregationService {
     // Example: two source buckets at 10deg (0.1745 rad) and 350deg (6.1087 rad)
     // with NULL sin/cos -> COALESCE uses SIN/COS(value_avg) ->
     // ATAN2(~0, ~0.985) -> ~0 rad (0/360deg), not a 180deg arithmetic mean.
+    //
+    // When a column is absent from the source schema entirely (all-legacy
+    // files), it can't even be named — DuckDB fails to bind the query — so
+    // derive from value_avg unconditionally in that case.
+    const sinExpr = hasSinAvg
+      ? 'COALESCE(value_sin_avg, SIN(value_avg))'
+      : 'SIN(value_avg)';
+    const cosExpr = hasCosAvg
+      ? 'COALESCE(value_cos_avg, COS(value_avg))'
+      : 'COS(value_avg)';
+    const srcColumns = [
+      'bucket_time as src_bucket_time',
+      'context',
+      'path',
+      'value_avg',
+      ...(hasSinAvg ? ['value_sin_avg'] : []),
+      ...(hasCosAvg ? ['value_cos_avg'] : []),
+      'sample_count',
+      'first_timestamp',
+      'last_timestamp',
+    ].join(', ');
     return `
       COPY (
         SELECT
@@ -526,18 +564,18 @@ export class AggregationService {
           context,
           path,
           ATAN2(
-            SUM(COALESCE(value_sin_avg, SIN(value_avg)) * sample_count) / SUM(sample_count),
-            SUM(COALESCE(value_cos_avg, COS(value_avg)) * sample_count) / SUM(sample_count)
+            SUM(${sinExpr} * sample_count) / SUM(sample_count),
+            SUM(${cosExpr} * sample_count) / SUM(sample_count)
           ) as value_avg,
           NULL::DOUBLE as value_min,
           NULL::DOUBLE as value_max,
           SUM(sample_count)::BIGINT as sample_count,
-          SUM(COALESCE(value_sin_avg, SIN(value_avg)) * sample_count) / SUM(sample_count) as value_sin_avg,
-          SUM(COALESCE(value_cos_avg, COS(value_avg)) * sample_count) / SUM(sample_count) as value_cos_avg,
+          SUM(${sinExpr} * sample_count) / SUM(sample_count) as value_sin_avg,
+          SUM(${cosExpr} * sample_count) / SUM(sample_count) as value_cos_avg,
           MIN(first_timestamp) as first_timestamp,
           MAX(last_timestamp) as last_timestamp
         FROM (
-          SELECT bucket_time as src_bucket_time, context, path, value_avg, value_sin_avg, value_cos_avg, sample_count, first_timestamp, last_timestamp
+          SELECT ${srcColumns}
           FROM read_parquet([${fileListStr}], union_by_name=true)
         ) src
         GROUP BY time_bucket(INTERVAL '${intervalSeconds} seconds', src_bucket_time::TIMESTAMP), context, path

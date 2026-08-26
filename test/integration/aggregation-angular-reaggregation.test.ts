@@ -103,6 +103,34 @@ describe('angular re-aggregation between tiers', function () {
   }
 
   /**
+   * Write an aggregated-tier parquet file in the pre-sin/cos (legacy)
+   * schema: no `value_sin_avg`/`value_cos_avg` columns at all, as written
+   * before the angular vector columns existed.
+   */
+  async function writeLegacySourceFile(
+    buckets: Array<{ valueAvg: number; sampleCount: number }>
+  ): Promise<string> {
+    const file = path.join(host.dataDir, 'legacy-source.parquet');
+    const rows = buckets.map((b, i) => {
+      const ts = `2026-03-04 00:00:${String(i * 5).padStart(2, '0')}`;
+      return `(TIMESTAMP '${ts}', '${CONTEXT}', '${ANGULAR_PATH}', ${b.valueAvg}::DOUBLE, NULL::DOUBLE, NULL::DOUBLE, ${b.sampleCount}::BIGINT, TIMESTAMP '${ts}', TIMESTAMP '${ts}')`;
+    });
+
+    const conn = await DuckDBPool.getConnection();
+    try {
+      await conn.runAndReadAll(
+        `COPY (SELECT * FROM (VALUES ${rows.join(',')}) AS t(
+           bucket_time, context, path, value_avg, value_min, value_max,
+           sample_count, first_timestamp, last_timestamp
+         )) TO '${toSqlPath(file)}' (FORMAT PARQUET, COMPRESSION 'SNAPPY');`
+      );
+    } finally {
+      conn.disconnectSync();
+    }
+    return file;
+  }
+
+  /**
    * Run the angular re-aggregation query the service generates for a
    * non-raw source tier, and return the resulting buckets.
    */
@@ -203,6 +231,59 @@ describe('angular re-aggregation between tiers', function () {
     );
     expect(rows[0].value_avg!).to.be.closeTo(expected, 1e-9);
     expect(rows[0].value_avg!).to.be.greaterThan(0);
+  });
+
+  // The regression: when every source file predates the sin/cos columns,
+  // the re-aggregation SQL named columns that exist nowhere in the unioned
+  // schema, so DuckDB refused to bind the query and the whole group failed.
+  // This drives aggregateGroup itself (not just the query builder) because
+  // the fix hinges on detecting the absent columns from the parquet schema.
+  it('re-aggregates an all-legacy schema lacking both sin/cos columns', async () => {
+    const sourceFile = await writeLegacySourceFile([
+      { valueAvg: TEN_DEG, sampleCount: 1 },
+      { valueAvg: THREE_FIFTY_DEG, sampleCount: 1 },
+    ]);
+
+    const result = await (
+      service as unknown as {
+        aggregateGroup: (
+          files: string[],
+          context: string,
+          signalkPath: string,
+          sourceTier: string,
+          targetTier: string,
+          date: Date
+        ) => Promise<{ recordsAggregated: number; outputFile: string | null }>;
+      }
+    ).aggregateGroup(
+      [sourceFile],
+      CONTEXT,
+      ANGULAR_PATH,
+      '5s',
+      '60s',
+      new Date('2026-03-04T00:00:00Z')
+    );
+
+    expect(result.outputFile, 'aggregation produced an output file').to.not.be
+      .null;
+    expect(result.recordsAggregated).to.equal(1);
+
+    const conn = await DuckDBPool.getConnection();
+    try {
+      const res = await conn.runAndReadAll(
+        `SELECT value_avg, sample_count, value_sin_avg, value_cos_avg FROM read_parquet('${toSqlPath(result.outputFile!)}')`
+      );
+      const rows = res.getRowObjects();
+      expect(rows).to.have.lengthOf(1);
+      // Circular mean of 10deg and 350deg derived purely from value_avg.
+      expect(Number(rows[0].value_avg)).to.be.closeTo(0, 1e-9);
+      expect(Number(rows[0].sample_count)).to.equal(2);
+      // The output bucket gains the vector columns for the next tier up.
+      expect(rows[0].value_sin_avg).to.not.be.null;
+      expect(rows[0].value_cos_avg).to.not.be.null;
+    } finally {
+      conn.disconnectSync();
+    }
   });
 
   it('carries a lone vectorless bucket through unchanged', async () => {
