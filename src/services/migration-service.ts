@@ -336,6 +336,9 @@ export class MigrationService {
       progress.completedAt = new Date();
       scheduleMigrationJobCleanup(jobId);
     } catch (error) {
+      // A cancel that lands before a phase throws should stay terminal as
+      // 'cancelled' rather than being overwritten by the error state.
+      if (this.finishIfCancelled(progress, jobId)) return;
       progress.status = 'error';
       progress.error = (error as Error).message;
       progress.completedAt = new Date();
