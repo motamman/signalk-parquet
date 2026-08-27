@@ -25,11 +25,17 @@ const hiveBuilder = new HivePathBuilder();
  * The directory encoding is lossy (issue #71: ':' and literal '-' both map to
  * '-', so a UUID vessel id can't be reconstructed from the dir name — and two
  * distinct contexts such as `a:b` and `a-b` can collide into one directory),
- * but every parquet record carries the original context as a data column. A
- * context's true name never changes, so entries live for the process;
- * clearFileListCache() clears it for tests.
+ * but every parquet record carries the original context as a data column.
+ * A context's true name never changes, but the SET of contexts sharing one
+ * directory can grow (a new colliding context starts recording), so entries
+ * carry the same TTL as the directory-listing cache. Entries for other data
+ * directories are purged on rescan so runtime reconfiguration can't
+ * accumulate stale directories; clearFileListCache() clears everything.
  */
-const trueContextCache = new Map<string, string[]>();
+const trueContextCache = new Map<
+  string,
+  { contexts: string[]; timestamp: number }
+>();
 
 /**
  * Read context=* directory names under tier=raw/. Returns the SANITIZED
@@ -80,8 +86,28 @@ async function resolveTrueContexts(
 ): Promise<string[]> {
   const key = JSON.stringify([dataDir, sanitized]);
   const cached = trueContextCache.get(key);
-  if (cached) return cached;
+  if (cached && Date.now() - cached.timestamp < CACHE_TTL.FILE_LIST) {
+    return cached.contexts;
+  }
 
+  const contexts = await queryDistinctContexts(dataDir, sanitized);
+  if (contexts !== null && contexts.length > 0) {
+    trueContextCache.set(key, { contexts, timestamp: Date.now() });
+    return contexts;
+  }
+  return [hiveBuilder.unsanitizeContext(sanitized)];
+}
+
+/**
+ * SELECT DISTINCT context over one sanitized context directory's data files,
+ * optionally constrained to a signalk_timestamp range. Returns null when the
+ * query fails (caller falls back).
+ */
+async function queryDistinctContexts(
+  dataDir: string,
+  sanitized: string,
+  range?: { fromIso: string; toIso: string }
+): Promise<string[] | null> {
   const glob = path.join(
     dataDir,
     'tier=raw',
@@ -91,6 +117,9 @@ async function resolveTrueContexts(
     'day=*',
     '*.parquet'
   );
+  const rangeClause = range
+    ? ` WHERE signalk_timestamp >= '${escapeSqlString(range.fromIso)}' AND signalk_timestamp <= '${escapeSqlString(range.toIso)}'`
+    : '';
   try {
     const connection = await DuckDBPool.getConnection();
     try {
@@ -98,16 +127,12 @@ async function resolveTrueContexts(
       // key=value path segments otherwise, and the (sanitized) partition
       // value shadows the files' `context` data column.
       const result = await connection.runAndReadAll(
-        `SELECT DISTINCT context FROM read_parquet('${escapeSqlString(glob)}', hive_partitioning=false, union_by_name=true)`
+        `SELECT DISTINCT context FROM read_parquet('${escapeSqlString(glob)}', hive_partitioning=false, union_by_name=true)${rangeClause}`
       );
-      const contexts = result
+      return result
         .getRowObjects()
         .map(row => row.context)
         .filter((c): c is string => typeof c === 'string' && c.length > 0);
-      if (contexts.length > 0) {
-        trueContextCache.set(key, contexts);
-        return contexts;
-      }
     } finally {
       connection.disconnectSync();
     }
@@ -116,8 +141,8 @@ async function resolveTrueContexts(
       `[Context Discovery] Could not read context column under context=${sanitized}:`,
       error
     );
+    return null;
   }
-  return [hiveBuilder.unsanitizeContext(sanitized)];
 }
 
 /**
@@ -148,6 +173,12 @@ export async function getAvailableContextsForTimeRange(
       debugLogger.log(
         `[Context Discovery] Scanning hive directories for contexts...`
       );
+      // Purge resolution-cache entries for other data directories so a
+      // runtime setDataDir() reconfigure can't accumulate stale entries.
+      for (const key of trueContextCache.keys()) {
+        const [cachedDataDir] = JSON.parse(key) as [string, string];
+        if (cachedDataDir !== dataDir) trueContextCache.delete(key);
+      }
       allContexts = await discoverContextDirsFromHive(dataDir);
 
       contextListCache = {
@@ -191,11 +222,31 @@ export async function getAvailableContextsForTimeRange(
     // Resolve the true context strings from the data — the dir-name
     // reconstruction is lossy for ids containing literal dashes (issue #71),
     // and one sanitized directory can hold several colliding contexts.
-    const matchingContexts = (
-      await Promise.all(
-        matchingSanitized.map(s => resolveTrueContexts(dataDir, s))
-      )
-    ).flat();
+    // Sequential on purpose: each resolution opens a DuckDB connection, and a
+    // large AIS store can have hundreds of context directories — a Promise.all
+    // fan-out would open them all at once. After the first request the
+    // resolutions are cached, so the sequential cost is a cold-start-only one.
+    const fromIso = from.toInstant().toString();
+    const toIso = to.toInstant().toString();
+    const matchingContexts: string[] = [];
+    for (const sanitized of matchingSanitized) {
+      const resolved = await resolveTrueContexts(dataDir, sanitized);
+      if (resolved.length > 1) {
+        // Collided directory (e.g. `a:b` and `a-b` share it): the day-level
+        // directory check above only proves SOME context in it has data in
+        // range. Re-query constrained to the requested range so a collider
+        // whose data lies entirely outside the range isn't reported. Rare
+        // (requires ids differing only colon-vs-dash), so the extra query
+        // costs nothing in the common single-context case.
+        const inRange = await queryDistinctContexts(dataDir, sanitized, {
+          fromIso,
+          toIso,
+        });
+        matchingContexts.push(...(inRange ?? resolved));
+      } else {
+        matchingContexts.push(...resolved);
+      }
+    }
 
     debugLogger.log(
       `[Context Discovery] Found ${matchingContexts.length} contexts with data in time range`

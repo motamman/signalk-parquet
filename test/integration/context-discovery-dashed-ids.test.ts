@@ -33,7 +33,13 @@ const MMSI_CONTEXT = 'vessels.urn:mrn:imo:mmsi:368076430';
 // (context=vessels__collide-abc). Discovery must recover both from the data.
 const COLON_CONTEXT = 'vessels.collide:abc';
 const DASH_CONTEXT = 'vessels.collide-abc';
+// Second colliding pair (shared dir context=vessels__range-x) whose members
+// have data on DIFFERENT days: the day-level directory check only proves some
+// collider has in-range data, so the resolver must range-filter collided dirs.
+const RANGE_COLON_CONTEXT = 'vessels.range:x';
+const RANGE_DASH_CONTEXT = 'vessels.range-x';
 const DAY = new Date('2024-06-01T00:00:00.000Z');
+const DAY2 = new Date('2024-06-02T00:00:00.000Z');
 const RANGE = 'from=2024-06-01T00:00:00Z&to=2024-06-01T23:59:59Z';
 // Matches the position fixtures below (New York harbor-ish).
 const BBOX = 'bbox=-74.5,40.2,-73.8,40.9';
@@ -108,7 +114,26 @@ describe('Context discovery with dash-bearing ids (issue #71)', function () {
         '2024-06-01T10:00:00.000Z'
       )
     );
+    // Range-collision pair: colon variant has June 1 data, dash variant only
+    // June 2 — a June 1 query must include the former and exclude the latter.
+    buffer.insert(
+      makeScalarRecord(
+        RANGE_COLON_CONTEXT,
+        'navigation.speedOverGround',
+        7,
+        '2024-06-01T10:00:00.000Z'
+      )
+    );
+    buffer.insert(
+      makeScalarRecord(
+        RANGE_DASH_CONTEXT,
+        'navigation.headingTrue',
+        2.5,
+        '2024-06-02T10:00:00.000Z'
+      )
+    );
     await exportService.exportDayToParquet(DAY);
+    await exportService.exportDayToParquet(DAY2);
 
     const app = express();
     const router = express.Router();
@@ -161,6 +186,24 @@ describe('Context discovery with dash-bearing ids (issue #71)', function () {
     // first won).
     expect(contexts).to.include(COLON_CONTEXT);
     expect(contexts).to.include(DASH_CONTEXT);
+  });
+
+  it('excludes a colliding context whose data is outside the requested range', async () => {
+    const res = await fetch(`${baseUrl}/signalk/v1/history/contexts?${RANGE}`);
+    expect(res.status).to.equal(200);
+    const contexts = (await res.json()) as string[];
+    // Both live under context=vessels__range-x, but only the colon variant
+    // has June 1 data; the dash variant's data is June 2 only.
+    expect(contexts).to.include(RANGE_COLON_CONTEXT);
+    expect(contexts).to.not.include(RANGE_DASH_CONTEXT);
+
+    // A range spanning both days returns both colliders.
+    const res2 = await fetch(
+      `${baseUrl}/signalk/v1/history/contexts?from=2024-06-01T00:00:00Z&to=2024-06-02T23:59:59Z`
+    );
+    const contexts2 = (await res2.json()) as string[];
+    expect(contexts2).to.include(RANGE_COLON_CONTEXT);
+    expect(contexts2).to.include(RANGE_DASH_CONTEXT);
   });
 
   it('spatial contexts endpoint returns the exact UUID context string', async () => {
