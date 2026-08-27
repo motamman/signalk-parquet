@@ -21,12 +21,28 @@ let contextListCache: ContextListCache | null = null;
 const hiveBuilder = new HivePathBuilder();
 
 /**
- * Read context=* directory names under tier=raw/ and unsanitize them.
- * No file scanning needed — just directory name reading.
+ * Sanitized context dir name -> ALL true context strings read from the data.
+ * The directory encoding is lossy (issue #71: ':' and literal '-' both map to
+ * '-', so a UUID vessel id can't be reconstructed from the dir name — and two
+ * distinct contexts such as `a:b` and `a-b` can collide into one directory),
+ * but every parquet record carries the original context as a data column.
+ * A context's true name never changes, but the SET of contexts sharing one
+ * directory can grow (a new colliding context starts recording), so entries
+ * carry the same TTL as the directory-listing cache. Entries for other data
+ * directories are purged on rescan so runtime reconfiguration can't
+ * accumulate stale directories; clearFileListCache() clears everything.
  */
-async function discoverContextsFromHiveDirs(
-  dataDir: string
-): Promise<string[]> {
+const trueContextCache = new Map<
+  string,
+  { contexts: string[]; timestamp: number }
+>();
+
+/**
+ * Read context=* directory names under tier=raw/. Returns the SANITIZED
+ * names — the true context strings are resolved later, per matching context,
+ * from the parquet data itself (see resolveTrueContexts).
+ */
+async function discoverContextDirsFromHive(dataDir: string): Promise<string[]> {
   const tierRawDir = path.join(dataDir, 'tier=raw');
 
   try {
@@ -38,8 +54,7 @@ async function discoverContextsFromHiveDirs(
 
       const match = entry.name.match(/^context=(.+)$/);
       if (match) {
-        const unsanitized = hiveBuilder.unsanitizeContext(match[1]);
-        contexts.push(unsanitized);
+        contexts.push(match[1]);
       }
     }
 
@@ -50,6 +65,83 @@ async function discoverContextsFromHiveDirs(
       error
     );
     return [];
+  }
+}
+
+/**
+ * Resolve ALL true context strings for a sanitized context directory name by
+ * reading them from the data (every record stores the original context).
+ * The sanitization is many-to-one, so one directory can hold data for
+ * multiple distinct contexts (e.g. `a:b` and `a-b`); a DISTINCT scan over
+ * the directory's data files recovers every one. The glob only matches the
+ * partition-shaped path=* / year=* / day=* subdirectories, so
+ * quarantine/failed/processed/repaired siblings are never touched.
+ * Falls back to the legacy lossy reconstruction from the directory name when
+ * no file can be read; the fallback is not cached so a later successful read
+ * can correct it.
+ */
+async function resolveTrueContexts(
+  dataDir: string,
+  sanitized: string
+): Promise<string[]> {
+  const key = JSON.stringify([dataDir, sanitized]);
+  const cached = trueContextCache.get(key);
+  if (cached && Date.now() - cached.timestamp < CACHE_TTL.FILE_LIST) {
+    return cached.contexts;
+  }
+
+  const contexts = await queryDistinctContexts(dataDir, sanitized);
+  if (contexts !== null && contexts.length > 0) {
+    trueContextCache.set(key, { contexts, timestamp: Date.now() });
+    return contexts;
+  }
+  return [hiveBuilder.unsanitizeContext(sanitized)];
+}
+
+/**
+ * SELECT DISTINCT context over one sanitized context directory's data files,
+ * optionally constrained to a signalk_timestamp range. Returns null when the
+ * query fails (caller falls back).
+ */
+async function queryDistinctContexts(
+  dataDir: string,
+  sanitized: string,
+  range?: { fromIso: string; toIso: string }
+): Promise<string[] | null> {
+  const glob = path.join(
+    dataDir,
+    'tier=raw',
+    `context=${sanitized}`,
+    'path=*',
+    'year=*',
+    'day=*',
+    '*.parquet'
+  );
+  const rangeClause = range
+    ? ` WHERE signalk_timestamp >= '${escapeSqlString(range.fromIso)}' AND signalk_timestamp <= '${escapeSqlString(range.toIso)}'`
+    : '';
+  try {
+    const connection = await DuckDBPool.getConnection();
+    try {
+      // hive_partitioning=false is required: DuckDB auto-detects the
+      // key=value path segments otherwise, and the (sanitized) partition
+      // value shadows the files' `context` data column.
+      const result = await connection.runAndReadAll(
+        `SELECT DISTINCT context FROM read_parquet('${escapeSqlString(glob)}', hive_partitioning=false, union_by_name=true)${rangeClause}`
+      );
+      return result
+        .getRowObjects()
+        .map(row => row.context)
+        .filter((c): c is string => typeof c === 'string' && c.length > 0);
+    } finally {
+      connection.disconnectSync();
+    }
+  } catch (error) {
+    debugLogger.warn(
+      `[Context Discovery] Could not read context column under context=${sanitized}:`,
+      error
+    );
+    return null;
   }
 }
 
@@ -81,7 +173,13 @@ export async function getAvailableContextsForTimeRange(
       debugLogger.log(
         `[Context Discovery] Scanning hive directories for contexts...`
       );
-      allContexts = await discoverContextsFromHiveDirs(dataDir);
+      // Purge resolution-cache entries for other data directories so a
+      // runtime setDataDir() reconfigure can't accumulate stale entries.
+      for (const key of trueContextCache.keys()) {
+        const [cachedDataDir] = JSON.parse(key) as [string, string];
+        if (cachedDataDir !== dataDir) trueContextCache.delete(key);
+      }
+      allContexts = await discoverContextDirsFromHive(dataDir);
 
       contextListCache = {
         contexts: allContexts,
@@ -103,13 +201,13 @@ export async function getAvailableContextsForTimeRange(
     const fromYearDay = dateToYearDay(fromDate);
     const toYearDay = dateToYearDay(toDate);
 
-    // Filter contexts by checking if they have any matching year/day subdirs
+    // Filter contexts (still by their sanitized dir names) by checking if
+    // they have any matching year/day subdirs
     const tierRawDir = path.join(dataDir, 'tier=raw');
-    const matchingContexts: string[] = [];
+    const matchingSanitized: string[] = [];
 
-    for (const context of allContexts) {
-      const sanitizedContext = hiveBuilder.sanitizeContext(context);
-      const contextDir = path.join(tierRawDir, `context=${sanitizedContext}`);
+    for (const sanitized of allContexts) {
+      const contextDir = path.join(tierRawDir, `context=${sanitized}`);
 
       const hasData = await contextHasDataInRange(
         contextDir,
@@ -117,7 +215,36 @@ export async function getAvailableContextsForTimeRange(
         toYearDay
       );
       if (hasData) {
-        matchingContexts.push(context);
+        matchingSanitized.push(sanitized);
+      }
+    }
+
+    // Resolve the true context strings from the data — the dir-name
+    // reconstruction is lossy for ids containing literal dashes (issue #71),
+    // and one sanitized directory can hold several colliding contexts.
+    // Sequential on purpose: each resolution opens a DuckDB connection, and a
+    // large AIS store can have hundreds of context directories — a Promise.all
+    // fan-out would open them all at once. After the first request the
+    // resolutions are cached, so the sequential cost is a cold-start-only one.
+    const fromIso = from.toInstant().toString();
+    const toIso = to.toInstant().toString();
+    const matchingContexts: string[] = [];
+    for (const sanitized of matchingSanitized) {
+      const resolved = await resolveTrueContexts(dataDir, sanitized);
+      if (resolved.length > 1) {
+        // Collided directory (e.g. `a:b` and `a-b` share it): the day-level
+        // directory check above only proves SOME context in it has data in
+        // range. Re-query constrained to the requested range so a collider
+        // whose data lies entirely outside the range isn't reported. Rare
+        // (requires ids differing only colon-vs-dash), so the extra query
+        // costs nothing in the common single-context case.
+        const inRange = await queryDistinctContexts(dataDir, sanitized, {
+          fromIso,
+          toIso,
+        });
+        matchingContexts.push(...(inRange ?? resolved));
+      } else {
+        matchingContexts.push(...resolved);
       }
     }
 
@@ -248,9 +375,14 @@ export async function getContextsInSpatialFilter(
 
   const spatialClause = buildSpatialSqlClause(filter);
 
+  // hive_partitioning=false (explicitly — DuckDB auto-detects key=value path
+  // segments otherwise): `context` must resolve to the DATA column (the
+  // original, unsanitized context every record stores), never the sanitized
+  // partition value from the directory name. Partition pruning isn't lost —
+  // the query never filtered on partition columns.
   const query = `
     SELECT DISTINCT context
-    FROM read_parquet('${escapeSqlString(glob)}', hive_partitioning=true, union_by_name=true)
+    FROM read_parquet('${escapeSqlString(glob)}', hive_partitioning=false, union_by_name=true)
     WHERE signalk_timestamp >= '${fromIso}'
       AND signalk_timestamp < '${toIso}'
       AND ${spatialClause}
@@ -265,12 +397,10 @@ export async function getContextsInSpatialFilter(
     const result = await connection.runAndReadAll(query);
     const rows = result.getRowObjects();
 
-    const contexts = rows
-      .map(row => {
-        const sanitized = row.context as string;
-        return hiveBuilder.unsanitizeContext(sanitized);
-      })
-      .sort() as Context[];
+    // row.context is the data column — already the true context string.
+    // Running unsanitizeContext on it corrupted dash-bearing ids (issue #71:
+    // it turned a UUID's literal dashes into colons).
+    const contexts = rows.map(row => row.context as string).sort() as Context[];
 
     debugLogger.log(
       `[Context Discovery] Found ${contexts.length} contexts in spatial filter`
@@ -287,5 +417,6 @@ export async function getContextsInSpatialFilter(
  */
 export function clearFileListCache(): void {
   contextListCache = null;
+  trueContextCache.clear();
   debugLogger.log('[Context Discovery] Context list cache cleared');
 }
