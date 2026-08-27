@@ -28,6 +28,11 @@ const SELF_ID = 'urn:mrn:signalk:uuid:c0d79334-4e25-4149-a2b8-1f7a3210ab42';
 const UUID_CONTEXT = `vessels.${SELF_ID}`;
 // The control: MMSI ids carry no literal dashes and always round-tripped fine.
 const MMSI_CONTEXT = 'vessels.urn:mrn:imo:mmsi:368076430';
+// The collision case: sanitization maps ':' onto '-' while literal '-' passes
+// through, so these two distinct contexts share one hive partition directory
+// (context=vessels__collide-abc). Discovery must recover both from the data.
+const COLON_CONTEXT = 'vessels.collide:abc';
+const DASH_CONTEXT = 'vessels.collide-abc';
 const DAY = new Date('2024-06-01T00:00:00.000Z');
 const RANGE = 'from=2024-06-01T00:00:00Z&to=2024-06-01T23:59:59Z';
 // Matches the position fixtures below (New York harbor-ish).
@@ -83,6 +88,26 @@ describe('Context discovery with dash-bearing ids (issue #71)', function () {
     buffer.insert(
       makePositionRecord(MMSI_CONTEXT, 40.65, -74.0, '2024-06-01T10:00:00.000Z')
     );
+    // Colliding contexts on DIFFERENT signalk paths: the exporter's filename
+    // timestamp is minute-precision, so colliding contexts sharing one
+    // context+path partition in a single export run would overwrite each
+    // other's file. Distinct paths keep both datasets on disk.
+    buffer.insert(
+      makeScalarRecord(
+        COLON_CONTEXT,
+        'navigation.speedOverGround',
+        6,
+        '2024-06-01T10:00:00.000Z'
+      )
+    );
+    buffer.insert(
+      makeScalarRecord(
+        DASH_CONTEXT,
+        'navigation.headingTrue',
+        1.5,
+        '2024-06-01T10:00:00.000Z'
+      )
+    );
     await exportService.exportDayToParquet(DAY);
 
     const app = express();
@@ -127,6 +152,17 @@ describe('Context discovery with dash-bearing ids (issue #71)', function () {
     }
   });
 
+  it('contexts listing returns all contexts colliding into one hive partition', async () => {
+    const res = await fetch(`${baseUrl}/signalk/v1/history/contexts?${RANGE}`);
+    expect(res.status).to.equal(200);
+    const contexts = (await res.json()) as string[];
+    // Both contexts live under context=vessels__collide-abc; resolving one
+    // context per directory dropped one of them (whichever file was read
+    // first won).
+    expect(contexts).to.include(COLON_CONTEXT);
+    expect(contexts).to.include(DASH_CONTEXT);
+  });
+
   it('spatial contexts endpoint returns the exact UUID context string', async () => {
     const res = await fetch(
       `${baseUrl}/api/history/contexts/spatial?${RANGE}&${BBOX}`
@@ -137,5 +173,10 @@ describe('Context discovery with dash-bearing ids (issue #71)', function () {
     // MMSI contexts were also corrupted here pre-fix only via the double
     // unsanitize when they contained dashes post-sanitize; assert exactness.
     expect(contexts).to.include(MMSI_CONTEXT);
+    // No context may come back in the colon-corrupted UUID form
+    // (vessels.urn:mrn:signalk:uuid:c0d79334:4e25:...).
+    for (const c of contexts) {
+      expect(c).to.not.match(/uuid:[0-9a-f]+:/i);
+    }
   });
 });

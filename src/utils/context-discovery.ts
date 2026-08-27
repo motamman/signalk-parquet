@@ -21,19 +21,20 @@ let contextListCache: ContextListCache | null = null;
 const hiveBuilder = new HivePathBuilder();
 
 /**
- * Sanitized context dir name -> true context string read from the data.
+ * Sanitized context dir name -> ALL true context strings read from the data.
  * The directory encoding is lossy (issue #71: ':' and literal '-' both map to
- * '-', so a UUID vessel id can't be reconstructed from the dir name), but
- * every parquet record carries the original context as a data column. A
+ * '-', so a UUID vessel id can't be reconstructed from the dir name — and two
+ * distinct contexts such as `a:b` and `a-b` can collide into one directory),
+ * but every parquet record carries the original context as a data column. A
  * context's true name never changes, so entries live for the process;
  * clearFileListCache() clears it for tests.
  */
-const trueContextCache = new Map<string, string>();
+const trueContextCache = new Map<string, string[]>();
 
 /**
  * Read context=* directory names under tier=raw/. Returns the SANITIZED
  * names — the true context strings are resolved later, per matching context,
- * from the parquet data itself (see resolveTrueContext).
+ * from the parquet data itself (see resolveTrueContexts).
  */
 async function discoverContextDirsFromHive(dataDir: string): Promise<string[]> {
   const tierRawDir = path.join(dataDir, 'tier=raw');
@@ -62,105 +63,61 @@ async function discoverContextDirsFromHive(dataDir: string): Promise<string[]> {
 }
 
 /**
- * Find one data parquet file under a context directory: first
- * path=* / year=* / day=* / *.parquet encountered. Only descends the
- * partition-shaped subdirectories, so quarantine/failed/processed/repaired
- * siblings are never touched.
- */
-async function findFirstParquetFile(
-  contextDir: string
-): Promise<string | null> {
-  try {
-    const pathEntries = await fs.readdir(contextDir, { withFileTypes: true });
-    for (const pathEntry of pathEntries) {
-      if (!pathEntry.isDirectory() || !pathEntry.name.startsWith('path=')) {
-        continue;
-      }
-      const pathDir = path.join(contextDir, pathEntry.name);
-      let yearEntries;
-      try {
-        yearEntries = await fs.readdir(pathDir, { withFileTypes: true });
-      } catch {
-        continue;
-      }
-      for (const yearEntry of yearEntries) {
-        if (!yearEntry.isDirectory() || !/^year=\d+$/.test(yearEntry.name)) {
-          continue;
-        }
-        const yearDir = path.join(pathDir, yearEntry.name);
-        let dayEntries;
-        try {
-          dayEntries = await fs.readdir(yearDir, { withFileTypes: true });
-        } catch {
-          continue;
-        }
-        for (const dayEntry of dayEntries) {
-          if (!dayEntry.isDirectory() || !/^day=\d+$/.test(dayEntry.name)) {
-            continue;
-          }
-          const dayDir = path.join(yearDir, dayEntry.name);
-          let files;
-          try {
-            files = await fs.readdir(dayDir);
-          } catch {
-            continue;
-          }
-          const parquet = files.find(f => f.endsWith('.parquet'));
-          if (parquet) {
-            return path.join(dayDir, parquet);
-          }
-        }
-      }
-    }
-  } catch {
-    // context dir unreadable — caller falls back
-  }
-  return null;
-}
-
-/**
- * Resolve the true context string for a sanitized context directory name by
- * reading it from the data (every record stores the original context).
+ * Resolve ALL true context strings for a sanitized context directory name by
+ * reading them from the data (every record stores the original context).
+ * The sanitization is many-to-one, so one directory can hold data for
+ * multiple distinct contexts (e.g. `a:b` and `a-b`); a DISTINCT scan over
+ * the directory's data files recovers every one. The glob only matches the
+ * partition-shaped path=* / year=* / day=* subdirectories, so
+ * quarantine/failed/processed/repaired siblings are never touched.
  * Falls back to the legacy lossy reconstruction from the directory name when
  * no file can be read; the fallback is not cached so a later successful read
  * can correct it.
  */
-async function resolveTrueContext(
+async function resolveTrueContexts(
   dataDir: string,
   sanitized: string
-): Promise<string> {
+): Promise<string[]> {
   const key = JSON.stringify([dataDir, sanitized]);
   const cached = trueContextCache.get(key);
   if (cached) return cached;
 
-  const contextDir = path.join(dataDir, 'tier=raw', `context=${sanitized}`);
-  const file = await findFirstParquetFile(contextDir);
-  if (file) {
+  const glob = path.join(
+    dataDir,
+    'tier=raw',
+    `context=${sanitized}`,
+    'path=*',
+    'year=*',
+    'day=*',
+    '*.parquet'
+  );
+  try {
+    const connection = await DuckDBPool.getConnection();
     try {
-      const connection = await DuckDBPool.getConnection();
-      try {
-        // hive_partitioning=false is required: DuckDB auto-detects the
-        // key=value path segments otherwise, and the (sanitized) partition
-        // value shadows the file's `context` data column.
-        const result = await connection.runAndReadAll(
-          `SELECT context FROM read_parquet('${escapeSqlString(file)}', hive_partitioning=false) LIMIT 1`
-        );
-        const ctx = result.getRowObjects()[0]?.context;
-        if (typeof ctx === 'string' && ctx.length > 0) {
-          trueContextCache.set(key, ctx);
-          return ctx;
-        }
-      } finally {
-        connection.disconnectSync();
-      }
-    } catch (error) {
-      debugLogger.warn(
-        `[Context Discovery] Could not read context column from ${file}:`,
-        error
+      // hive_partitioning=false is required: DuckDB auto-detects the
+      // key=value path segments otherwise, and the (sanitized) partition
+      // value shadows the files' `context` data column.
+      const result = await connection.runAndReadAll(
+        `SELECT DISTINCT context FROM read_parquet('${escapeSqlString(glob)}', hive_partitioning=false, union_by_name=true)`
       );
+      const contexts = result
+        .getRowObjects()
+        .map(row => row.context)
+        .filter((c): c is string => typeof c === 'string' && c.length > 0);
+      if (contexts.length > 0) {
+        trueContextCache.set(key, contexts);
+        return contexts;
+      }
+    } finally {
+      connection.disconnectSync();
     }
+  } catch (error) {
+    debugLogger.warn(
+      `[Context Discovery] Could not read context column under context=${sanitized}:`,
+      error
+    );
   }
-  return hiveBuilder.unsanitizeContext(sanitized);
+  return [hiveBuilder.unsanitizeContext(sanitized)];
 }
 
 /**
@@ -232,10 +189,13 @@ export async function getAvailableContextsForTimeRange(
     }
 
     // Resolve the true context strings from the data — the dir-name
-    // reconstruction is lossy for ids containing literal dashes (issue #71).
-    const matchingContexts = await Promise.all(
-      matchingSanitized.map(s => resolveTrueContext(dataDir, s))
-    );
+    // reconstruction is lossy for ids containing literal dashes (issue #71),
+    // and one sanitized directory can hold several colliding contexts.
+    const matchingContexts = (
+      await Promise.all(
+        matchingSanitized.map(s => resolveTrueContexts(dataDir, s))
+      )
+    ).flat();
 
     debugLogger.log(
       `[Context Discovery] Found ${matchingContexts.length} contexts with data in time range`
