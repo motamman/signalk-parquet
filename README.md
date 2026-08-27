@@ -255,7 +255,7 @@ Configure cloud storage upload in the plugin configuration. Uploads run as part 
 | **Secret Access Key** | Cloud credentials | - |
 | **Custom Endpoint URL** | Override the S3 endpoint for self-hosted S3-compatible storage (Garage, MinIO). Include protocol and port, e.g. `https://garage.example.com:3900` (S3 only) | - |
 | **Use Path-Style Addressing** | Path-style bucket addressing (`https://endpoint/bucket`); often required by self-hosted services. Defaults to enabled when a custom endpoint is set | auto |
-| **Allow Private/Local Endpoints** | Permit custom endpoints on private/loopback/link-local addresses (e.g. `192.168.x.x`, `localhost`). Required for self-hosted storage on the boat LAN; off by default to prevent SSRF (v0.7.44+) | `false` |
+| **Allow Private/Local Endpoints** | Permit custom endpoints on private/loopback/link-local addresses (e.g. `192.168.x.x`, `localhost`). Required for self-hosted storage on the boat LAN; off by default to prevent SSRF (since v0.7.44-beta.2) | `false` |
 | **Delete After Upload** | Delete local files after upload | `false` |
 
 > **Upload timeouts (v0.7.44+):** cloud requests are bounded (10 s to connect, 60 s per request) so a dead or stalled uplink fails the upload — which is retried — instead of hanging the daily export pipeline.
@@ -597,7 +597,7 @@ This provides better compression, faster queries, and proper type safety for dat
 | `/api/paths` | GET | List available data paths |
 | `/api/files/:path` | GET | List files for a path |
 | `/api/sample/:path` | GET | Sample data from a path |
-| `/api/query` | POST | Execute SQL query (⚠️ disabled by default, requires `SIGNALK_PARQUET_RAW_SQL=true`). Runs on a sandboxed DuckDB instance (v0.7.44+): no network access, no cloud credentials, reads restricted to the data directory |
+| `/api/query` | POST | Execute SQL query (⚠️ disabled by default; enabled when **either** the `Enable Raw SQL` plugin setting is on **or** the `SIGNALK_PARQUET_RAW_SQL=true` environment variable is set — one gate is sufficient, both are not required). Runs on a sandboxed DuckDB instance (v0.7.44+): no network access, no cloud credentials, reads restricted to the data directory |
 | `/api/config/paths` | GET/POST/PUT/DELETE | Manage path configurations |
 | `/api/test-cloud` | POST | Test cloud storage connection |
 | `/api/health` | GET | Health check |
