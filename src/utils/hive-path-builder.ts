@@ -269,14 +269,19 @@ export class HivePathBuilder {
   }
 
   /**
-   * Get all day directories in a time range
+   * Get all day directories in a time range.
+   * The cursor is normalized to UTC midnight so the comparison covers every
+   * CALENDAR day the range touches — a cursor keeping from's time of day
+   * would skip the final day whenever `to` has an earlier time (issue #72).
    */
   getDaysInRange(
     from: Date,
     to: Date
   ): Array<{ year: number; dayOfYear: number }> {
     const days: Array<{ year: number; dayOfYear: number }> = [];
-    const current = new Date(from);
+    const current = new Date(
+      Date.UTC(from.getUTCFullYear(), from.getUTCMonth(), from.getUTCDate())
+    );
 
     while (current <= to) {
       days.push({
@@ -372,20 +377,25 @@ export class HivePathBuilder {
    */
   private getDayPatterns(from: Date, to: Date): string {
     const days: string[] = [];
-    const current = new Date(from);
+    // UTC-midnight cursor: a cursor keeping from's time of day skipped the
+    // final calendar day whenever `to` had an earlier time — silently
+    // dropping the last partial day from S3-backed queries (issue #72).
+    const current = new Date(
+      Date.UTC(from.getUTCFullYear(), from.getUTCMonth(), from.getUTCDate())
+    );
     const maxExplicitDays = 7;
 
-    let dayCount = 0;
-    while (current <= to && dayCount < maxExplicitDays) {
+    while (current <= to && days.length < maxExplicitDays) {
       const year = current.getUTCFullYear();
       const dayOfYear = this.getDayOfYear(current);
       days.push(`year=${year}/day=${String(dayOfYear).padStart(3, '0')}`);
       current.setUTCDate(current.getUTCDate() + 1);
-      dayCount++;
     }
 
-    if (dayCount >= maxExplicitDays) {
-      // Fallback to wildcard for long ranges
+    // Wildcard only when days REMAIN past the cap: exactly 7 days stays an
+    // explicit list, matching the docstring and buildDuckDBGlob (the old
+    // `dayCount >= max` check wildcarded the 7-day case, an off-by-one).
+    if (current <= to) {
       return 'year=*/day=*';
     }
 
