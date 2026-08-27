@@ -26,8 +26,8 @@ import { registerHistoryApiRoute } from '../../src/HistoryAPI';
 import { createFakeSignalK, FakeSignalK } from './helpers/fake-signalk';
 import { makeScalarRecord } from './helpers/records';
 
-// No hyphen/colon: sanitizeContext maps ':' -> '-' and unsanitizeContext maps
-// '-' -> ':', so a hyphenated id would not survive the contexts round-trip.
+// Plain id keeps this suite's fixtures simple; hyphenated/UUID ids round-trip
+// correctly too (see context-discovery-dashed-ids.test.ts for that regression).
 const SELF_ID = 'integrationself';
 const STORED_CONTEXT = `vessels.${SELF_ID}`;
 const DAY = new Date('2024-06-01T00:00:00.000Z');
