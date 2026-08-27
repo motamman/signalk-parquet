@@ -1,5 +1,45 @@
 # Changelog
 
+## [0.7.44-beta.2] - 2026-08-26
+
+Rolls up everything merged since 0.7.43. (`0.7.44-beta.1` was an internal deploy only — never published to npm.) Major thanks to @msallin, who contributed the security, correctness, and reliability work in this release (PRs #89, #91, #92, #93, #114).
+
+### Security (PR #89)
+
+- **Boundary validation for untrusted contexts and paths** — new `src/utils/signalk-validation.ts`: `validateContext` / `validateSignalKPath` allow-list validators now guard every place an HTTP-supplied `?context=` or `?paths=` value reaches a DuckDB `read_parquet` glob or a filesystem path (V1 routes, the V2 provider, and path-config POST/PUT). Glob metacharacters, quotes, slashes, and `..` are rejected up front instead of sanitised. `assertWithinDataDir` (lexical + symlink-resolved containment) stops bucket-supplied keys in cloud sync from reaching files outside the data directory.
+- **SQL-literal escaping across the query layer** — every interpolated `read_parquet('…')` / `parquet_schema('…')` file path in `HistoryAPI.ts`, `history-provider.ts`, `api-routes.ts`, `context-discovery.ts`, `path-discovery.ts`, and `claude-analyzer.ts` now goes through `escapeSqlString`.
+- **Sandboxed DuckDB instance for untrusted SQL** — `/api/query` (the opt-in raw SQL endpoint) and Claude-generated analysis SQL no longer run on the main pool, which holds the S3 credential SECRET. They use a separate sandbox instance with `enable_external_access=false` and `allowed_directories` restricted to the data directory: no network, no httpfs, no cloud credentials, no reads outside the store.
+- **SSRF guard on custom S3 endpoints** — a custom `cloudUpload.endpoint` resolving to a private, loopback, or link-local address is now rejected unless the new `allowPrivateEndpoint` config flag is set (needed for self-hosted MinIO/Garage on the boat LAN; off by default so a malicious config can't probe the cloud metadata service or the local network).
+- **Information-disclosure cleanups** — the `/tmp/claude-prompt-debug-*.txt` dump of full analysis prompts is gone; cloud connection-test and compare-job errors return generic messages (topology details stay server-side); DuckDB errors reaching LLM tool-results and HTTP responses are genericized; `/api/analyze` no longer logs user prompts to stdout.
+
+### Fixed
+
+- **Angular tier→tier re-aggregation produced NULL buckets** (PR #91) — rolling 5s→60s→1h aggregates of angular paths read `value_sin_avg`/`value_cos_avg` from source files that may predate those columns; `SUM` over the NULLs made the whole bucket NULL. The rollup now falls back per-row with `COALESCE(value_sin_avg, SIN(value_avg))` (and cos), and — follow-up — probes the source schema first so all-legacy file sets, where the columns can't even be named without a binder error, derive from `value_avg` directly.
+- **Sub-second history resolutions collapsed into one bucket** — the bucket-timestamp SQL wrapped the (millisecond-correct) `FLOOR(EPOCH_MS(...)/resolution)` arithmetic in `DATE_TRUNC('seconds', …)` with a seconds-only format, so distinct sub-second buckets got identical timestamp strings and merged in GROUP BY. All six query paths now share one `bucketExprSql()` helper that keeps millisecond precision (`%S.%gZ`) for fractional resolutions while preserving the fraction-free format for whole-second ones. With it, the V1 auto-resolution is clamped to ≥1 ms and computed in milliseconds (PR #91) — previously a `from == to` or sub-500 s range truncated to a 0 ms divisor. Regression tests cover both.
+- **Timeout-only deltas were silently discarded** (PR #91) — `timeout` was in `metaOnlyKeys`, so an object delta whose only key is `timeout` was treated as metadata and dropped.
+- **Spatial-filter query errors blanked every correlated path** (PR #91) — a transient DuckDB failure during `bbox`/`radius` position correlation returned an *empty* timestamp set, which read as "no positions matched" and emptied every correlated path in the response. Errors now return `null` (= no filtering, data served unfiltered) at both correlation sites; end-to-end tests pin all three outcomes (inside box, outside box, query error).
+- **Date-only timestamps parsed inconsistently** (PR #91) — `parseDateTime('2025-08-13')` went through `new Date()` as UTC midnight while `'2025-08-13T08:00'` parsed as local time. Date-only inputs now normalise to local midnight, matching the documented bare-timestamp contract.
+- **Migration jobs: cancellation overhauled** (PR #91 + follow-ups) — cancel is now per-job (`progress.cancelRequested`) instead of a shared service flag that let concurrent jobs cross-cancel, works during the `scanning` phase, and — via a shared `finishIfCancelled()` at every phase boundary — can no longer be swallowed by the empty-file-list path, the cleanup/aggregation phases, the final file's window, or an error landing after a cancel (the job stays terminal as `cancelled`, not `error`/`completed`).
+- **Legacy `retentionDays` migration could be lost on early exit** (PR #91) — the one-time config migration's `savePluginOptions` was fire-and-forget; it is now awaited so the persisted sentinel can't be skipped.
+- **Threshold monitor subscription leak** (PR #114) — `updateCommand` built the monitor key ad-hoc (`${commandName}_${watchPath}`) instead of with `buildThresholdMonitorKey()`, so the old streambundle subscription was never found and unsubscribed — every threshold edit leaked a live subscription. Fixed and covered by unit tests that fail on the unfixed code.
+- **Silent failures now logged** (PR #114) — three empty `catch {}` blocks in `data-handler.ts` (command handling, per-delta stream handling, buffer flush) now log through `app.error`; a failed AWS SDK import (cloud upload configured but SDK unavailable) is logged instead of silently disabling sync forever.
+- **Cloud uploads can no longer hang the export pipeline** (PR #114) — S3/R2 clients now set `connectionTimeout: 10s` and `requestTimeout: 60s` with `throwOnRequestTimeout: true` (without the flag the AWS SDK only *warns* when the ceiling elapses). A dead or stalled uplink now fails the upload (and retries) instead of wedging the daily export.
+- **SQLite buffer close hardening** (PR #114) — `_open` flips before `db.close()` so a throwing close can't leave the buffer claiming to be open; `insertBatch()` gained the same `_open` guard as `insert()`. New integration test pins the close-state contract.
+- **`stop()` data-loss window narrowed** (PR #114) — subscriptions are unsubscribed *before* the final buffer flush (previously a delta arriving between flush and teardown was lost), with each unsubscribe individually wrapped so one throwing teardown can't skip the flush.
+
+### Changed
+
+- **Dead historical-streaming feature removed** (PR #93) — the never-enabled `HistoricalStreamingService` (~1,800 lines: ws server, commented-out routes, five dead config/state fields) is gone from the codebase and the shipped package.
+- **Logging and hygiene** (PR #92) — the Claude analyzer's 13 unconditional `console.log` diagnostics (including full result-set dumps) now route through `app.debug`; job-id generation is centralized in `src/utils/job-id.ts`.
+- **eslint 10 / prettier 3.9.6 / TypeScript lib update** — lint stack upgraded (`@eslint/js` added — eslint 10 no longer provides it transitively); the two new recommended rules are satisfied for real: 8 rethrown errors now attach `{ cause }` (`lib: ES2022.Error` added for the typings), and the unreachable manual-traversal block + orphaned `traverseSignalKPaths` helper in `claude-analyzer.ts` (~210 lines, issue #73) are deleted rather than suppressed.
+
+### Dependencies
+
+- Runtime: `@anthropic-ai/sdk`, `@aws-sdk/client-s3`, `@signalk/server-api` 2.31.1, `@dsnp/parquetjs`, `@js-joda/core`, `fs-extra`, `minimatch`, `multer` types, `ws`, and friends (grouped minor/patch updates).
+- Dev: `@types/node` 26, `c8` 12, `mocha` 11.8, `@typescript-eslint` 8.67, CI action bumps.
+
+---
+
 ## [0.7.43] - 2026-08-21
 
 Stable release — includes the `0.7.43-beta.1` fixes below (daily aggregation moved to a short-lived worker to stop the midnight memory ratchet/OOM; offline startup no longer blocked by the spatial-extension download) plus the following changes since beta.1.
