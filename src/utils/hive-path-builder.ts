@@ -346,7 +346,9 @@ export class HivePathBuilder {
    * @param signalkPath SignalK path (e.g., "navigation.speedOverGround")
    * @param fromDate Start date for partition pruning
    * @param toDate End date for partition pruning
-   * @returns S3 URI pattern for DuckDB read_parquet
+   * @returns S3 URI pattern for DuckDB read_parquet, or null for an empty
+   *   (reversed) range — a `{}` day segment would otherwise reach
+   *   read_parquet as a malformed glob instead of "no S3 source"
    */
   buildS3Glob(
     bucket: string,
@@ -356,12 +358,17 @@ export class HivePathBuilder {
     signalkPath: string,
     fromDate: Date,
     toDate: Date
-  ): string {
+  ): string | null {
     const sanitizedContext = this.sanitizeContext(context);
     const sanitizedPath = this.sanitizePath(signalkPath);
 
     // Generate day patterns for partition pruning
     const dayPatterns = this.getDayPatterns(fromDate, toDate);
+
+    // Empty (reversed) range: no partitions to read — report no S3 source.
+    if (dayPatterns.length === 0) {
+      return null;
+    }
 
     // Build S3 URI with Hive partition structure
     // Normalize keyPrefix (remove trailing slash if present)

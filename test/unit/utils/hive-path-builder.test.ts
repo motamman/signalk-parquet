@@ -698,7 +698,8 @@ describe('HivePathBuilder', () => {
         new Date(Date.UTC(2024, 5, 15)),
         new Date(Date.UTC(2024, 5, 21))
       );
-      expect(sevenDays.split(',')).to.have.length(7);
+      expect(sevenDays).to.be.a('string');
+      expect((sevenDays as string).split(',')).to.have.length(7);
 
       const eightDays = builder.buildS3Glob(
         'bkt',
@@ -712,9 +713,11 @@ describe('HivePathBuilder', () => {
       expect(eightDays).to.equal(`s3://bkt/${prefix}/year=*/day=*/*.parquet`);
     });
 
-    it('treats a reversed same-day range like any reversed range', () => {
+    it('returns null (no S3 source) for reversed ranges', () => {
       // Regression: the midnight-normalized cursor admitted a same-day range
-      // with from > to, emitting a day partition for an empty range.
+      // with from > to, emitting a day partition for an empty range — and an
+      // empty pattern list used to produce a malformed `{}` day segment that
+      // reached read_parquet instead of signalling "no S3 source".
       const sameDayReversed = builder.buildS3Glob(
         'bkt',
         '',
@@ -733,8 +736,8 @@ describe('HivePathBuilder', () => {
         new Date(Date.UTC(2024, 5, 16)),
         new Date(Date.UTC(2024, 5, 15))
       );
-      expect(sameDayReversed).to.equal(multiDayReversed);
-      expect(sameDayReversed).to.not.contain('day=167');
+      expect(sameDayReversed).to.equal(null);
+      expect(multiDayReversed).to.equal(null);
     });
 
     it('includes the final partial day in the brace list', () => {
