@@ -279,6 +279,11 @@ export class HivePathBuilder {
     to: Date
   ): Array<{ year: number; dayOfYear: number }> {
     const days: Array<{ year: number; dayOfYear: number }> = [];
+    // Reversed ranges are empty; check before normalizing, since midnight
+    // normalization would otherwise admit a same-day range with from > to.
+    if (from > to) {
+      return days;
+    }
     const current = new Date(
       Date.UTC(from.getUTCFullYear(), from.getUTCMonth(), from.getUTCDate())
     );
@@ -377,6 +382,11 @@ export class HivePathBuilder {
    */
   private getDayPatterns(from: Date, to: Date): string {
     const days: string[] = [];
+    // Reversed ranges are empty; check before normalizing, since midnight
+    // normalization would otherwise admit a same-day range with from > to.
+    if (from > to) {
+      return '';
+    }
     // UTC-midnight cursor: a cursor keeping from's time of day skipped the
     // final calendar day whenever `to` had an earlier time — silently
     // dropping the last partial day from S3-backed queries (issue #72).

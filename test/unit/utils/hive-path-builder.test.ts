@@ -263,6 +263,15 @@ describe('HivePathBuilder', () => {
       expect(builder.getDaysInRange(from, to)).to.deep.equal([]);
     });
 
+    it('returns an empty list when from is after to on the same UTC day', () => {
+      // Regression: the midnight-normalized cursor (issue #72) starts at
+      // 00:00 of from's day, which is <= to here even though the range is
+      // reversed — without an up-front guard this yielded one day.
+      const from = new Date(Date.UTC(2024, 5, 15, 10, 0, 0));
+      const to = new Date(Date.UTC(2024, 5, 15, 4, 0, 0));
+      expect(builder.getDaysInRange(from, to)).to.deep.equal([]);
+    });
+
     it('includes the final day when to has an earlier time of day', () => {
       // Regression for issue #72: the cursor is normalized to UTC midnight,
       // so a range ending at 06:00 on the next day still visits that day —
@@ -701,6 +710,31 @@ describe('HivePathBuilder', () => {
         new Date(Date.UTC(2024, 5, 22))
       );
       expect(eightDays).to.equal(`s3://bkt/${prefix}/year=*/day=*/*.parquet`);
+    });
+
+    it('treats a reversed same-day range like any reversed range', () => {
+      // Regression: the midnight-normalized cursor admitted a same-day range
+      // with from > to, emitting a day partition for an empty range.
+      const sameDayReversed = builder.buildS3Glob(
+        'bkt',
+        '',
+        'raw',
+        context,
+        signalkPath,
+        new Date(Date.UTC(2024, 5, 15, 10, 0, 0)),
+        new Date(Date.UTC(2024, 5, 15, 4, 0, 0))
+      );
+      const multiDayReversed = builder.buildS3Glob(
+        'bkt',
+        '',
+        'raw',
+        context,
+        signalkPath,
+        new Date(Date.UTC(2024, 5, 16)),
+        new Date(Date.UTC(2024, 5, 15))
+      );
+      expect(sameDayReversed).to.equal(multiDayReversed);
+      expect(sameDayReversed).to.not.contain('day=167');
     });
 
     it('includes the final partial day in the brace list', () => {
