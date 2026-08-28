@@ -28,7 +28,13 @@ type Handler = (req: unknown, res: unknown) => Promise<void> | void;
 
 interface CapturedResponse {
   status: number;
-  body: { success?: boolean; error?: string };
+  body: {
+    success?: boolean;
+    error?: string;
+    rowCount?: number;
+    truncated?: boolean;
+    data?: unknown[];
+  };
 }
 
 /** Minimal router double recording the handlers the plugin registers. */
@@ -151,6 +157,23 @@ describe('raw SQL endpoint guard', function () {
     const { status, body } = await postQuery("ATTACH '/tmp/buffer.db' AS b");
     expect(status).to.equal(403);
     expect(body.error).to.match(/Raw SQL queries are disabled/);
+  });
+
+  it('caps a large result and reports the truncation', async () => {
+    // range() needs no fixture files, so this exercises the row cap without
+    // depending on which data directory the sandbox instance was scoped to.
+    const { body } = await postQuery('SELECT i FROM range(25000) t(i)');
+    expect(body.success).to.equal(true);
+    expect(body.rowCount).to.equal(10000);
+    expect(body.truncated).to.equal(true);
+    expect(body.data).to.have.lengthOf(10000);
+  });
+
+  it('does not report truncation for a result under the cap', async () => {
+    const { body } = await postQuery('SELECT i FROM range(5) t(i)');
+    expect(body.success).to.equal(true);
+    expect(body.rowCount).to.equal(5);
+    expect(body.truncated).to.equal(false);
   });
 
   it('lets a read-only query past the guard', async () => {

@@ -17,6 +17,14 @@ import { escapeSqlString } from './utils/sql-escape';
 import { ClaudeModel } from './claude-models';
 import { shouldSkipDirectory } from './utils/path-helpers';
 
+/**
+ * Row limits for model-driven SQL results, kept small so a wide result set
+ * exhausts neither the Node heap nor the model's context window. A result
+ * above the threshold is cut harder than one below it.
+ */
+const LARGE_RESULT_ROW_THRESHOLD = 1000;
+const LARGE_RESULT_MAX_ROWS = 500;
+
 // Claude AI Integration Types
 export interface ClaudeAnalyzerConfig {
   apiKey: string;
@@ -3126,7 +3134,15 @@ Begin your analysis by querying relevant data within the specified time range.`;
         this.app?.debug(`🔧 Corrected query: ${correctedSQL}`);
       }
 
-      const result = await connection.runAndReadAll(correctedSQL);
+      // Read a bounded prefix rather than the whole result. The row limit
+      // below is applied after materialisation, which is too late on a path
+      // the model drives: DuckDB's memory limit does not bound rows once they
+      // are JS objects. Reading one row past the widest limit still tells the
+      // two limits apart, because the reader only overshoots the target.
+      const result = await connection.streamAndReadUntil(
+        correctedSQL,
+        LARGE_RESULT_ROW_THRESHOLD + 1
+      );
       const data = result.getRowObjects();
 
       // Convert BigInt values to regular numbers to prevent serialization errors
@@ -3141,7 +3157,10 @@ Begin your analysis by querying relevant data within the specified time range.`;
       });
 
       // Limit result size aggressively for production systems to prevent memory and token issues
-      const maxRows = cleanedData.length > 1000 ? 500 : 1000; // Smaller limits for large datasets
+      const maxRows =
+        cleanedData.length > LARGE_RESULT_ROW_THRESHOLD
+          ? LARGE_RESULT_MAX_ROWS
+          : LARGE_RESULT_ROW_THRESHOLD; // Smaller limits for large datasets
       const limitedData = cleanedData.slice(0, maxRows);
 
       this.app?.debug(`✅ Query returned ${limitedData.length} rows`);

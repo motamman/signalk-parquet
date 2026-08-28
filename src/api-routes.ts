@@ -545,12 +545,18 @@ export function registerApiRoutes(
         const connection = await DuckDBPool.getSandboxConnection(dataDir);
 
         try {
-          const reader = await connection.runAndReadAll(processedQuery);
+          // Read a bounded prefix rather than the whole result: DuckDB's own
+          // memory limit does not bound rows once they are materialised into
+          // the Node heap, so a SELECT * over a year of parquet would OOM the
+          // SignalK process before any cap applied after the fact could help.
+          // Rows arrive in chunks of 2048, so the reader overshoots the target
+          // and the extra rows are what makes truncation detectable.
+          const reader = await connection.streamAndReadUntil(
+            processedQuery,
+            RAW_QUERY_MAX_ROWS + 1
+          );
           const rawData = reader.getRowObjects();
 
-          // Cap before mapping: the whole result set is materialised into the
-          // Node heap, which DuckDB's own memory limit does not bound, and a
-          // SELECT * over a year of parquet would OOM the SignalK process.
           const truncated = rawData.length > RAW_QUERY_MAX_ROWS;
           const data = mapForJSON(
             truncated ? rawData.slice(0, RAW_QUERY_MAX_ROWS) : rawData
