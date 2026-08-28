@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.7.44-beta.3] - 2026-08-27
+
+### Fixed
+
+- **Context ids with literal dashes (UUID vessels) returned corrupted by the History API** (#71, PR #115) — the hive directory encoding is many-to-one (`:` and literal `-` both become `-` in directory names), so reconstructing a context from its directory name turned a default (no-MMSI) install's UUID vessel id into a colon-riddled invalid URN (`…uuid:c0d79334:4e25:…`), breaking client-side identity matching against the server's real self context. Contexts are no longer reconstructed from directory names: the contexts listing resolves each matching directory's true context string(s) from the parquet `context` data column (TTL-cached per directory; sequential resolution so a large AIS store can't stampede the DuckDB pool), and the spatial contexts endpoint returns the data column directly, removing a second, independent corruption (it was un-sanitizing an already-correct value). Because the encoding is many-to-one, two distinct contexts (`a:b` / `a-b`) can share one directory — the resolver now recovers **all** colliding contexts, range-filtered so a collider with no data in the requested window isn't reported. Both queries pass `hive_partitioning=false` explicitly: DuckDB auto-detects `key=value` path segments and the sanitized partition value silently shadows the file's identically-named data column. No on-disk change — directories keep their names, no migration, previously-stored (mangled) context strings still resolve to the same partitions.
+- **S3-backed history queries silently dropped the final partial day** (#72, PR #116) — `getDayPatterns`, which builds the S3 day-partition brace list, advanced its day cursor while keeping `from`'s time of day, so a query ending mid-day (e.g. `…15T12:00Z → …16T06:00Z`) never read the last day's partition — truncating the tail of cloud query results. The cursor is now normalized to UTC midnight so every calendar day the range touches is covered; reversed ranges are rejected up front; exactly-7-day ranges keep the explicit day list instead of falling to a wildcard (off-by-one against the documented cap); and `buildS3Glob` returns `null` for an empty range instead of a malformed `{}` glob. Same fixes applied to the latent twin `getDaysInRange`.
+
+### Dependencies
+
+- Dev: `@stryker-mutator/core` / `@stryker-mutator/mocha-runner` 9.6.1 → 10.0.0 (bumped together; the mutation config needed no changes).
+
+---
+
 ## [0.7.44-beta.2] - 2026-08-26
 
 Rolls up everything merged since 0.7.43. (`0.7.44-beta.1` was an internal deploy only — never published to npm.) Major thanks to @msallin, who contributed the security, correctness, and reliability work in this release (PRs #89, #91, #92, #93, #114).

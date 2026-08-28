@@ -792,6 +792,8 @@ The plugin provides full SignalK History API compliance, allowing you to query h
 
 > ⚠️ **Extension**: The `/contexts` and `/paths` endpoints accept time range parameters as **optional**. The official spec requires time parameters; without them, these endpoints return all available data (more permissive behavior).
 
+> **Exact context ids (v0.7.44+):** the contexts endpoints return vessel context strings exactly as recorded — resolved from the stored data rather than reconstructed from partition directory names, whose encoding is lossy. Earlier versions mangled UUID-identified vessels (`urn:mrn:signalk:uuid:…`, the default when no MMSI is configured) by turning the UUID's dashes into colons.
+
 ### Standard Time Range Patterns
 
 The History API supports 5 standard SignalK time query patterns:
