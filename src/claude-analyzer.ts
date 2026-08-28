@@ -12,6 +12,7 @@ import { getAvailablePaths } from './utils/path-discovery';
 import * as fs from 'fs-extra';
 import * as path from 'path';
 import { DuckDBPool } from './utils/duckdb-pool';
+import { findUnsafeSqlReason } from './utils/sql-guard';
 import { escapeSqlString } from './utils/sql-escape';
 import { ClaudeModel } from './claude-models';
 import { shouldSkipDirectory } from './utils/path-helpers';
@@ -3094,26 +3095,16 @@ Begin your analysis by querying relevant data within the specified time range.`;
     // Auto-correct common column usage patterns
     const correctedSQL = this.correctColumnUsage(sql);
 
-    // Validate query is read-only (starts with SELECT or WITH for CTEs)
-    const trimmedSQL = correctedSQL.trim().toUpperCase();
-    if (!trimmedSQL.startsWith('SELECT') && !trimmedSQL.startsWith('WITH')) {
-      throw new Error('Only SELECT and WITH queries are allowed for security');
-    }
-
-    // Additional safety checks
-    const dangerousKeywords = [
-      'DROP',
-      'DELETE',
-      'UPDATE',
-      'INSERT',
-      'CREATE',
-      'ALTER',
-      'TRUNCATE',
-    ];
-    for (const keyword of dangerousKeywords) {
-      if (trimmedSQL.includes(keyword)) {
-        throw new Error(`Dangerous SQL keyword '${keyword}' is not allowed`);
-      }
+    // Validate every statement is read-only and touches no database- or
+    // file-opening table function. The reason is thrown back to the model as a
+    // tool result so it can rewrite the query; log it too, since a model
+    // looping on rejected SQL is otherwise invisible from the server side.
+    const unsafeReason = findUnsafeSqlReason(correctedSQL);
+    if (unsafeReason) {
+      this.app?.debug(
+        `Rejected AI-generated SQL for ${purpose}: ${unsafeReason} — query: ${correctedSQL.slice(0, 200)}`
+      );
+      throw new Error(`Query rejected for security: ${unsafeReason}`);
     }
 
     if (!this.dataDirectory) {
@@ -3122,7 +3113,8 @@ Begin your analysis by querying relevant data within the specified time range.`;
     // Run LLM-generated SQL on the hardened sandbox connection: file access is
     // confined to the data dir and httpfs/S3 are unavailable, so a prompt-steered
     // query cannot read arbitrary host files, reach the network, or use the S3
-    // secret. The keyword checks above remain as defence in depth.
+    // secret. The read-only guard above covers what the sandbox does not: the
+    // sandbox still permits writes inside the data directory.
     const connection = await DuckDBPool.getSandboxConnection(
       this.dataDirectory
     );

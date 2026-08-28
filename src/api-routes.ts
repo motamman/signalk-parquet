@@ -6,6 +6,7 @@ import multer from 'multer';
 import { getAvailablePaths } from './utils/path-discovery';
 import { DuckDBPool } from './utils/duckdb-pool';
 import { escapeSqlString } from './utils/sql-escape';
+import { findUnsafeSqlReason } from './utils/sql-guard';
 import {
   validateSignalKPath,
   assertWithinDataDir,
@@ -124,6 +125,12 @@ interface RepairProgress {
 const repairJobs = new Map<string, RepairProgress>();
 
 const VALIDATION_JOB_TTL_MS = 10 * 60 * 1000; // Retain job metadata for 10 minutes
+
+/**
+ * Row cap for the raw SQL endpoint. Results are materialised into the Node
+ * heap before serialisation, which DuckDB's own memory limit does not bound.
+ */
+const RAW_QUERY_MAX_ROWS = 10000;
 
 function scheduleValidationJobCleanup(jobId: string) {
   setTimeout(() => {
@@ -505,8 +512,29 @@ export function registerApiRoutes(
                 selfContextPath,
                 quotedPath
               );
-              processedQuery = processedQuery.replace(match, `'${filePath}'`);
+              // Replacer function, not a string: `$&` and `` $` `` in a
+              // user-supplied path would otherwise be expanded by replace()
+              // and splice unvalidated text into the executed SQL.
+              processedQuery = processedQuery.replace(
+                match,
+                () => `'${filePath}'`
+              );
             }
+          });
+        }
+
+        // Validate the string that actually executes, after substitution, so
+        // the guarded SQL and the executed SQL cannot diverge. The sandbox
+        // confines file access to the data dir but still permits writes inside
+        // it, so this is what keeps the query read-only (see sql-guard.ts).
+        const unsafeReason = findUnsafeSqlReason(processedQuery);
+        if (unsafeReason) {
+          app.debug(
+            `Rejected raw SQL query: ${unsafeReason} — query: ${processedQuery.slice(0, 200)}`
+          );
+          return res.status(400).json({
+            success: false,
+            error: unsafeReason,
           });
         }
 
@@ -520,12 +548,19 @@ export function registerApiRoutes(
           const reader = await connection.runAndReadAll(processedQuery);
           const rawData = reader.getRowObjects();
 
-          const data = mapForJSON(rawData);
+          // Cap before mapping: the whole result set is materialised into the
+          // Node heap, which DuckDB's own memory limit does not bound, and a
+          // SELECT * over a year of parquet would OOM the SignalK process.
+          const truncated = rawData.length > RAW_QUERY_MAX_ROWS;
+          const data = mapForJSON(
+            truncated ? rawData.slice(0, RAW_QUERY_MAX_ROWS) : rawData
+          );
 
           return res.json({
             success: true,
             query: processedQuery,
             rowCount: data.length,
+            truncated,
             data: data,
           });
         } catch (err) {
