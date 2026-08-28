@@ -263,15 +263,25 @@ describe('HivePathBuilder', () => {
       expect(builder.getDaysInRange(from, to)).to.deep.equal([]);
     });
 
-    it('drops the final day when to has an earlier time of day', () => {
-      // The loop advances by whole days while keeping from's time of day, so
-      // a range ending at 06:00 on the next day never visits that day even
-      // though six hours of it are inside the range. Pinned as current
-      // behaviour; callers passing intraday bounds lose the last partition.
+    it('returns an empty list when from is after to on the same UTC day', () => {
+      // Regression: the midnight-normalized cursor (issue #72) starts at
+      // 00:00 of from's day, which is <= to here even though the range is
+      // reversed — without an up-front guard this yielded one day.
+      const from = new Date(Date.UTC(2024, 5, 15, 10, 0, 0));
+      const to = new Date(Date.UTC(2024, 5, 15, 4, 0, 0));
+      expect(builder.getDaysInRange(from, to)).to.deep.equal([]);
+    });
+
+    it('includes the final day when to has an earlier time of day', () => {
+      // Regression for issue #72: the cursor is normalized to UTC midnight,
+      // so a range ending at 06:00 on the next day still visits that day —
+      // six hours of it are inside the range. The old time-of-day-carrying
+      // cursor skipped it, dropping the last partition.
       const from = new Date(Date.UTC(2023, 11, 30, 12, 0, 0));
       const to = new Date(Date.UTC(2023, 11, 31, 6, 0, 0));
       expect(builder.getDaysInRange(from, to)).to.deep.equal([
         { year: 2023, dayOfYear: 364 },
+        { year: 2023, dayOfYear: 365 },
       ]);
     });
 
@@ -675,23 +685,10 @@ describe('HivePathBuilder', () => {
       );
     });
 
-    it('lists explicit days for a 6-day range but wildcards 7 days', () => {
-      // The docstring promises explicit days for ranges <= 7 days, but the
-      // implementation counts the 7th pushed day as "hit the cap" and falls
-      // back to wildcards, so only ranges of up to 6 days stay explicit.
-      // Pinned as current behaviour (off-by-one against the documentation,
-      // and inconsistent with buildDuckDBGlob which keeps 7 days explicit).
-      const sixDays = builder.buildS3Glob(
-        'bkt',
-        '',
-        'raw',
-        context,
-        signalkPath,
-        new Date(Date.UTC(2024, 5, 15)),
-        new Date(Date.UTC(2024, 5, 20))
-      );
-      expect(sixDays.split(',')).to.have.length(6);
-
+    it('lists explicit days up to exactly 7 days and wildcards 8', () => {
+      // Regression for issue #72: exactly 7 days stays an explicit list,
+      // matching the docstring and buildDuckDBGlob. (The old check counted
+      // the 7th pushed day as "hit the cap" and wildcarded it.)
       const sevenDays = builder.buildS3Glob(
         'bkt',
         '',
@@ -701,7 +698,65 @@ describe('HivePathBuilder', () => {
         new Date(Date.UTC(2024, 5, 15)),
         new Date(Date.UTC(2024, 5, 21))
       );
-      expect(sevenDays).to.equal(`s3://bkt/${prefix}/year=*/day=*/*.parquet`);
+      expect(sevenDays).to.be.a('string');
+      expect((sevenDays as string).split(',')).to.have.length(7);
+
+      const eightDays = builder.buildS3Glob(
+        'bkt',
+        '',
+        'raw',
+        context,
+        signalkPath,
+        new Date(Date.UTC(2024, 5, 15)),
+        new Date(Date.UTC(2024, 5, 22))
+      );
+      expect(eightDays).to.equal(`s3://bkt/${prefix}/year=*/day=*/*.parquet`);
+    });
+
+    it('returns null (no S3 source) for reversed ranges', () => {
+      // Regression: the midnight-normalized cursor admitted a same-day range
+      // with from > to, emitting a day partition for an empty range — and an
+      // empty pattern list used to produce a malformed `{}` day segment that
+      // reached read_parquet instead of signalling "no S3 source".
+      const sameDayReversed = builder.buildS3Glob(
+        'bkt',
+        '',
+        'raw',
+        context,
+        signalkPath,
+        new Date(Date.UTC(2024, 5, 15, 10, 0, 0)),
+        new Date(Date.UTC(2024, 5, 15, 4, 0, 0))
+      );
+      const multiDayReversed = builder.buildS3Glob(
+        'bkt',
+        '',
+        'raw',
+        context,
+        signalkPath,
+        new Date(Date.UTC(2024, 5, 16)),
+        new Date(Date.UTC(2024, 5, 15))
+      );
+      expect(sameDayReversed).to.equal(null);
+      expect(multiDayReversed).to.equal(null);
+    });
+
+    it('includes the final partial day in the brace list', () => {
+      // Regression for issue #72: an S3-backed query from 12:00 to 06:00 the
+      // next day must read BOTH day partitions. The old time-of-day-carrying
+      // cursor emitted only the first day, silently truncating the final
+      // hours of cloud query results.
+      const result = builder.buildS3Glob(
+        'bkt',
+        '',
+        'raw',
+        context,
+        signalkPath,
+        new Date(Date.UTC(2024, 5, 15, 12, 0, 0)),
+        new Date(Date.UTC(2024, 5, 16, 6, 0, 0))
+      );
+      expect(result).to.equal(
+        `s3://bkt/${prefix}/{year=2024/day=167,year=2024/day=168}/*.parquet`
+      );
     });
   });
 

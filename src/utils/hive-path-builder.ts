@@ -269,14 +269,24 @@ export class HivePathBuilder {
   }
 
   /**
-   * Get all day directories in a time range
+   * Get all day directories in a time range.
+   * The cursor is normalized to UTC midnight so the comparison covers every
+   * CALENDAR day the range touches — a cursor keeping from's time of day
+   * would skip the final day whenever `to` has an earlier time (issue #72).
    */
   getDaysInRange(
     from: Date,
     to: Date
   ): Array<{ year: number; dayOfYear: number }> {
     const days: Array<{ year: number; dayOfYear: number }> = [];
-    const current = new Date(from);
+    // Reversed ranges are empty; check before normalizing, since midnight
+    // normalization would otherwise admit a same-day range with from > to.
+    if (from > to) {
+      return days;
+    }
+    const current = new Date(
+      Date.UTC(from.getUTCFullYear(), from.getUTCMonth(), from.getUTCDate())
+    );
 
     while (current <= to) {
       days.push({
@@ -336,7 +346,9 @@ export class HivePathBuilder {
    * @param signalkPath SignalK path (e.g., "navigation.speedOverGround")
    * @param fromDate Start date for partition pruning
    * @param toDate End date for partition pruning
-   * @returns S3 URI pattern for DuckDB read_parquet
+   * @returns S3 URI pattern for DuckDB read_parquet, or null for an empty
+   *   (reversed) range — a `{}` day segment would otherwise reach
+   *   read_parquet as a malformed glob instead of "no S3 source"
    */
   buildS3Glob(
     bucket: string,
@@ -346,12 +358,17 @@ export class HivePathBuilder {
     signalkPath: string,
     fromDate: Date,
     toDate: Date
-  ): string {
+  ): string | null {
     const sanitizedContext = this.sanitizeContext(context);
     const sanitizedPath = this.sanitizePath(signalkPath);
 
     // Generate day patterns for partition pruning
     const dayPatterns = this.getDayPatterns(fromDate, toDate);
+
+    // Empty (reversed) range: no partitions to read — report no S3 source.
+    if (dayPatterns.length === 0) {
+      return null;
+    }
 
     // Build S3 URI with Hive partition structure
     // Normalize keyPrefix (remove trailing slash if present)
@@ -372,20 +389,30 @@ export class HivePathBuilder {
    */
   private getDayPatterns(from: Date, to: Date): string {
     const days: string[] = [];
-    const current = new Date(from);
+    // Reversed ranges are empty; check before normalizing, since midnight
+    // normalization would otherwise admit a same-day range with from > to.
+    if (from > to) {
+      return '';
+    }
+    // UTC-midnight cursor: a cursor keeping from's time of day skipped the
+    // final calendar day whenever `to` had an earlier time — silently
+    // dropping the last partial day from S3-backed queries (issue #72).
+    const current = new Date(
+      Date.UTC(from.getUTCFullYear(), from.getUTCMonth(), from.getUTCDate())
+    );
     const maxExplicitDays = 7;
 
-    let dayCount = 0;
-    while (current <= to && dayCount < maxExplicitDays) {
+    while (current <= to && days.length < maxExplicitDays) {
       const year = current.getUTCFullYear();
       const dayOfYear = this.getDayOfYear(current);
       days.push(`year=${year}/day=${String(dayOfYear).padStart(3, '0')}`);
       current.setUTCDate(current.getUTCDate() + 1);
-      dayCount++;
     }
 
-    if (dayCount >= maxExplicitDays) {
-      // Fallback to wildcard for long ranges
+    // Wildcard only when days REMAIN past the cap: exactly 7 days stays an
+    // explicit list, matching the docstring and buildDuckDBGlob (the old
+    // `dayCount >= max` check wildcarded the 7-day case, an off-by-one).
+    if (current <= to) {
       return 'year=*/day=*';
     }
 
