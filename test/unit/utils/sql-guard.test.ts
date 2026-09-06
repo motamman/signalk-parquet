@@ -62,6 +62,52 @@ describe('maskSqlLiteralsAndComments', () => {
     );
   });
 
+  describe('lexes every quoting construct in one pass', () => {
+    // A comment or quote character inside a quoted identifier is part of the
+    // identifier, not the start of a comment or literal. Masking identifiers
+    // in a pass of their own let the other pass consume the opening token
+    // from inside the identifier body and blank the rest of the input,
+    // semicolon and following statement included.
+    const identifierBodies = ['a--b', 'a/*b', "a'b", 'a$$b'];
+
+    for (const body of identifierBodies) {
+      it(`keeps the statement after an identifier containing ${body.slice(1)}`, () => {
+        expect(
+          maskSqlLiteralsAndComments(`SELECT 1 AS "${body}"; COPY x TO 'f'`)
+        ).to.include('COPY');
+      });
+    }
+
+    it('masks an escaped quote inside an escape string', () => {
+      // E'...' takes backslash escapes, so E'a\'b' is one literal ending at
+      // the third quote. Ending it at the second flips quote parity and
+      // blanks everything that follows.
+      expect(
+        maskSqlLiteralsAndComments("SELECT E'a\\'b' AS x; COPY y TO 'f'")
+      ).to.include('COPY');
+    });
+
+    it('masks a lowercase escape string', () => {
+      expect(
+        maskSqlLiteralsAndComments("SELECT e'a\\'b' AS x; COPY y TO 'f'")
+      ).to.include('COPY');
+    });
+
+    it('masks a trailing escaped backslash inside an escape string', () => {
+      expect(
+        maskSqlLiteralsAndComments("SELECT E'a\\\\' AS x; COPY y TO 'f'")
+      ).to.include('COPY');
+    });
+
+    it('leaves a keyword ending in E intact before a literal', () => {
+      // DATE'2024-01-01' is a typed literal, not an escape string: the E
+      // belongs to the keyword.
+      expect(maskSqlLiteralsAndComments("SELECT DATE'2024-01-01'")).to.include(
+        'DATE'
+      );
+    });
+  });
+
   it('masks line and block comments', () => {
     expect(
       maskSqlLiteralsAndComments('SELECT 1 -- attach the buffer\nFROM t')
@@ -170,6 +216,7 @@ describe('findUnsafeSqlReason', () => {
       ['DESCRIBE', 'DESCRIBE SELECT 1'],
       ['SUMMARIZE', 'SUMMARIZE SELECT 1'],
       ['EXPLAIN', 'EXPLAIN SELECT 1'],
+      ['EXPLAIN ANALYZE of a read-only query', 'EXPLAIN ANALYZE SELECT 1'],
       ['VALUES', 'VALUES (1), (2)'],
       ['PIVOT', 'PIVOT (SELECT 1 AS a, 2 AS b) ON a USING sum(b)'],
       ['SHOW', 'SHOW TABLES'],
@@ -277,6 +324,84 @@ describe('findUnsafeSqlReason', () => {
     });
   });
 
+  describe('rejects statements hidden by a quoting construct', () => {
+    // Each of these executed on DuckDB 1.5.3 while the guard returned null,
+    // because the mask lexed quoted identifiers separately from comments and
+    // literals and so blanked the semicolon along with the second statement.
+    const hidden: [string, string][] = [
+      ['line comment in an identifier', 'SELECT 1 AS "a--b"'],
+      ['block comment in an identifier', 'SELECT 1 AS "a/*b"'],
+      ['apostrophe in an identifier', `SELECT 1 AS "a'b"`],
+      ['dollar quote in an identifier', 'SELECT 1 AS "a$$b"'],
+      ['escaped quote in an escape string', "SELECT E'a\\'b' AS x"],
+      ['lowercase escape string', "SELECT e'a\\'b' AS x"],
+    ];
+
+    for (const [label, prefix] of hidden) {
+      it(`rejects a COPY chained after ${label}`, () => {
+        expect(
+          findUnsafeSqlReason(
+            `${prefix}; COPY (SELECT 99 AS id) TO '/d/recorded.parquet'`
+          )
+        ).to.match(/'COPY' is not allowed/);
+      });
+    }
+  });
+
+  describe('rejects a statement nested inside an allowed one', () => {
+    // EXPLAIN is read-only; EXPLAIN ANALYZE executes what it explains. Both
+    // of the first two ran to completion on DuckDB 1.5.3 past the earlier
+    // guard: the COPY overwrote a recorded parquet file, and the SET raised
+    // the sandbox's own 512MB memory limit to 3.7GiB.
+    const nested: [string, string, RegExp][] = [
+      [
+        'EXPLAIN ANALYZE COPY',
+        `EXPLAIN ANALYZE COPY (SELECT 99 AS id) TO '/d/recorded.parquet'`,
+        /'COPY' is not allowed/,
+      ],
+      [
+        'EXPLAIN ANALYZE SET',
+        "EXPLAIN ANALYZE SET memory_limit='4GB'",
+        /'SET' is not allowed/,
+      ],
+      [
+        'EXPLAIN ANALYZE PRAGMA',
+        'EXPLAIN ANALYZE PRAGMA enable_profiling',
+        /'PRAGMA' is not allowed/,
+      ],
+      [
+        'EXPLAIN ANALYZE LOAD',
+        'EXPLAIN ANALYZE LOAD sqlite_scanner',
+        /'LOAD' is not allowed/,
+      ],
+      [
+        // The parenthesised option list is not the prefix the statement
+        // whitelist strips, so only the anywhere-scan rejects this one.
+        'EXPLAIN (ANALYZE) COPY',
+        `EXPLAIN (ANALYZE) COPY (SELECT 99 AS id) TO '/d/recorded.parquet'`,
+        /'COPY' is not allowed/,
+      ],
+      [
+        // LOAD is the case the anywhere-scan deliberately does not cover, so
+        // stripping the EXPLAIN prefix is the only thing that catches it.
+        'EXPLAIN without ANALYZE',
+        'EXPLAIN LOAD sqlite_scanner',
+        /'LOAD' is not allowed/,
+      ],
+      [
+        'EXPLAIN ANALYZE across a line break',
+        'EXPLAIN\n  ANALYZE LOAD sqlite_scanner',
+        /'LOAD' is not allowed/,
+      ],
+    ];
+
+    for (const [label, sql, expected] of nested) {
+      it(`rejects ${label}`, () => {
+        expect(findUnsafeSqlReason(sql)).to.match(expected);
+      });
+    }
+  });
+
   describe('rejects raw file readers', () => {
     for (const fn of ['read_text', 'read_blob', 'glob']) {
       it(`rejects ${fn}`, () => {
@@ -289,6 +414,18 @@ describe('findUnsafeSqlReason', () => {
     it('rejects duckdb_secrets', () => {
       expect(findUnsafeSqlReason('SELECT * FROM duckdb_secrets()')).to.match(
         /Table function/
+      );
+    });
+
+    it('does not read a function name out of a comment or a literal', () => {
+      // The name check keeps quoted identifiers visible so "read_text"( still
+      // matches; comments and string literals stay masked, or a query that
+      // merely mentions a reader in prose would be rejected.
+      expect(
+        findUnsafeSqlReason('-- read_text(x) is not used here\nSELECT 1')
+      ).to.equal(null);
+      expect(findUnsafeSqlReason("SELECT 'glob(' AS pattern FROM t")).to.equal(
+        null
       );
     });
 
@@ -339,6 +476,41 @@ describe('findUnsafeSqlReason', () => {
           'WITH x AS (SELECT 3 AS a) INSERT INTO t SELECT a FROM x'
         )
       ).to.match(/Data-modifying keyword 'INSERT'/);
+    });
+  });
+
+  describe('allows only one statement', () => {
+    it('rejects two read-only statements', () => {
+      // Both callers keep the last result and discard the rest, so a batch
+      // was never useful; holding the guard to one statement means anything
+      // chained has to survive this check as well as the whitelist.
+      expect(findUnsafeSqlReason('SELECT 1; SELECT 2')).to.match(
+        /Only one statement is allowed; got 2/
+      );
+    });
+
+    it('names the offending statement rather than the count when one is unsafe', () => {
+      expect(findUnsafeSqlReason("SELECT 1; COPY x TO '/d/f'")).to.match(
+        /'COPY' is not allowed/
+      );
+    });
+  });
+
+  describe('documented false positives', () => {
+    // The keyword scans run over identifiers that are not quoted, so a column
+    // spelled like a rejected keyword is rejected. Quoting it works, because
+    // quoted identifiers are masked before the scan runs.
+    it('rejects an unquoted column named after a keyword', () => {
+      expect(findUnsafeSqlReason('SELECT drop FROM t')).to.match(
+        /Data-modifying keyword 'DROP'/
+      );
+      expect(findUnsafeSqlReason('SELECT set FROM t')).to.match(
+        /'SET' is not allowed/
+      );
+    });
+
+    it('allows the quoted spelling of the same column', () => {
+      expect(findUnsafeSqlReason('SELECT "drop", "set" FROM t')).to.equal(null);
     });
   });
 

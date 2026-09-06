@@ -95,4 +95,78 @@ describe('sandbox write exposure', function () {
       )
     ).to.equal(null);
   });
+
+  describe('overwrites that an earlier revision of the guard let through', () => {
+    // Same shape as the characterization test above, one level down: each of
+    // these is a real overwrite that DuckDB performs, reached through a
+    // construct the guard once mis-lexed. Running both halves keeps the
+    // payloads honest — a payload that stopped executing would no longer
+    // prove anything about the rule that rejects it.
+    const overwrites: [string, (target: string) => string][] = [
+      [
+        'a COPY hidden behind a comment inside a quoted identifier',
+        target =>
+          `SELECT 1 AS "a--b"; COPY (SELECT 99 AS id, 'clobbered' AS v) TO '${target}'`,
+      ],
+      [
+        'a COPY hidden behind an escaped quote in an escape string',
+        target =>
+          `SELECT E'a\\'b' AS x; COPY (SELECT 99 AS id, 'clobbered' AS v) TO '${target}'`,
+      ],
+      [
+        'a COPY executed by EXPLAIN ANALYZE',
+        target =>
+          `EXPLAIN ANALYZE COPY (SELECT 99 AS id, 'clobbered' AS v) TO '${target}'`,
+      ],
+    ];
+
+    for (const [label, build] of overwrites) {
+      it(`the sandbox executes ${label}`, async () => {
+        const connection = await DuckDBPool.getSandboxConnection(dataDir);
+        try {
+          await connection.runAndReadAll(build(toSqlPath(recorded)));
+          const reader = await connection.runAndReadAll(
+            `SELECT v FROM read_parquet('${toSqlPath(recorded)}');`
+          );
+          expect(reader.getRowObjects().map(row => row.v)).to.deep.equal([
+            'clobbered',
+          ]);
+        } finally {
+          connection.disconnectSync();
+        }
+      });
+
+      it(`the guard rejects ${label}`, () => {
+        expect(findUnsafeSqlReason(build(toSqlPath(recorded)))).to.match(
+          /'COPY' is not allowed/
+        );
+      });
+    }
+  });
+
+  describe('engine settings the sandbox cannot defend on its own', () => {
+    const raiseMemoryLimit = "EXPLAIN ANALYZE SET memory_limit='4GB'";
+
+    it('the sandbox lets SQL raise its own memory limit', async () => {
+      // The sandbox sets memory_limit to 512MB precisely so untrusted SQL
+      // cannot exhaust the Node process; EXPLAIN ANALYZE runs the SET that
+      // lifts it.
+      const connection = await DuckDBPool.getSandboxConnection(dataDir);
+      try {
+        await connection.runAndReadAll(raiseMemoryLimit);
+        const reader = await connection.runAndReadAll(
+          `SELECT current_setting('memory_limit') AS limit_setting;`
+        );
+        expect(reader.getRowObjects()[0].limit_setting).to.match(/GiB/);
+      } finally {
+        connection.disconnectSync();
+      }
+    });
+
+    it('the guard rejects raising the memory limit', () => {
+      expect(findUnsafeSqlReason(raiseMemoryLimit)).to.match(
+        /'SET' is not allowed/
+      );
+    });
+  });
 });
