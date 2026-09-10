@@ -84,7 +84,7 @@ The validation system checks each Parquet file for:
   - **Standard Time Parameters**: All 5 standard query patterns supported
   - **Time-Filtered Discovery**: Paths and contexts filtered by time range using hive partition directory names (no file scanning)
   - **Optional Analytics**: Moving averages (EMA/SMA) available on demand
-- **SignalK Track API Provider** (preview): registers as a provider for the server's upcoming Track API (SignalK/signalk-server#2995) — vessel tracks as GeoJSON from the parquet store and live buffer. Inert on servers without the API; see [Track API Integration](#track-api-integration)
+- **SignalK Track API Provider** (preview, v0.7.44-beta.4+): registers as a provider for the server's upcoming Track API (SignalK/signalk-server#2995) — vessel tracks as GeoJSON from the parquet store and live buffer. Inert on servers without the API; see [Track API Integration](#track-api-integration)
 - **🌍 ISO 8601 Timestamps**: All timestamps returned in server local time with offset (e.g., `2025-10-20T12:34:04-04:00`)
 - **Flexible Time Querying**: Multiple ways to specify time ranges
   - Query from now, from specific times, or between time ranges
@@ -598,7 +598,7 @@ This provides better compression, faster queries, and proper type safety for dat
 | `/api/paths` | GET | List available data paths |
 | `/api/files/:path` | GET | List files for a path |
 | `/api/sample/:path` | GET | Sample data from a path |
-| `/api/query` | POST | Execute SQL query (⚠️ disabled by default; enabled when **either** the `Enable Raw SQL` plugin setting is on **or** the `SIGNALK_PARQUET_RAW_SQL=true` environment variable is set — one gate is sufficient, both are not required). Runs on a sandboxed DuckDB instance (v0.7.44+): no network access, no cloud credentials, reads restricted to the data directory |
+| `/api/query` | POST | Execute SQL query (⚠️ disabled by default; enabled when **either** the `Enable Raw SQL` plugin setting is on **or** the `SIGNALK_PARQUET_RAW_SQL=true` environment variable is set — one gate is sufficient, both are not required). Runs on a sandboxed DuckDB instance (v0.7.44+): no network access, no cloud credentials, reads restricted to the data directory. From v0.7.44-beta.4 the SQL must be a single read-only statement (ATTACH/COPY/EXPORT/SET/PRAGMA and file- or database-opening table functions are rejected with a 400 naming the reason), the sandbox configuration is locked, and results are capped at 10,000 rows with `truncated: true` in the response when the cap applied |
 | `/api/config/paths` | GET/POST/PUT/DELETE | Manage path configurations |
 | `/api/test-cloud` | POST | Test cloud storage connection |
 | `/api/health` | GET | Health check |
