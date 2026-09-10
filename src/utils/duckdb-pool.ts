@@ -170,6 +170,13 @@ export class DuckDBPool {
         `SET allowed_directories=['${dataDir.replace(/'/g, "''")}'];`
       );
       await setup.runAndReadAll('SET enable_external_access=false;');
+      // Freeze the configuration last. The sandbox never changes a setting
+      // after this point (unlike the main pool, which loads httpfs later), so
+      // locking it costs nothing and closes the one hole the settings above
+      // leave open: untrusted SQL can otherwise raise memory_limit itself —
+      // `EXPLAIN ANALYZE SET memory_limit='4GB'` lifts the 512MB cap — which
+      // the SQL guard catches by keyword but the engine should refuse outright.
+      await setup.runAndReadAll('SET lock_configuration=true;');
       setup.disconnectSync();
       this.sandboxInstance = instance;
     }

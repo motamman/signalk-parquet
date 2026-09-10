@@ -144,20 +144,29 @@ describe('sandbox write exposure', function () {
     }
   });
 
-  describe('engine settings the sandbox cannot defend on its own', () => {
+  describe('engine settings, defended by the sandbox and the guard', () => {
     const raiseMemoryLimit = "EXPLAIN ANALYZE SET memory_limit='4GB'";
 
-    it('the sandbox lets SQL raise its own memory limit', async () => {
+    it('the sandbox refuses to raise its own memory limit', async () => {
       // The sandbox sets memory_limit to 512MB precisely so untrusted SQL
-      // cannot exhaust the Node process; EXPLAIN ANALYZE runs the SET that
-      // lifts it.
+      // cannot exhaust the Node process. Without lock_configuration, EXPLAIN
+      // ANALYZE ran the SET and lifted the cap to 3.7GiB; with it, the engine
+      // refuses every SET for the life of the instance and the cap holds.
       const connection = await DuckDBPool.getSandboxConnection(dataDir);
       try {
-        await connection.runAndReadAll(raiseMemoryLimit);
+        let refusal: string | undefined;
+        try {
+          await connection.runAndReadAll(raiseMemoryLimit);
+        } catch (err) {
+          refusal = (err as Error).message;
+        }
+        expect(refusal, 'the SET must be refused by the engine').to.match(
+          /configuration has been locked/
+        );
         const reader = await connection.runAndReadAll(
           `SELECT current_setting('memory_limit') AS limit_setting;`
         );
-        expect(reader.getRowObjects()[0].limit_setting).to.match(/GiB/);
+        expect(reader.getRowObjects()[0].limit_setting).to.match(/MiB/);
       } finally {
         connection.disconnectSync();
       }
