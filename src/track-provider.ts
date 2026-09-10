@@ -288,17 +288,20 @@ function isoOf(ms: number): string {
 }
 
 export function instantToMillis(value: TrackInstant): number {
+  let ms: number;
   if (typeof value === 'number') {
-    return value;
+    ms = value;
+  } else if (typeof value === 'string') {
+    ms = Date.parse(value);
+  } else {
+    ms = Number(value.epochMilliseconds);
   }
-  if (typeof value === 'string') {
-    const ms = Date.parse(value);
-    if (Number.isNaN(ms)) {
-      throw new Error(`Invalid timestamp: ${JSON.stringify(value)}`);
-    }
-    return ms;
+  // A NaN or infinite instant would flow straight into the window arithmetic
+  // and the SQL; refuse it here rather than produce a query that means nothing.
+  if (!Number.isFinite(ms)) {
+    throw new Error(`Invalid timestamp: ${JSON.stringify(value)}`);
   }
-  return Number(value.epochMilliseconds);
+  return ms;
 }
 
 /**
@@ -307,24 +310,33 @@ export function instantToMillis(value: TrackInstant): number {
  */
 export function durationToMillis(value: TrackDuration): number {
   if (typeof value === 'number') {
-    return value * 1000;
+    return finiteMillis(value * 1000, value);
   }
   if (typeof value === 'string') {
-    return parseDurationToMillis(value);
+    return finiteMillis(parseDurationToMillis(value), value);
   }
   if ((value.years ?? 0) !== 0 || (value.months ?? 0) !== 0) {
     throw new Error('Durations in months or years are not supported');
   }
-  return (
+  return finiteMillis(
     (value.weeks ?? 0) * 7 * 86_400_000 +
-    (value.days ?? 0) * 86_400_000 +
-    (value.hours ?? 0) * 3_600_000 +
-    (value.minutes ?? 0) * 60_000 +
-    (value.seconds ?? 0) * 1_000 +
-    (value.milliseconds ?? 0) +
-    (value.microseconds ?? 0) / 1_000 +
-    (value.nanoseconds ?? 0) / 1_000_000
+      (value.days ?? 0) * 86_400_000 +
+      (value.hours ?? 0) * 3_600_000 +
+      (value.minutes ?? 0) * 60_000 +
+      (value.seconds ?? 0) * 1_000 +
+      (value.milliseconds ?? 0) +
+      (value.microseconds ?? 0) / 1_000 +
+      (value.nanoseconds ?? 0) / 1_000_000,
+    value
   );
+}
+
+/** A duration that is not a finite number of milliseconds is refused. */
+function finiteMillis(ms: number, source: unknown): number {
+  if (!Number.isFinite(ms)) {
+    throw new Error(`Invalid duration: ${JSON.stringify(source)}`);
+  }
+  return ms;
 }
 
 /**
@@ -365,12 +377,16 @@ export function resolveWindow(
 
 function toSpatialFilter(bbox: TrackBoundingBox): SpatialFilter {
   const [west, south, east, north] = bbox;
+  // West greater than east is legal (a box across the antimeridian), so only
+  // the ranges are checked, matching parseBboxParam on the History API side.
   const finite = [west, south, east, north].every(Number.isFinite);
   if (
     !finite ||
     south > north ||
     Math.abs(south) > 90 ||
-    Math.abs(north) > 90
+    Math.abs(north) > 90 ||
+    Math.abs(west) > 180 ||
+    Math.abs(east) > 180
   ) {
     throw new Error(`Invalid bbox: ${JSON.stringify(bbox)}`);
   }

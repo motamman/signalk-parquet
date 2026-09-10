@@ -281,6 +281,16 @@ describe('Track API provider', function () {
     ).to.deep.equal([]);
   });
 
+  it('rejects a bbox with out-of-range longitudes', async () => {
+    let message = '';
+    try {
+      await provider.getTracks({ ...WHOLE_DAY, bbox: [-200, 47, 10, 48] });
+    } catch (err) {
+      message = (err as Error).message;
+    }
+    expect(message).to.match(/Invalid bbox/);
+  });
+
   it('returns no feature for a context with no data', async () => {
     const res = await provider.getTracks({
       ...WHOLE_DAY,

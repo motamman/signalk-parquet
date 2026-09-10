@@ -31,6 +31,14 @@ describe('TrackProvider request decoding', () => {
         /Invalid timestamp/
       );
     });
+
+    it('rejects non-finite instants in every form', () => {
+      expect(() => instantToMillis(NaN)).to.throw(/Invalid timestamp/);
+      expect(() => instantToMillis(Infinity)).to.throw(/Invalid timestamp/);
+      expect(() => instantToMillis({ epochMilliseconds: NaN })).to.throw(
+        /Invalid timestamp/
+      );
+    });
   });
 
   describe('durationToMillis', () => {
@@ -57,6 +65,14 @@ describe('TrackProvider request decoding', () => {
     it('refuses calendar units', () => {
       expect(() => durationToMillis(Temporal.Duration.from('P1M'))).to.throw(
         /months or years/
+      );
+    });
+
+    it('refuses non-finite durations', () => {
+      expect(() => durationToMillis(NaN)).to.throw(/Invalid duration/);
+      expect(() => durationToMillis(Infinity)).to.throw(/Invalid duration/);
+      expect(() => durationToMillis({ hours: Infinity })).to.throw(
+        /Invalid duration/
       );
     });
   });
