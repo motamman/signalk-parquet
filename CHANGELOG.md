@@ -1,5 +1,15 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- **Track API provider (SignalK/signalk-server#2995)** — new `src/track-provider.ts` registers signalk-parquet as a provider for the server's upcoming Track API (`GET /signalk/v2/api/tracks`, `/tracks/contexts`), answering from raw-tier `navigation.position` parquet federated with the live SQLite buffer. Implements the contract as settled on that PR: whole-window tracks as a GeoJSON `MultiLineString` per context, split at recording gaps; `bbox` selects tracks rather than clipping them; time-bucket thinning driven by `resolution` / `maxPoints` with the applied spacing reported; Douglas-Peucker `simplify` / `epsilon`; `times` (`coordTimes`); co-recorded `properties` matched to the nearest sample within a tolerance (talkers stamp position and speed a few hundred ms apart, so an exact-timestamp join returns nothing); angular properties use a circular mean folded to `[0, 2π)`. Registration is duck-typed and the typings are copied rather than imported, so nothing new is pulled in.
+
+  **Caveat: inert without server support.** The Track API is not part of a released signalk-server yet. On a release server the plugin logs one debug line and skips registration; history, recording and the webapp are unchanged. The provider only becomes reachable on a server carrying SignalK/signalk-server#2995, where it has been exercised side by side with `@signalk/tracks-plugin`. Until that PR merges, the contract may still move, and the copied typings and behaviour in `track-provider.ts` will need to follow it.
+
+---
+
 ## [0.7.44-beta.3] - 2026-08-27
 
 ### Fixed
