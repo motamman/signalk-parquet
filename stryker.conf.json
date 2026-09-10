@@ -24,6 +24,7 @@
     "src/utils/retention-rules.ts",
     "src/utils/spatial-queries.ts",
     "src/utils/sql-escape.ts",
+    "src/utils/sql-guard.ts",
     "src/utils/type-detector.ts",
     "src/claude-models.ts"
   ],

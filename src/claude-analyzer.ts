@@ -12,9 +12,18 @@ import { getAvailablePaths } from './utils/path-discovery';
 import * as fs from 'fs-extra';
 import * as path from 'path';
 import { DuckDBPool } from './utils/duckdb-pool';
+import { findUnsafeSqlReason } from './utils/sql-guard';
 import { escapeSqlString } from './utils/sql-escape';
 import { ClaudeModel } from './claude-models';
 import { shouldSkipDirectory } from './utils/path-helpers';
+
+/**
+ * Row limits for model-driven SQL results, kept small so a wide result set
+ * exhausts neither the Node heap nor the model's context window. A result
+ * above the threshold is cut harder than one below it.
+ */
+const LARGE_RESULT_ROW_THRESHOLD = 1000;
+const LARGE_RESULT_MAX_ROWS = 500;
 
 // Claude AI Integration Types
 export interface ClaudeAnalyzerConfig {
@@ -3094,26 +3103,16 @@ Begin your analysis by querying relevant data within the specified time range.`;
     // Auto-correct common column usage patterns
     const correctedSQL = this.correctColumnUsage(sql);
 
-    // Validate query is read-only (starts with SELECT or WITH for CTEs)
-    const trimmedSQL = correctedSQL.trim().toUpperCase();
-    if (!trimmedSQL.startsWith('SELECT') && !trimmedSQL.startsWith('WITH')) {
-      throw new Error('Only SELECT and WITH queries are allowed for security');
-    }
-
-    // Additional safety checks
-    const dangerousKeywords = [
-      'DROP',
-      'DELETE',
-      'UPDATE',
-      'INSERT',
-      'CREATE',
-      'ALTER',
-      'TRUNCATE',
-    ];
-    for (const keyword of dangerousKeywords) {
-      if (trimmedSQL.includes(keyword)) {
-        throw new Error(`Dangerous SQL keyword '${keyword}' is not allowed`);
-      }
+    // Validate every statement is read-only and touches no database- or
+    // file-opening table function. The reason is thrown back to the model as a
+    // tool result so it can rewrite the query; log it too, since a model
+    // looping on rejected SQL is otherwise invisible from the server side.
+    const unsafeReason = findUnsafeSqlReason(correctedSQL);
+    if (unsafeReason) {
+      this.app?.debug(
+        `Rejected AI-generated SQL for ${purpose}: ${unsafeReason} — query: ${correctedSQL.slice(0, 200)}`
+      );
+      throw new Error(`Query rejected for security: ${unsafeReason}`);
     }
 
     if (!this.dataDirectory) {
@@ -3122,7 +3121,8 @@ Begin your analysis by querying relevant data within the specified time range.`;
     // Run LLM-generated SQL on the hardened sandbox connection: file access is
     // confined to the data dir and httpfs/S3 are unavailable, so a prompt-steered
     // query cannot read arbitrary host files, reach the network, or use the S3
-    // secret. The keyword checks above remain as defence in depth.
+    // secret. The read-only guard above covers what the sandbox does not: the
+    // sandbox still permits writes inside the data directory.
     const connection = await DuckDBPool.getSandboxConnection(
       this.dataDirectory
     );
@@ -3134,7 +3134,15 @@ Begin your analysis by querying relevant data within the specified time range.`;
         this.app?.debug(`🔧 Corrected query: ${correctedSQL}`);
       }
 
-      const result = await connection.runAndReadAll(correctedSQL);
+      // Read a bounded prefix rather than the whole result. The row limit
+      // below is applied after materialisation, which is too late on a path
+      // the model drives: DuckDB's memory limit does not bound rows once they
+      // are JS objects. Reading one row past the widest limit still tells the
+      // two limits apart, because the reader only overshoots the target.
+      const result = await connection.streamAndReadUntil(
+        correctedSQL,
+        LARGE_RESULT_ROW_THRESHOLD + 1
+      );
       const data = result.getRowObjects();
 
       // Convert BigInt values to regular numbers to prevent serialization errors
@@ -3149,7 +3157,10 @@ Begin your analysis by querying relevant data within the specified time range.`;
       });
 
       // Limit result size aggressively for production systems to prevent memory and token issues
-      const maxRows = cleanedData.length > 1000 ? 500 : 1000; // Smaller limits for large datasets
+      const maxRows =
+        cleanedData.length > LARGE_RESULT_ROW_THRESHOLD
+          ? LARGE_RESULT_MAX_ROWS
+          : LARGE_RESULT_ROW_THRESHOLD; // Smaller limits for large datasets
       const limitedData = cleanedData.slice(0, maxRows);
 
       this.app?.debug(`✅ Query returned ${limitedData.length} rows`);

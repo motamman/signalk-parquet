@@ -170,6 +170,13 @@ export class DuckDBPool {
         `SET allowed_directories=['${dataDir.replace(/'/g, "''")}'];`
       );
       await setup.runAndReadAll('SET enable_external_access=false;');
+      // Freeze the configuration last. The sandbox never changes a setting
+      // after this point (unlike the main pool, which loads httpfs later), so
+      // locking it costs nothing and closes the one hole the settings above
+      // leave open: untrusted SQL can otherwise raise memory_limit itself —
+      // `EXPLAIN ANALYZE SET memory_limit='4GB'` lifts the 512MB cap — which
+      // the SQL guard catches by keyword but the engine should refuse outright.
+      await setup.runAndReadAll('SET lock_configuration=true;');
       setup.disconnectSync();
       this.sandboxInstance = instance;
     }
@@ -207,11 +214,14 @@ export class DuckDBPool {
 
   /**
    * Cleanup on plugin shutdown
-   * Sets the instance to null to allow garbage collection
+   *
+   * Closes the native instances rather than waiting for a finalizer: a plugin
+   * disable/enable cycle would otherwise leave the previous DuckDB instances
+   * (and their own memory budgets) alive on hardware that has little to spare.
    */
   static async shutdown(): Promise<void> {
     if (this.instance) {
-      // DuckDB instances handle cleanup automatically
+      this.closeQuietly(this.instance);
       this.instance = null;
       this.initialized = false;
       this.s3Initialized = false;
@@ -220,7 +230,24 @@ export class DuckDBPool {
     }
     // Drop the sandbox instance too so a reconfigure rebuilds it against the
     // (possibly changed) data directory.
-    this.sandboxInstance = null;
+    if (this.sandboxInstance) {
+      this.closeQuietly(this.sandboxInstance);
+      this.sandboxInstance = null;
+    }
+  }
+
+  /**
+   * Close a DuckDB instance, ignoring failures. Shutdown runs from
+   * plugin.stop(), where a close error must not prevent the remaining
+   * teardown; dropping the reference still allows the finalizer to reclaim
+   * the instance.
+   */
+  private static closeQuietly(instance: DuckDBInstance): void {
+    try {
+      instance.closeSync();
+    } catch {
+      // Best-effort.
+    }
   }
 
   /**
