@@ -79,7 +79,7 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.118.0",
     "@aws-sdk/client-s3": "^3.1068.0",
-    "@dsnp/parquetjs": "^1.8.7",
+    "@dsnp/parquetjs": "~1.8.9",
     "@duckdb/node-api": "^1.5.3-r.3",
     "@js-joda/core": "^6.0.1",
     "@signalk/server-api": "^2.25.0",
