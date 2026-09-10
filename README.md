@@ -84,6 +84,7 @@ The validation system checks each Parquet file for:
   - **Standard Time Parameters**: All 5 standard query patterns supported
   - **Time-Filtered Discovery**: Paths and contexts filtered by time range using hive partition directory names (no file scanning)
   - **Optional Analytics**: Moving averages (EMA/SMA) available on demand
+- **SignalK Track API Provider** (preview): registers as a provider for the server's upcoming Track API (SignalK/signalk-server#2995) — vessel tracks as GeoJSON from the parquet store and live buffer. Inert on servers without the API; see [Track API Integration](#track-api-integration)
 - **🌍 ISO 8601 Timestamps**: All timestamps returned in server local time with offset (e.g., `2025-10-20T12:34:04-04:00`)
 - **Flexible Time Querying**: Multiple ways to specify time ranges
   - Query from now, from specific times, or between time ranges
@@ -1317,6 +1318,56 @@ Point 5: Value=5.5, EMA=5.42,  SMA=5.5  // Rolling 10-point SMA window
 - 📊 **History API**: Add `includeMovingAverages=true` to include EMA/SMA calculations
 
 
+## Track API Integration
+
+> ⚠️ **Preview — requires unreleased server support.** The SignalK Track API is proposed in [SignalK/signalk-server#2995](https://github.com/SignalK/signalk-server/pull/2995) and is not part of a released signalk-server yet. On a release server this plugin logs one debug line at startup and skips registration; nothing else changes. On a server carrying that PR, the plugin registers as a Track API provider and the endpoints below work. The contract may still move until the PR merges.
+
+The plugin registers a `TrackProvider` (`src/track-provider.ts`) the same way it registers the History API provider. The server owns the routes and the query parsing; the plugin answers from raw-tier `navigation.position` parquet federated with the live SQLite buffer, so a track is available for any window the store holds, including the hour before the plugin was installed.
+
+### Endpoints (served by the server)
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET /signalk/v2/api/tracks` | Tracks matching the query, as a GeoJSON `FeatureCollection`, one `Feature` per context |
+| `GET /signalk/v2/api/tracks/contexts` | Contexts with track data in the window, without geometry |
+| `GET /signalk/v2/api/tracks/_providers` | Registered providers; `?provider=signalk-parquet` selects this one when several are installed |
+
+All registered providers are queried and their features concatenated; each feature carries `properties.providerId`, so a server running both this plugin and `@signalk/tracks-plugin` returns one feature from each.
+
+### Query parameters
+
+| Parameter | Description |
+|-----------|-------------|
+| `context` / `contexts` | Vessel(s) to return. Defaults to the own vessel. Bare ids are qualified with `vessels.` |
+| `from`, `to`, `duration` | Time window. `duration` measures back from `to` (default now); with `from` as well, the later start wins. Required unless a single context is requested |
+| `bbox` | `west,south,east,north`. **Selects** tracks that pass through the box during the window; a matching track is returned whole, not clipped |
+| `resolution` | Minimum spacing between points (ISO 8601 or seconds). The spacing actually applied is reported in `properties.resolution` |
+| `maxPoints` | Point budget per track; the spacing is widened until it fits. Default budget 5000 |
+| `simplify`, `epsilon` | Douglas-Peucker simplification, tolerance in metres; the applied tolerance is reported |
+| `times` | Include the recording time of every point as `properties.coordTimes`, nested like `coordinates` |
+| `properties` | Comma-separated paths to return alongside each position (e.g. `navigation.speedOverGround`), nested like `coordinates` under `properties.values`. Only paths the store holds are returned; `properties.appliedProperties` lists them. Values are matched to the nearest sample within a few seconds, because different talkers stamp position and speed a few hundred milliseconds apart. Angular paths use a circular mean |
+| `geometry=false` | Metadata only, no coordinates |
+
+### How the provider answers
+
+- Points are thinned by time bucketing in DuckDB, keeping the **first fix** in each bucket rather than an average (averaging cuts corners off a track).
+- A gap in recording longer than five buckets, and at least five minutes, starts a new segment of the `MultiLineString`, so a line is never drawn across a stretch the vessel did not travel.
+- Position is read from the raw tier only, since the aggregated tiers collapse object paths; long windows are thinned by bucket size, not by tier.
+- A request with no window returns the context's whole recorded history, anchored on its earliest raw partition.
+
+```bash
+# Last 24 hours of the own vessel, with times and speed
+curl "http://localhost:3000/signalk/v2/api/tracks?duration=P1D&times=true&properties=navigation.speedOverGround"
+
+# Every recorded vessel that passed through a box this week, at most 500 points each
+curl "http://localhost:3000/signalk/v2/api/tracks?bbox=23.5,60.0,23.6,60.1&duration=P7D&maxPoints=500"
+
+# Only this plugin's answer, when several providers are registered
+curl "http://localhost:3000/signalk/v2/api/tracks?duration=PT1H&provider=signalk-parquet"
+```
+
+The Track API has no `radius` filter; that exists only on this plugin's own History API routes (see [Spatial Filtering](#spatial-filtering)). A shared spatial parameter set for the v2 APIs is proposed in [SignalK/signalk-server#3021](https://github.com/SignalK/signalk-server/issues/3021).
+
 ## Cloud Storage (S3 / Cloudflare R2)
 
 ### Configuration
@@ -1395,6 +1446,7 @@ signalk-parquet/
 │   ├── HistoryAPI.ts           # SignalK History API implementation
 │   ├── HistoryAPI-types.ts     # History API type definitions
 │   ├── history-provider.ts     # SignalK HistoryApi provider (v2)
+│   ├── track-provider.ts       # SignalK Track API provider (preview, server PR #2995)
 │   ├── services/
 │   │   ├── aggregation-service.ts  # Tier aggregation (raw→5s→60s→1h)
 │   │   └── parquet-export-service.ts # Daily export pipeline
@@ -1406,6 +1458,7 @@ signalk-parquet/
 │       ├── angular-paths.ts    # Angular path detection (units=rad)
 │       ├── duration-parser.ts  # ISO 8601 and shorthand duration parsing
 │       ├── spatial-queries.ts  # Geographic/spatial query support
+│       ├── track-geometry.ts   # Track segmentation, simplification, bbox
 │       ├── lru-cache.ts        # LRU cache implementation
 │       ├── path-helpers.ts     # Path utility functions
 │       ├── path-discovery.ts   # Path auto-discovery
