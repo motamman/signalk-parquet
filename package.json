@@ -1,6 +1,6 @@
 {
   "name": "signalk-parquet",
-  "version": "0.7.44-beta.3",
+  "version": "0.7.44-beta.4",
   "description": "Vessel data Parquet file archive with automated value and geospatial triggers. History API compliant with cloud backups and queries.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -79,9 +79,10 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.118.0",
     "@aws-sdk/client-s3": "^3.1068.0",
-    "@dsnp/parquetjs": "^1.8.7",
+    "@dsnp/parquetjs": "~1.8.9",
     "@duckdb/node-api": "^1.5.3-r.3",
     "@js-joda/core": "^6.0.1",
+    "@js-temporal/polyfill": "^0.5.1",
     "@signalk/server-api": "^2.25.0",
     "express": "^5.2.1",
     "fs-extra": "^11.3.5",

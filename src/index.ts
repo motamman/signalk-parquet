@@ -38,6 +38,11 @@ import {
   registerHistoryApiProvider,
   unregisterHistoryApiProvider,
 } from './history-provider';
+import {
+  TrackProvider,
+  registerTrackApiProvider,
+  unregisterTrackApiProvider,
+} from './track-provider';
 import { SQLiteBuffer } from './utils/sqlite-buffer';
 import { ParquetExportService } from './services/parquet-export-service';
 import {
@@ -917,6 +922,22 @@ export default function (app: ServerAPI): SignalKPlugin {
       app.error(`Failed to register as History API provider: ${error}`);
     }
 
+    // Register as a Track API provider (SignalK/signalk-server#2995). Only a
+    // server carrying that PR exposes the registry; elsewhere this logs and
+    // returns, and the plugin behaves exactly as before.
+    try {
+      const trackProvider = new TrackProvider(
+        app.selfId,
+        state.currentConfig.outputDirectory,
+        app,
+        app.debug,
+        state.sqliteBuffer
+      );
+      registerTrackApiProvider(app, trackProvider, app.debug);
+    } catch (error) {
+      app.error(`Failed to register as Track API provider: ${error}`);
+    }
+
     // Handle "Set Current Location" action
     handleSetCurrentLocationAction(state.currentConfig).catch(err => {
       app.error(`Error handling set current location action: ${err}`);
@@ -961,8 +982,9 @@ export default function (app: ServerAPI): SignalKPlugin {
       }
     }
 
-    // Unregister as History API provider
+    // Unregister as History API and Track API provider
     unregisterHistoryApiProvider(app);
+    unregisterTrackApiProvider(app);
 
     // Stop threshold monitoring system
     stopThresholdMonitoring();

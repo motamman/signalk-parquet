@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.7.44-beta.4] - 2026-09-10
+
+### Security (PR #117, @msallin)
+
+- **Untrusted SQL is now read-only** — the sandboxed DuckDB instance added in 0.7.44-beta.2 confines *where* the engine may touch the filesystem, but the plugin's data directory is exactly the allowed directory, so `COPY (...) TO 'navigation_position.parquet'` from the raw `/api/query` endpoint or from model-generated analysis SQL could overwrite recorded data without leaving the sandbox — and the analysis path is not behind `enableRawSql`. New `src/utils/sql-guard.ts` validates every statement at both call sites before a connection is taken: a statement whitelist (SELECT/WITH/FROM/DESCRIBE/SUMMARIZE/EXPLAIN/VALUES/PIVOT/TABLE/SHOW), the file- and state-changing keywords (ATTACH, COPY, EXPORT, SET, PRAGMA, INSTALL, CALL, …) rejected anywhere in a statement so `EXPLAIN ANALYZE COPY …` cannot smuggle one through, table functions that open files or run nested SQL (`read_text`, `read_blob`, `glob`, `query`, `sqlite_*`) rejected by name, and one statement per request. Literals, comments, escape strings, dollar-quoted strings and quoted identifiers are masked in a single lexer pass, because two passes could be desynchronised (`SELECT 1 AS "a--b"; COPY …` executed both statements while a two-pass mask saw one). Replaces the analyzer's old `includes('CREATE')` check, which also rejected any query mentioning `created_at`.
+- **Sandbox configuration locked** — `SET lock_configuration=true` is the last step of sandbox setup, so the engine itself refuses `SET memory_limit` / `SET enable_external_access` / `SET allowed_directories` for the life of the instance. Previously `EXPLAIN ANALYZE SET memory_limit='4GB'` lifted the sandbox's 512MB cap to 3.7GiB; now only the keyword guard stood in the way, and the engine should refuse outright.
+- **Path substitution hardened** — the raw-query placeholder replacement uses a replacer function, so `$&` in a user-supplied path can no longer splice unvalidated text into the executed SQL; the guard validates the string that actually executes.
+
+### Changed
+
+- **Raw `/api/query` results are capped at 10,000 rows** (PR #117) and read as a bounded prefix rather than materialised in full (a 2M-row result: 3.9 MB / 16 ms instead of 429 MB / 1.2 s). The response carries `truncated: true` when the cap applied. Model-driven analysis SQL is bounded the same way at its existing 500/1000-row limits. Rejections are logged server-side on both paths, and `DuckDBPool.shutdown()` closes both native instances instead of waiting for a finalizer.
+
+### Added
+
+- **Track API provider (SignalK/signalk-server#2995)** — new `src/track-provider.ts` registers signalk-parquet as a provider for the server's upcoming Track API (`GET /signalk/v2/api/tracks`, `/tracks/contexts`), answering from raw-tier `navigation.position` parquet federated with the live SQLite buffer. Implements the contract as settled on that PR: whole-window tracks as a GeoJSON `MultiLineString` per context, split at recording gaps; `bbox` selects tracks rather than clipping them; time-bucket thinning driven by `resolution` / `maxPoints` with the applied spacing reported; Douglas-Peucker `simplify` / `epsilon`; `times` (`coordTimes`); co-recorded `properties` matched to the nearest sample within a tolerance (talkers stamp position and speed a few hundred ms apart, so an exact-timestamp join returns nothing); angular properties use a circular mean folded to `[0, 2π)`. Registration is duck-typed and the typings are copied rather than imported, so nothing new is pulled in.
+
+  **Caveat: inert without server support.** The Track API is not part of a released signalk-server yet. On a release server the plugin logs one debug line and skips registration; history, recording and the webapp are unchanged. The provider only becomes reachable on a server carrying SignalK/signalk-server#2995, where it has been exercised side by side with `@signalk/tracks-plugin`. Until that PR merges, the contract may still move, and the copied typings and behaviour in `track-provider.ts` will need to follow it.
+
+### Dependencies
+
+- **`@dsnp/parquetjs` pinned to `~1.8.9`** — the 1.9.3 release on npm was published without its `dist/` directory (frequency-chain/parquetjs#206), so `require` fails, the writer silently falls back and every parquet export breaks. The previous `^1.8.7` range allowed it on any fresh install; dependabot PR #121, which included that bump, failed 25 integration tests for this reason. Widen the range again once upstream publishes a repaired release.
+- CI: `plugin-ci.yml` workflow pin updated (PR #120).
+
+---
+
 ## [0.7.44-beta.3] - 2026-08-27
 
 ### Fixed
