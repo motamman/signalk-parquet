@@ -98,13 +98,23 @@ export class HivePathBuilder {
   }
 
   /**
-   * Parse a path to determine if it's Hive-style or flat
+   * Parse a path to determine if it's Hive-style or flat.
+   *
+   * `sep` is the separator `filePath` uses and defaults to the platform's,
+   * since callers pass native paths (glob results, path.join() output). A
+   * backslash is therefore a separator on Windows only; on POSIX it is a legal
+   * filename character and stays part of the name.
+   *
+   * Example (sep '\'): 'C:\data\tier=raw\context=vessels__self\path=navigation__position\year=2024\day=153\a.parquet'
+   *   -> isHive, tier 'raw', year 2024, dayOfYear 153
    */
-  detectPathStyle(filePath: string): PathParseResult {
+  detectPathStyle(filePath: string, sep: string = path.sep): PathParseResult {
+    const normalized = sep === '/' ? filePath : filePath.split(sep).join('/');
+
     // Check for Hive-style partition markers
     const hivePattern =
       /tier=([^/]+)\/context=([^/]+)\/path=([^/]+)\/year=(\d+)\/day=(\d+)/;
-    const hiveMatch = filePath.match(hivePattern);
+    const hiveMatch = normalized.match(hivePattern);
 
     if (hiveMatch) {
       return {
@@ -121,7 +131,7 @@ export class HivePathBuilder {
     // Check for flat-style (legacy) path
     // Pattern: vessels/{context}/{path/parts}/filename.parquet
     const flatPattern = /vessels\/([^/]+)\/(.+?)\/[^/]+\.parquet$/;
-    const flatMatch = filePath.match(flatPattern);
+    const flatMatch = normalized.match(flatPattern);
 
     if (flatMatch) {
       return {

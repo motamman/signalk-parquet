@@ -13,7 +13,7 @@
 
 import * as fs from 'fs-extra';
 import * as path from 'path';
-import { glob } from 'glob';
+import { globIn } from '../utils/glob-in';
 import { ServerAPI } from '@signalk/server-api';
 import { DuckDBPool } from '../utils/duckdb-pool';
 import { HivePathBuilder, AggregationTier } from '../utils/hive-path-builder';
@@ -214,17 +214,10 @@ export class AggregationService {
     const dayOfYear = this.hivePathBuilder.getDayOfYear(date);
 
     // Find all source files for this date
-    const sourcePattern = path.join(
+    const allSourceFiles = await globIn(
       this.config.outputDirectory,
-      `tier=${sourceTier}`,
-      'context=*',
-      'path=*',
-      `year=${year}`,
-      `day=${String(dayOfYear).padStart(3, '0')}`,
-      '*.parquet'
+      `tier=${sourceTier}/context=*/path=*/year=${year}/day=${String(dayOfYear).padStart(3, '0')}/*.parquet`
     );
-
-    const allSourceFiles = await glob(sourcePattern);
     // Exclude files in processed, quarantine, failed, repaired directories
     const sourceFiles = allSourceFiles.filter(
       f =>
@@ -795,14 +788,10 @@ export class AggregationService {
 
       const tierMultiplier = TIER_RETENTION_MULTIPLIER[tier];
 
-      const pattern = path.join(
+      const files = await globIn(
         this.config.outputDirectory,
-        `tier=${tier}`,
-        '**',
-        '*.parquet'
+        `tier=${tier}/**/*.parquet`
       );
-
-      const files = await glob(pattern);
 
       for (const file of files) {
         if (this.cancelRequested) break;
@@ -927,9 +916,7 @@ export class AggregationService {
     const rawDir = path.join(this.config.outputDirectory, 'tier=raw');
     if (!(await fs.pathExists(rawDir))) return [];
 
-    const dayDirs = await glob(
-      path.join(rawDir, 'context=*', 'path=*', 'year=*', 'day=*')
-    );
+    const dayDirs = await globIn(rawDir, 'context=*/path=*/year=*/day=*');
 
     const dateSet = new Set<string>();
     for (const dir of dayDirs) {

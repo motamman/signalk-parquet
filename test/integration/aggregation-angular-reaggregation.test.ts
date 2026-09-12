@@ -12,11 +12,8 @@
  *
  * These tests execute the generated re-aggregation SQL against real parquet
  * fixtures, so what is asserted is DuckDB's actual numeric output. They drive
- * the query builder directly rather than going through `aggregateTier()`,
- * because that entry point discovers its inputs with a `glob()` call built via
- * `path.join()` and therefore matches nothing on Windows — a separate,
- * pre-existing platform issue that would make this suite silently vacuous on
- * one of the CI runners.
+ * the query builder directly rather than going through `aggregateTier()`, so
+ * each case controls exactly which source buckets are combined.
  */
 import { expect } from 'chai';
 import * as path from 'path';
