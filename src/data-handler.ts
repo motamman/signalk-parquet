@@ -97,9 +97,6 @@ export async function initializeCloudSDK(
   }
 }
 
-// Legacy alias
-export const initializeS3 = initializeCloudSDK;
-
 export function createCloudClient(config: PluginConfig, app: ServerAPI): any {
   const cloud = config.cloudUpload;
   if (cloud.provider === 'none' || !S3Client) {
@@ -170,10 +167,6 @@ export function createCloudClient(config: PluginConfig, app: ServerAPI): any {
     return undefined;
   }
 }
-
-// Legacy aliases
-export const createS3Client = createCloudClient;
-export const createR2Client = createCloudClient;
 
 // Build cloud target from config and state
 export function getCloudTarget(

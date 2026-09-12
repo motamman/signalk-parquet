@@ -91,8 +91,6 @@ export type FromToContextRequest = Request<
   unknown,
   unknown,
   TimeRangeQueryParams & {
-    // Legacy parameter for backward compatibility (deprecated)
-    start?: string;
     // Additional query parameters
     context?: string;
     paths?: string;

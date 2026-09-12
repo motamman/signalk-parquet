@@ -20,7 +20,7 @@ import {
   SampleApiResponse,
   ConfigApiResponse,
   HealthApiResponse,
-  S3TestApiResponse,
+  CloudTestApiResponse,
   QueryRequest,
   PathConfigRequest,
   CommandApiResponse,
@@ -601,7 +601,7 @@ export function registerApiRoutes(
   // Test cloud connection (S3 or R2)
   router.post(
     '/api/test-cloud',
-    async (_: TypedRequest, res: TypedResponse<S3TestApiResponse>) => {
+    async (_: TypedRequest, res: TypedResponse<CloudTestApiResponse>) => {
       try {
         if (!state.currentConfig) {
           return res.status(500).json({
