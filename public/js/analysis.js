@@ -632,7 +632,10 @@ export function cancelAnalysis() {
   }
 }
 
-// Run custom analysis
+/**
+ * Runs the analysis configured in the form. Clicking the button again while
+ * it runs cancels it.
+ */
 export async function runCustomAnalysis() {
   const runButton =
     document.getElementById('runAnalysisBtn') ||
@@ -724,7 +727,8 @@ Provide actionable insights based on what you observe in the data.`,
       },
       aggregationMethod: aggregationMethod || 'average',
       resolution: resolution || '', // Empty string = Auto
-      claudeModel: claudeModel || 'claude-sonnet-4-20250514',
+      // Omitted when empty, so the server uses its configured model.
+      claudeModel: claudeModel || undefined,
       useDatabaseAccess: enableDatabaseAccess,
     };
 

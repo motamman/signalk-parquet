@@ -168,7 +168,7 @@ function getSharedAnalyzer(
     sharedAnalyzer = new ClaudeAnalyzer(
       {
         apiKey: config.claudeIntegration.apiKey,
-        model: migrateClaudeModel(config.claudeIntegration.model, app) as any,
+        model: migrateClaudeModel(config.claudeIntegration.model, app),
         maxTokens: config.claudeIntegration.maxTokens || 4000,
         temperature: config.claudeIntegration.temperature || 0.3,
       },
@@ -185,10 +185,13 @@ function getSharedAnalyzer(
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let ListObjectsV2Command: any;
 
-import { getValidClaudeModel } from './claude-models';
+import { getValidClaudeModel, ClaudeModel } from './claude-models';
 
-// Helper function to migrate deprecated Claude model names
-function migrateClaudeModel(model?: string, app?: ServerAPI): string {
+/**
+ * Resolves a configured or requested model id to a supported model, mapping
+ * an older id to the current model of its tier, and logs when it changed.
+ */
+function migrateClaudeModel(model?: string, app?: ServerAPI): ClaudeModel {
   const validatedModel = getValidClaudeModel(model);
   if (model && validatedModel !== model) {
     app?.debug(`Auto-migrated Claude model ${model} to ${validatedModel}`);
@@ -1890,6 +1893,7 @@ export function registerApiRoutes(
           timeRange,
           aggregationMethod,
           resolution,
+          claudeModel,
           useDatabaseAccess,
         } = req.body;
 
@@ -1952,6 +1956,12 @@ export function registerApiRoutes(
             resolution,
             useDatabaseAccess: useDatabaseAccess || false,
           };
+        }
+
+        // A model picked in the UI overrides the configured one for this
+        // analysis; without one the analyzer keeps its configured model.
+        if (claudeModel) {
+          analysisRequest.model = migrateClaudeModel(claudeModel, app);
         }
 
         // Execute analysis

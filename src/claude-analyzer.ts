@@ -14,7 +14,7 @@ import * as path from 'path';
 import { DuckDBPool } from './utils/duckdb-pool';
 import { findUnsafeSqlReason } from './utils/sql-guard';
 import { escapeSqlString } from './utils/sql-escape';
-import { ClaudeModel } from './claude-models';
+import { ClaudeModel, modelRequestParams } from './claude-models';
 import { shouldSkipDirectory } from './utils/path-helpers';
 
 /**
@@ -24,6 +24,28 @@ import { shouldSkipDirectory } from './utils/path-helpers';
  */
 const LARGE_RESULT_ROW_THRESHOLD = 1000;
 const LARGE_RESULT_MAX_ROWS = 500;
+
+/**
+ * Raises a refusal as an error: the response then carries no usable answer,
+ * and reading its content as one would surface an empty analysis.
+ */
+function throwIfRefused(response: Anthropic.Message): void {
+  if (response.stop_reason === 'refusal') {
+    throw new Error('Claude declined to answer this request');
+  }
+}
+
+/**
+ * The answer text of a Messages API response. Models that think by default
+ * put a thinking block ahead of the answer, so it is not necessarily
+ * content[0].
+ */
+export function responseText(response: Anthropic.Message): string {
+  return response.content
+    .filter((block): block is Anthropic.TextBlock => block.type === 'text')
+    .map(block => block.text)
+    .join('\n');
+}
 
 // Claude AI Integration Types
 export interface ClaudeAnalyzerConfig {
@@ -42,6 +64,8 @@ export interface AnalysisRequest {
   aggregationMethod?: string;
   resolution?: string;
   useDatabaseAccess?: boolean;
+  /** Overrides the configured model for this analysis. */
+  model?: ClaudeModel;
 }
 
 export interface FollowUpRequest {
@@ -158,9 +182,11 @@ export class ClaudeAnalyzer {
 
       // Call Claude API
       const response = await this.client.messages.create({
-        model: this.config.model,
-        max_tokens: this.config.maxTokens,
-        temperature: this.config.temperature,
+        ...modelRequestParams(
+          request.model ?? this.config.model,
+          this.config.maxTokens,
+          this.config.temperature
+        ),
         messages: [
           {
             role: 'user',
@@ -168,6 +194,7 @@ export class ClaudeAnalyzer {
           },
         ],
       });
+      throwIfRefused(response);
 
       // Parse response
       const analysisResult = this.parseAnalysisResponse(
@@ -842,10 +869,10 @@ Please structure your response as JSON with the following format:
   ): AnalysisResponse {
     try {
       let content = '';
-      if (response.content && response.content[0] && response.content[0].text) {
-        content = response.content[0].text;
-      } else if (typeof response === 'string') {
+      if (typeof response === 'string') {
         content = response;
+      } else if (response?.content) {
+        content = responseText(response);
       }
 
       // Try to extract JSON from the response
@@ -1626,9 +1653,12 @@ Begin your analysis by querying relevant data within the specified time range.`;
 
       while (queryCount < maxQueries) {
         const response = await this.callClaudeWithRetry({
-          model: this.config.model,
-          max_tokens: Math.max(this.config.maxTokens, 8000), // Increased for comprehensive analysis
-          temperature: 0.0,
+          // Raised output budget for comprehensive analysis
+          ...modelRequestParams(
+            request.model ?? this.config.model,
+            Math.max(this.config.maxTokens, 8000),
+            0.0
+          ),
           system: systemContext,
           tools: availableTools,
           messages: conversationMessages,
@@ -1797,6 +1827,7 @@ Begin your analysis by querying relevant data within the specified time range.`;
         this.app?.debug(
           `Claude API response usage: ${JSON.stringify(response.usage)}`
         );
+        throwIfRefused(response);
         return response;
       } catch (error: any) {
         const isRateLimited =
@@ -2016,9 +2047,11 @@ Begin your analysis by querying relevant data within the specified time range.`;
       // Continue the conversation with Claude
       while (queryCount < maxQueries) {
         const response = await this.callClaudeWithRetry({
-          model: this.config.model,
-          max_tokens: Math.max(this.config.maxTokens, 8000),
-          temperature: 0.0,
+          ...modelRequestParams(
+            this.config.model,
+            Math.max(this.config.maxTokens, 8000),
+            0.0
+          ),
           tools: followUpTools,
           messages: conversationMessages,
         });
@@ -3447,6 +3480,9 @@ DATA LIMITATIONS:
       const response = await this.client.messages.create({
         model: this.config.model,
         max_tokens: 50,
+        // A one-line echo needs no reasoning, and thinking would spend the
+        // small budget before any text is written.
+        thinking: { type: 'disabled' },
         messages: [
           {
             role: 'user',
@@ -3456,8 +3492,7 @@ DATA LIMITATIONS:
         ],
       });
 
-      const content = response.content[0] as any;
-      if (content && content.text && content.text.includes('successful')) {
+      if (responseText(response).includes('successful')) {
         return { success: true };
       } else {
         return { success: false, error: 'Unexpected response from Claude API' };
