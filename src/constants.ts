@@ -29,6 +29,14 @@ export const POSITION_MAX_SPEED_MPS = 25;
 export const GPX_UPLOAD_MAX_FILE_BYTES = 500 * 1024 * 1024;
 
 /**
+ * GPX import: cap on the whole multipart request, in bytes. The per-file
+ * cap times GPX_UPLOAD_MAX_FILES would let one request stage hundreds of
+ * gigabytes, so the request's Content-Length is checked against this
+ * before any file is written to disk.
+ */
+export const GPX_UPLOAD_MAX_TOTAL_BYTES = 2 * 1024 * 1024 * 1024;
+
+/**
  * GPX import: how many (path, day) parquet writers may be open at once.
  * Each holds one row group (a few thousand rows) in memory. A chronological
  * track touches one or two groups at a time; a file that jumps between

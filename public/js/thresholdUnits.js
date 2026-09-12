@@ -129,20 +129,26 @@ export function unitFor(path, dataType) {
   return dataType === 'angular' ? DEGREES_FALLBACK : null;
 }
 
-/** Display-unit number -> base-unit number (identity without a unit). */
+/**
+ * Display-unit number -> base-unit number (identity without a unit). NaN
+ * when the formula cannot convert the value (e.g. a division by zero), so
+ * callers can refuse it rather than persist Infinity or NaN.
+ */
 export function toBaseValue(unit, value) {
   if (!unit || typeof value !== 'number' || !Number.isFinite(value)) {
     return value;
   }
-  return unit.toBase(value);
+  const converted = unit.toBase(value);
+  return Number.isFinite(converted) ? converted : NaN;
 }
 
-/** Base-unit number -> display-unit number (identity without a unit). */
+/** Base-unit number -> display-unit number (identity without a unit); NaN when the formula cannot convert it. */
 export function toDisplayValue(unit, value) {
   if (!unit || typeof value !== 'number' || !Number.isFinite(value)) {
     return value;
   }
-  return roundDisplay(unit.toDisplay(value));
+  const converted = unit.toDisplay(value);
+  return Number.isFinite(converted) ? roundDisplay(converted) : NaN;
 }
 
 /** Trim float noise from a converted value: 0.5144 m/s -> 1 kn, not 0.99999. */
@@ -159,5 +165,7 @@ export function describeThresholdValue(path, value) {
   if (typeof value !== 'number') return value;
   const unit = unitFor(path);
   if (!unit) return value;
-  return `${toDisplayValue(unit, value)} ${unit.symbol}`;
+  const shown = toDisplayValue(unit, value);
+  if (!Number.isFinite(shown)) return value;
+  return `${shown} ${unit.symbol}`;
 }

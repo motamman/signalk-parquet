@@ -1,4 +1,4 @@
-import { getPluginPath } from './utils.js';
+import { getPluginPath, escapeHtml } from './utils.js';
 import {
   loadThresholdUnit,
   hasThresholdUnit,
@@ -1180,6 +1180,20 @@ async function applyPathMetadata(operatorSelectId, valueContainerId, path) {
   return promise;
 }
 
+/**
+ * Base-unit value for a number entered in the display unit, or null (after
+ * alerting) when the unit's formula cannot convert it, e.g. a division by
+ * zero. Keeps Infinity and NaN out of saved thresholds (#74).
+ */
+function toBaseOrAlert(unit, value) {
+  const converted = toBaseValue(unit, value);
+  if (!Number.isFinite(converted)) {
+    alert(`Value ${value} cannot be converted to the stored unit`);
+    return null;
+  }
+  return converted;
+}
+
 /** Resolves once the lookup for the path last chosen in the form has settled. */
 function pathMetadataSettled(operatorSelectId) {
   const state = pathMetadataLoads.get(operatorSelectId);
@@ -1683,8 +1697,9 @@ export async function saveNewThreshold() {
     threshold.valueMin = parseFloat(min);
     threshold.valueMax = parseFloat(max);
     // Entered in the display unit, stored in the base unit (#74).
-    threshold.valueMin = toBaseValue(unit, threshold.valueMin);
-    threshold.valueMax = toBaseValue(unit, threshold.valueMax);
+    threshold.valueMin = toBaseOrAlert(unit, threshold.valueMin);
+    threshold.valueMax = toBaseOrAlert(unit, threshold.valueMax);
+    if (threshold.valueMin === null || threshold.valueMax === null) return;
   } else if (operator === 'withinRadius' || operator === 'outsideRadius') {
     const useHomePort = document.getElementById(
       'newThresholdValueGroup_useHomePort'
@@ -1791,7 +1806,8 @@ export async function saveNewThreshold() {
         return;
       }
       // Entered in the display unit, stored in the base unit (#74).
-      threshold.value = toBaseValue(unit, numValue);
+      threshold.value = toBaseOrAlert(unit, numValue);
+      if (threshold.value === null) return;
     }
   }
 
@@ -1902,7 +1918,7 @@ function displayThresholdsList() {
     html += `
             <div style="background: white; border: 1px solid #ddd; border-radius: 4px; padding: 10px; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center;">
                 <div>
-                    <strong>${threshold.watchPath}</strong> ${description} → ${action}${hysteresis}
+                    <strong>${escapeHtml(threshold.watchPath)}</strong> ${escapeHtml(description)} → ${action}${hysteresis}
                 </div>
                 <div style="display: flex; gap: 5px;">
                     <button onclick="editThreshold(${index})" style="background: #2196F3; color: white; border: none; padding: 4px 8px; border-radius: 3px; font-size: 0.8em;">
@@ -2255,8 +2271,11 @@ function buildThresholdFromModal() {
     threshold.valueMin = parseFloat(min);
     threshold.valueMax = parseFloat(max);
     // Entered in the display unit, stored in the base unit (#74).
-    threshold.valueMin = toBaseValue(unit, threshold.valueMin);
-    threshold.valueMax = toBaseValue(unit, threshold.valueMax);
+    threshold.valueMin = toBaseOrAlert(unit, threshold.valueMin);
+    threshold.valueMax = toBaseOrAlert(unit, threshold.valueMax);
+    if (threshold.valueMin === null || threshold.valueMax === null) {
+      return null;
+    }
   } else if (operator === 'withinRadius' || operator === 'outsideRadius') {
     const useHomePort = document.getElementById(
       'thresholdValueGroup_useHomePort'
@@ -2344,7 +2363,8 @@ function buildThresholdFromModal() {
       threshold.value = valueInput.value;
     } else {
       // Entered in the display unit, stored in the base unit (#74).
-      threshold.value = toBaseValue(unit, numValue);
+      threshold.value = toBaseOrAlert(unit, numValue);
+      if (threshold.value === null) return null;
     }
   }
 
@@ -2670,8 +2690,9 @@ export async function saveAddCmdThreshold() {
     threshold.valueMin = parseFloat(min);
     threshold.valueMax = parseFloat(max);
     // Entered in the display unit, stored in the base unit (#74).
-    threshold.valueMin = toBaseValue(unit, threshold.valueMin);
-    threshold.valueMax = toBaseValue(unit, threshold.valueMax);
+    threshold.valueMin = toBaseOrAlert(unit, threshold.valueMin);
+    threshold.valueMax = toBaseOrAlert(unit, threshold.valueMax);
+    if (threshold.valueMin === null || threshold.valueMax === null) return;
   } else if (operator === 'withinRadius' || operator === 'outsideRadius') {
     const useHomePort = document.getElementById(
       'addCmdThresholdValueGroup_useHomePort'
@@ -2784,7 +2805,8 @@ export async function saveAddCmdThreshold() {
         return;
       }
       // Entered in the display unit, stored in the base unit (#74).
-      threshold.value = toBaseValue(unit, numValue);
+      threshold.value = toBaseOrAlert(unit, numValue);
+      if (threshold.value === null) return;
     }
   }
 
@@ -2873,7 +2895,7 @@ function displayAddCommandThresholdsList() {
     html += `
             <div style="background: white; border: 1px solid #ddd; border-radius: 4px; padding: 10px; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center;">
                 <div>
-                    <strong>${threshold.watchPath}</strong> ${description} → ${action}${hysteresis}
+                    <strong>${escapeHtml(threshold.watchPath)}</strong> ${escapeHtml(description)} → ${action}${hysteresis}
                 </div>
                 <button onclick="removeAddCommandThreshold(${index})" style="background: #f44336; color: white; border: none; padding: 4px 8px; border-radius: 3px; font-size: 0.8em;">
                     ❌ Remove

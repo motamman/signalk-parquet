@@ -39,7 +39,11 @@ import {
   ProcessCancelApiResponse,
 } from './types';
 import { MigrationService } from './services/migration-service';
-import { GPX_UPLOAD_MAX_FILE_BYTES, GPX_UPLOAD_MAX_FILES } from './constants';
+import {
+  GPX_UPLOAD_MAX_FILE_BYTES,
+  GPX_UPLOAD_MAX_FILES,
+  GPX_UPLOAD_MAX_TOTAL_BYTES,
+} from './constants';
 import { uploadFilename } from './utils/upload-filename';
 import {
   GpxImportService,
@@ -4209,8 +4213,38 @@ export function registerApiRoutes(
     },
   });
 
+  // Bound the whole request before multer stages anything: the per-file
+  // limit alone would let one request write files × fileSize to the data
+  // disk. Node feeds the body to multer only up to Content-Length, so the
+  // header is a hard cap on staged bytes; a body without one (chunked) has
+  // no such cap and is refused.
+  const enforceUploadTotal = (
+    req: express.Request,
+    res: express.Response,
+    next: express.NextFunction
+  ): void => {
+    const header = req.headers['content-length'];
+    const length = header === undefined ? NaN : Number(header);
+    if (!Number.isFinite(length)) {
+      res.status(411).json({
+        success: false,
+        error: 'Upload requires a Content-Length header',
+      });
+      return;
+    }
+    if (length > GPX_UPLOAD_MAX_TOTAL_BYTES) {
+      res.status(413).json({
+        success: false,
+        error: `Upload exceeds the ${Math.round(GPX_UPLOAD_MAX_TOTAL_BYTES / (1024 * 1024))} MB limit per request`,
+      });
+      return;
+    }
+    next();
+  };
+
   router.post(
     '/api/import/gpx/upload',
+    enforceUploadTotal,
     gpxUpload.array('files'),
     async (req, res) => {
       const session = uploadSessions.get(req);

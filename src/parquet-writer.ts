@@ -322,7 +322,15 @@ export class ParquetWriter {
       rowCount += records.length;
     };
 
-    await append(firstBatch);
+    try {
+      await append(firstBatch);
+    } catch (error) {
+      // openFile() already created the file; don't leave a stub behind.
+      open = false;
+      await writer.close().catch(() => undefined);
+      await fs.remove(filepath).catch(() => undefined);
+      throw error;
+    }
 
     return {
       get rowCount() {
