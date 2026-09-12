@@ -297,7 +297,11 @@ export class ParquetWriter {
     return result.schema;
   }
 
-  // Guideline 3: Get type for empty columns using SignalK metadata and other files
+  /**
+   * Type for a column whose sampled values are all empty. The `value` column
+   * becomes DOUBLE when the path's SignalK metadata has a numeric unit; every
+   * other case falls back to UTF8.
+   */
   private async getTypeForEmptyColumn(
     colName: string,
     currentPath?: string,
@@ -387,19 +391,6 @@ export class ParquetWriter {
         );
       }
     }
-
-    // Fallback to other consolidated files for the same path
-    // Disabled to prevent errors from corrupted parquet files
-    // if (currentPath && outputDirectory) {
-    //   this.app?.debug(`    🔎 Searching other files for path: ${currentPath}`);
-    //   const typeFromOtherFiles = this.getTypeFromOtherFiles(currentPath, outputDirectory, undefined, filenamePrefix);
-    //   if (typeFromOtherFiles) {
-    //     this.app?.debug(`    ✅ Found type ${typeFromOtherFiles} from other files`);
-    //     return typeFromOtherFiles;
-    //   } else {
-    //     this.app?.debug(`    ↪️ No type information found in other files`);
-    //   }
-    // }
 
     // Final fallback to UTF8
     this.app?.debug(`    ✅ Final fallback to UTF8`);
@@ -516,101 +507,10 @@ export class ParquetWriter {
     return this.inferTypeFromFieldName(colName);
   }
 
-  // Helper: Search other consolidated files for type information
-  private getTypeFromOtherFiles(
-    currentPath: string,
-    outputDirectory: string,
-    specificColumn?: string,
-    filenamePrefix?: string
-  ): string | null {
-    const targetColumn = specificColumn || 'value';
-    this.app?.debug(
-      `      🔍 Searching files for column '${targetColumn}' in path '${currentPath}'`
-    );
-
-    try {
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const glob = require('glob');
-      const prefix = filenamePrefix || 'signalk_data';
-      const pathPattern = path.join(
-        outputDirectory,
-        'vessels',
-        '*',
-        currentPath.replace(/\./g, '/'),
-        `${prefix}_*.parquet`
-      );
-      this.app?.debug(`      📁 Search pattern: ${pathPattern}`);
-
-      const allFiles = glob.sync(pathPattern);
-      // Filter out consolidated files
-      const files = allFiles.filter(
-        (file: string) => !file.includes('_consolidated.parquet')
-      );
-      this.app?.debug(
-        `      📄 Found ${files.length} regular files to check (excluding consolidated)`
-      );
-
-      for (const filePath of files) {
-        try {
-          this.app?.debug(`      🔎 Checking file: ${path.basename(filePath)}`);
-
-          if (!parquet) {
-            this.app?.debug(`      ❌ Parquet library not available`);
-            continue;
-          }
-
-          // Skip corrupted parquet files to prevent crashes
-          if (
-            path.basename(filePath).includes('corrupted') ||
-            path.basename(filePath).includes('quarantine')
-          ) {
-            this.app?.debug(
-              `      ⚠️ Skipping quarantined file: ${path.basename(filePath)}`
-            );
-            continue;
-          }
-
-          try {
-            const reader = parquet.ParquetReader.openFile(filePath);
-            const schema = reader.schema;
-
-            if (schema && schema.schema && schema.schema[targetColumn]) {
-              const columnType = schema.schema[targetColumn].type;
-              this.app?.debug(
-                `      ✅ Found type ${columnType} for column '${targetColumn}' in ${path.basename(filePath)}`
-              );
-              if (typeof reader.close === 'function') reader.close();
-              return columnType;
-            } else {
-              this.app?.debug(
-                `      ↪️ Column '${targetColumn}' not found in ${path.basename(filePath)}`
-              );
-            }
-            if (typeof reader.close === 'function') reader.close();
-          } catch (fileError) {
-            this.app?.debug(
-              `      ⚠️ Corrupted file, skipping: ${path.basename(filePath)} - ${(fileError as Error).message}`
-            );
-            continue;
-          }
-        } catch (error) {
-          this.app?.debug(
-            `      ❌ Error reading file ${path.basename(filePath)}: ${(error as Error).message}`
-          );
-          continue;
-        }
-      }
-    } catch (error) {
-      this.app?.debug(
-        `      ❌ File search error: ${(error as Error).message}`
-      );
-    }
-
-    this.app?.debug(`      ❌ No type information found in any files`);
-    return null;
-  }
-
-  // Helper: Infer type from field name patterns
+  /**
+   * Infers a Parquet column type from the field name, e.g. latitude and
+   * longitude fields become DOUBLE.
+   */
   private inferTypeFromFieldName(fieldName: string): string {
     this.app?.debug(`      🏷️ Inferring type from field name: ${fieldName}`);
     const field = fieldName.toLowerCase();

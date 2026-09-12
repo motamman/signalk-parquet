@@ -403,9 +403,6 @@ export interface CloudTestApiResponse extends ApiResponse {
   keyPrefix?: string;
 }
 
-// Legacy alias
-export type S3TestApiResponse = CloudTestApiResponse;
-
 export interface ValidationViolation {
   file: string;
   vessel?: string;
@@ -705,7 +702,6 @@ export interface PathConfigRequest {
   source?: string;
   context?: Context;
 }
-//FIXME https://github.com/SignalK/signalk-server/pull/2043
 // Command Types
 export type CommandPutHandler = (
   context: string,

@@ -318,7 +318,11 @@ export function initializeCommandState(
   });
 }
 
-// Command registration with full type safety
+/**
+ * Registers a boolean command at `commands.<name>`: stores its config,
+ * installs the PUT handlers for the command and its `.auto` switch, and
+ * publishes their initial values.
+ */
 export function registerCommand(
   commandName: string,
   description?: string,
@@ -393,7 +397,7 @@ export function registerCommand(
     appInstance.registerPutHandler(
       'vessels.self',
       commandPath,
-      putHandler as any, //FIXME server api registerPutHandler is incorrectly typed https://github.com/SignalK/signalk-server/pull/2043
+      putHandler,
       'zennora-parquet-commands'
     );
 
@@ -513,7 +517,7 @@ export function registerCommand(
     appInstance.registerPutHandler(
       'vessels.self',
       autoPath,
-      autoPutHandler as any,
+      autoPutHandler,
       'signalk-parquet-commands'
     );
 
@@ -703,7 +707,11 @@ export function unregisterCommand(commandName: string): CommandExecutionResult {
   }
 }
 
-// Command execution with full type safety
+/**
+ * Sets `commands.<name>` to `value` by publishing a delta, and records the
+ * change in the command state and history. An unknown command yields a 404
+ * result.
+ */
 export function executeCommand(
   commandName: string,
   value: boolean
@@ -739,8 +747,7 @@ export function executeCommand(
     };
 
     // Send delta message
-    //FIXME see if delta can be Delta from the beginning
-    appInstance.handleMessage('signalk-parquet-commands', delta as Delta);
+    appInstance.handleMessage('signalk-parquet-commands', delta);
 
     // Update command state
     commandConfig.active = value;
@@ -788,6 +795,7 @@ function isValidCommandName(commandName: string): boolean {
   );
 }
 
+/** Publishes the initial value of `commands.<name>` as a delta. */
 function initializeCommandValue(commandName: string, value: boolean): void {
   const timestamp = new Date().toISOString() as Timestamp;
   const delta: Delta = {
@@ -806,8 +814,7 @@ function initializeCommandValue(commandName: string, value: boolean): void {
     ],
   };
 
-  //FIXME
-  appInstance.handleMessage('signalk-parquet-commands', delta as Delta);
+  appInstance.handleMessage('signalk-parquet-commands', delta);
 }
 
 function addCommandHistoryEntry(
