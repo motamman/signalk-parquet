@@ -36,6 +36,7 @@ import {
 import { getPathComponentSchema } from './utils/schema-cache';
 import { HivePathBuilder } from './utils/hive-path-builder';
 import { isAngularPath } from './utils/angular-paths';
+import { middleIndexSql } from './utils/aggregate-sql';
 import {
   buildBufferScalarSubquery,
   buildBufferObjectSubquery,
@@ -351,8 +352,6 @@ export class HistoryProvider implements HistoryApi {
         pathSpec.path
       );
 
-      const aggFunc = this.getAggregateFunction(pathSpec.aggregate);
-
       // sma/ema bucket like average, so angular data needs the same
       // circular-mean bucket value before the moving window is applied.
       const averageLike =
@@ -386,6 +385,10 @@ export class HistoryProvider implements HistoryApi {
         )
           .map(([name, comp]) => {
             if (comp.dataType !== 'numeric') {
+              // middle_index takes the same sample as the numeric components.
+              if (pathSpec.aggregate === 'middle_index') {
+                return `${middleIndexSql(comp.columnName, 'signalk_timestamp')} as ${name}`;
+              }
               // FIRST returns the physically-first row's value, which may be
               // NULL even when a later row in the same bucket has one;
               // ANY_VALUE skips NULLs and the ORDER BY makes "earliest
@@ -413,7 +416,7 @@ export class HistoryProvider implements HistoryApi {
                 return `ATAN2(AVG(SIN(${colExpr})), AVG(COS(${colExpr}))) as ${name}`;
               }
             }
-            return `${aggFunc}(${colExpr}) as ${name}`;
+            return `${this.aggregateSql(pathSpec.aggregate, colExpr)} as ${name}`;
           })
           .join(', ');
 
@@ -499,7 +502,10 @@ export class HistoryProvider implements HistoryApi {
         const valueExpression =
           angular && averageLike
             ? 'ATAN2(AVG(SIN(TRY_CAST(value AS DOUBLE))), AVG(COS(TRY_CAST(value AS DOUBLE))))'
-            : `${aggFunc}(TRY_CAST(value AS DOUBLE))`;
+            : this.aggregateSql(
+                pathSpec.aggregate,
+                'TRY_CAST(value AS DOUBLE)'
+              );
 
         // Build federated FROM: parquet UNION ALL buffer
         let federatedFrom: string;
@@ -547,6 +553,16 @@ export class HistoryProvider implements HistoryApi {
   }
 
   /**
+   * Aggregate SQL for one column of a bucketed query.
+   */
+  private aggregateSql(method: AggregateMethod, colExpr: string): string {
+    if (method === 'middle_index') {
+      return middleIndexSql(colExpr, 'signalk_timestamp');
+    }
+    return `${this.getAggregateFunction(method)}(${colExpr})`;
+  }
+
+  /**
    * Convert aggregate method to SQL function
    */
   private getAggregateFunction(method: AggregateMethod): string {
@@ -564,7 +580,9 @@ export class HistoryProvider implements HistoryApi {
       case 'mid':
         return 'MEDIAN';
       case 'middle_index':
-        return 'FIRST'; // Fallback
+        // Needs the bucket's row count as well as its values, so it has no
+        // single-function form.
+        throw new Error('middle_index must be built with middleIndexSql()');
       case 'sma':
       case 'ema':
         // Moving averages bucket identically to `average`; the sma/ema window

@@ -57,6 +57,7 @@ import {
   InvalidResolutionError,
 } from './utils/duration-parser';
 import { isAngularPath } from './utils/angular-paths';
+import { middleIndexSql } from './utils/aggregate-sql';
 import { PathRetentionRule, RetentionRuleSet } from './utils/retention-rules';
 import {
   parsePathFilters,
@@ -1223,6 +1224,12 @@ export class HistoryAPI {
     }
   }
 
+  /**
+   * Queries every requested path over the time range and merges the buckets
+   * into one response. Each path reads its tier's parquet (local, plus S3 for
+   * older dates) federated with the SQLite buffer, and falls back to the
+   * buffer alone when the parquet query fails.
+   */
   async getNumericValues(
     context: Context,
     from: ZonedDateTime,
@@ -1749,16 +1756,17 @@ export class HistoryAPI {
               componentSchema.components.values()
             )
               .map(comp => {
-                const aggFunc = getComponentAggregateFunction(
-                  pathSpec.aggregateMethod,
-                  comp.dataType
-                );
                 // TRY_CAST handles mixed-type parquet files (some store lat/lon as VARCHAR)
                 const colExpr =
                   comp.dataType === 'numeric'
                     ? `TRY_CAST(${comp.columnName} AS DOUBLE)`
                     : comp.columnName;
-                return `${aggFunc}(${colExpr}) as ${comp.name}`;
+                const aggExpr = getComponentAggregateExpression(
+                  pathSpec.aggregateMethod,
+                  comp.dataType,
+                  colExpr
+                );
+                return `${aggExpr} as ${comp.name}`;
               })
               .join(',\n              ');
 
@@ -1789,11 +1797,6 @@ export class HistoryAPI {
             // UNION ALL the results, then ROW_NUMBER to pick highest-priority source per bucket.
             // Priority: buffer(3) > raw tier gap(2) > tier parquet(1).
             const objTsCol = getTierTimestampColumn('raw');
-            const componentCols = Array.from(
-              componentSchema.components.values()
-            )
-              .map(c => c.columnName)
-              .join(', ');
             const objBucketExpr = (col: string) =>
               bucketExprSql(col, timeResolutionMillis);
 
@@ -1842,14 +1845,17 @@ export class HistoryAPI {
                 GROUP BY timestamp`);
               }
 
-              if (subqueries.length === 1) {
-                return `SELECT timestamp, ${componentCols} FROM (${subqueries[0]}) ORDER BY timestamp`;
-              }
-
-              // Pick highest priority per timestamp bucket
+              // The subqueries alias each component by its name (latitude),
+              // not its column (value_latitude), so the outer query selects
+              // by name.
               const compNames = Array.from(
                 componentSchema.components.keys()
               ).join(', ');
+              if (subqueries.length === 1) {
+                return `SELECT timestamp, ${compNames} FROM (${subqueries[0]}) ORDER BY timestamp`;
+              }
+
+              // Pick highest priority per timestamp bucket
               return `
               SELECT timestamp, ${compNames} FROM (
                 SELECT timestamp, ${compNames},
@@ -2092,7 +2098,7 @@ export class HistoryAPI {
                 const componentSelects = Array.from(fallbackComponents.values())
                   .map(
                     comp =>
-                      `${getComponentAggregateFunction(pathSpec.aggregateMethod, comp.dataType)}(${comp.columnName}) as ${comp.name}`
+                      `${getComponentAggregateExpression(pathSpec.aggregateMethod, comp.dataType, comp.columnName)} as ${comp.name}`
                   )
                   .join(', ');
                 const bufferQuery = `
@@ -2134,9 +2140,16 @@ export class HistoryAPI {
                     )
                   : null;
               if (bufferSubquery) {
-                const fallbackAggExpr = isStringPath(pathSpec.path)
-                  ? 'FIRST(value)'
-                  : 'AVG(TRY_CAST(value AS DOUBLE))';
+                // Same aggregate as the buffer source of the main query, so
+                // the requested method still applies when parquet fails.
+                const fallbackAggExpr = getTierAggregateExpression(
+                  pathSpec.aggregateMethod,
+                  pathSpec.path,
+                  'raw',
+                  false,
+                  app,
+                  context as string
+                );
                 const bufferQuery = `
                   SELECT
                     ${bucketExprSql('signalk_timestamp', timeResolutionMillis)} as timestamp,
@@ -2644,6 +2657,11 @@ const functionForAggregate: { [key: string]: string } = {
   middle_index: 'nth_value',
 } as const;
 
+/**
+ * SQL aggregate function for a method that is a single function of the
+ * bucket's values, e.g. 'max' -> 'MAX'. middle_index has no such form and is
+ * built by middleIndexSql() instead.
+ */
 function getAggregateFunction(method: AggregateMethod): string {
   switch (method) {
     case 'average':
@@ -2659,7 +2677,9 @@ function getAggregateFunction(method: AggregateMethod): string {
     case 'mid':
       return 'MEDIAN';
     case 'middle_index':
-      return 'NTH_VALUE';
+      // Needs the bucket's row count as well as its values, so it has no
+      // single-function form.
+      throw new Error('middle_index must be built with middleIndexSql()');
     default:
       return 'AVG';
   }
@@ -2732,6 +2752,9 @@ function getTierAggregateExpression(
     case undefined:
       // Weighted average using sample_count
       return 'SUM(value_avg * sample_count) / SUM(sample_count)';
+    case 'middle_index':
+      // The chronologically middle pre-aggregated bucket
+      return middleIndexSql('value_avg', getTierTimestampColumn(tier));
     default:
       // For other methods (first, last, median), fall back to value_avg
       return `${getAggregateFunction(method)}(value_avg)`;
@@ -2766,6 +2789,11 @@ function isStringPath(pathName: string): boolean {
   return STRING_PATHS.has(pathName) || !pathName.includes('.');
 }
 
+/**
+ * Aggregate expression over raw samples (the raw tier and the SQLite buffer)
+ * for one requested method. String paths only support methods that pick a
+ * single sample; angular paths average on the circle.
+ */
 function getAggregateExpression(
   method: AggregateMethod,
   pathName: string,
@@ -2779,6 +2807,8 @@ function getAggregateExpression(
     switch (method) {
       case 'last':
         return `LAST(${valueExpr})`;
+      case 'middle_index':
+        return middleIndexSql(valueExpr, getTierTimestampColumn('raw'));
       case 'first':
       case 'average':
       case undefined:
@@ -2790,9 +2820,7 @@ function getAggregateExpression(
   const valueExpr = getValueExpression(pathName, hasValueJson);
 
   if (method === 'middle_index') {
-    // For middle_index, use FIRST as a simple fallback for now
-    // TODO: Implement proper middle index selection
-    return `FIRST(${valueExpr})`;
+    return middleIndexSql(valueExpr, getTierTimestampColumn('raw'));
   }
 
   // Use vector averaging for angular paths (heading, COG, wind direction, etc.)
@@ -2809,24 +2837,21 @@ function getAggregateExpression(
 }
 
 /**
- * Get the appropriate aggregate function for a component based on its data type
- * Numeric components use the requested method, non-numeric use middle_index
+ * Aggregate expression for one component column of an object path. Numeric
+ * components use the requested method; non-numeric ones (string, boolean,
+ * unknown) take the bucket's FIRST value. middle_index works on any type and
+ * applies to every component, so all of them come from the same sample.
  */
-function getComponentAggregateFunction(
+function getComponentAggregateExpression(
   requestedMethod: AggregateMethod,
-  dataType: ComponentInfo['dataType']
+  dataType: ComponentInfo['dataType'],
+  colExpr: string
 ): string {
-  // For numeric components, use the requested aggregation method
-  if (dataType === 'numeric') {
-    // Special case: middle_index requires window functions (NTH_VALUE)
-    // Use FIRST as fallback, matching scalar path behavior
-    if (requestedMethod === 'middle_index') {
-      return 'FIRST';
-    }
-    return getAggregateFunction(requestedMethod);
+  if (requestedMethod === 'middle_index') {
+    return middleIndexSql(colExpr, getTierTimestampColumn('raw'));
   }
-
-  // For non-numeric components (string, boolean, unknown), use FIRST
-  // This ensures we get a representative value from the bucket
-  return 'FIRST';
+  if (dataType === 'numeric') {
+    return `${getAggregateFunction(requestedMethod)}(${colExpr})`;
+  }
+  return `FIRST(${colExpr})`;
 }

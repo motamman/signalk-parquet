@@ -851,6 +851,7 @@ The History API supports 5 standard SignalK time query patterns:
 | `first` | First value in bucket | `path:first` |
 | `last` | Last value in bucket | `path:last` |
 | `mid` | Median value in bucket | `path:mid` |
+| `middle_index` | Value of the chronologically middle sample in bucket (first of the two middle samples for even counts) | `path:middle_index` |
 | `sma` | Simple Moving Average, window default 5 samples (returns only smoothed value) | `path:sma:5` |
 | `ema` | Exponential Moving Average, alpha default 0.2 (returns only smoothed value) | `path:ema:0.2` |
 
