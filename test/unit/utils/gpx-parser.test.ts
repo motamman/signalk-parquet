@@ -6,11 +6,7 @@
  * independent), and the exact behaviour of the regex edge cases.
  */
 import { expect } from 'chai';
-import {
-  parseGpx,
-  collect,
-  GpxTokenizer,
-} from '../../../src/utils/gpx-parser';
+import { parseGpx, collect, GpxTokenizer } from '../../../src/utils/gpx-parser';
 
 describe('parseGpx', () => {
   describe('minimal plain GPX', () => {
@@ -369,6 +365,40 @@ describe('parseGpx', () => {
       expect(result.totalPoints).to.equal(1);
       expect(result.tracks[0].points[0].latitude).to.equal(1);
     });
+
+    it('skips an unterminated trkpt that runs into </trk> and keeps the next track intact', () => {
+      // Regression: the lazy trkpt body used to run through </trk> to the
+      // second track's </trkpt>, swallowing the boundary and the second
+      // track, and yielding one point with the first point's coordinates.
+      const xml = `<gpx>
+        <trk><trkseg>
+          <trkpt lat="1" lon="1"><time>2024-06-01T00:00:00Z</time>
+        </trkseg></trk>
+        <trk><trkseg>
+          <trkpt lat="2" lon="2"><time>2024-06-02T00:00:00Z</time></trkpt>
+        </trkseg></trk>
+      </gpx>`;
+      const result = parseGpx(xml);
+
+      expect(result.tracks.length).to.equal(2);
+      expect(result.tracks[0].points).to.deep.equal([]);
+      expect(result.tracks[1].points.map(p => p.latitude)).to.deep.equal([2]);
+      expect(result.totalPoints).to.equal(1);
+      expect(result.firstTime?.toISOString()).to.equal(
+        '2024-06-02T00:00:00.000Z'
+      );
+    });
+
+    it('skips an unterminated <name> that runs into </trk>', () => {
+      const xml =
+        '<gpx><trk><name>Broken</trk><trk><name>Good</name><trkseg><trkpt lat="2" lon="2"/></trkseg></trk></gpx>';
+      const result = parseGpx(xml);
+
+      expect(result.tracks.length).to.equal(2);
+      expect(result.tracks[0].name).to.equal(undefined);
+      expect(result.tracks[1].name).to.equal('Good');
+      expect(result.totalPoints).to.equal(1);
+    });
   });
 
   describe('real-world export', () => {
@@ -480,7 +510,9 @@ describe('GpxTokenizer (streaming, #54)', () => {
     const tokenizer = new GpxTokenizer();
     const first = tokenizer.push('<trk><trkpt lat="1" lon="2"><ti');
     expect(first).to.deep.equal([{ type: 'track' }]);
-    const second = tokenizer.push('me>2024-01-01T00:00:00Z</time></trkpt></trk>');
+    const second = tokenizer.push(
+      'me>2024-01-01T00:00:00Z</time></trkpt></trk>'
+    );
     expect(second.length).to.equal(1);
     expect(second[0].type).to.equal('point');
     expect(tokenizer.end()).to.deep.equal([]);
@@ -496,9 +528,9 @@ describe('GpxTokenizer (streaming, #54)', () => {
 
   it('skips an unterminated point at the end of input instead of waiting forever', () => {
     const tokenizer = new GpxTokenizer();
-    expect(tokenizer.push('<trk><trkpt lat="1" lon="2"><time>2024')).to.deep.equal([
-      { type: 'track' },
-    ]);
+    expect(
+      tokenizer.push('<trk><trkpt lat="1" lon="2"><time>2024')
+    ).to.deep.equal([{ type: 'track' }]);
     expect(tokenizer.end()).to.deep.equal([]);
   });
 });

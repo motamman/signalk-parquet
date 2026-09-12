@@ -1154,6 +1154,38 @@ async function detectPathType(path) {
   return { dataType: 'unknown' };
 }
 
+// Per-form bookkeeping for the async path lookup (type + display unit).
+// Selecting another path before the previous lookup has answered must not
+// let the older answer overwrite the newer path's state, and Save has to
+// wait for the current lookup so values are converted with the right unit.
+const pathMetadataLoads = new Map(); // operatorSelectId -> { path, generation, promise }
+
+async function applyPathMetadata(operatorSelectId, valueContainerId, path) {
+  const previous = pathMetadataLoads.get(operatorSelectId);
+  const generation = (previous ? previous.generation : 0) + 1;
+  const promise = (async () => {
+    const typeInfo = await detectPathType(path);
+    await loadThresholdUnit(path, typeInfo.dataType);
+    const current = pathMetadataLoads.get(operatorSelectId);
+    if (!current || current.generation !== generation) return null; // stale
+    const operatorSelect = document.getElementById(operatorSelectId);
+    if (!operatorSelect) return null;
+    updateOperatorDropdown(operatorSelectId, typeInfo.dataType);
+    operatorSelect.dataset.watchPath = path;
+    operatorSelect.dataset.pathDataType = typeInfo.dataType;
+    updateValueFields(operatorSelectId, valueContainerId, typeInfo.dataType);
+    return typeInfo;
+  })();
+  pathMetadataLoads.set(operatorSelectId, { path, generation, promise });
+  return promise;
+}
+
+/** Resolves once the lookup for the path last chosen in the form has settled. */
+function pathMetadataSettled(operatorSelectId) {
+  const state = pathMetadataLoads.get(operatorSelectId);
+  return state ? state.promise.catch(() => null) : Promise.resolve(null);
+}
+
 // Update operator dropdown based on detected path type
 function updateOperatorDropdown(operatorSelectId, dataType) {
   const operatorSelect = document.getElementById(operatorSelectId);
@@ -1234,9 +1266,14 @@ function updateValueFields(operatorSelectId, valueContainerId, dataType) {
     document.getElementById(operatorSelectId)?.dataset.watchPath,
     dataType
   );
-  const unitHint = unit
-    ? `<div style=\"font-size: 0.85em; color: #666; margin-top: 5px;\">💡 Enter values in ${unit.symbol} (stored as ${unit.baseUnit})</div>`
-    : '';
+  // The symbol and base unit come from the units plugin's response, so the
+  // hint is built from DOM nodes rather than interpolated into HTML.
+  let unitHint = null;
+  if (unit) {
+    unitHint = document.createElement('div');
+    unitHint.style.cssText = 'font-size: 0.85em; color: #666; margin-top: 5px;';
+    unitHint.textContent = `💡 Enter values in ${unit.symbol} (stored as ${unit.baseUnit})`;
+  }
 
   // Clear existing content
   container.innerHTML = '';
@@ -1264,8 +1301,8 @@ function updateValueFields(operatorSelectId, valueContainerId, dataType) {
                     <input type="number" id="${valueContainerId}_max" step="any" style="width: 100%;">
                 </div>
             </div>
-            ${unitHint}
         `;
+    if (unitHint) container.appendChild(unitHint);
     return;
   }
 
@@ -1444,8 +1481,8 @@ function updateValueFields(operatorSelectId, valueContainerId, dataType) {
   container.innerHTML = `
         <label>Value:</label>
         <input type="number" id="${valueContainerId}_value" step="any" placeholder="Enter value" style="width: 100%;">
-        ${unitHint}
     `;
+  if (unitHint) container.appendChild(unitHint);
 }
 
 export function updateThresholdPathFilter() {
@@ -1547,17 +1584,7 @@ async function populateThresholdPaths() {
   if (hiddenInput) {
     hiddenInput.addEventListener('change', async function () {
       if (this.value) {
-        const typeInfo = await detectPathType(this.value);
-        updateOperatorDropdown('newThresholdOperator', typeInfo.dataType);
-        await loadThresholdUnit(this.value, typeInfo.dataType);
-        document.getElementById('newThresholdOperator').dataset.watchPath = this.value;
-        updateValueFields(
-          'newThresholdOperator',
-          'newThresholdValueGroup',
-          typeInfo.dataType
-        );
-        document.getElementById('newThresholdOperator').dataset.pathDataType =
-          typeInfo.dataType;
+        await applyPathMetadata('newThresholdOperator', 'newThresholdValueGroup', this.value);
       }
     });
   }
@@ -1567,17 +1594,7 @@ async function populateThresholdPaths() {
   if (customInput) {
     customInput.onblur = async function () {
       if (this.value) {
-        const typeInfo = await detectPathType(this.value);
-        updateOperatorDropdown('newThresholdOperator', typeInfo.dataType);
-        await loadThresholdUnit(this.value, typeInfo.dataType);
-        document.getElementById('newThresholdOperator').dataset.watchPath = this.value;
-        updateValueFields(
-          'newThresholdOperator',
-          'newThresholdValueGroup',
-          typeInfo.dataType
-        );
-        document.getElementById('newThresholdOperator').dataset.pathDataType =
-          typeInfo.dataType;
+        await applyPathMetadata('newThresholdOperator', 'newThresholdValueGroup', this.value);
       }
     };
   }
@@ -1620,7 +1637,10 @@ export function cancelNewThreshold() {
   editingThresholdIndex = null;
 }
 
-export function saveNewThreshold() {
+export async function saveNewThreshold() {
+  // Let the selected path's type and unit lookup finish so the value is
+  // converted with the right unit (#74).
+  await pathMetadataSettled('newThresholdOperator');
   const pathSelect = document.getElementById('newThresholdPath');
   const pathCustom = document.getElementById('newThresholdPathCustom');
   const operator = document.getElementById('newThresholdOperator').value;
@@ -2025,20 +2045,14 @@ async function loadThresholdIntoModal(threshold) {
   }
 
   // Detect path type and update dropdown (same logic as add flow)
-  const typeInfo = await detectPathType(threshold.watchPath);
-  await loadThresholdUnit(threshold.watchPath, typeInfo.dataType);
-  document.getElementById('thresholdOperator').dataset.watchPath =
-    threshold.watchPath;
-  updateOperatorDropdown('thresholdOperator', typeInfo.dataType);
-  updateValueFields(
+  const typeInfo = await applyPathMetadata(
     'thresholdOperator',
     'thresholdValueGroup',
-    typeInfo.dataType
+    threshold.watchPath
   );
+  // Another path was chosen while this lookup was running.
+  if (!typeInfo) return;
   const operatorSelect = document.getElementById('thresholdOperator');
-  if (operatorSelect) {
-    operatorSelect.dataset.pathDataType = typeInfo.dataType;
-  }
 
   // Wait for dropdown to be updated, then set operator
   setTimeout(() => {
@@ -2167,7 +2181,10 @@ function populateThresholdValues(threshold) {
   }
 }
 
-export function saveThresholdModal() {
+export async function saveThresholdModal() {
+  // Let the selected path's type and unit lookup finish so the value is
+  // converted with the right unit (#74).
+  await pathMetadataSettled('thresholdOperator');
   const threshold = buildThresholdFromModal();
   if (!threshold) return;
 
@@ -2435,17 +2452,7 @@ async function populateThresholdModalPaths() {
   if (hiddenInput) {
     hiddenInput.addEventListener('change', async function () {
       if (this.value) {
-        const typeInfo = await detectPathType(this.value);
-        updateOperatorDropdown('thresholdOperator', typeInfo.dataType);
-        await loadThresholdUnit(this.value, typeInfo.dataType);
-        document.getElementById('thresholdOperator').dataset.watchPath = this.value;
-        updateValueFields(
-          'thresholdOperator',
-          'thresholdValueGroup',
-          typeInfo.dataType
-        );
-        document.getElementById('thresholdOperator').dataset.pathDataType =
-          typeInfo.dataType;
+        await applyPathMetadata('thresholdOperator', 'thresholdValueGroup', this.value);
       }
     });
   }
@@ -2455,17 +2462,7 @@ async function populateThresholdModalPaths() {
   if (customInput) {
     customInput.onblur = async function () {
       if (this.value) {
-        const typeInfo = await detectPathType(this.value);
-        updateOperatorDropdown('thresholdOperator', typeInfo.dataType);
-        await loadThresholdUnit(this.value, typeInfo.dataType);
-        document.getElementById('thresholdOperator').dataset.watchPath = this.value;
-        updateValueFields(
-          'thresholdOperator',
-          'thresholdValueGroup',
-          typeInfo.dataType
-        );
-        document.getElementById('thresholdOperator').dataset.pathDataType =
-          typeInfo.dataType;
+        await applyPathMetadata('thresholdOperator', 'thresholdValueGroup', this.value);
       }
     };
   }
@@ -2580,18 +2577,7 @@ async function populateAddCmdThresholdPaths() {
   if (hiddenInput) {
     hiddenInput.addEventListener('change', async function () {
       if (this.value) {
-        const typeInfo = await detectPathType(this.value);
-        updateOperatorDropdown('addCmdThresholdOperator', typeInfo.dataType);
-        await loadThresholdUnit(this.value, typeInfo.dataType);
-        document.getElementById('addCmdThresholdOperator').dataset.watchPath = this.value;
-        updateValueFields(
-          'addCmdThresholdOperator',
-          'addCmdThresholdValueGroup',
-          typeInfo.dataType
-        );
-        document.getElementById(
-          'addCmdThresholdOperator'
-        ).dataset.pathDataType = typeInfo.dataType;
+        await applyPathMetadata('addCmdThresholdOperator', 'addCmdThresholdValueGroup', this.value);
       }
     });
   }
@@ -2601,18 +2587,7 @@ async function populateAddCmdThresholdPaths() {
   if (customInput) {
     customInput.onblur = async function () {
       if (this.value) {
-        const typeInfo = await detectPathType(this.value);
-        updateOperatorDropdown('addCmdThresholdOperator', typeInfo.dataType);
-        await loadThresholdUnit(this.value, typeInfo.dataType);
-        document.getElementById('addCmdThresholdOperator').dataset.watchPath = this.value;
-        updateValueFields(
-          'addCmdThresholdOperator',
-          'addCmdThresholdValueGroup',
-          typeInfo.dataType
-        );
-        document.getElementById(
-          'addCmdThresholdOperator'
-        ).dataset.pathDataType = typeInfo.dataType;
+        await applyPathMetadata('addCmdThresholdOperator', 'addCmdThresholdValueGroup', this.value);
       }
     };
   }
@@ -2648,7 +2623,10 @@ export function cancelAddCmdThreshold() {
   }
 }
 
-export function saveAddCmdThreshold() {
+export async function saveAddCmdThreshold() {
+  // Let the selected path's type and unit lookup finish so the value is
+  // converted with the right unit (#74).
+  await pathMetadataSettled('addCmdThresholdOperator');
   const pathSelect = document.getElementById('addCmdThresholdPath');
   const pathCustom = document.getElementById('addCmdThresholdPathCustom');
   const operator = document.getElementById('addCmdThresholdOperator').value;

@@ -14,6 +14,9 @@ let currentGpxImportJobId = localStorage.getItem('gpxImportJobId') || null;
 let gpxImportPollInterval = null;
 let gpxSelectedFiles = [];
 let gpxUploadInFlight = false;
+// Start Import stays disabled until the path list has loaded: with no
+// checkboxes there is nothing to select, so a submit could only fail.
+let gpxPathOptionsLoaded = false;
 
 // Human labels for the backend "phase" field — the service uses internal
 // short names, but users shouldn't see "parse" or "write" bare.
@@ -48,6 +51,7 @@ async function loadGpxPathOptions() {
       throw new Error(data.error || 'unexpected response');
     }
     container.textContent = '';
+    container.style.color = '';
     for (const option of data.paths) {
       const label = document.createElement('label');
       label.style.fontWeight = 'normal';
@@ -65,10 +69,13 @@ async function loadGpxPathOptions() {
       label.appendChild(hint);
       container.appendChild(label);
     }
+    gpxPathOptionsLoaded = true;
   } catch (error) {
+    gpxPathOptionsLoaded = false;
     container.textContent = `Could not load the path list: ${error.message}`;
     container.style.color = '#c62828';
   }
+  refreshStartButtonState();
 }
 
 function formatBytes(bytes) {
@@ -112,6 +119,7 @@ function refreshStartButtonState() {
   if (!btn) return;
   btn.disabled =
     gpxUploadInFlight ||
+    !gpxPathOptionsLoaded ||
     currentGpxImportJobId !== null ||
     (gpxSelectedFiles.length === 0 && !serverDirValue());
 }

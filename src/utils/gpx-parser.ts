@@ -75,6 +75,10 @@ const TRACK_TOKEN_RE =
 
 const NAME_RE = /<(?:[\w-]+:)?name\b[^>]*>([\s\S]*?)<\/(?:[\w-]+:)?name>/;
 
+// Closing </trk> tag. An element match that contains one has run past the
+// end of its own track, so the element was never closed.
+const TRK_CLOSE_RE = /<\/(?:[\w-]+:)?trk\s*>/;
+
 // Sticky variants for matching exactly at a token's position.
 const TRKPT_AT_RE = new RegExp(TRKPT_RE.source, 'y');
 const NAME_AT_RE = new RegExp(NAME_RE.source, 'y');
@@ -208,6 +212,13 @@ export class GpxTokenizer {
       const re = isName ? NAME_AT_RE : TRKPT_AT_RE;
       re.lastIndex = at;
       const m = re.exec(buffer);
+      if (m && TRK_CLOSE_RE.test(m[0])) {
+        // The lazy body ran through </trk> to a closing tag in a later
+        // track: this element is unterminated. Skip it so the </trk> is
+        // handled as a track boundary and the later track stays intact.
+        pos = at + 1;
+        continue;
+      }
       if (m) {
         if (isName) {
           this.nameSeen = true;

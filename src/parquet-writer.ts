@@ -332,7 +332,13 @@ export class ParquetWriter {
       close: async (): Promise<string> => {
         if (!open) return filepath;
         open = false;
-        await writer.close();
+        try {
+          await writer.close();
+        } catch (error) {
+          // abort() is a no-op once closed, so discard the partial file here.
+          await fs.remove(filepath).catch(() => undefined);
+          throw error;
+        }
         const isValid = await this.validateParquetFile(filepath);
         if (!isValid) {
           const quarantineDir = path.join(path.dirname(filepath), 'quarantine');

@@ -36,6 +36,18 @@ const DEGREES_FALLBACK = Object.freeze({
   source: 'fallback',
 });
 
+/**
+ * Cached unit for a path. A miss cached before the path was known to be
+ * angular (e.g. when type detection failed for the list view) is promoted
+ * to the degrees fallback, so the editor and the list agree from then on.
+ */
+function cachedUnit(path, dataType) {
+  const unit = unitCache.get(path);
+  if (unit || dataType !== 'angular') return unit;
+  unitCache.set(path, DEGREES_FALLBACK);
+  return DEGREES_FALLBACK;
+}
+
 /** Only digits, operators, parentheses, whitespace and the word `value`. */
 const FORMULA_RE = /^[\d\s+\-*/().eE]*(value[\d\s+\-*/().eE]*)*$/;
 
@@ -57,7 +69,7 @@ function compileFormula(formula) {
  */
 export async function loadThresholdUnit(path, dataType) {
   if (!path) return null;
-  if (unitCache.has(path)) return unitCache.get(path);
+  if (unitCache.has(path)) return cachedUnit(path, dataType);
 
   let unit = null;
   try {
@@ -113,7 +125,7 @@ export function hasThresholdUnit(path) {
  * renderers and the list views can use it directly.
  */
 export function unitFor(path, dataType) {
-  if (path && unitCache.has(path)) return unitCache.get(path);
+  if (path && unitCache.has(path)) return cachedUnit(path, dataType);
   return dataType === 'angular' ? DEGREES_FALLBACK : null;
 }
 
