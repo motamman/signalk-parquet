@@ -152,6 +152,7 @@ The validation system checks each Parquet file for:
 ### Core Requirements
 - SignalK Server v2.13+
 - Node.js 22.5+ (required for `node:sqlite` — the built-in SQLite module used for crash-safe buffering; on Node < 22.5 the buffer falls back to in-memory LRU)
+- Linux, macOS or Windows. On Windows, file discovery (daily aggregation, retention, compaction, migration, cloud compare/sync, schema validation) works from v0.7.44-beta.5; earlier versions recorded data but those jobs silently found no files.
 
 ## Installation
 
@@ -855,6 +856,8 @@ The History API supports 5 standard SignalK time query patterns:
 | `sma` | Simple Moving Average, window default 5 samples (returns only smoothed value) | `path:sma:5` |
 | `ema` | Exponential Moving Average, alpha default 0.2 (returns only smoothed value) | `path:ema:0.2` |
 
+> **`middle_index` (v0.7.44-beta.5+):** earlier versions documented this method but did not implement it — the raw tier and v2 provider returned `first`, and the aggregated tiers returned nothing. It now returns the chronologically middle sample on every query path, with all components of an object path (e.g. position) taken from the same sample.
+
 **SMA/EMA as aggregation methods (official SignalK syntax):**
 ```bash
 # SMA with window of 5 - returns ONLY the smoothed value (V1 with shorthand duration)
@@ -1226,7 +1229,7 @@ curl "http://localhost:3000/signalk/v1/history/values?duration=1h&paths=navigati
 
 **Path Syntax Format:** `path:aggregateMethod:smoothingType:smoothingParam`
 - `path` - SignalK path (e.g., `navigation.speedOverGround`)
-- `aggregateMethod` - Aggregation method: `average`, `min`, `max`, `first`, `last`, `mid` (default: `average`)
+- `aggregateMethod` - Aggregation method: `average`, `min`, `max`, `first`, `last`, `mid`, `middle_index` (default: `average`)
 - `smoothingType` - `sma` (Simple Moving Average) or `ema` (Exponential Moving Average)
 - `smoothingParam` - For SMA: window size (default: 10), for EMA: alpha value 0-1 (default: 0.2)
 

@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.7.44-beta.5] - 2026-09-12
+
+Five contributions from @msallin (PRs #123–#127).
+
+### Fixed
+
+- **`middle_index` aggregate implemented** (PR #124) — it was documented and offered in the webapp dropdown but never worked: the raw tier, V1 object paths and the v2 provider quietly computed `first`, and the aggregated tiers (5s/60s/1h) rendered invalid SQL so the path came back empty. Every query path now shares one expression from the new `src/utils/aggregate-sql.ts`, `list(value ORDER BY time)[(count(*) + 1) // 2]`: the chronologically middle sample (first of the two middle samples for even counts), independent of file scan order, with every component of an object path taken from the same row so a position's latitude and longitude come from one fix. On aggregated tiers it picks the middle pre-aggregated bucket. `getAggregateFunction('middle_index')` now throws rather than silently substituting another aggregate. Eight integration tests, seven of which failed on the previous code.
+- **V1 object paths returned nothing when parquet was the only source** (PR #124) — with the SQLite buffer disabled, the single-source branch selected the raw `value_latitude` / `value_longitude` columns from a subquery that exposes `latitude` / `longitude`; the binder error was swallowed into an empty result for any object path and any aggregate. It now selects by component name, as the multi-source branch already did.
+- **Buffer-only fallback ignored the requested aggregate** (PR #124) — when the parquet query fails and the buffer is attached, the fallback averaged numeric paths and took the first string value regardless of method. It now applies the same raw-sample aggregate as the main query's buffer source.
+- **File discovery on Windows and under glob-special directory names** (PR #125) — every scan built its pattern with `path.join(dataDir, …)`, and `glob()` reads a backslash as an escape, so on Windows daily aggregation, retention cleanup, compaction, migration, GPX import, cloud compare/sync, schema validation and the two data migrations all matched nothing and silently did no work. A data directory whose name contains glob syntax (`+(1)`, `[1]`, …) broke the same jobs on Linux. New `src/utils/glob-in.ts` passes the directory as glob's `cwd` and keeps patterns relative with forward slashes; all 16 call sites use it. The `/processed/`-style exclusion filters became glob `ignore` patterns (they never excluded anything on Windows). `HivePathBuilder.detectPathStyle` takes the platform separator, so a backslash is a separator on Windows only and stays a legal filename character on POSIX. Cloud object keys built from local paths always use `/`; the daily upload had been producing backslash keys on Windows. Thirteen new tests, including an integration suite that runs the real services under a `+(1)` directory so the failure reproduces on Linux CI.
+- **Analysis model selector had no effect** (PR #126) — `/api/analyze` accepted `claudeModel` but never passed it on, so every analysis ran on the configured model. The route now sets the request's model and the selector's first option is "Configured default", which sends nothing. Follow-up questions still use the configured model.
+
+### Changed
+
+- **Analysis moves to current Claude models** (PR #126) — Opus 5 (`claude-opus-5`), Sonnet 5 (`claude-sonnet-5`, the default) and Haiku 4.5 (`claude-haiku-4-5`); the previous list offered Sonnet 4 / Opus 4.1 / Opus 4, and Opus 4.1 has been retired by the API. A saved id from an older generation maps to the current model of the same tier. Opus 5 and Sonnet 5 reject `temperature` and think by default, so `temperature` is only sent where accepted, `max_tokens` is raised to at least 16k where thinking shares the budget, answers are read from the text blocks rather than `content[0]`, and a `refusal` stop reason is raised as an error instead of yielding an empty analysis.
+- **Dead code removed** (PR #127), no behaviour change: the unused `initializeS3` / `createS3Client` / `createR2Client` aliases and `S3TestApiResponse` type in `data-handler.ts`, the never-read deprecated `start` history parameter, the ~90-line `ParquetWriter.getTypeFromOtherFiles` whose only caller was commented out, and the `as any` / `as Delta` casts that worked around a `@signalk/server-api` typing bug fixed upstream in SignalK/signalk-server#2043.
+
+### Dependencies
+
+- **Lockfile updated past open advisories** (PR #123): `multer` 2.2.0 → 2.3.0 (high), `body-parser` 2.2.2 → 2.3.0, `qs` 6.15.3 → 6.16.0, `js-yaml` 4.2.0 → 4.3.2, `brace-expansion` 2.1.1 → 2.1.4. No `package.json` change.
+
+---
+
 ## [0.7.44-beta.4] - 2026-09-10
 
 ### Security (PR #117, @msallin)
