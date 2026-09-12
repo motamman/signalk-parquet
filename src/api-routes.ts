@@ -1,6 +1,6 @@
 import * as fs from 'fs-extra';
 import * as path from 'path';
-import { glob } from 'glob';
+import { globIn } from './utils/glob-in';
 import express, { Router } from 'express';
 import multer from 'multer';
 import { getAvailablePaths } from './utils/path-discovery';
@@ -690,6 +690,15 @@ export function registerApiRoutes(
   const cloudCompareJobs = new Map<string, CloudCompareJob>();
 
   // Start cloud compare job
+  // Side directories under the data directory holding already-handled or
+  // rejected files; cloud compare and sync skip them.
+  const EXCLUDED_LOCAL_DIRS = [
+    '**/processed/**',
+    '**/repaired/**',
+    '**/failed/**',
+    '**/quarantine/**',
+  ];
+
   router.post('/api/cloud/compare', async (_req, res) => {
     try {
       const cloud = state.currentConfig?.cloudUpload;
@@ -732,25 +741,20 @@ export function registerApiRoutes(
 
           job.phase = 'Discovering local files...';
           // Only scan hive-partitioned files (tier=X/context=Y/path=Z/year=YYYY/day=DDD/)
-          const excludedDirs = [
-            '/processed/',
-            '/repaired/',
-            '/failed/',
-            '/quarantine/',
-          ];
-          const allLocalFiles = await glob(
-            path.join(dataDir, 'tier=*', '**', '*.parquet')
-          );
-          const localFiles = allLocalFiles.filter(
-            f => !excludedDirs.some(dir => f.includes(dir))
-          );
+          const localFiles = await globIn(dataDir, 'tier=*/**/*.parquet', {
+            ignore: EXCLUDED_LOCAL_DIRS,
+          });
           job.localFilesTotal = localFiles.length;
 
           const localKeys = new Map<string, { path: string; size: number }>();
 
           for (let i = 0; i < localFiles.length; i++) {
             const filePath = localFiles[i];
-            const relativePath = path.relative(dataDir, filePath);
+            // Object keys use forward slashes whatever the local OS.
+            const relativePath = path
+              .relative(dataDir, filePath)
+              .split(path.sep)
+              .join('/');
             let cloudKey = relativePath;
             if (cloud.keyPrefix) {
               const prefix = cloud.keyPrefix.endsWith('/')
@@ -958,18 +962,9 @@ export function registerApiRoutes(
           } else {
             job.phase = 'Scanning local files...';
             // Only sync hive-partitioned files (tier=X/context=Y/path=Z/year=YYYY/day=DDD/)
-            const excludedDirs = [
-              '/processed/',
-              '/repaired/',
-              '/failed/',
-              '/quarantine/',
-            ];
-            const allLocalFiles = await glob(
-              path.join(dataDir, 'tier=*', '**', '*.parquet')
-            );
-            const localFiles = allLocalFiles.filter(
-              f => !excludedDirs.some(dir => f.includes(dir))
-            );
+            const localFiles = await globIn(dataDir, 'tier=*/**/*.parquet', {
+              ignore: EXCLUDED_LOCAL_DIRS,
+            });
 
             job.phase = `Listing ${label} objects...`;
             job.progress = 10;
@@ -1000,7 +995,11 @@ export function registerApiRoutes(
             job.progress = 20;
 
             for (const localPath of localFiles) {
-              const relativePath = path.relative(dataDir, localPath);
+              // Object keys use forward slashes whatever the local OS.
+              const relativePath = path
+                .relative(dataDir, localPath)
+                .split(path.sep)
+                .join('/');
               let cloudKey = relativePath;
               if (cloud.keyPrefix) {
                 const prefix = cloud.keyPrefix.endsWith('/')
@@ -2569,8 +2568,6 @@ export function registerApiRoutes(
           // eslint-disable-next-line @typescript-eslint/no-require-imports
           const parquet = require('@dsnp/parquetjs');
           // eslint-disable-next-line @typescript-eslint/no-require-imports
-          const glob = require('glob');
-          // eslint-disable-next-line @typescript-eslint/no-require-imports
           const path = require('path');
 
           const configOutputDir =
@@ -2591,22 +2588,17 @@ export function registerApiRoutes(
             app.debug(message);
           };
 
-          const searchPattern = path.join(
-            dataDir,
-            'vessels',
-            '**',
-            '*.parquet'
-          );
+          const searchPattern = 'vessels/**/*.parquet';
           addDebug(`🔍 Data directory: ${dataDir}`);
           addDebug(`🔍 Searching pattern: ${searchPattern}`);
 
-          const files = glob.sync(searchPattern, {
+          const files = await globIn(dataDir, searchPattern, {
             ignore: [
-              `${dataDir}/**/processed/**`,
-              `${dataDir}/**/repaired/**`,
-              `${dataDir}/**/quarantine/**`,
-              `${dataDir}/**/claude-schemas/**`,
-              `${dataDir}/**/failed/**`,
+              '**/processed/**',
+              '**/repaired/**',
+              '**/quarantine/**',
+              '**/claude-schemas/**',
+              '**/failed/**',
             ],
           });
           addDebug(`📄 Found ${files.length} parquet files`);
@@ -2684,9 +2676,14 @@ export function registerApiRoutes(
                   }
                 });
 
-                const relativePath =
+                // Forward slashes, so the flat-layout pattern below also
+                // matches the native paths found on Windows.
+                const relativePath = (
                   progressJob.currentRelativePath ||
-                  path.relative(dataDir, filePath);
+                  path.relative(dataDir, filePath)
+                )
+                  .split(path.sep)
+                  .join('/');
                 const pathMatch = relativePath.match(
                   /vessels\/[^/]+\/(.+?)\/[^/]*\.parquet$/
                 );
@@ -4856,13 +4853,13 @@ export function registerApiRoutes(
             const tierDir = path.join(dataDir, `tier=${tier}`);
             if (!(await fs.pathExists(tierDir))) continue;
 
-            const contextDirs = await glob(path.join(tierDir, 'context=*'));
+            const contextDirs = await globIn(tierDir, 'context=*');
             for (const contextDir of contextDirs) {
               const context = path
                 .basename(contextDir)
                 .replace('context=', '')
                 .replace(/__/g, '.');
-              const pathDirs = await glob(path.join(contextDir, 'path=*'));
+              const pathDirs = await globIn(contextDir, 'path=*');
               for (const pathDir of pathDirs) {
                 const signalkPath = path
                   .basename(pathDir)
@@ -4871,9 +4868,9 @@ export function registerApiRoutes(
                 if (isAngularPath(signalkPath, app, context)) {
                   angularPathsFound.add(signalkPath);
                   // Find dates with data for this path
-                  const yearDirs = await glob(path.join(pathDir, 'year=*'));
+                  const yearDirs = await globIn(pathDir, 'year=*');
                   for (const yearDir of yearDirs) {
-                    const dayDirs = await glob(path.join(yearDir, 'day=*'));
+                    const dayDirs = await globIn(yearDir, 'day=*');
                     for (const dayDir of dayDirs) {
                       const yearStr = path
                         .basename(yearDir)
@@ -5040,9 +5037,9 @@ export function registerApiRoutes(
 
           const rawTierDir = path.join(dataDir, 'tier=raw');
           if (await fs.pathExists(rawTierDir)) {
-            const contextDirs = await glob(path.join(rawTierDir, 'context=*'));
+            const contextDirs = await globIn(rawTierDir, 'context=*');
             for (const contextDir of contextDirs) {
-              const pathDirs = await glob(path.join(contextDir, 'path=*'));
+              const pathDirs = await globIn(contextDir, 'path=*');
               for (const pathDir of pathDirs) {
                 const signalkPath = path
                   .basename(pathDir)
@@ -5051,9 +5048,7 @@ export function registerApiRoutes(
 
                 // Walk year/day directories and sample one parquet per day
                 // to avoid loading every parquet path into memory.
-                const dayDirs = await glob(
-                  path.join(pathDir, 'year=*', 'day=*')
-                );
+                const dayDirs = await globIn(pathDir, 'year=*/day=*');
                 if (dayDirs.length === 0) continue;
 
                 const dayCandidates: Array<{

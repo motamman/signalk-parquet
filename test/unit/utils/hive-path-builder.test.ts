@@ -443,14 +443,48 @@ describe('HivePathBuilder', () => {
       });
     });
 
-    it('does not match hive paths written with backslash separators', () => {
-      // The regexes only accept '/' separators, so unnormalized Windows
-      // paths are classified as neither style. Pinned as current behaviour.
+    // Use case: on Windows, glob results and path.join() output carry
+    // backslashes, and every discovered file is classified through here.
+    // Passing the separator explicitly exercises that on every platform.
+    it('parses hive paths written with backslash separators', () => {
       const result = builder.detectPathStyle(
-        'data\\tier=raw\\context=vessels__self\\path=navigation__position\\' +
-          'year=2024\\day=167\\file.parquet'
+        'C:\\data\\tier=raw\\context=vessels__self\\path=navigation__position\\' +
+          'year=2024\\day=167\\file.parquet',
+        '\\'
       );
-      expect(result).to.deep.equal({ isHive: false, isFlat: false });
+      expect(result).to.deep.equal({
+        isHive: true,
+        isFlat: false,
+        tier: 'raw',
+        context: 'vessels.self',
+        signalkPath: 'navigation.position',
+        year: 2024,
+        dayOfYear: 167,
+      });
+    });
+
+    it('parses flat paths written with backslash separators', () => {
+      // 'vessels\urn_mrn_signalk_uuid_xxx\navigation\speedOverGround\f.parquet'
+      //   signalkPath: 'navigation.speedOverGround' ('\' -> '.')
+      const result = builder.detectPathStyle(
+        'C:\\data\\vessels\\urn_mrn_signalk_uuid_xxx\\navigation\\' +
+          'speedOverGround\\signalk_20240615.parquet',
+        '\\'
+      );
+      expect(result.isFlat).to.equal(true);
+      expect(result.context).to.equal('vessels.urn:mrn:signalk:uuid:xxx');
+      expect(result.signalkPath).to.equal('navigation.speedOverGround');
+    });
+
+    // Use case: on POSIX a backslash is a legal filename character, so a file
+    // named with one must not gain an extra SignalK path segment.
+    it('keeps backslashes literal when the separator is a forward slash', () => {
+      const result = builder.detectPathStyle(
+        'data/vessels/abc/navigation/speedOverGround/odd\\name.parquet',
+        '/'
+      );
+      expect(result.isFlat).to.equal(true);
+      expect(result.signalkPath).to.equal('navigation.speedOverGround');
     });
   });
 

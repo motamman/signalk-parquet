@@ -32,7 +32,7 @@
 
 import * as fs from 'fs-extra';
 import * as path from 'path';
-import { glob } from 'glob';
+import { globIn } from '../utils/glob-in';
 import { ServerAPI } from '@signalk/server-api';
 import { DuckDBPool } from '../utils/duckdb-pool';
 import { HivePathBuilder, AggregationTier } from '../utils/hive-path-builder';
@@ -231,26 +231,12 @@ export async function cleanupStrandedCompactionTempFiles(
   baseDirectory: string
 ): Promise<{ removed: number }> {
   if (!(await fs.pathExists(baseDirectory))) return { removed: 0 };
-  const pattern = path.join(
-    baseDirectory,
-    'tier=*',
-    'context=*',
-    'path=*',
-    'year=*',
-    `${COMPACTION_OUTPUT_PREFIX}_*${COMPACTION_TEMP_SUFFIX}`
-  );
-  const aggregationPattern = path.join(
-    baseDirectory,
-    'tier=*',
-    'context=*',
-    'path=*',
-    'year=*',
-    'day=*',
-    '*_aggregated.parquet.tmp'
-  );
+  const pattern = `tier=*/context=*/path=*/year=*/${COMPACTION_OUTPUT_PREFIX}_*${COMPACTION_TEMP_SUFFIX}`;
+  const aggregationPattern =
+    'tier=*/context=*/path=*/year=*/day=*/*_aggregated.parquet.tmp';
   const stragglers = [
-    ...(await glob(pattern)),
-    ...(await glob(aggregationPattern)),
+    ...(await globIn(baseDirectory, pattern)),
+    ...(await globIn(baseDirectory, aggregationPattern)),
   ];
   let removed = 0;
   for (const f of stragglers) {
@@ -294,15 +280,10 @@ export async function recoverStrandedCompactionTrash(
   if (!(await fs.pathExists(baseDirectory))) {
     return { restored: 0, cleaned: 0, failed: 0 };
   }
-  const pattern = path.join(
+  const trashDirs = await globIn(
     baseDirectory,
-    'tier=*',
-    'context=*',
-    'path=*',
-    'year=*',
-    `${COMPACTION_TRASH_PREFIX}*`
+    `tier=*/context=*/path=*/year=*/${COMPACTION_TRASH_PREFIX}*`
   );
-  const trashDirs = await glob(pattern);
 
   let restored = 0;
   let cleaned = 0;
@@ -310,8 +291,9 @@ export async function recoverStrandedCompactionTrash(
 
   for (const trashDir of trashDirs) {
     const yearDir = path.dirname(trashDir);
-    const compactedSiblings = await glob(
-      path.join(yearDir, `${COMPACTION_OUTPUT_PREFIX}_*.parquet`)
+    const compactedSiblings = await globIn(
+      yearDir,
+      `${COMPACTION_OUTPUT_PREFIX}_*.parquet`
     );
 
     if (compactedSiblings.length > 0) {
@@ -331,7 +313,7 @@ export async function recoverStrandedCompactionTrash(
 
     // Pre-publish trash: restore by mirroring back to yearDir.
     try {
-      const trashedFiles = await glob(path.join(trashDir, '**', '*.parquet'));
+      const trashedFiles = await globIn(trashDir, '**/*.parquet');
       for (const trashed of trashedFiles) {
         const relative = path.relative(trashDir, trashed);
         const original = path.join(yearDir, relative);
@@ -537,9 +519,7 @@ export class CompactionService {
       return [];
     }
 
-    const yearDirs = await glob(
-      path.join(tierRoot, 'context=*', 'path=*', 'year=*')
-    );
+    const yearDirs = await globIn(tierRoot, 'context=*/path=*/year=*');
 
     // Stat each year directory; filter to actual directories matching
     // the cutoff and the optional path substring filter. Capped at
@@ -577,13 +557,12 @@ export class CompactionService {
         } => c !== null
       ),
       async ({ yearDir, parsed }) => {
-        const existing = await glob(
-          path.join(yearDir, `${COMPACTION_OUTPUT_PREFIX}_*.parquet`)
+        const existing = await globIn(
+          yearDir,
+          `${COMPACTION_OUTPUT_PREFIX}_*.parquet`
         );
         if (existing.length > 0) return null;
-        const parquetFiles = await glob(
-          path.join(yearDir, 'day=*', '*.parquet')
-        );
+        const parquetFiles = await globIn(yearDir, 'day=*/*.parquet');
         if (parquetFiles.length <= 1) return null;
         const sizes = await limiter.map(parquetFiles, f =>
           fs

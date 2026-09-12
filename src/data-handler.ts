@@ -936,7 +936,10 @@ async function listCloudKeys(
   return keys;
 }
 
-// Upload a single file to cloud (no HEAD check — caller handles dedup)
+/**
+ * Uploads one file to the cloud target. There is no HEAD check: the caller
+ * decides which files are missing.
+ */
 async function putToCloud(
   filePath: string,
   target: CloudTarget,
@@ -944,7 +947,11 @@ async function putToCloud(
 ): Promise<boolean> {
   if (!target.client || !PutObjectCommand) return false;
 
-  const relativePath = path.relative(config.outputDirectory, filePath);
+  // Object keys use forward slashes whatever the local OS.
+  const relativePath = path
+    .relative(config.outputDirectory, filePath)
+    .split(path.sep)
+    .join('/');
   let cloudKey = relativePath;
   if (target.keyPrefix) {
     const prefix = target.keyPrefix.endsWith('/')
@@ -976,13 +983,20 @@ async function putToCloud(
   }
 }
 
-// Get cloud key for a local file path
+/**
+ * Object key for a local file: its path under the output directory, with
+ * forward slashes, behind the target's key prefix.
+ */
 function getCloudKey(
   filePath: string,
   target: CloudTarget,
   config: PluginConfig
 ): string {
-  const relativePath = path.relative(config.outputDirectory, filePath);
+  // Object keys use forward slashes whatever the local OS.
+  const relativePath = path
+    .relative(config.outputDirectory, filePath)
+    .split(path.sep)
+    .join('/');
   if (target.keyPrefix) {
     const prefix = target.keyPrefix.endsWith('/')
       ? target.keyPrefix
@@ -992,7 +1006,10 @@ function getCloudKey(
   return relativePath;
 }
 
-// Upload missing hive files to cloud with batch concurrency
+/**
+ * Uploads the hive files that are not in the bucket yet, `concurrency` at a
+ * time, skipping side directories such as processed/ and quarantine/.
+ */
 async function uploadMissingFiles(
   localFiles: string[],
   existingKeys: Set<string>,
@@ -1007,9 +1024,11 @@ async function uploadMissingFiles(
     '/failed/',
     '/quarantine/',
   ];
-  const filtered = localFiles.filter(
-    f => !excludedDirs.some(dir => f.includes(dir))
-  );
+  // Compare with forward slashes: glob results are native paths.
+  const filtered = localFiles.filter(f => {
+    const posixPath = f.split(path.sep).join('/');
+    return !excludedDirs.some(dir => posixPath.includes(dir));
+  });
   const missing = filtered.filter(
     f => !existingKeys.has(getCloudKey(f, target, config))
   );
@@ -1033,7 +1052,10 @@ async function uploadMissingFiles(
   return uploaded;
 }
 
-// Upload all hive-partitioned parquet files to cloud (7-day lookback)
+/**
+ * Startup sync: uploads the hive-partitioned parquet files of the last seven
+ * days whose day directory has no objects in the bucket yet.
+ */
 export async function uploadAllConsolidatedFilesToS3(
   config: PluginConfig,
   state: PluginState,
@@ -1080,7 +1102,11 @@ export async function uploadAllConsolidatedFilesToS3(
         : `${target.keyPrefix}/`
       : '';
     for (const file of allLocalFiles) {
-      const rel = path.relative(config.outputDirectory, file);
+      // Forward slashes: the directory becomes an object key prefix.
+      const rel = path
+        .relative(config.outputDirectory, file)
+        .split(path.sep)
+        .join('/');
       if (!rel.startsWith('tier=raw')) continue;
       const dirPart = path.dirname(rel);
       prefixSet.add(`${basePrefix}${dirPart}/`);
@@ -1117,8 +1143,11 @@ export async function uploadAllConsolidatedFilesToS3(
       '/quarantine/',
     ];
     const filesToUpload = allLocalFiles.filter(f => {
-      if (excludedDirs.some(dir => f.includes(dir))) return false;
-      const rel = path.relative(config.outputDirectory, f);
+      const rel = path
+        .relative(config.outputDirectory, f)
+        .split(path.sep)
+        .join('/');
+      if (excludedDirs.some(dir => rel.includes(dir))) return false;
       // Strip tier segment to get context/path/year/day/
       const withoutTier = rel.replace(/^tier=[^/]+\//, '');
       const dirPart = path.dirname(withoutTier) + '/';

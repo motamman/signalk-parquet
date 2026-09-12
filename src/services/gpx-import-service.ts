@@ -21,7 +21,7 @@
 
 import * as fs from 'fs-extra';
 import * as path from 'path';
-import { glob } from 'glob';
+import { globIn } from '../utils/glob-in';
 import { ServerAPI } from '@signalk/server-api';
 import { DataRecord, ParquetWriter } from '../types';
 import { HivePathBuilder } from '../utils/hive-path-builder';
@@ -121,8 +121,9 @@ export class GpxImportService {
    * Scan a directory for .gpx files (non-destructive dry run).
    */
   async scan(sourceDirectory: string): Promise<GpxScanResult> {
-    const pattern = path.join(sourceDirectory, '**', '*.gpx');
-    const matches = await glob(pattern, { nocase: true });
+    const matches = await globIn(sourceDirectory, '**/*.gpx', {
+      nocase: true,
+    });
 
     const files: Array<{ path: string; size: number }> = [];
     let totalSize = 0;
@@ -217,8 +218,9 @@ export class GpxImportService {
       if (config.sourceFiles && config.sourceFiles.length > 0) {
         gpxFiles.push(...config.sourceFiles);
       } else if (config.sourceDirectory) {
-        const pattern = path.join(config.sourceDirectory, '**', '*.gpx');
-        const matches = await glob(pattern, { nocase: true });
+        const matches = await globIn(config.sourceDirectory, '**/*.gpx', {
+          nocase: true,
+        });
         gpxFiles.push(...matches);
       }
 

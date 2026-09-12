@@ -7,7 +7,7 @@
 
 import * as fs from 'fs-extra';
 import * as path from 'path';
-import { glob } from 'glob';
+import { globIn } from '../utils/glob-in';
 import { ServerAPI } from '@signalk/server-api';
 import { HivePathBuilder, AggregationTier } from '../utils/hive-path-builder';
 import { DuckDBPool } from '../utils/duckdb-pool';
@@ -50,6 +50,14 @@ export interface ScanResult {
   sourceStyle: 'flat' | 'mixed' | 'unknown';
 }
 
+// Side directories holding already-handled or rejected files; never migrated.
+const EXCLUDED_DIRS = [
+  '**/processed/**',
+  '**/repaired/**',
+  '**/failed/**',
+  '**/quarantine/**',
+];
+
 const migrationJobs = new Map<string, MigrationProgress>();
 const MIGRATION_JOB_TTL_MS = 30 * 60 * 1000; // 30 minutes
 
@@ -75,16 +83,9 @@ export class MigrationService {
    * Scan source directory for files to migrate
    */
   async scan(sourceDirectory: string): Promise<ScanResult> {
-    const pattern = path.join(sourceDirectory, '**', '*.parquet');
-    const files = await glob(pattern);
-
-    // Exclude processed/repaired directories
-    const excludedDirs = [
-      '/processed/',
-      '/repaired/',
-      '/failed/',
-      '/quarantine/',
-    ];
+    const files = await globIn(sourceDirectory, '**/*.parquet', {
+      ignore: EXCLUDED_DIRS,
+    });
 
     let totalSize = 0;
     let flatCount = 0;
@@ -92,11 +93,6 @@ export class MigrationService {
     const byPath = new Map<string, { count: number; size: number }>();
 
     for (const file of files) {
-      // Skip files in processed/repaired directories
-      if (excludedDirs.some(dir => file.includes(dir))) {
-        continue;
-      }
-
       try {
         const stats = await fs.stat(file);
         totalSize += stats.size;
@@ -211,22 +207,13 @@ export class MigrationService {
       progress.phase = 'scan';
       progress.status = 'scanning';
 
-      const pattern = path.join(config.sourceDirectory, '**', '*.parquet');
-      const files = await glob(pattern);
+      const files = await globIn(config.sourceDirectory, '**/*.parquet', {
+        ignore: EXCLUDED_DIRS,
+      });
 
-      // Filter to only flat-style files, excluding processed/repaired directories
-      const excludedDirs = [
-        '/processed/',
-        '/repaired/',
-        '/failed/',
-        '/quarantine/',
-      ];
+      // Filter to only flat-style files
       const flatFiles: string[] = [];
       for (const file of files) {
-        // Skip files in processed/repaired directories
-        if (excludedDirs.some(dir => file.includes(dir))) {
-          continue;
-        }
         const parsed = this.hivePathBuilder.detectPathStyle(file);
         if (parsed.isFlat) {
           flatFiles.push(file);
