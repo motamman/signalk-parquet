@@ -7,12 +7,18 @@
  * altitude) and written directly as parquet files, bypassing the SQLite
  * buffer (bulk historical load).
  *
+ * Files are streamed (#54): the tokenizer emits points as their elements
+ * complete and each (path, day) group appends to an open parquet writer,
+ * so peak memory is set by the number of open writers, not the file size.
+ *
  * Follows the same progress-tracking / cancellable-job pattern as
  * MigrationService.
  *
  * When adding a new SignalK path:
  *   1. Extend the GpxImportPath union below
- *   2. Append to DEFAULT_IMPORT_PATHS
+ *   2. Append an entry to GPX_IMPORT_PATH_OPTIONS (the admin UI builds its
+ *      checkboxes from it via GET /api/import/gpx/options, so nothing in
+ *      public/ needs editing)
  *   3. Add a case in pointToValue() that maps the <trkpt> to the value
  *      in SignalK units (m/s, radians, etc.)
  *   4. Extend the GpxPoint interface in gpx-parser.ts if a new tag must
@@ -23,10 +29,17 @@ import * as fs from 'fs-extra';
 import * as path from 'path';
 import { globIn } from '../utils/glob-in';
 import { ServerAPI } from '@signalk/server-api';
-import { DataRecord, ParquetWriter } from '../types';
+import { DataRecord, ParquetAppender, ParquetWriter } from '../types';
 import { HivePathBuilder } from '../utils/hive-path-builder';
-import { parseGpx, GpxPoint } from '../utils/gpx-parser';
-import { IMPORT_JOB_TTL_MS } from '../constants';
+import { GpxTokenizer, GpxPoint } from '../utils/gpx-parser';
+import {
+  IMPORT_JOB_TTL_MS,
+  GPX_IMPORT_MAX_OPEN_WRITERS,
+  GPX_IMPORT_OPEN_AFTER_RECORDS,
+  GPX_IMPORT_APPEND_BATCH,
+  GPX_IMPORT_PENDING_RECORDS_CAP,
+  GPX_IMPORT_CANCEL_CHECK_POINTS,
+} from '../constants';
 import { AggregationService } from './aggregation-service';
 
 export type GpxImportPath =
@@ -35,16 +48,59 @@ export type GpxImportPath =
   | 'navigation.courseOverGroundTrue'
   | 'navigation.gnss.antennaAltitude';
 
-export const DEFAULT_IMPORT_PATHS: GpxImportPath[] = [
-  'navigation.position',
-  'navigation.speedOverGround',
-  'navigation.courseOverGroundTrue',
-  'navigation.gnss.antennaAltitude',
+/** One importable SignalK path as offered to the admin UI (#55). */
+export interface GpxImportPathOption {
+  path: GpxImportPath;
+  /** Whether the UI ticks the box before the user touches it. */
+  defaultChecked: boolean;
+  /** The GPX element the value comes from, for the UI's hint text. */
+  from: string;
+  /** SignalK unit the value is stored in. */
+  unit: string;
+}
+
+/**
+ * The supported import paths with their UI metadata. Single source of truth:
+ * the route serves it as GET /api/import/gpx/options and the import page
+ * renders its checkboxes from the response.
+ */
+export const GPX_IMPORT_PATH_OPTIONS: readonly GpxImportPathOption[] = [
+  {
+    path: 'navigation.position',
+    defaultChecked: true,
+    from: '<trkpt lat/lon>',
+    unit: 'deg',
+  },
+  {
+    path: 'navigation.speedOverGround',
+    defaultChecked: true,
+    from: '<speed>',
+    unit: 'm/s',
+  },
+  {
+    path: 'navigation.courseOverGroundTrue',
+    defaultChecked: true,
+    from: '<course>',
+    unit: 'rad',
+  },
+  {
+    path: 'navigation.gnss.antennaAltitude',
+    defaultChecked: true,
+    from: '<ele>',
+    unit: 'm',
+  },
 ];
+
+export const DEFAULT_IMPORT_PATHS: GpxImportPath[] =
+  GPX_IMPORT_PATH_OPTIONS.map(option => option.path);
 
 export interface GpxImportConfig {
   sourceDirectory?: string; // Scan recursively for .gpx files
   sourceFiles?: string[]; // Explicit list (absolute paths). Used if set.
+  // Original filename per entry of sourceFiles, keyed by the path in that
+  // list. Uploads are staged under a de-duplicated name (#68); the name the
+  // user gave the file is what progress and the records' source.file show.
+  sourceNames?: Record<string, string>;
   targetDirectory: string; // Typically state.getDataDirPath()
   context: string; // SignalK context, e.g. 'vessels.urn:mrn:...'
   paths: GpxImportPath[]; // Which SK paths to emit per point
@@ -84,15 +140,25 @@ export interface GpxScanResult {
   files: Array<{ path: string; size: number }>;
 }
 
+/** Tunables for the streaming writer pool; defaults come from constants.ts. */
+export interface GpxImportServiceOptions {
+  /** Parquet writers allowed open at once. */
+  maxOpenWriters?: number;
+  /** Records a (path, day) group collects before its writer opens. */
+  openAfterRecords?: number;
+}
+
 const importJobs = new Map<string, GpxImportProgress>();
 
 function scheduleImportJobCleanup(jobId: string) {
+  // unref: a pending cleanup must not keep the process alive on its own
+  // (the plugin's host decides when to exit, and so does the test runner).
   setTimeout(() => {
     const job = importJobs.get(jobId);
     if (job && job.status !== 'running') {
       importJobs.delete(jobId);
     }
-  }, IMPORT_JOB_TTL_MS);
+  }, IMPORT_JOB_TTL_MS).unref();
 }
 
 export class GpxImportService {
@@ -100,6 +166,9 @@ export class GpxImportService {
   private readonly parquetWriter: ParquetWriter;
   private readonly hivePathBuilder: HivePathBuilder;
   private readonly aggregationService?: AggregationService;
+
+  private readonly maxOpenWriters: number;
+  private readonly openAfterRecords: number;
 
   // Per-job cancellation. A set (rather than a single flag) so concurrent
   // imports don't trample each other's state — cancelling one job never
@@ -109,12 +178,21 @@ export class GpxImportService {
   constructor(
     app: ServerAPI,
     parquetWriter: ParquetWriter,
-    aggregationService?: AggregationService
+    aggregationService?: AggregationService,
+    options: GpxImportServiceOptions = {}
   ) {
     this.app = app;
     this.parquetWriter = parquetWriter;
     this.hivePathBuilder = new HivePathBuilder();
     this.aggregationService = aggregationService;
+    this.maxOpenWriters = Math.max(
+      1,
+      options.maxOpenWriters ?? GPX_IMPORT_MAX_OPEN_WRITERS
+    );
+    this.openAfterRecords = Math.max(
+      1,
+      options.openAfterRecords ?? GPX_IMPORT_OPEN_AFTER_RECORDS
+    );
   }
 
   /**
@@ -260,7 +338,8 @@ export class GpxImportService {
         }
 
         const file = gpxFiles[i];
-        progress.currentFile = path.basename(file);
+        const displayName = config.sourceNames?.[file] ?? path.basename(file);
+        progress.currentFile = displayName;
         progress.processed = i + 1;
         progress.percent = Math.round(((i + 1) / gpxFiles.length) * 100);
         progress.phase = 'parse'; // reset before each file; importFile flips to 'write' once it starts emitting
@@ -270,6 +349,7 @@ export class GpxImportService {
           const imported = await this.importFile(
             jobId,
             file,
+            displayName,
             resolvedContext,
             config,
             progress,
@@ -348,8 +428,19 @@ export class GpxImportService {
   }
 
   /**
-   * Parse a single GPX file and write its points to the parquet store.
-   * Returns true if at least one parquet file was produced.
+   * Stream a single GPX file into the parquet store. Returns true if at
+   * least one parquet file was produced.
+   *
+   * Points are handled as the tokenizer emits them. Each (path, day)
+   * partition is a group in a GroupWriterPool: a group collects a first
+   * batch (the schema sample), opens a writer, and appends from then on.
+   * The pool caps open writers; an evicted group is closed into a finished
+   * file and reopens as a new file in the same partition if more points
+   * arrive for it. Cancellation closes what is open, so everything parsed
+   * so far is kept (a partial import counts).
+   *
+   * `displayName` is the filename recorded in each record's source.file:
+   * the user's original name for an upload, the basename otherwise.
    *
    * `touchedDays` is mutated to record each (year, day) partition this
    * file wrote into; the caller drives a post-import aggregation phase
@@ -358,115 +449,112 @@ export class GpxImportService {
   private async importFile(
     jobId: string,
     sourcePath: string,
+    displayName: string,
     resolvedContext: string,
     config: GpxImportConfig,
     progress: GpxImportProgress,
     metadataCache: Map<string, object | undefined>,
     touchedDays: Map<string, Date>
   ): Promise<boolean> {
-    const xml = await fs.readFile(sourcePath, 'utf8');
-    const parsed = parseGpx(xml);
-    progress.pointsParsed += parsed.totalPoints;
-
-    if (parsed.totalPoints === 0) {
-      return false;
-    }
-
-    // Flatten all trkpts across all tracks; keep only points with a timestamp
-    const allPoints: GpxPoint[] = [];
-    for (const trk of parsed.tracks) {
-      for (const pt of trk.points) {
-        if (pt.time) {
-          allPoints.push(pt);
-        }
-      }
-    }
-
-    if (allPoints.length === 0) {
-      return false;
-    }
-
-    // Group records by (signalkPath, dayKey) so each group becomes one parquet file.
-    // dayKey uses UTC year+dayOfYear which matches the Hive partition granularity.
-    type GroupKey = string; // `${signalkPath}|${year}|${dayOfYear}`
-    const groups = new Map<
-      GroupKey,
-      { records: DataRecord[]; signalkPath: GpxImportPath; anchor: Date }
-    >();
-
-    for (const pt of allPoints) {
-      const ts = pt.time!;
-      const year = ts.getUTCFullYear();
-      const dayOfYear = this.hivePathBuilder.getDayOfYear(ts);
-
-      for (const skPath of config.paths) {
-        const value = this.pointToValue(skPath, pt);
-        if (value === undefined) continue;
-
-        const record = this.buildRecord(
-          skPath,
+    const pool = new GroupWriterPool({
+      maxOpen: this.maxOpenWriters,
+      openAfter: this.openAfterRecords,
+      appendBatch: GPX_IMPORT_APPEND_BATCH,
+      pendingCap: GPX_IMPORT_PENDING_RECORDS_CAP,
+      openFile: async (group, firstBatch) => {
+        const finalPath = this.buildHiveFilePath(
+          config.targetDirectory,
           resolvedContext,
-          ts,
-          value,
-          config.sourceLabel,
-          path.basename(sourcePath),
-          metadataCache.get(skPath)
+          group.signalkPath,
+          group.anchor,
+          config.filenamePrefix
         );
-
-        const key: GroupKey = `${skPath}|${year}|${dayOfYear}`;
-        let group = groups.get(key);
-        if (!group) {
-          group = { records: [], signalkPath: skPath, anchor: ts };
-          groups.set(key, group);
-        }
-        group.records.push(record);
-        progress.pointsWritten++;
-      }
-    }
-
-    progress.phase = 'write';
-
-    for (const [, group] of groups) {
-      if (this.cancelledJobs.has(jobId)) return true; // partial import counts
-
-      const filePath = this.buildHiveFilePath(
-        config.targetDirectory,
-        resolvedContext,
-        group.signalkPath,
-        group.anchor,
-        config.filenamePrefix
-      );
-
-      await fs.ensureDir(path.dirname(filePath));
-      const tempFilePath = filePath + '.tmp';
-
-      try {
-        // ParquetWriter.writeRecords validates the file before returning
-        // (see validateParquetFile in parquet-writer.ts — checks minimum
-        // size and round-trips through the reader) and throws on failure.
-        // We don't re-validate here; on success the temp file is present
-        // and safe to atomic-rename to the final destination.
-        await this.parquetWriter.writeRecords(tempFilePath, group.records);
-        await fs.rename(tempFilePath, filePath);
-        progress.filesCreated.push(filePath);
-        progress.recordsWritten += group.records.length;
+        await fs.ensureDir(path.dirname(finalPath));
+        const tempPath = finalPath + '.tmp';
+        progress.phase = 'write';
+        const appender = await this.parquetWriter.openAppender(
+          tempPath,
+          firstBatch,
+          group.signalkPath
+        );
+        return { appender, finalPath, tempPath };
+      },
+      onClosed: (group, rows, finalPath) => {
+        progress.filesCreated.push(finalPath);
+        progress.recordsWritten += rows;
         // Record only after a successful write so a failed group doesn't
         // schedule aggregation for a partition we never produced.
         const dayKey = group.anchor.toISOString().slice(0, 10);
         if (!touchedDays.has(dayKey)) {
           touchedDays.set(dayKey, group.anchor);
         }
-      } catch (error) {
-        try {
-          await fs.remove(tempFilePath);
-        } catch {
-          // ignore cleanup failures
-        }
-        throw error;
+      },
+    });
+
+    const filesBefore = progress.filesCreated.length;
+    const tokenizer = new GpxTokenizer();
+    const stream = fs.createReadStream(sourcePath, {
+      encoding: 'utf8',
+      highWaterMark: 256 * 1024,
+    });
+
+    const handlePoint = async (pt: GpxPoint): Promise<void> => {
+      progress.pointsParsed++;
+      // Only points with a timestamp can be partitioned.
+      if (!pt.time) return;
+      const ts = pt.time;
+      const year = ts.getUTCFullYear();
+      const dayOfYear = this.hivePathBuilder.getDayOfYear(ts);
+
+      for (const skPath of config.paths) {
+        const value = this.pointToValue(skPath, pt);
+        if (value === undefined) continue;
+        const record = this.buildRecord(
+          skPath,
+          resolvedContext,
+          ts,
+          value,
+          config.sourceLabel,
+          displayName,
+          metadataCache.get(skPath)
+        );
+        await pool.add(`${skPath}|${year}|${dayOfYear}`, skPath, ts, record);
+        progress.pointsWritten++;
       }
+    };
+
+    let sinceCancelCheck = 0;
+    let cancelled = false;
+    try {
+      for await (const chunk of stream) {
+        for (const event of tokenizer.push(chunk as string)) {
+          if (event.type !== 'point') continue;
+          await handlePoint(event.point);
+          if (++sinceCancelCheck >= GPX_IMPORT_CANCEL_CHECK_POINTS) {
+            sinceCancelCheck = 0;
+            if (this.cancelledJobs.has(jobId)) {
+              cancelled = true;
+              break;
+            }
+          }
+        }
+        if (cancelled) break;
+      }
+      if (!cancelled) {
+        for (const event of tokenizer.end()) {
+          if (event.type === 'point') await handlePoint(event.point);
+        }
+      }
+      // Cancelled or not, what was parsed is written: a partial import counts.
+      await pool.finishAll();
+    } catch (error) {
+      await pool.abortAll();
+      throw error;
+    } finally {
+      stream.destroy();
     }
 
-    return groups.size > 0;
+    return progress.filesCreated.length > filesBefore;
   }
 
   /**
@@ -646,5 +734,166 @@ export class GpxImportService {
 
   getJobIds(): string[] {
     return Array.from(importJobs.keys());
+  }
+}
+
+/** One (path, day) partition being written during a file's import. */
+interface WriterGroup {
+  key: string;
+  signalkPath: GpxImportPath;
+  anchor: Date;
+  /** Records not yet handed to the appender. */
+  pending: DataRecord[];
+  appender?: ParquetAppender;
+  finalPath?: string;
+  tempPath?: string;
+  /** Monotonic counter of the last add, for LRU eviction. */
+  lastUse: number;
+}
+
+interface GroupWriterPoolOptions {
+  maxOpen: number;
+  openAfter: number;
+  appendBatch: number;
+  pendingCap: number;
+  openFile: (
+    group: WriterGroup,
+    firstBatch: DataRecord[]
+  ) => Promise<{
+    appender: ParquetAppender;
+    finalPath: string;
+    tempPath: string;
+  }>;
+  onClosed: (group: WriterGroup, rows: number, finalPath: string) => void;
+}
+
+/**
+ * Routes records to per-partition parquet writers while a file streams in,
+ * keeping at most `maxOpen` writers open and at most `pendingCap` records
+ * waiting for one.
+ *
+ * A group opens once it holds `openAfter` records (the schema sample) or
+ * when the pending total passes the cap, whichever is first. Opening past
+ * the writer limit closes the least recently used group into a finished
+ * file; if that partition gets more records later, a new group opens a new
+ * file next to it. `finishAll()` closes everything (opening groups that
+ * never reached the sample size), `abortAll()` discards open files.
+ */
+class GroupWriterPool {
+  private readonly groups = new Map<string, WriterGroup>();
+  private pendingTotal = 0;
+  private openCount = 0;
+  private tick = 0;
+
+  constructor(private readonly options: GroupWriterPoolOptions) {}
+
+  async add(
+    key: string,
+    signalkPath: GpxImportPath,
+    anchor: Date,
+    record: DataRecord
+  ): Promise<void> {
+    let group = this.groups.get(key);
+    if (!group) {
+      group = { key, signalkPath, anchor, pending: [], lastUse: 0 };
+      this.groups.set(key, group);
+    }
+    group.pending.push(record);
+    group.lastUse = ++this.tick;
+
+    if (group.appender) {
+      if (group.pending.length >= this.options.appendBatch) {
+        await this.flush(group);
+      }
+      return;
+    }
+    this.pendingTotal++;
+    if (group.pending.length >= this.options.openAfter) {
+      await this.open(group);
+    } else if (this.pendingTotal > this.options.pendingCap) {
+      await this.open(this.largestWaiting());
+    }
+  }
+
+  async finishAll(): Promise<void> {
+    for (const group of Array.from(this.groups.values())) {
+      await this.finish(group);
+    }
+  }
+
+  async abortAll(): Promise<void> {
+    for (const group of Array.from(this.groups.values())) {
+      if (group.appender) {
+        await group.appender.abort();
+      }
+    }
+    this.groups.clear();
+    this.pendingTotal = 0;
+    this.openCount = 0;
+  }
+
+  private largestWaiting(): WriterGroup {
+    let largest: WriterGroup | undefined;
+    for (const group of this.groups.values()) {
+      if (group.appender) continue;
+      if (!largest || group.pending.length > largest.pending.length) {
+        largest = group;
+      }
+    }
+    // pendingTotal > 0 guarantees at least one waiting group.
+    return largest!;
+  }
+
+  private leastRecentlyUsedOpen(): WriterGroup | undefined {
+    let lru: WriterGroup | undefined;
+    for (const group of this.groups.values()) {
+      if (!group.appender) continue;
+      if (!lru || group.lastUse < lru.lastUse) {
+        lru = group;
+      }
+    }
+    return lru;
+  }
+
+  private async open(group: WriterGroup): Promise<void> {
+    if (this.openCount >= this.options.maxOpen) {
+      const evict = this.leastRecentlyUsedOpen();
+      if (evict) await this.finish(evict);
+    }
+    const firstBatch = group.pending;
+    group.pending = [];
+    this.pendingTotal -= firstBatch.length;
+    const opened = await this.options.openFile(group, firstBatch);
+    group.appender = opened.appender;
+    group.finalPath = opened.finalPath;
+    group.tempPath = opened.tempPath;
+    this.openCount++;
+  }
+
+  private async flush(group: WriterGroup): Promise<void> {
+    const batch = group.pending;
+    group.pending = [];
+    await group.appender!.append(batch);
+  }
+
+  private async finish(group: WriterGroup): Promise<void> {
+    // finishAll() walks a snapshot; a group may already have been closed by
+    // an eviction that opening an earlier group triggered.
+    if (!this.groups.has(group.key)) return;
+    if (!group.appender) {
+      await this.open(group);
+    }
+    if (group.pending.length > 0) {
+      await this.flush(group);
+    }
+    const appender = group.appender!;
+    const rows = appender.rowCount;
+    // close() validates and throws (quarantining the file) on failure; the
+    // caller aborts the rest of the pool in that case.
+    await appender.close();
+    this.openCount--;
+    this.groups.delete(group.key);
+    await fs.rename(group.tempPath!, group.finalPath!);
+    this.options.onClosed(group, rows, group.finalPath!);
   }
 }

@@ -677,7 +677,26 @@ export interface ParquetWriter {
     nextBatch: () => DataRecord[],
     currentPath?: string
   ): Promise<string>;
+  openAppender(
+    filepath: string,
+    firstBatch: DataRecord[],
+    currentPath?: string
+  ): Promise<ParquetAppender>;
   getSchemaService(): SchemaService | undefined;
+}
+
+/**
+ * An open parquet file taking rows incrementally (see
+ * ParquetWriter.openAppender). Exactly one of close() or abort() ends it.
+ */
+export interface ParquetAppender {
+  /** Rows written so far, including the batch it was opened with. */
+  readonly rowCount: number;
+  append(records: DataRecord[]): Promise<void>;
+  /** Finish and validate the file; throws (and quarantines) if invalid. */
+  close(): Promise<string>;
+  /** Discard the file. */
+  abort(): Promise<void>;
 }
 
 // S3 Related Types

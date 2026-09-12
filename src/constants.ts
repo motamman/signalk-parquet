@@ -19,16 +19,46 @@ export const POSITION_MAX_SPEED_MPS = 25;
 /**
  * GPX import: per-file upload size cap, in bytes.
  *
- * The whole file is read into memory and then fanned out into one
- * DataRecord per (point x selected SK path), so the conservative cap
- * is much lower than what multer's wire limit would allow. A 50 MB
- * GPX is roughly half a million trkpts; with four default paths that
- * peaks around 2 GB of working set, which is the upper bound for a
- * Pi-class host. Raise only after the importer streams instead of
- * buffering (parquet-writer.ts:writeParquetBatched is available for
- * this; it just isn't wired into the import path yet).
+ * The importer streams the file and writes parquet as points arrive (#54),
+ * so peak memory no longer scales with file size: it is bounded by the open
+ * writers (GPX_IMPORT_MAX_OPEN_WRITERS, one row group each) plus the
+ * records waiting for a writer to open (GPX_IMPORT_PENDING_RECORDS_CAP).
+ * The cap is now a sanity guard against a runaway upload filling the disk,
+ * not a memory limit. Multer also stages the upload on disk, never in RAM.
  */
-export const GPX_UPLOAD_MAX_FILE_BYTES = 50 * 1024 * 1024;
+export const GPX_UPLOAD_MAX_FILE_BYTES = 500 * 1024 * 1024;
+
+/**
+ * GPX import: how many (path, day) parquet writers may be open at once.
+ * Each holds one row group (a few thousand rows) in memory. A chronological
+ * track touches one or two groups at a time; a file that jumps between
+ * days evicts the least recently used writer, and a later point for that
+ * day opens a new file in the same partition, which the hive layout allows.
+ */
+export const GPX_IMPORT_MAX_OPEN_WRITERS = 16;
+
+/**
+ * GPX import: records a group collects before its writer opens. The parquet
+ * schema is detected from this first batch, so it wants a reasonable sample.
+ */
+export const GPX_IMPORT_OPEN_AFTER_RECORDS = 500;
+
+/**
+ * GPX import: records appended per call once a writer is open.
+ */
+export const GPX_IMPORT_APPEND_BATCH = 500;
+
+/**
+ * GPX import: total records allowed to wait for a writer across all groups.
+ * Past this, the largest waiting group is opened early so a file that
+ * scatters points over many days cannot accumulate a full day per group.
+ */
+export const GPX_IMPORT_PENDING_RECORDS_CAP = 20_000;
+
+/**
+ * GPX import: points between cancellation checks while streaming a file.
+ */
+export const GPX_IMPORT_CANCEL_CHECK_POINTS = 1000;
 
 /**
  * GPX import: maximum number of files per multipart upload request.

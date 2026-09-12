@@ -30,6 +30,47 @@ function getSelectedGpxPaths() {
     .map(cb => cb.value);
 }
 
+// Build the path checkboxes from the server's list so adding a path is a
+// one-place change (#55). Each option carries the GPX element it comes from
+// and the unit it is stored in, shown as a hint next to the path.
+async function loadGpxPathOptions() {
+  const container = document.getElementById('gpxPathOptions');
+  if (!container) return;
+  try {
+    const response = await fetch(
+      '/plugins/signalk-parquet/api/import/gpx/options'
+    );
+    if (!response.ok) {
+      throw new Error(await explainHttpError(response));
+    }
+    const data = await response.json();
+    if (!data.success || !Array.isArray(data.paths)) {
+      throw new Error(data.error || 'unexpected response');
+    }
+    container.textContent = '';
+    for (const option of data.paths) {
+      const label = document.createElement('label');
+      label.style.fontWeight = 'normal';
+      const checkbox = document.createElement('input');
+      checkbox.type = 'checkbox';
+      checkbox.className = 'gpxPath';
+      checkbox.value = option.path;
+      checkbox.checked = !!option.defaultChecked;
+      label.appendChild(checkbox);
+      label.appendChild(document.createTextNode(` ${option.path}`));
+      const hint = document.createElement('small');
+      hint.style.color = '#999';
+      hint.style.marginLeft = '6px';
+      hint.textContent = `from ${option.from}, stored in ${option.unit}`;
+      label.appendChild(hint);
+      container.appendChild(label);
+    }
+  } catch (error) {
+    container.textContent = `Could not load the path list: ${error.message}`;
+    container.style.color = '#c62828';
+  }
+}
+
 function formatBytes(bytes) {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
@@ -165,7 +206,7 @@ async function explainHttpError(response) {
     return 'Not logged in. Open the Signal K admin UI, log in, then try again from this tab.';
   }
   if (response.status === 413) {
-    return 'Upload too large (over 200 MB per file or 500 files total).';
+    return 'Upload too large (over 500 MB per file or 500 files total).';
   }
   try {
     const d = await response.json();
@@ -525,6 +566,7 @@ window.cancelGpxImport = cancelGpxImport;
 
 document.addEventListener('DOMContentLoaded', () => {
   initGpxDropZone();
+  loadGpxPathOptions();
   refreshStartButtonState();
 
   if (currentGpxImportJobId) {

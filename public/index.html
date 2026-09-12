@@ -3937,43 +3937,12 @@
 
               <div class="form-group">
                 <label>Paths to emit per track point</label>
-                <div style="display: flex; flex-direction: column; gap: 5px">
-                  <label style="font-weight: normal">
-                    <input
-                      type="checkbox"
-                      class="gpxPath"
-                      value="navigation.position"
-                      checked
-                    />
-                    navigation.position
-                  </label>
-                  <label style="font-weight: normal">
-                    <input
-                      type="checkbox"
-                      class="gpxPath"
-                      value="navigation.speedOverGround"
-                      checked
-                    />
-                    navigation.speedOverGround
-                  </label>
-                  <label style="font-weight: normal">
-                    <input
-                      type="checkbox"
-                      class="gpxPath"
-                      value="navigation.courseOverGroundTrue"
-                      checked
-                    />
-                    navigation.courseOverGroundTrue
-                  </label>
-                  <label style="font-weight: normal">
-                    <input
-                      type="checkbox"
-                      class="gpxPath"
-                      value="navigation.gnss.antennaAltitude"
-                      checked
-                    />
-                    navigation.gnss.antennaAltitude
-                  </label>
+                <!-- Filled from GET /api/import/gpx/options by import.js -->
+                <div
+                  id="gpxPathOptions"
+                  style="display: flex; flex-direction: column; gap: 5px"
+                >
+                  <span style="color: #999">Loading paths…</span>
                 </div>
                 <small style="color: #666; display: block; margin-top: 6px">
                   Values are stored in SignalK's canonical units (m/s, rad, m).

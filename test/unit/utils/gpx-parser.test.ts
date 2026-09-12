@@ -6,7 +6,11 @@
  * independent), and the exact behaviour of the regex edge cases.
  */
 import { expect } from 'chai';
-import { parseGpx } from '../../../src/utils/gpx-parser';
+import {
+  parseGpx,
+  collect,
+  GpxTokenizer,
+} from '../../../src/utils/gpx-parser';
 
 describe('parseGpx', () => {
   describe('minimal plain GPX', () => {
@@ -290,28 +294,43 @@ describe('parseGpx', () => {
       expect(result.tracks[0].points[0].time).to.equal(undefined);
     });
 
-    it('merges a self-closing point into the following paired point (documents current behaviour)', () => {
-      // QUIRK: TRKPT_RE tries the paired-tag alternative first. For a
-      // self-closing trkpt FOLLOWED by a paired trkpt, `<trkpt\b([^>]*)>`
-      // consumes the trailing "/" into the attribute group and the lazy inner
-      // match runs to the next </trkpt>, swallowing the second point.
+    it('keeps a self-closing point and the paired point that follows it as two points (#70)', () => {
+      // Regression: with the paired alternative tried first, `<trkpt\b([^>]*)>`
+      // consumed the trailing "/" of the self-closing tag and the lazy inner
+      // match ran to the next </trkpt>, so these two points collapsed into
+      // one carrying the first point's coordinates and the second's time.
       // Input:
       //   <trkpt lat="1" lon="2"/>
       //   <trkpt lat="3" lon="4"><time>2024-01-01T00:00:00Z</time></trkpt>
-      // Output: ONE point with the first point's coordinates and the second
-      // point's time. Real exports use a single style throughout, so this
-      // only bites on hand-mixed files.
+      // Output: two points, each with its own coordinates and time.
       const xml = `<gpx><trk><trkseg>
         <trkpt lat="1" lon="2"/>
         <trkpt lat="3" lon="4"><time>2024-01-01T00:00:00Z</time></trkpt>
       </trkseg></trk></gpx>`;
       const result = parseGpx(xml);
 
-      expect(result.totalPoints).to.equal(1);
-      const pt = result.tracks[0].points[0];
-      expect(pt.latitude).to.equal(1);
-      expect(pt.longitude).to.equal(2);
-      expect(pt.time?.toISOString()).to.equal('2024-01-01T00:00:00.000Z');
+      expect(result.totalPoints).to.equal(2);
+      const [first, second] = result.tracks[0].points;
+      expect([first.latitude, first.longitude]).to.deep.equal([1, 2]);
+      expect(first.time).to.equal(undefined);
+      expect([second.latitude, second.longitude]).to.deep.equal([3, 4]);
+      expect(second.time?.toISOString()).to.equal('2024-01-01T00:00:00.000Z');
+    });
+
+    it('keeps a paired point followed by a self-closing point as two points', () => {
+      const xml = `<gpx><trk><trkseg>
+        <trkpt lat="3" lon="4"><time>2024-01-01T00:00:00Z</time></trkpt>
+        <trkpt lat="1" lon="2"/>
+      </trkseg></trk></gpx>`;
+      const result = parseGpx(xml);
+
+      expect(result.totalPoints).to.equal(2);
+      expect(
+        result.tracks[0].points.map(p => [p.latitude, p.longitude])
+      ).to.deep.equal([
+        [3, 4],
+        [1, 2],
+      ]);
     });
   });
 
@@ -412,5 +431,74 @@ describe('parseGpx', () => {
         '2024-08-10T13:01:05.000Z'
       );
     });
+  });
+});
+
+describe('GpxTokenizer (streaming, #54)', () => {
+  const garmin = `<?xml version="1.0" encoding="UTF-8"?>
+<ns3:gpx xmlns:ns3="http://www.topografix.com/GPX/1/1" version="1.1" creator="Garmin Connect">
+  <ns3:metadata><ns3:time>2024-08-10T12:59:00.000Z</ns3:time></ns3:metadata>
+  <ns3:trk>
+    <ns3:name>Lake Zurich evening sail</ns3:name>
+    <ns3:trkseg>
+      <ns3:trkpt lat="47.3438" lon="8.5573"><ns3:ele>406.0</ns3:ele><ns3:time>2024-08-10T13:00:05.000Z</ns3:time><ns3:speed>2.57</ns3:speed><ns3:course>184.5</ns3:course></ns3:trkpt>
+      <ns3:trkpt lat="47.3431" lon="8.5570"><ns3:time>2024-08-10T13:00:35.000Z</ns3:time></ns3:trkpt>
+      <ns3:trkpt lat="47.3424" lon="8.5566"/>
+    </ns3:trkseg>
+  </ns3:trk>
+  <ns3:trk><ns3:trkseg><ns3:trkpt lat="1" lon="2"><ns3:time>2024-08-11T13:00:05.000Z</ns3:time></ns3:trkpt></ns3:trkseg></ns3:trk>
+</ns3:gpx>`;
+  const mixed = `<gpx><trk><trkseg>
+        <trkpt lat="1" lon="2"/>
+        <trkpt lat="3" lon="4"><time>2024-01-01T00:00:00Z</time></trkpt>
+        <trkpt lat="5" lon="6" />
+      </trkseg></trk><trkpt lat="9" lon="9"/><trk><name>Second</name><trkseg><trkpt lat="7" lon="8"></trkpt></trkseg></trk></gpx>`;
+
+  /** Feed `xml` to a tokenizer in fixed-size chunks and collect the result. */
+  function parseInChunks(xml: string, size: number) {
+    const tokenizer = new GpxTokenizer();
+    const events = [];
+    for (let i = 0; i < xml.length; i += size) {
+      events.push(...tokenizer.push(xml.slice(i, i + size)));
+    }
+    events.push(...tokenizer.end());
+    return collect(events);
+  }
+
+  for (const size of [1, 3, 7, 64, 1000]) {
+    it(`gives the same result as parseGpx when fed ${size}-character chunks`, () => {
+      expect(parseInChunks(garmin, size)).to.deep.equal(parseGpx(garmin));
+      expect(parseInChunks(mixed, size)).to.deep.equal(parseGpx(mixed));
+      // Sanity: the fixtures exercise something.
+      expect(parseGpx(garmin).totalPoints).to.equal(4);
+      expect(parseGpx(mixed).totalPoints).to.equal(4);
+      expect(parseGpx(mixed).tracks[1].name).to.equal('Second');
+    });
+  }
+
+  it('emits a point only once its element is complete', () => {
+    const tokenizer = new GpxTokenizer();
+    const first = tokenizer.push('<trk><trkpt lat="1" lon="2"><ti');
+    expect(first).to.deep.equal([{ type: 'track' }]);
+    const second = tokenizer.push('me>2024-01-01T00:00:00Z</time></trkpt></trk>');
+    expect(second.length).to.equal(1);
+    expect(second[0].type).to.equal('point');
+    expect(tokenizer.end()).to.deep.equal([]);
+  });
+
+  it('takes the first <name> of a track but not one inside a point', () => {
+    const xml =
+      '<trk><trkpt lat="1" lon="2"><name>fix</name></trkpt><name>Track</name></trk>';
+    const result = parseGpx(xml);
+    expect(result.tracks[0].name).to.equal('Track');
+    expect(result.totalPoints).to.equal(1);
+  });
+
+  it('skips an unterminated point at the end of input instead of waiting forever', () => {
+    const tokenizer = new GpxTokenizer();
+    expect(tokenizer.push('<trk><trkpt lat="1" lon="2"><time>2024')).to.deep.equal([
+      { type: 'track' },
+    ]);
+    expect(tokenizer.end()).to.deep.equal([]);
   });
 });

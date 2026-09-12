@@ -40,9 +40,11 @@ import {
 } from './types';
 import { MigrationService } from './services/migration-service';
 import { GPX_UPLOAD_MAX_FILE_BYTES, GPX_UPLOAD_MAX_FILES } from './constants';
+import { uploadFilename } from './utils/upload-filename';
 import {
   GpxImportService,
   DEFAULT_IMPORT_PATHS,
+  GPX_IMPORT_PATH_OPTIONS,
   GpxImportPath,
 } from './services/gpx-import-service';
 import {
@@ -3991,6 +3993,12 @@ export function registerApiRoutes(
   }
   const uploadSessions = new WeakMap<express.Request, UploadSession>();
 
+  // The importable paths with their UI metadata (#55). The import page
+  // builds its checkboxes from this so the list lives in one place.
+  router.get('/api/import/gpx/options', (_req, res) => {
+    res.json({ success: true, paths: GPX_IMPORT_PATH_OPTIONS });
+  });
+
   // Scan a directory for .gpx files
   router.post('/api/import/gpx/scan', async (req, res) => {
     try {
@@ -4171,10 +4179,10 @@ export function registerApiRoutes(
       }
     },
     filename: (_req, file, cb) => {
-      // Preserve original filename so the import log is informative; strip
-      // path components to defeat any path-traversal via the upload name.
-      const safe = path.basename(file.originalname).replace(/[^\w.-]/g, '_');
-      cb(null, safe);
+      // Sanitised stem plus a random suffix: two uploads in one request
+      // whose names collide after sanitising must not overwrite each other
+      // (#68). The original name travels separately via sourceNames.
+      cb(null, uploadFilename(file.originalname));
     },
   });
 
@@ -4244,6 +4252,9 @@ export function registerApiRoutes(
 
         const jobId = await getGpxImportService().import({
           sourceFiles: files.map(f => f.path),
+          sourceNames: Object.fromEntries(
+            files.map(f => [f.path, path.basename(f.originalname)])
+          ),
           targetDirectory: state.getDataDirPath(),
           context: resolved.context,
           paths: resolved.paths,

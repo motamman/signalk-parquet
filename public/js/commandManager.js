@@ -1,4 +1,12 @@
 import { getPluginPath } from './utils.js';
+import {
+  loadThresholdUnit,
+  hasThresholdUnit,
+  unitFor,
+  toBaseValue,
+  toDisplayValue,
+  describeThresholdValue,
+} from './thresholdUnits.js';
 
 let editingThresholds = [];
 let addingThresholds = [];
@@ -757,6 +765,7 @@ export async function showEditCommandForm(commandName) {
     // Populate thresholds configuration (multiple thresholds supported)
     editingThresholds = command.thresholds ? [...command.thresholds] : [];
     displayThresholdsList();
+    warmThresholdUnits(editingThresholds, displayThresholdsList);
 
     setupEditFormFieldListeners();
     attachEditFormToRow(command.command);
@@ -1219,6 +1228,16 @@ function updateValueFields(operatorSelectId, valueContainerId, dataType) {
   const container = document.getElementById(valueContainerId);
   if (!container) return;
 
+  // Values are entered in the user's display unit (#74) and converted to
+  // the path's base unit on save; the hint says which is which.
+  const unit = unitFor(
+    document.getElementById(operatorSelectId)?.dataset.watchPath,
+    dataType
+  );
+  const unitHint = unit
+    ? `<div style=\"font-size: 0.85em; color: #666; margin-top: 5px;\">💡 Enter values in ${unit.symbol} (stored as ${unit.baseUnit})</div>`
+    : '';
+
   // Clear existing content
   container.innerHTML = '';
 
@@ -1245,7 +1264,7 @@ function updateValueFields(operatorSelectId, valueContainerId, dataType) {
                     <input type="number" id="${valueContainerId}_max" step="any" style="width: 100%;">
                 </div>
             </div>
-            ${dataType === 'angular' ? '<div style="font-size: 0.85em; color: #666; margin-top: 5px;">💡 Enter values in degrees (will be converted to radians)</div>' : ''}
+            ${unitHint}
         `;
     return;
   }
@@ -1422,11 +1441,10 @@ function updateValueFields(operatorSelectId, valueContainerId, dataType) {
   }
 
   // Numeric operators (gt, lt, eq, ne)
-  const isAngular = dataType === 'angular';
   container.innerHTML = `
         <label>Value:</label>
         <input type="number" id="${valueContainerId}_value" step="any" placeholder="Enter value" style="width: 100%;">
-        ${isAngular ? '<div style="font-size: 0.85em; color: #666; margin-top: 5px;">💡 Enter value in degrees (will be converted to radians)</div>' : ''}
+        ${unitHint}
     `;
 }
 
@@ -1531,6 +1549,8 @@ async function populateThresholdPaths() {
       if (this.value) {
         const typeInfo = await detectPathType(this.value);
         updateOperatorDropdown('newThresholdOperator', typeInfo.dataType);
+        await loadThresholdUnit(this.value, typeInfo.dataType);
+        document.getElementById('newThresholdOperator').dataset.watchPath = this.value;
         updateValueFields(
           'newThresholdOperator',
           'newThresholdValueGroup',
@@ -1549,6 +1569,8 @@ async function populateThresholdPaths() {
       if (this.value) {
         const typeInfo = await detectPathType(this.value);
         updateOperatorDropdown('newThresholdOperator', typeInfo.dataType);
+        await loadThresholdUnit(this.value, typeInfo.dataType);
+        document.getElementById('newThresholdOperator').dataset.watchPath = this.value;
         updateValueFields(
           'newThresholdOperator',
           'newThresholdValueGroup',
@@ -1620,6 +1642,7 @@ export function saveNewThreshold() {
     alert('Please select or enter a SignalK path');
     return;
   }
+  const unit = unitFor(path, dataType);
 
   // Create new threshold
   const threshold = {
@@ -1639,12 +1662,9 @@ export function saveNewThreshold() {
     }
     threshold.valueMin = parseFloat(min);
     threshold.valueMax = parseFloat(max);
-
-    // Convert degrees to radians for angular values
-    if (dataType === 'angular') {
-      threshold.valueMin = threshold.valueMin * (Math.PI / 180);
-      threshold.valueMax = threshold.valueMax * (Math.PI / 180);
-    }
+    // Entered in the display unit, stored in the base unit (#74).
+    threshold.valueMin = toBaseValue(unit, threshold.valueMin);
+    threshold.valueMax = toBaseValue(unit, threshold.valueMax);
   } else if (operator === 'withinRadius' || operator === 'outsideRadius') {
     const useHomePort = document.getElementById(
       'newThresholdValueGroup_useHomePort'
@@ -1750,12 +1770,8 @@ export function saveNewThreshold() {
         alert('Please enter a valid numeric value');
         return;
       }
-      threshold.value = numValue;
-
-      // Convert degrees to radians for angular values
-      if (dataType === 'angular') {
-        threshold.value = threshold.value * (Math.PI / 180);
-      }
+      // Entered in the display unit, stored in the base unit (#74).
+      threshold.value = toBaseValue(unit, numValue);
     }
   }
 
@@ -1781,6 +1797,24 @@ export function saveNewThreshold() {
   markEditFormDirty();
 }
 
+/**
+ * Load the display unit for every path in `thresholds` that has not been
+ * looked up yet, then re-render, so a list first drawn with raw base-unit
+ * values shows converted ones once the units plugin has answered (#74).
+ */
+async function warmThresholdUnits(thresholds, rerender) {
+  const paths = [...new Set(thresholds.map(t => t.watchPath).filter(Boolean))];
+  const missing = paths.filter(p => !hasThresholdUnit(p));
+  if (missing.length === 0) return;
+  await Promise.all(
+    missing.map(async p => {
+      const typeInfo = await detectPathType(p);
+      await loadThresholdUnit(p, typeInfo.dataType);
+    })
+  );
+  rerender();
+}
+
 function displayThresholdsList() {
   const container = document.getElementById('thresholdsList');
 
@@ -1796,7 +1830,7 @@ function displayThresholdsList() {
 
     // Format description based on operator type
     if (threshold.operator === 'range') {
-      description = `${threshold.valueMin} to ${threshold.valueMax}`;
+      description = `${describeThresholdValue(threshold.watchPath, threshold.valueMin)} to ${describeThresholdValue(threshold.watchPath, threshold.valueMax)}`;
     } else if (
       threshold.operator === 'withinRadius' ||
       threshold.operator === 'outsideRadius'
@@ -1837,7 +1871,7 @@ function displayThresholdsList() {
           endsWith: 'ends with',
           stringEquals: 'equals',
         }[threshold.operator] || threshold.operator;
-      description = `${operatorSymbol} ${threshold.value !== undefined ? threshold.value : ''}`;
+      description = `${operatorSymbol} ${threshold.value !== undefined ? describeThresholdValue(threshold.watchPath, threshold.value) : ''}`;
     }
 
     const action = threshold.activateOnMatch ? 'ON' : 'OFF';
@@ -1992,6 +2026,9 @@ async function loadThresholdIntoModal(threshold) {
 
   // Detect path type and update dropdown (same logic as add flow)
   const typeInfo = await detectPathType(threshold.watchPath);
+  await loadThresholdUnit(threshold.watchPath, typeInfo.dataType);
+  document.getElementById('thresholdOperator').dataset.watchPath =
+    threshold.watchPath;
   updateOperatorDropdown('thresholdOperator', typeInfo.dataType);
   updateValueFields(
     'thresholdOperator',
@@ -2031,11 +2068,21 @@ async function loadThresholdIntoModal(threshold) {
 }
 
 function populateThresholdValues(threshold) {
+  // Stored values are in the base unit; the fields show the display unit
+  // (#74). Before this, an angular threshold came back as radians and was
+  // converted to radians again on save.
+  const unit = unitFor(
+    threshold.watchPath,
+    document.getElementById('thresholdOperator')?.dataset.pathDataType ||
+      'unknown'
+  );
+  const shown = v =>
+    v === undefined || v === null ? '' : toDisplayValue(unit, v);
   if (threshold.operator === 'range') {
     const minInput = document.getElementById('thresholdValueGroup_min');
     const maxInput = document.getElementById('thresholdValueGroup_max');
-    if (minInput) minInput.value = threshold.valueMin || '';
-    if (maxInput) maxInput.value = threshold.valueMax || '';
+    if (minInput) minInput.value = shown(threshold.valueMin);
+    if (maxInput) maxInput.value = shown(threshold.valueMax);
   } else if (
     threshold.operator === 'withinRadius' ||
     threshold.operator === 'outsideRadius'
@@ -2115,7 +2162,7 @@ function populateThresholdValues(threshold) {
   ) {
     const valueInput = document.getElementById('thresholdValueGroup_value');
     if (valueInput) {
-      valueInput.value = threshold.value;
+      valueInput.value = shown(threshold.value);
     }
   }
 }
@@ -2171,6 +2218,7 @@ function buildThresholdFromModal() {
     alert('Please select or enter a SignalK path');
     return null;
   }
+  const unit = unitFor(watchPath, dataType);
 
   const threshold = {
     watchPath,
@@ -2189,10 +2237,9 @@ function buildThresholdFromModal() {
     }
     threshold.valueMin = parseFloat(min);
     threshold.valueMax = parseFloat(max);
-    if (dataType === 'angular') {
-      threshold.valueMin = threshold.valueMin * (Math.PI / 180);
-      threshold.valueMax = threshold.valueMax * (Math.PI / 180);
-    }
+    // Entered in the display unit, stored in the base unit (#74).
+    threshold.valueMin = toBaseValue(unit, threshold.valueMin);
+    threshold.valueMax = toBaseValue(unit, threshold.valueMax);
   } else if (operator === 'withinRadius' || operator === 'outsideRadius') {
     const useHomePort = document.getElementById(
       'thresholdValueGroup_useHomePort'
@@ -2279,10 +2326,8 @@ function buildThresholdFromModal() {
     if (isNaN(numValue)) {
       threshold.value = valueInput.value;
     } else {
-      threshold.value = numValue;
-      if (dataType === 'angular') {
-        threshold.value = threshold.value * (Math.PI / 180);
-      }
+      // Entered in the display unit, stored in the base unit (#74).
+      threshold.value = toBaseValue(unit, numValue);
     }
   }
 
@@ -2392,6 +2437,8 @@ async function populateThresholdModalPaths() {
       if (this.value) {
         const typeInfo = await detectPathType(this.value);
         updateOperatorDropdown('thresholdOperator', typeInfo.dataType);
+        await loadThresholdUnit(this.value, typeInfo.dataType);
+        document.getElementById('thresholdOperator').dataset.watchPath = this.value;
         updateValueFields(
           'thresholdOperator',
           'thresholdValueGroup',
@@ -2410,6 +2457,8 @@ async function populateThresholdModalPaths() {
       if (this.value) {
         const typeInfo = await detectPathType(this.value);
         updateOperatorDropdown('thresholdOperator', typeInfo.dataType);
+        await loadThresholdUnit(this.value, typeInfo.dataType);
+        document.getElementById('thresholdOperator').dataset.watchPath = this.value;
         updateValueFields(
           'thresholdOperator',
           'thresholdValueGroup',
@@ -2533,6 +2582,8 @@ async function populateAddCmdThresholdPaths() {
       if (this.value) {
         const typeInfo = await detectPathType(this.value);
         updateOperatorDropdown('addCmdThresholdOperator', typeInfo.dataType);
+        await loadThresholdUnit(this.value, typeInfo.dataType);
+        document.getElementById('addCmdThresholdOperator').dataset.watchPath = this.value;
         updateValueFields(
           'addCmdThresholdOperator',
           'addCmdThresholdValueGroup',
@@ -2552,6 +2603,8 @@ async function populateAddCmdThresholdPaths() {
       if (this.value) {
         const typeInfo = await detectPathType(this.value);
         updateOperatorDropdown('addCmdThresholdOperator', typeInfo.dataType);
+        await loadThresholdUnit(this.value, typeInfo.dataType);
+        document.getElementById('addCmdThresholdOperator').dataset.watchPath = this.value;
         updateValueFields(
           'addCmdThresholdOperator',
           'addCmdThresholdValueGroup',
@@ -2618,6 +2671,7 @@ export function saveAddCmdThreshold() {
     alert('Please select or enter a SignalK path');
     return;
   }
+  const unit = unitFor(path, dataType);
 
   // Create new threshold
   const threshold = {
@@ -2637,12 +2691,9 @@ export function saveAddCmdThreshold() {
     }
     threshold.valueMin = parseFloat(min);
     threshold.valueMax = parseFloat(max);
-
-    // Convert degrees to radians for angular values
-    if (dataType === 'angular') {
-      threshold.valueMin = threshold.valueMin * (Math.PI / 180);
-      threshold.valueMax = threshold.valueMax * (Math.PI / 180);
-    }
+    // Entered in the display unit, stored in the base unit (#74).
+    threshold.valueMin = toBaseValue(unit, threshold.valueMin);
+    threshold.valueMax = toBaseValue(unit, threshold.valueMax);
   } else if (operator === 'withinRadius' || operator === 'outsideRadius') {
     const useHomePort = document.getElementById(
       'addCmdThresholdValueGroup_useHomePort'
@@ -2754,12 +2805,8 @@ export function saveAddCmdThreshold() {
         alert('Please enter a valid numeric value');
         return;
       }
-      threshold.value = numValue;
-
-      // Convert degrees to radians for angular values
-      if (dataType === 'angular') {
-        threshold.value = threshold.value * (Math.PI / 180);
-      }
+      // Entered in the display unit, stored in the base unit (#74).
+      threshold.value = toBaseValue(unit, numValue);
     }
   }
 
@@ -2796,7 +2843,7 @@ function displayAddCommandThresholdsList() {
 
     // Format description based on operator type
     if (threshold.operator === 'range') {
-      description = `${threshold.valueMin} to ${threshold.valueMax}`;
+      description = `${describeThresholdValue(threshold.watchPath, threshold.valueMin)} to ${describeThresholdValue(threshold.watchPath, threshold.valueMax)}`;
     } else if (
       threshold.operator === 'withinRadius' ||
       threshold.operator === 'outsideRadius'
@@ -2837,7 +2884,7 @@ function displayAddCommandThresholdsList() {
           endsWith: 'ends with',
           stringEquals: 'equals',
         }[threshold.operator] || threshold.operator;
-      description = `${operatorSymbol} ${threshold.value !== undefined ? threshold.value : ''}`;
+      description = `${operatorSymbol} ${threshold.value !== undefined ? describeThresholdValue(threshold.watchPath, threshold.value) : ''}`;
     }
 
     const action = threshold.activateOnMatch ? 'ON' : 'OFF';
