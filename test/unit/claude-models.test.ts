@@ -2,7 +2,8 @@
  * Unit tests for the Claude model registry helpers. The plugin persists a
  * model id in its config and must coerce unknown/missing values to a safe
  * default before calling the Anthropic API, so the validation and fallback
- * logic is what stops a stale config from sending an invalid model id.
+ * logic is what stops a stale config from sending an invalid model id. The
+ * request helper decides which parameters each model accepts.
  */
 import { expect } from 'chai';
 import {
@@ -10,8 +11,10 @@ import {
   SUPPORTED_CLAUDE_MODELS,
   DEFAULT_CLAUDE_MODEL,
   CLAUDE_MODEL_DESCRIPTIONS,
+  THINKING_MIN_MAX_TOKENS,
   isValidClaudeModel,
   getValidClaudeModel,
+  modelRequestParams,
 } from '../../src/claude-models';
 
 describe('claude-models registry', () => {
@@ -55,7 +58,7 @@ describe('isValidClaudeModel', () => {
   });
 
   it('is exact, not a prefix or substring match', () => {
-    expect(isValidClaudeModel(CLAUDE_MODELS.SONNET_4_5 + '-extra')).to.equal(
+    expect(isValidClaudeModel(CLAUDE_MODELS.SONNET_5 + '-extra')).to.equal(
       false
     );
     expect(isValidClaudeModel('sonnet')).to.equal(false);
@@ -64,8 +67,8 @@ describe('isValidClaudeModel', () => {
 
 describe('getValidClaudeModel', () => {
   it('passes through a valid model id unchanged', () => {
-    expect(getValidClaudeModel(CLAUDE_MODELS.OPUS_4_1)).to.equal(
-      CLAUDE_MODELS.OPUS_4_1
+    expect(getValidClaudeModel(CLAUDE_MODELS.OPUS_5)).to.equal(
+      CLAUDE_MODELS.OPUS_5
     );
   });
 
@@ -79,5 +82,76 @@ describe('getValidClaudeModel', () => {
 
   it('falls back to the default for the empty string', () => {
     expect(getValidClaudeModel('')).to.equal(DEFAULT_CLAUDE_MODEL);
+  });
+
+  // Use case: a config or an open browser tab still carrying an id from an
+  // older model generation, some of them already retired by the API.
+  it('maps older Opus ids to the current Opus', () => {
+    expect(getValidClaudeModel('claude-opus-4-1-20250805')).to.equal(
+      CLAUDE_MODELS.OPUS_5
+    );
+    expect(getValidClaudeModel('claude-opus-4-20250514')).to.equal(
+      CLAUDE_MODELS.OPUS_5
+    );
+  });
+
+  it('maps older Haiku ids to the current Haiku', () => {
+    expect(getValidClaudeModel('claude-3-haiku-20240307')).to.equal(
+      CLAUDE_MODELS.HAIKU_4_5
+    );
+  });
+
+  it('maps older Sonnet ids to the default, the current Sonnet', () => {
+    expect(DEFAULT_CLAUDE_MODEL).to.equal(CLAUDE_MODELS.SONNET_5);
+    expect(getValidClaudeModel('claude-sonnet-4-20250514')).to.equal(
+      CLAUDE_MODELS.SONNET_5
+    );
+    expect(getValidClaudeModel('claude-sonnet-4-5-20250929')).to.equal(
+      CLAUDE_MODELS.SONNET_5
+    );
+  });
+});
+
+describe('modelRequestParams', () => {
+  it('builds params for every supported model', () => {
+    for (const model of SUPPORTED_CLAUDE_MODELS) {
+      expect(modelRequestParams(model, 1000, 0.5).model, model).to.equal(model);
+    }
+  });
+
+  for (const model of [CLAUDE_MODELS.OPUS_5, CLAUDE_MODELS.SONNET_5]) {
+    it(`omits temperature for ${model}, which rejects it`, () => {
+      expect(modelRequestParams(model, 4000, 0.3)).to.not.have.property(
+        'temperature'
+      );
+    });
+
+    it(`raises a budget below the thinking floor for ${model}`, () => {
+      expect(
+        modelRequestParams(model, THINKING_MIN_MAX_TOKENS - 1, 0).max_tokens
+      ).to.equal(THINKING_MIN_MAX_TOKENS);
+    });
+
+    it(`keeps a budget above the thinking floor for ${model}`, () => {
+      expect(
+        modelRequestParams(model, THINKING_MIN_MAX_TOKENS + 1, 0).max_tokens
+      ).to.equal(THINKING_MIN_MAX_TOKENS + 1);
+    });
+  }
+
+  it('passes temperature and budget through for Haiku 4.5', () => {
+    expect(
+      modelRequestParams(CLAUDE_MODELS.HAIKU_4_5, 4000, 0.3)
+    ).to.deep.equal({
+      model: CLAUDE_MODELS.HAIKU_4_5,
+      max_tokens: 4000,
+      temperature: 0.3,
+    });
+  });
+
+  it('passes a zero temperature through for Haiku 4.5', () => {
+    expect(
+      modelRequestParams(CLAUDE_MODELS.HAIKU_4_5, 8000, 0).temperature
+    ).to.equal(0);
   });
 });
