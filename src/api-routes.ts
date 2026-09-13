@@ -3749,6 +3749,26 @@ export function registerApiRoutes(
   const migrationService = new MigrationService(app);
 
   // Scan for files to migrate
+  // Whether legacy flat-layout data is present, without walking the tree.
+  // Flat files live under <dataDir>/vessels/...; the hive layout has no
+  // top-level vessels directory, so its existence is the whole test. The
+  // Status tab shows the migration panel only when this says so, because a
+  // full scan stats every parquet file in the store.
+  router.get('/api/migrate/legacy-check', async (_req, res) => {
+    try {
+      const legacyDir = path.join(state.getDataDirPath(), 'vessels');
+      const legacyDirectoryPresent =
+        (await fs.pathExists(legacyDir)) &&
+        (await fs.stat(legacyDir)).isDirectory();
+      return res.json({ success: true, legacyDirectoryPresent });
+    } catch (error) {
+      return res.status(500).json({
+        success: false,
+        error: (error as Error).message,
+      });
+    }
+  });
+
   router.post('/api/migrate/scan', async (req, res) => {
     try {
       const { sourceDirectory } = req.body;

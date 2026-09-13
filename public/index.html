@@ -3686,9 +3686,13 @@
               </div>
             </div>
 
-            <!-- Migration Section -->
+            <!-- Migration Section: shown by migration.js only when a legacy
+                 flat-layout vessels/ directory exists (GET /api/migrate/legacy-check).
+                 The migration API itself is always available. -->
             <div
+              id="migrationPanel"
               style="
+                display: none;
                 padding: 20px;
                 background: #fff3e0;
                 border-radius: 8px;

@@ -59,6 +59,9 @@ function showTab(tabId) {
     if (typeof window.refreshBufferStatus === 'function') {
       window.refreshBufferStatus();
     }
+    if (typeof window.refreshMigrationPanel === 'function') {
+      window.refreshMigrationPanel();
+    }
   }
 }
 

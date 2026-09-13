@@ -490,7 +490,7 @@ output_directory/
 
 ### Migrating Legacy Files to Hive Partitioning
 
-If you have existing data in the legacy flat structure, use the Migration API to convert to Hive partitioning:
+If you have existing data in the legacy flat structure, use the Migration API to convert to Hive partitioning. The Status tab shows the **Migrate to Hive Partitioning** panel only while a legacy `vessels/` directory exists in the data directory (checked via `GET /api/migrate/legacy-check`, a directory lookup rather than a scan); on a fully migrated install the panel is hidden and the API below remains available (v0.7.44-beta.5+).
 
 **1. Scan for migratable files:**
 ```bash
@@ -614,6 +614,7 @@ This provides better compression, faster queries, and proper type safety for dat
 | `/signalk/v1/history/paths` | GET | SignalK History API - Get available paths |
 | `/signalk/v2/api/history/*` | GET | SignalK v2 API - handled by registered HistoryApi provider (spec-compliant) |
 | **Migration API** | | |
+| `/api/migrate/legacy-check` | GET | Whether a legacy flat-layout `vessels/` directory exists (drives the Status tab panel; no tree walk) |
 | `/api/migrate/scan` | POST | Scan directory for migratable files |
 | `/api/migrate` | POST | Start migration job |
 | `/api/migrate/progress/:jobId` | GET | Get migration job progress |
