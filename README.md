@@ -53,10 +53,10 @@ Vessel data Parquet file archive with automated value and geospatial triggers. H
 - **GPX Track Import**: Load historical GPX tracks (other vessels, handhelds, archived logs) directly into the Hive-partitioned parquet store, bypassing the live SignalK subscription path
   - Drag-and-drop browser upload from the Status tab, or "Advanced" server-directory mode for USB-drive bulk imports on the host
   - Dependency-free GPX 1.0 / 1.1 parser extracts `<trkpt>` lat/lon/time plus optional `<ele>`, `<speed>`, `<course>`; `<course>` is converted from degrees to radians to match `navigation.courseOverGroundTrue`
-  - Streams the file (v0.7.44-beta.5+): points are written to parquet as they are parsed through a capped pool of per-day writers, so peak memory no longer grows with file size and multi-year archives import on a Pi
+  - Streams the file (v0.7.44-beta.6+): points are written to parquet as they are parsed through a capped pool of per-day writers, so peak memory no longer grows with file size and multi-year archives import on a Pi
   - The importable paths (and their default checkboxes) come from `GET /api/import/gpx/options`, so the UI and the importer cannot disagree
   - Job-based with per-`jobId` cancellation, progress polling, and 30-minute TTL on finished jobs
-  - Browser upload caps: 500 MB per file (was 50 MB before v0.7.44-beta.5), 500 files per request
+  - Browser upload caps: 500 MB per file (was 50 MB before v0.7.44-beta.6), 500 files and 2 GB in total per request
 
 ### Data Validation & Schema Repair
 - **Schema Validation**: Comprehensive validation of Parquet file schemas against SignalK metadata standards
@@ -144,7 +144,7 @@ The validation system checks each Parquet file for:
 - **True-Only Actions**: On every path update the condition is evaluated; when it is true the command is set to the threshold's `activateOnMatch` state (ON/OFF). False evaluations leave the command untouched, so use a second threshold if you want a different level to switch it back.
 - **Stable Triggers**: Optional hysteresis (seconds) suppresses re-firing while the condition remains true, preventing rapid toggling in noisy data.
 - **Multiple Thresholds Per Path**: Unique monitor keys allow several thresholds to observe the same SignalK path without cancelling each other.
-- **Unit Handling**: Thresholds are stored and evaluated in the live SignalK (SI) units. In the web UI (v0.7.44-beta.5+) values are entered and shown in the unit you have chosen in the [signalk-units-preference](https://github.com/motamman/signalk-units-preference) plugin when it is installed (knots, °F, feet, …), converted on save and on edit; the hint under the field names both units. Without that plugin, angular thresholds are entered in degrees and everything else in SI, as before.
+- **Unit Handling**: Thresholds are stored and evaluated in the live SignalK (SI) units. In the web UI (v0.7.44-beta.6+) values are entered and shown in the unit you have chosen in the [signalk-units-preference](https://github.com/motamman/signalk-units-preference) plugin when it is installed (knots, °F, feet, …), converted on save and on edit; the hint under the field names both units. Without that plugin, angular thresholds are entered in degrees and everything else in SI, as before.
 - **Automation State Machine**: When enabling automation, command is set to OFF then all thresholds are immediately evaluated. When disabling automation, threshold monitoring stops and command state remains unchanged. Default state is hardcoded to OFF on server side.
 
 - **Custom Analysis**: Create custom analysis prompts for specific operational needs
@@ -490,7 +490,7 @@ output_directory/
 
 ### Migrating Legacy Files to Hive Partitioning
 
-If you have existing data in the legacy flat structure, use the Migration API to convert to Hive partitioning. The Status tab shows the **Migrate to Hive Partitioning** panel only while a legacy `vessels/` directory exists in the data directory (checked via `GET /api/migrate/legacy-check`, a directory lookup rather than a scan); on a fully migrated install the panel is hidden and the API below remains available (v0.7.44-beta.5+).
+If you have existing data in the legacy flat structure, use the Migration API to convert to Hive partitioning. The Status tab shows the **Migrate to Hive Partitioning** panel only while a legacy `vessels/` directory exists in the data directory (checked via `GET /api/migrate/legacy-check`, a directory lookup rather than a scan); on a fully migrated install the panel is hidden and the API below remains available (v0.7.44-beta.6+).
 
 **1. Scan for migratable files:**
 ```bash
