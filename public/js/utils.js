@@ -1,3 +1,13 @@
+/** Escape a value for interpolation into innerHTML. */
+export function escapeHtml(value) {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 export function getPluginPath() {
   const currentPath = window.location.pathname;
   const pathParts = currentPath.split('/');

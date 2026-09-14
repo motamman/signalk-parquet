@@ -1,6 +1,11 @@
 import * as fs from 'fs-extra';
 import * as path from 'path';
-import { DataRecord, ParquetWriterOptions, FileFormat } from './types';
+import {
+  DataRecord,
+  ParquetWriterOptions,
+  FileFormat,
+  ParquetAppender,
+} from './types';
 import { ServerAPI } from '@signalk/server-api';
 import { SchemaService } from './schema-service';
 
@@ -277,6 +282,109 @@ export class ParquetWriter {
       );
       throw error;
     }
+  }
+
+  /**
+   * Open a parquet file for incremental appends (#54). The schema is
+   * detected from `firstBatch`, which is written immediately; later rows go
+   * through `append()`. `close()` validates the file the way the one-shot
+   * writers do and quarantines it on failure; `abort()` discards it.
+   *
+   * parquetjs buffers rows into a row group and flushes it to disk once it
+   * is full, so an open appender holds one row group in memory at most.
+   */
+  async openAppender(
+    filepath: string,
+    firstBatch: DataRecord[],
+    currentPath?: string
+  ): Promise<ParquetAppender> {
+    if (!parquet) {
+      throw new Error('ParquetJS not available');
+    }
+    if (firstBatch.length === 0) {
+      throw new Error('openAppender needs at least one record for the schema');
+    }
+    const schema = await this.createParquetSchema(
+      firstBatch,
+      currentPath || firstBatch[0].path
+    );
+    const writer = await parquet.ParquetWriter.openFile(schema, filepath);
+    let rowCount = 0;
+    let open = true;
+
+    const append = async (records: DataRecord[]): Promise<void> => {
+      if (!open) throw new Error(`appender for ${filepath} is closed`);
+      for (const record of records) {
+        await writer.appendRow({
+          ...this.prepareRecordForParquet(record, schema),
+        });
+      }
+      rowCount += records.length;
+    };
+
+    try {
+      await append(firstBatch);
+    } catch (error) {
+      // openFile() already created the file; don't leave a stub behind.
+      open = false;
+      await writer.close().catch(() => undefined);
+      await fs.remove(filepath).catch(() => undefined);
+      throw error;
+    }
+
+    return {
+      get rowCount() {
+        return rowCount;
+      },
+      append,
+      close: async (): Promise<string> => {
+        if (!open) return filepath;
+        open = false;
+        try {
+          await writer.close();
+        } catch (error) {
+          // abort() is a no-op once closed, so discard the partial file here.
+          await fs.remove(filepath).catch(() => undefined);
+          throw error;
+        }
+        const isValid = await this.validateParquetFile(filepath);
+        if (!isValid) {
+          const quarantineDir = path.join(path.dirname(filepath), 'quarantine');
+          const quarantineFile = path.join(
+            quarantineDir,
+            path.basename(filepath)
+          );
+          try {
+            await fs.ensureDir(quarantineDir);
+            await fs.move(filepath, quarantineFile, { overwrite: true });
+            await this.logQuarantine(
+              quarantineFile,
+              'write',
+              'File failed validation after write'
+            );
+          } catch (quarantineError) {
+            // abort() is a no-op once closed; the invalid file must not
+            // linger where a later scan would read it.
+            await fs.remove(filepath).catch(() => undefined);
+            throw quarantineError;
+          }
+          throw new Error(
+            `Parquet file failed validation after write, moved to quarantine: ${quarantineFile}`
+          );
+        }
+        return filepath;
+      },
+      abort: async (): Promise<void> => {
+        if (!open) return;
+        open = false;
+        try {
+          await writer.close();
+        } catch {
+          // The file is being discarded anyway.
+        }
+        await fs.remove(filepath);
+      },
+    };
   }
 
   // Create Parquet schema based on sample records

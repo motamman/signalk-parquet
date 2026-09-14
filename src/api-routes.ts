@@ -39,10 +39,16 @@ import {
   ProcessCancelApiResponse,
 } from './types';
 import { MigrationService } from './services/migration-service';
-import { GPX_UPLOAD_MAX_FILE_BYTES, GPX_UPLOAD_MAX_FILES } from './constants';
+import {
+  GPX_UPLOAD_MAX_FILE_BYTES,
+  GPX_UPLOAD_MAX_FILES,
+  GPX_UPLOAD_MAX_TOTAL_BYTES,
+} from './constants';
+import { uploadFilename } from './utils/upload-filename';
 import {
   GpxImportService,
   DEFAULT_IMPORT_PATHS,
+  GPX_IMPORT_PATH_OPTIONS,
   GpxImportPath,
 } from './services/gpx-import-service';
 import {
@@ -3743,6 +3749,26 @@ export function registerApiRoutes(
   const migrationService = new MigrationService(app);
 
   // Scan for files to migrate
+  // Whether legacy flat-layout data is present, without walking the tree.
+  // Flat files live under <dataDir>/vessels/...; the hive layout has no
+  // top-level vessels directory, so its existence is the whole test. The
+  // Status tab shows the migration panel only when this says so, because a
+  // full scan stats every parquet file in the store.
+  router.get('/api/migrate/legacy-check', async (_req, res) => {
+    try {
+      const legacyDir = path.join(state.getDataDirPath(), 'vessels');
+      const legacyDirectoryPresent =
+        (await fs.pathExists(legacyDir)) &&
+        (await fs.stat(legacyDir)).isDirectory();
+      return res.json({ success: true, legacyDirectoryPresent });
+    } catch (error) {
+      return res.status(500).json({
+        success: false,
+        error: (error as Error).message,
+      });
+    }
+  });
+
   router.post('/api/migrate/scan', async (req, res) => {
     try {
       const { sourceDirectory } = req.body;
@@ -3991,6 +4017,12 @@ export function registerApiRoutes(
   }
   const uploadSessions = new WeakMap<express.Request, UploadSession>();
 
+  // The importable paths with their UI metadata (#55). The import page
+  // builds its checkboxes from this so the list lives in one place.
+  router.get('/api/import/gpx/options', (_req, res) => {
+    res.json({ success: true, paths: GPX_IMPORT_PATH_OPTIONS });
+  });
+
   // Scan a directory for .gpx files
   router.post('/api/import/gpx/scan', async (req, res) => {
     try {
@@ -4171,10 +4203,10 @@ export function registerApiRoutes(
       }
     },
     filename: (_req, file, cb) => {
-      // Preserve original filename so the import log is informative; strip
-      // path components to defeat any path-traversal via the upload name.
-      const safe = path.basename(file.originalname).replace(/[^\w.-]/g, '_');
-      cb(null, safe);
+      // Sanitised stem plus a random suffix: two uploads in one request
+      // whose names collide after sanitising must not overwrite each other
+      // (#68). The original name travels separately via sourceNames.
+      cb(null, uploadFilename(file.originalname));
     },
   });
 
@@ -4201,8 +4233,38 @@ export function registerApiRoutes(
     },
   });
 
+  // Bound the whole request before multer stages anything: the per-file
+  // limit alone would let one request write files × fileSize to the data
+  // disk. Node feeds the body to multer only up to Content-Length, so the
+  // header is a hard cap on staged bytes; a body without one (chunked) has
+  // no such cap and is refused.
+  const enforceUploadTotal = (
+    req: express.Request,
+    res: express.Response,
+    next: express.NextFunction
+  ): void => {
+    const header = req.headers['content-length'];
+    const length = header === undefined ? NaN : Number(header);
+    if (!Number.isFinite(length)) {
+      res.status(411).json({
+        success: false,
+        error: 'Upload requires a Content-Length header',
+      });
+      return;
+    }
+    if (length > GPX_UPLOAD_MAX_TOTAL_BYTES) {
+      res.status(413).json({
+        success: false,
+        error: `Upload exceeds the ${Math.round(GPX_UPLOAD_MAX_TOTAL_BYTES / (1024 * 1024))} MB limit per request`,
+      });
+      return;
+    }
+    next();
+  };
+
   router.post(
     '/api/import/gpx/upload',
+    enforceUploadTotal,
     gpxUpload.array('files'),
     async (req, res) => {
       const session = uploadSessions.get(req);
@@ -4244,6 +4306,9 @@ export function registerApiRoutes(
 
         const jobId = await getGpxImportService().import({
           sourceFiles: files.map(f => f.path),
+          sourceNames: Object.fromEntries(
+            files.map(f => [f.path, path.basename(f.originalname)])
+          ),
           targetDirectory: state.getDataDirPath(),
           context: resolved.context,
           paths: resolved.paths,

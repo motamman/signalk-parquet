@@ -166,6 +166,29 @@ async function forceBufferExport() {
 }
 
 /**
+ * Show the migration panel only when legacy flat-layout data exists. The
+ * check is a directory lookup on the server, not a scan, so it is safe to
+ * run every time the tab is shown; a full scan walks the whole store.
+ */
+async function refreshMigrationPanel() {
+  const panel = document.getElementById('migrationPanel');
+  if (!panel) return;
+  try {
+    const response = await fetch(
+      '/plugins/signalk-parquet/api/migrate/legacy-check'
+    );
+    const data = await response.json();
+    panel.style.display =
+      data.success && data.legacyDirectoryPresent ? 'block' : 'none';
+  } catch (error) {
+    // Hide the panel, including one an earlier check showed; the API
+    // remains available.
+    panel.style.display = 'none';
+    console.error('Legacy data check failed:', error);
+  }
+}
+
+/**
  * Scan for files to migrate
  */
 async function scanForMigration() {
@@ -542,6 +565,7 @@ window.scanForMigration = scanForMigration;
 window.startMigration = startMigration;
 window.cancelMigration = cancelMigration;
 window.refreshStoreStats = refreshStoreStats;
+window.refreshMigrationPanel = refreshMigrationPanel;
 
 // Initialize on tab show
 document.addEventListener('DOMContentLoaded', () => {
@@ -551,6 +575,7 @@ document.addEventListener('DOMContentLoaded', () => {
     refreshStoreStats();
     refreshBufferStatus();
   }
+  refreshMigrationPanel();
 
   // Resume polling if a migration job was in progress
   if (currentMigrationJobId) {

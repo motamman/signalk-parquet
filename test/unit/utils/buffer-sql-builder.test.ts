@@ -178,17 +178,21 @@ describe('buildBufferObjectSubquery', () => {
     expect(sql).to.contain('TRY_CAST(value_longitude AS DOUBLE)');
   });
 
-  it('uses NULL::DOUBLE even for missing string components', () => {
-    // The missing-column check runs before the dataType branch, so a string
-    // component absent from the buffer table is emitted as NULL::DOUBLE,
-    // not NULL VARCHAR. Pinned as current behaviour.
+  it('substitutes NULL::VARCHAR for missing string and boolean components (#69)', () => {
+    // A missing component's NULL carries the type the present-column branch
+    // would cast to, so the buffer side of the UNION agrees with parquet.
     const sql = objectSql(
       'navigation.gnss',
-      componentMap(component('methodQuality', 'string')),
+      componentMap(
+        component('methodQuality', 'string'),
+        component('engaged', 'boolean')
+      ),
       { bufferTableColumns: new Set<string>() }
     );
 
-    expect(sql).to.contain('NULL::DOUBLE AS value_methodQuality');
+    expect(sql).to.contain('NULL::VARCHAR AS value_methodQuality');
+    expect(sql).to.contain('NULL::VARCHAR AS value_engaged');
+    expect(sql).to.not.contain('NULL::DOUBLE');
     expect(sql).to.not.contain('CAST(value_methodQuality');
   });
 

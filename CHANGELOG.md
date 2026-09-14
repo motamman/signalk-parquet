@@ -1,5 +1,50 @@
 # Changelog
 
+## [0.7.44-beta.6] - 2026-09-13
+
+Closes the open issues @msallin filed in June (#54, #55, #68, #69, #70, #74) and hides the migration panel on migrated installs. 0.7.44-beta.5 was committed but never published to npm; its changes ship here.
+
+### Fixed
+
+- **GPX upload: colliding filenames overwrote each other** (#68) — every file of one multipart request is staged in the same directory under a sanitised name, so `nav 1.gpx` and `nav@1.gpx` both became `nav_1.gpx` and the second silently replaced the first. Staged names now carry a random suffix (`src/utils/upload-filename.ts`); the original name still travels to the import via a staging-path → name map, so progress and each record's `source.file` show what the user uploaded. Also unref's the job-cleanup timer so a pending cleanup cannot keep the process alive.
+- **GPX parser merged a self-closing `<trkpt/>` into the paired point after it** (#70) — the regex tried the paired form first, `[^>]*` swallowed the trailing `/`, and the lazy body ran to the next `</trkpt>`, so the two points collapsed into one with the first point's coordinates and the second point's time. The self-closing alternative is now tried first with a lazy attribute group. The test that pinned the merge asserts two points.
+- **Buffer object subquery typed missing string components as `NULL::DOUBLE`** (#69) — a component absent from the buffer table is now a `NULL` cast to the type the present-column branch would use (`DOUBLE` for numeric, `VARCHAR` otherwise), so the UNION with the parquet side resolves the same column type either way.
+- **Threshold editor showed radians and re-converted them on save** — editing an angular threshold loaded the stored radians into the degrees field, so saving without retyping shrank the value by a factor of 57. Values are now converted back to the display unit on load (part of #74).
+
+### Added
+
+- **Threshold values in your display units** (#74) — the command threshold editor (add, edit and the unified modal) takes and shows values in the unit chosen in the [signalk-units-preference](https://github.com/motamman/signalk-units-preference) plugin, read from its public `GET /signalk/v1/conversions/<path>` endpoint, and converts to the path's base unit on save. The hint under the field names both units, and the threshold lists show converted values with their symbol. Without the plugin, angular paths keep the degrees entry and everything else stays in SI. Conversion formulas are checked against an arithmetic-only alphabet before being compiled, a value the formula cannot convert (a division by zero) is refused with an alert rather than saved as Infinity or NaN, the unit symbol and path are inserted as text rather than HTML, and choosing another path while the previous lookup is still answering can no longer leave the form converting with the wrong unit: Save waits for the current lookup and stale answers are dropped. New `public/js/thresholdUnits.js`; no server change.
+- **`GET /api/import/gpx/options`** (#55) — the importable GPX paths with their default-checked flag, source element and unit, from one table in `gpx-import-service.ts` that also derives the importer's accepted list. The import page builds its checkboxes from the response; the four hard-coded inputs are gone from `index.html`. Adding a path is now one entry plus one `pointToValue` case.
+
+### Changed
+
+- **GPX import streams the file** (#54) — the importer used to read the whole file into a string, parse it into point objects and fan those out into per-(path, day) record arrays before writing anything, peaking at roughly ten times the file size and forcing a 50 MB upload cap. A new incremental tokenizer (`GpxTokenizer` in `gpx-parser.ts`, which `parseGpx` now uses too) emits points as their elements complete, coping with tags split across chunks, and the service appends them through a capped pool of parquet writers (`ParquetWriter.openAppender`, 16 open at once, LRU eviction; an evicted day reopens as a second file in the same partition). Everything parsed before a cancellation is written. The per-file upload cap rises to 500 MB, and a new 2 GB cap on the whole multipart request is checked against `Content-Length` before any file is staged (a chunked body without one is refused with 411), since the per-file cap times the 500-file limit would otherwise let one request fill the disk. The tokenizer skips an unterminated `<trkpt>` or `<name>` whose lazy match would run through `</trk>`, so the next track stays intact, and the appender removes its partial file if the schema sample or `close()` fails. Measured on a 200 MB, 1.5-million-point file: 14 s and a flat peak of about 350 MB above baseline regardless of file size (400 MB: 360 MB), where the previous code peaked 495 MB above baseline on a 50 MB file with one path and 814 MB with four. Tunables live in `constants.ts`.
+- **Migration panel hidden on migrated installs** — the Status tab's "Migrate to Hive Partitioning" panel now appears only when a legacy flat-layout `vessels/` directory exists in the data directory, answered by new `GET /api/migrate/legacy-check`, a directory lookup rather than a scan (a full scan stats every parquet file in the store). The migration API is unchanged and always available.
+
+---
+
+## [0.7.44-beta.5] - 2026-09-12
+
+Five contributions from @msallin (PRs #123–#127).
+
+### Fixed
+
+- **`middle_index` aggregate implemented** (PR #124) — it was documented and offered in the webapp dropdown but never worked: the raw tier, V1 object paths and the v2 provider quietly computed `first`, and the aggregated tiers (5s/60s/1h) rendered invalid SQL so the path came back empty. Every query path now shares one expression from the new `src/utils/aggregate-sql.ts`, `list(value ORDER BY time)[(count(*) + 1) // 2]`: the chronologically middle sample (first of the two middle samples for even counts), independent of file scan order, with every component of an object path taken from the same row so a position's latitude and longitude come from one fix. On aggregated tiers it picks the middle pre-aggregated bucket. `getAggregateFunction('middle_index')` now throws rather than silently substituting another aggregate. Eight integration tests, seven of which failed on the previous code.
+- **V1 object paths returned nothing when parquet was the only source** (PR #124) — with the SQLite buffer disabled, the single-source branch selected the raw `value_latitude` / `value_longitude` columns from a subquery that exposes `latitude` / `longitude`; the binder error was swallowed into an empty result for any object path and any aggregate. It now selects by component name, as the multi-source branch already did.
+- **Buffer-only fallback ignored the requested aggregate** (PR #124) — when the parquet query fails and the buffer is attached, the fallback averaged numeric paths and took the first string value regardless of method. It now applies the same raw-sample aggregate as the main query's buffer source.
+- **File discovery on Windows and under glob-special directory names** (PR #125) — every scan built its pattern with `path.join(dataDir, …)`, and `glob()` reads a backslash as an escape, so on Windows daily aggregation, retention cleanup, compaction, migration, GPX import, cloud compare/sync, schema validation and the two data migrations all matched nothing and silently did no work. A data directory whose name contains glob syntax (`+(1)`, `[1]`, …) broke the same jobs on Linux. New `src/utils/glob-in.ts` passes the directory as glob's `cwd` and keeps patterns relative with forward slashes; all 16 call sites use it. The `/processed/`-style exclusion filters became glob `ignore` patterns (they never excluded anything on Windows). `HivePathBuilder.detectPathStyle` takes the platform separator, so a backslash is a separator on Windows only and stays a legal filename character on POSIX. Cloud object keys built from local paths always use `/`; the daily upload had been producing backslash keys on Windows. Thirteen new tests, including an integration suite that runs the real services under a `+(1)` directory so the failure reproduces on Linux CI.
+- **Analysis model selector had no effect** (PR #126) — `/api/analyze` accepted `claudeModel` but never passed it on, so every analysis ran on the configured model. The route now sets the request's model and the selector's first option is "Configured default", which sends nothing. Follow-up questions still use the configured model.
+### Changed
+
+- **Analysis moves to current Claude models** (PR #126) — Opus 5 (`claude-opus-5`), Sonnet 5 (`claude-sonnet-5`, the default) and Haiku 4.5 (`claude-haiku-4-5`); the previous list offered Sonnet 4 / Opus 4.1 / Opus 4, and Opus 4.1 has been retired by the API. A saved id from an older generation maps to the current model of the same tier. Opus 5 and Sonnet 5 reject `temperature` and think by default, so `temperature` is only sent where accepted, `max_tokens` is raised to at least 16k where thinking shares the budget, answers are read from the text blocks rather than `content[0]`, and a `refusal` stop reason is raised as an error instead of yielding an empty analysis.
+- **Dead code removed** (PR #127), no behaviour change: the unused `initializeS3` / `createS3Client` / `createR2Client` aliases and `S3TestApiResponse` type in `data-handler.ts`, the never-read deprecated `start` history parameter, the ~90-line `ParquetWriter.getTypeFromOtherFiles` whose only caller was commented out, and the `as any` / `as Delta` casts that worked around a `@signalk/server-api` typing bug fixed upstream in SignalK/signalk-server#2043.
+
+### Dependencies
+
+- **Lockfile updated past open advisories** (PR #123): `multer` 2.2.0 → 2.3.0 (high), `body-parser` 2.2.2 → 2.3.0, `qs` 6.15.3 → 6.16.0, `js-yaml` 4.2.0 → 4.3.2, `brace-expansion` 2.1.1 → 2.1.4. No `package.json` change.
+
+---
+
 ## [0.7.44-beta.4] - 2026-09-10
 
 ### Security (PR #117, @msallin)

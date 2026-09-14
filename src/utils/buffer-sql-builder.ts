@@ -67,9 +67,13 @@ export function buildBufferObjectSubquery(
 ): string {
   const componentSelects = Array.from(components.entries())
     .map(([_name, comp]) => {
-      // If we know the buffer table's columns, output NULL for missing ones
+      // If we know the buffer table's columns, output a typed NULL for
+      // missing ones. The type matches what the present-column branch below
+      // casts to, so the UNION with the parquet side resolves the same
+      // column type either way (#69).
       if (bufferTableColumns && !bufferTableColumns.has(comp.columnName)) {
-        return `NULL::DOUBLE AS ${comp.columnName}`;
+        const nullType = comp.dataType === 'numeric' ? 'DOUBLE' : 'VARCHAR';
+        return `NULL::${nullType} AS ${comp.columnName}`;
       }
       // Columns are already flattened in per-path tables — just SELECT them directly
       if (comp.dataType === 'numeric') {

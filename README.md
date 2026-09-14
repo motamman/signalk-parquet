@@ -53,8 +53,10 @@ Vessel data Parquet file archive with automated value and geospatial triggers. H
 - **GPX Track Import**: Load historical GPX tracks (other vessels, handhelds, archived logs) directly into the Hive-partitioned parquet store, bypassing the live SignalK subscription path
   - Drag-and-drop browser upload from the Status tab, or "Advanced" server-directory mode for USB-drive bulk imports on the host
   - Dependency-free GPX 1.0 / 1.1 parser extracts `<trkpt>` lat/lon/time plus optional `<ele>`, `<speed>`, `<course>`; `<course>` is converted from degrees to radians to match `navigation.courseOverGroundTrue`
+  - Streams the file (v0.7.44-beta.6+): points are written to parquet as they are parsed through a capped pool of per-day writers, so peak memory no longer grows with file size and multi-year archives import on a Pi
+  - The importable paths (and their default checkboxes) come from `GET /api/import/gpx/options`, so the UI and the importer cannot disagree
   - Job-based with per-`jobId` cancellation, progress polling, and 30-minute TTL on finished jobs
-  - Browser upload caps: 50 MB per file, 500 files per request
+  - Browser upload caps: 500 MB per file (was 50 MB before v0.7.44-beta.6), 500 files and 2 GB in total per request
 
 ### Data Validation & Schema Repair
 - **Schema Validation**: Comprehensive validation of Parquet file schemas against SignalK metadata standards
@@ -142,7 +144,7 @@ The validation system checks each Parquet file for:
 - **True-Only Actions**: On every path update the condition is evaluated; when it is true the command is set to the threshold's `activateOnMatch` state (ON/OFF). False evaluations leave the command untouched, so use a second threshold if you want a different level to switch it back.
 - **Stable Triggers**: Optional hysteresis (seconds) suppresses re-firing while the condition remains true, preventing rapid toggling in noisy data.
 - **Multiple Thresholds Per Path**: Unique monitor keys allow several thresholds to observe the same SignalK path without cancelling each other.
-- **Unit Handling**: Threshold values must match the live SignalK units (e.g., fractional 0–1 SoC values). Angular thresholds are entered in degrees in the UI and stored as radians automatically.
+- **Unit Handling**: Thresholds are stored and evaluated in the live SignalK (SI) units. In the web UI (v0.7.44-beta.6+) values are entered and shown in the unit you have chosen in the [signalk-units-preference](https://github.com/motamman/signalk-units-preference) plugin when it is installed (knots, °F, feet, …), converted on save and on edit; the hint under the field names both units. Without that plugin, angular thresholds are entered in degrees and everything else in SI, as before.
 - **Automation State Machine**: When enabling automation, command is set to OFF then all thresholds are immediately evaluated. When disabling automation, threshold monitoring stops and command state remains unchanged. Default state is hardcoded to OFF on server side.
 
 - **Custom Analysis**: Create custom analysis prompts for specific operational needs
@@ -152,6 +154,7 @@ The validation system checks each Parquet file for:
 ### Core Requirements
 - SignalK Server v2.13+
 - Node.js 22.5+ (required for `node:sqlite` — the built-in SQLite module used for crash-safe buffering; on Node < 22.5 the buffer falls back to in-memory LRU)
+- Linux, macOS or Windows. On Windows, file discovery (daily aggregation, retention, compaction, migration, cloud compare/sync, schema validation) works from v0.7.44-beta.5; earlier versions recorded data but those jobs silently found no files.
 
 ## Installation
 
@@ -487,7 +490,7 @@ output_directory/
 
 ### Migrating Legacy Files to Hive Partitioning
 
-If you have existing data in the legacy flat structure, use the Migration API to convert to Hive partitioning:
+If you have existing data in the legacy flat structure, use the Migration API to convert to Hive partitioning. The Status tab shows the **Migrate to Hive Partitioning** panel only while a legacy `vessels/` directory exists in the data directory (checked via `GET /api/migrate/legacy-check`, a directory lookup rather than a scan); on a fully migrated install the panel is hidden and the API below remains available (v0.7.44-beta.6+).
 
 **1. Scan for migratable files:**
 ```bash
@@ -611,11 +614,19 @@ This provides better compression, faster queries, and proper type safety for dat
 | `/signalk/v1/history/paths` | GET | SignalK History API - Get available paths |
 | `/signalk/v2/api/history/*` | GET | SignalK v2 API - handled by registered HistoryApi provider (spec-compliant) |
 | **Migration API** | | |
+| `/api/migrate/legacy-check` | GET | Whether a legacy flat-layout `vessels/` directory exists (drives the Status tab panel; no tree walk) |
 | `/api/migrate/scan` | POST | Scan directory for migratable files |
 | `/api/migrate` | POST | Start migration job |
 | `/api/migrate/progress/:jobId` | GET | Get migration job progress |
 | `/api/migrate/cancel/:jobId` | POST | Cancel running migration job |
 | `/api/migrate/jobs` | GET | List all migration jobs |
+| `/api/import/gpx/options` | GET | Importable SignalK paths with default-checked flag, source GPX element and unit (the UI builds its checkboxes from this) |
+| `/api/import/gpx/upload` | POST | Multipart upload of `.gpx` files (field `files`); starts an import job |
+| `/api/import/gpx/scan` | POST | Scan a server directory for `.gpx` files |
+| `/api/import/gpx` | POST | Start an import from a server directory or file list |
+| `/api/import/gpx/progress/:jobId` | GET | Get import job progress |
+| `/api/import/gpx/cancel/:jobId` | POST | Cancel a running import job |
+| `/api/import/gpx/jobs` | GET | List import jobs |
 | **Buffer Status API** | | |
 | `/api/buffer/stats` | GET | Get SQLite buffer statistics |
 | `/api/buffer/export` | POST | Force immediate export of pending records |
@@ -854,6 +865,8 @@ The History API supports 5 standard SignalK time query patterns:
 | `middle_index` | Value of the chronologically middle sample in bucket (first of the two middle samples for even counts) | `path:middle_index` |
 | `sma` | Simple Moving Average, window default 5 samples (returns only smoothed value) | `path:sma:5` |
 | `ema` | Exponential Moving Average, alpha default 0.2 (returns only smoothed value) | `path:ema:0.2` |
+
+> **`middle_index` (v0.7.44-beta.5+):** earlier versions documented this method but did not implement it — the raw tier and v2 provider returned `first`, and the aggregated tiers returned nothing. It now returns the chronologically middle sample on every query path, with all components of an object path (e.g. position) taken from the same sample.
 
 **SMA/EMA as aggregation methods (official SignalK syntax):**
 ```bash
@@ -1226,7 +1239,7 @@ curl "http://localhost:3000/signalk/v1/history/values?duration=1h&paths=navigati
 
 **Path Syntax Format:** `path:aggregateMethod:smoothingType:smoothingParam`
 - `path` - SignalK path (e.g., `navigation.speedOverGround`)
-- `aggregateMethod` - Aggregation method: `average`, `min`, `max`, `first`, `last`, `mid` (default: `average`)
+- `aggregateMethod` - Aggregation method: `average`, `min`, `max`, `first`, `last`, `mid`, `middle_index` (default: `average`)
 - `smoothingType` - `sma` (Simple Moving Average) or `ema` (Exponential Moving Average)
 - `smoothingParam` - For SMA: window size (default: 10), for EMA: alpha value 0-1 (default: 0.2)
 

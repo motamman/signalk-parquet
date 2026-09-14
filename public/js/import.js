@@ -14,6 +14,9 @@ let currentGpxImportJobId = localStorage.getItem('gpxImportJobId') || null;
 let gpxImportPollInterval = null;
 let gpxSelectedFiles = [];
 let gpxUploadInFlight = false;
+// Start Import stays disabled until the path list has loaded: with no
+// checkboxes there is nothing to select, so a submit could only fail.
+let gpxPathOptionsLoaded = false;
 
 // Human labels for the backend "phase" field — the service uses internal
 // short names, but users shouldn't see "parse" or "write" bare.
@@ -28,6 +31,52 @@ function getSelectedGpxPaths() {
   return Array.from(document.querySelectorAll('.gpxPath'))
     .filter(cb => cb.checked)
     .map(cb => cb.value);
+}
+
+// Build the path checkboxes from the server's list so adding a path is a
+// one-place change (#55). Each option carries the GPX element it comes from
+// and the unit it is stored in, shown as a hint next to the path.
+async function loadGpxPathOptions() {
+  const container = document.getElementById('gpxPathOptions');
+  if (!container) return;
+  try {
+    const response = await fetch(
+      '/plugins/signalk-parquet/api/import/gpx/options'
+    );
+    if (!response.ok) {
+      throw new Error(await explainHttpError(response));
+    }
+    const data = await response.json();
+    if (!data.success || !Array.isArray(data.paths)) {
+      throw new Error(data.error || 'unexpected response');
+    }
+    container.textContent = '';
+    container.style.color = '';
+    for (const option of data.paths) {
+      const label = document.createElement('label');
+      label.style.fontWeight = 'normal';
+      const checkbox = document.createElement('input');
+      checkbox.type = 'checkbox';
+      checkbox.className = 'gpxPath';
+      checkbox.value = option.path;
+      checkbox.checked = !!option.defaultChecked;
+      label.appendChild(checkbox);
+      label.appendChild(document.createTextNode(` ${option.path}`));
+      const hint = document.createElement('small');
+      hint.style.color = '#999';
+      hint.style.marginLeft = '6px';
+      hint.textContent = `from ${option.from}, stored in ${option.unit}`;
+      label.appendChild(hint);
+      container.appendChild(label);
+    }
+    gpxPathOptionsLoaded = true;
+  } catch (error) {
+    gpxPathOptionsLoaded = false;
+    const message = error instanceof Error ? error.message : String(error);
+    container.textContent = `Could not load the path list: ${message}`;
+    container.style.color = '#c62828';
+  }
+  refreshStartButtonState();
 }
 
 function formatBytes(bytes) {
@@ -71,6 +120,7 @@ function refreshStartButtonState() {
   if (!btn) return;
   btn.disabled =
     gpxUploadInFlight ||
+    !gpxPathOptionsLoaded ||
     currentGpxImportJobId !== null ||
     (gpxSelectedFiles.length === 0 && !serverDirValue());
 }
@@ -165,7 +215,7 @@ async function explainHttpError(response) {
     return 'Not logged in. Open the Signal K admin UI, log in, then try again from this tab.';
   }
   if (response.status === 413) {
-    return 'Upload too large (over 200 MB per file or 500 files total).';
+    return 'Upload too large (over 500 MB per file, 2 GB in total, or 500 files).';
   }
   try {
     const d = await response.json();
@@ -525,6 +575,7 @@ window.cancelGpxImport = cancelGpxImport;
 
 document.addEventListener('DOMContentLoaded', () => {
   initGpxDropZone();
+  loadGpxPathOptions();
   refreshStartButtonState();
 
   if (currentGpxImportJobId) {

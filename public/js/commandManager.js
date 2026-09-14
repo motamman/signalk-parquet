@@ -1,4 +1,12 @@
-import { getPluginPath } from './utils.js';
+import { getPluginPath, escapeHtml } from './utils.js';
+import {
+  loadThresholdUnit,
+  hasThresholdUnit,
+  unitFor,
+  toBaseValue,
+  toDisplayValue,
+  describeThresholdValue,
+} from './thresholdUnits.js';
 
 let editingThresholds = [];
 let addingThresholds = [];
@@ -757,6 +765,7 @@ export async function showEditCommandForm(commandName) {
     // Populate thresholds configuration (multiple thresholds supported)
     editingThresholds = command.thresholds ? [...command.thresholds] : [];
     displayThresholdsList();
+    warmThresholdUnits(editingThresholds, displayThresholdsList);
 
     setupEditFormFieldListeners();
     attachEditFormToRow(command.command);
@@ -1145,6 +1154,58 @@ async function detectPathType(path) {
   return { dataType: 'unknown' };
 }
 
+// Per-form bookkeeping for the async path lookup (type + display unit).
+// Selecting another path before the previous lookup has answered must not
+// let the older answer overwrite the newer path's state, and Save has to
+// wait for the current lookup so values are converted with the right unit.
+const pathMetadataLoads = new Map(); // operatorSelectId -> { path, generation, promise }
+
+async function applyPathMetadata(operatorSelectId, valueContainerId, path) {
+  const previous = pathMetadataLoads.get(operatorSelectId);
+  const generation = (previous ? previous.generation : 0) + 1;
+  const promise = (async () => {
+    const typeInfo = await detectPathType(path);
+    await loadThresholdUnit(path, typeInfo.dataType);
+    const current = pathMetadataLoads.get(operatorSelectId);
+    if (!current || current.generation !== generation) return null; // stale
+    const operatorSelect = document.getElementById(operatorSelectId);
+    if (!operatorSelect) return null;
+    updateOperatorDropdown(operatorSelectId, typeInfo.dataType);
+    operatorSelect.dataset.watchPath = path;
+    operatorSelect.dataset.pathDataType = typeInfo.dataType;
+    updateValueFields(operatorSelectId, valueContainerId, typeInfo.dataType);
+    return typeInfo;
+  })();
+  pathMetadataLoads.set(operatorSelectId, { path, generation, promise });
+  return promise;
+}
+
+/**
+ * Base-unit value for a number entered in the display unit, or null (after
+ * alerting) when the unit's formula cannot convert it, e.g. a division by
+ * zero. Keeps Infinity and NaN out of saved thresholds (#74).
+ */
+function toBaseOrAlert(unit, value) {
+  const converted = toBaseValue(unit, value);
+  if (!Number.isFinite(converted)) {
+    alert(`Value ${value} cannot be converted to the stored unit`);
+    return null;
+  }
+  return converted;
+}
+
+/** Resolves once the lookup for the path last chosen in the form has settled. */
+async function pathMetadataSettled(operatorSelectId) {
+  // A path chosen while a lookup is pending starts a newer lookup; keep
+  // waiting until the one that settled is still the latest.
+  for (;;) {
+    const state = pathMetadataLoads.get(operatorSelectId);
+    if (!state) return null;
+    const result = await state.promise.catch(() => null);
+    if (pathMetadataLoads.get(operatorSelectId) === state) return result;
+  }
+}
+
 // Update operator dropdown based on detected path type
 function updateOperatorDropdown(operatorSelectId, dataType) {
   const operatorSelect = document.getElementById(operatorSelectId);
@@ -1219,6 +1280,21 @@ function updateValueFields(operatorSelectId, valueContainerId, dataType) {
   const container = document.getElementById(valueContainerId);
   if (!container) return;
 
+  // Values are entered in the user's display unit (#74) and converted to
+  // the path's base unit on save; the hint says which is which.
+  const unit = unitFor(
+    document.getElementById(operatorSelectId)?.dataset.watchPath,
+    dataType
+  );
+  // The symbol and base unit come from the units plugin's response, so the
+  // hint is built from DOM nodes rather than interpolated into HTML.
+  let unitHint = null;
+  if (unit) {
+    unitHint = document.createElement('div');
+    unitHint.style.cssText = 'font-size: 0.85em; color: #666; margin-top: 5px;';
+    unitHint.textContent = `💡 Enter values in ${unit.symbol} (stored as ${unit.baseUnit})`;
+  }
+
   // Clear existing content
   container.innerHTML = '';
 
@@ -1245,8 +1321,8 @@ function updateValueFields(operatorSelectId, valueContainerId, dataType) {
                     <input type="number" id="${valueContainerId}_max" step="any" style="width: 100%;">
                 </div>
             </div>
-            ${dataType === 'angular' ? '<div style="font-size: 0.85em; color: #666; margin-top: 5px;">💡 Enter values in degrees (will be converted to radians)</div>' : ''}
         `;
+    if (unitHint) container.appendChild(unitHint);
     return;
   }
 
@@ -1422,12 +1498,11 @@ function updateValueFields(operatorSelectId, valueContainerId, dataType) {
   }
 
   // Numeric operators (gt, lt, eq, ne)
-  const isAngular = dataType === 'angular';
   container.innerHTML = `
         <label>Value:</label>
         <input type="number" id="${valueContainerId}_value" step="any" placeholder="Enter value" style="width: 100%;">
-        ${isAngular ? '<div style="font-size: 0.85em; color: #666; margin-top: 5px;">💡 Enter value in degrees (will be converted to radians)</div>' : ''}
     `;
+  if (unitHint) container.appendChild(unitHint);
 }
 
 export function updateThresholdPathFilter() {
@@ -1529,15 +1604,7 @@ async function populateThresholdPaths() {
   if (hiddenInput) {
     hiddenInput.addEventListener('change', async function () {
       if (this.value) {
-        const typeInfo = await detectPathType(this.value);
-        updateOperatorDropdown('newThresholdOperator', typeInfo.dataType);
-        updateValueFields(
-          'newThresholdOperator',
-          'newThresholdValueGroup',
-          typeInfo.dataType
-        );
-        document.getElementById('newThresholdOperator').dataset.pathDataType =
-          typeInfo.dataType;
+        await applyPathMetadata('newThresholdOperator', 'newThresholdValueGroup', this.value);
       }
     });
   }
@@ -1547,15 +1614,7 @@ async function populateThresholdPaths() {
   if (customInput) {
     customInput.onblur = async function () {
       if (this.value) {
-        const typeInfo = await detectPathType(this.value);
-        updateOperatorDropdown('newThresholdOperator', typeInfo.dataType);
-        updateValueFields(
-          'newThresholdOperator',
-          'newThresholdValueGroup',
-          typeInfo.dataType
-        );
-        document.getElementById('newThresholdOperator').dataset.pathDataType =
-          typeInfo.dataType;
+        await applyPathMetadata('newThresholdOperator', 'newThresholdValueGroup', this.value);
       }
     };
   }
@@ -1598,7 +1657,10 @@ export function cancelNewThreshold() {
   editingThresholdIndex = null;
 }
 
-export function saveNewThreshold() {
+export async function saveNewThreshold() {
+  // Let the selected path's type and unit lookup finish so the value is
+  // converted with the right unit (#74).
+  await pathMetadataSettled('newThresholdOperator');
   const pathSelect = document.getElementById('newThresholdPath');
   const pathCustom = document.getElementById('newThresholdPathCustom');
   const operator = document.getElementById('newThresholdOperator').value;
@@ -1620,6 +1682,7 @@ export function saveNewThreshold() {
     alert('Please select or enter a SignalK path');
     return;
   }
+  const unit = unitFor(path, dataType);
 
   // Create new threshold
   const threshold = {
@@ -1639,12 +1702,10 @@ export function saveNewThreshold() {
     }
     threshold.valueMin = parseFloat(min);
     threshold.valueMax = parseFloat(max);
-
-    // Convert degrees to radians for angular values
-    if (dataType === 'angular') {
-      threshold.valueMin = threshold.valueMin * (Math.PI / 180);
-      threshold.valueMax = threshold.valueMax * (Math.PI / 180);
-    }
+    // Entered in the display unit, stored in the base unit (#74).
+    threshold.valueMin = toBaseOrAlert(unit, threshold.valueMin);
+    threshold.valueMax = toBaseOrAlert(unit, threshold.valueMax);
+    if (threshold.valueMin === null || threshold.valueMax === null) return;
   } else if (operator === 'withinRadius' || operator === 'outsideRadius') {
     const useHomePort = document.getElementById(
       'newThresholdValueGroup_useHomePort'
@@ -1750,12 +1811,9 @@ export function saveNewThreshold() {
         alert('Please enter a valid numeric value');
         return;
       }
-      threshold.value = numValue;
-
-      // Convert degrees to radians for angular values
-      if (dataType === 'angular') {
-        threshold.value = threshold.value * (Math.PI / 180);
-      }
+      // Entered in the display unit, stored in the base unit (#74).
+      threshold.value = toBaseOrAlert(unit, numValue);
+      if (threshold.value === null) return;
     }
   }
 
@@ -1781,6 +1839,24 @@ export function saveNewThreshold() {
   markEditFormDirty();
 }
 
+/**
+ * Load the display unit for every path in `thresholds` that has not been
+ * looked up yet, then re-render, so a list first drawn with raw base-unit
+ * values shows converted ones once the units plugin has answered (#74).
+ */
+async function warmThresholdUnits(thresholds, rerender) {
+  const paths = [...new Set(thresholds.map(t => t.watchPath).filter(Boolean))];
+  const missing = paths.filter(p => !hasThresholdUnit(p));
+  if (missing.length === 0) return;
+  await Promise.all(
+    missing.map(async p => {
+      const typeInfo = await detectPathType(p);
+      await loadThresholdUnit(p, typeInfo.dataType);
+    })
+  );
+  rerender();
+}
+
 function displayThresholdsList() {
   const container = document.getElementById('thresholdsList');
 
@@ -1796,7 +1872,7 @@ function displayThresholdsList() {
 
     // Format description based on operator type
     if (threshold.operator === 'range') {
-      description = `${threshold.valueMin} to ${threshold.valueMax}`;
+      description = `${describeThresholdValue(threshold.watchPath, threshold.valueMin)} to ${describeThresholdValue(threshold.watchPath, threshold.valueMax)}`;
     } else if (
       threshold.operator === 'withinRadius' ||
       threshold.operator === 'outsideRadius'
@@ -1837,7 +1913,7 @@ function displayThresholdsList() {
           endsWith: 'ends with',
           stringEquals: 'equals',
         }[threshold.operator] || threshold.operator;
-      description = `${operatorSymbol} ${threshold.value !== undefined ? threshold.value : ''}`;
+      description = `${operatorSymbol} ${threshold.value !== undefined ? describeThresholdValue(threshold.watchPath, threshold.value) : ''}`;
     }
 
     const action = threshold.activateOnMatch ? 'ON' : 'OFF';
@@ -1848,7 +1924,7 @@ function displayThresholdsList() {
     html += `
             <div style="background: white; border: 1px solid #ddd; border-radius: 4px; padding: 10px; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center;">
                 <div>
-                    <strong>${threshold.watchPath}</strong> ${description} → ${action}${hysteresis}
+                    <strong>${escapeHtml(threshold.watchPath)}</strong> ${escapeHtml(description)} → ${action}${hysteresis}
                 </div>
                 <div style="display: flex; gap: 5px;">
                     <button onclick="editThreshold(${index})" style="background: #2196F3; color: white; border: none; padding: 4px 8px; border-radius: 3px; font-size: 0.8em;">
@@ -1991,17 +2067,14 @@ async function loadThresholdIntoModal(threshold) {
   }
 
   // Detect path type and update dropdown (same logic as add flow)
-  const typeInfo = await detectPathType(threshold.watchPath);
-  updateOperatorDropdown('thresholdOperator', typeInfo.dataType);
-  updateValueFields(
+  const typeInfo = await applyPathMetadata(
     'thresholdOperator',
     'thresholdValueGroup',
-    typeInfo.dataType
+    threshold.watchPath
   );
+  // Another path was chosen while this lookup was running.
+  if (!typeInfo) return;
   const operatorSelect = document.getElementById('thresholdOperator');
-  if (operatorSelect) {
-    operatorSelect.dataset.pathDataType = typeInfo.dataType;
-  }
 
   // Wait for dropdown to be updated, then set operator
   setTimeout(() => {
@@ -2031,11 +2104,21 @@ async function loadThresholdIntoModal(threshold) {
 }
 
 function populateThresholdValues(threshold) {
+  // Stored values are in the base unit; the fields show the display unit
+  // (#74). Before this, an angular threshold came back as radians and was
+  // converted to radians again on save.
+  const unit = unitFor(
+    threshold.watchPath,
+    document.getElementById('thresholdOperator')?.dataset.pathDataType ||
+      'unknown'
+  );
+  const shown = v =>
+    v === undefined || v === null ? '' : toDisplayValue(unit, v);
   if (threshold.operator === 'range') {
     const minInput = document.getElementById('thresholdValueGroup_min');
     const maxInput = document.getElementById('thresholdValueGroup_max');
-    if (minInput) minInput.value = threshold.valueMin || '';
-    if (maxInput) maxInput.value = threshold.valueMax || '';
+    if (minInput) minInput.value = shown(threshold.valueMin);
+    if (maxInput) maxInput.value = shown(threshold.valueMax);
   } else if (
     threshold.operator === 'withinRadius' ||
     threshold.operator === 'outsideRadius'
@@ -2115,12 +2198,15 @@ function populateThresholdValues(threshold) {
   ) {
     const valueInput = document.getElementById('thresholdValueGroup_value');
     if (valueInput) {
-      valueInput.value = threshold.value;
+      valueInput.value = shown(threshold.value);
     }
   }
 }
 
-export function saveThresholdModal() {
+export async function saveThresholdModal() {
+  // Let the selected path's type and unit lookup finish so the value is
+  // converted with the right unit (#74).
+  await pathMetadataSettled('thresholdOperator');
   const threshold = buildThresholdFromModal();
   if (!threshold) return;
 
@@ -2171,6 +2257,7 @@ function buildThresholdFromModal() {
     alert('Please select or enter a SignalK path');
     return null;
   }
+  const unit = unitFor(watchPath, dataType);
 
   const threshold = {
     watchPath,
@@ -2189,9 +2276,11 @@ function buildThresholdFromModal() {
     }
     threshold.valueMin = parseFloat(min);
     threshold.valueMax = parseFloat(max);
-    if (dataType === 'angular') {
-      threshold.valueMin = threshold.valueMin * (Math.PI / 180);
-      threshold.valueMax = threshold.valueMax * (Math.PI / 180);
+    // Entered in the display unit, stored in the base unit (#74).
+    threshold.valueMin = toBaseOrAlert(unit, threshold.valueMin);
+    threshold.valueMax = toBaseOrAlert(unit, threshold.valueMax);
+    if (threshold.valueMin === null || threshold.valueMax === null) {
+      return null;
     }
   } else if (operator === 'withinRadius' || operator === 'outsideRadius') {
     const useHomePort = document.getElementById(
@@ -2279,10 +2368,9 @@ function buildThresholdFromModal() {
     if (isNaN(numValue)) {
       threshold.value = valueInput.value;
     } else {
-      threshold.value = numValue;
-      if (dataType === 'angular') {
-        threshold.value = threshold.value * (Math.PI / 180);
-      }
+      // Entered in the display unit, stored in the base unit (#74).
+      threshold.value = toBaseOrAlert(unit, numValue);
+      if (threshold.value === null) return null;
     }
   }
 
@@ -2390,15 +2478,7 @@ async function populateThresholdModalPaths() {
   if (hiddenInput) {
     hiddenInput.addEventListener('change', async function () {
       if (this.value) {
-        const typeInfo = await detectPathType(this.value);
-        updateOperatorDropdown('thresholdOperator', typeInfo.dataType);
-        updateValueFields(
-          'thresholdOperator',
-          'thresholdValueGroup',
-          typeInfo.dataType
-        );
-        document.getElementById('thresholdOperator').dataset.pathDataType =
-          typeInfo.dataType;
+        await applyPathMetadata('thresholdOperator', 'thresholdValueGroup', this.value);
       }
     });
   }
@@ -2408,15 +2488,7 @@ async function populateThresholdModalPaths() {
   if (customInput) {
     customInput.onblur = async function () {
       if (this.value) {
-        const typeInfo = await detectPathType(this.value);
-        updateOperatorDropdown('thresholdOperator', typeInfo.dataType);
-        updateValueFields(
-          'thresholdOperator',
-          'thresholdValueGroup',
-          typeInfo.dataType
-        );
-        document.getElementById('thresholdOperator').dataset.pathDataType =
-          typeInfo.dataType;
+        await applyPathMetadata('thresholdOperator', 'thresholdValueGroup', this.value);
       }
     };
   }
@@ -2531,16 +2603,7 @@ async function populateAddCmdThresholdPaths() {
   if (hiddenInput) {
     hiddenInput.addEventListener('change', async function () {
       if (this.value) {
-        const typeInfo = await detectPathType(this.value);
-        updateOperatorDropdown('addCmdThresholdOperator', typeInfo.dataType);
-        updateValueFields(
-          'addCmdThresholdOperator',
-          'addCmdThresholdValueGroup',
-          typeInfo.dataType
-        );
-        document.getElementById(
-          'addCmdThresholdOperator'
-        ).dataset.pathDataType = typeInfo.dataType;
+        await applyPathMetadata('addCmdThresholdOperator', 'addCmdThresholdValueGroup', this.value);
       }
     });
   }
@@ -2550,16 +2613,7 @@ async function populateAddCmdThresholdPaths() {
   if (customInput) {
     customInput.onblur = async function () {
       if (this.value) {
-        const typeInfo = await detectPathType(this.value);
-        updateOperatorDropdown('addCmdThresholdOperator', typeInfo.dataType);
-        updateValueFields(
-          'addCmdThresholdOperator',
-          'addCmdThresholdValueGroup',
-          typeInfo.dataType
-        );
-        document.getElementById(
-          'addCmdThresholdOperator'
-        ).dataset.pathDataType = typeInfo.dataType;
+        await applyPathMetadata('addCmdThresholdOperator', 'addCmdThresholdValueGroup', this.value);
       }
     };
   }
@@ -2595,7 +2649,10 @@ export function cancelAddCmdThreshold() {
   }
 }
 
-export function saveAddCmdThreshold() {
+export async function saveAddCmdThreshold() {
+  // Let the selected path's type and unit lookup finish so the value is
+  // converted with the right unit (#74).
+  await pathMetadataSettled('addCmdThresholdOperator');
   const pathSelect = document.getElementById('addCmdThresholdPath');
   const pathCustom = document.getElementById('addCmdThresholdPathCustom');
   const operator = document.getElementById('addCmdThresholdOperator').value;
@@ -2618,6 +2675,7 @@ export function saveAddCmdThreshold() {
     alert('Please select or enter a SignalK path');
     return;
   }
+  const unit = unitFor(path, dataType);
 
   // Create new threshold
   const threshold = {
@@ -2637,12 +2695,10 @@ export function saveAddCmdThreshold() {
     }
     threshold.valueMin = parseFloat(min);
     threshold.valueMax = parseFloat(max);
-
-    // Convert degrees to radians for angular values
-    if (dataType === 'angular') {
-      threshold.valueMin = threshold.valueMin * (Math.PI / 180);
-      threshold.valueMax = threshold.valueMax * (Math.PI / 180);
-    }
+    // Entered in the display unit, stored in the base unit (#74).
+    threshold.valueMin = toBaseOrAlert(unit, threshold.valueMin);
+    threshold.valueMax = toBaseOrAlert(unit, threshold.valueMax);
+    if (threshold.valueMin === null || threshold.valueMax === null) return;
   } else if (operator === 'withinRadius' || operator === 'outsideRadius') {
     const useHomePort = document.getElementById(
       'addCmdThresholdValueGroup_useHomePort'
@@ -2754,12 +2810,9 @@ export function saveAddCmdThreshold() {
         alert('Please enter a valid numeric value');
         return;
       }
-      threshold.value = numValue;
-
-      // Convert degrees to radians for angular values
-      if (dataType === 'angular') {
-        threshold.value = threshold.value * (Math.PI / 180);
-      }
+      // Entered in the display unit, stored in the base unit (#74).
+      threshold.value = toBaseOrAlert(unit, numValue);
+      if (threshold.value === null) return;
     }
   }
 
@@ -2796,7 +2849,7 @@ function displayAddCommandThresholdsList() {
 
     // Format description based on operator type
     if (threshold.operator === 'range') {
-      description = `${threshold.valueMin} to ${threshold.valueMax}`;
+      description = `${describeThresholdValue(threshold.watchPath, threshold.valueMin)} to ${describeThresholdValue(threshold.watchPath, threshold.valueMax)}`;
     } else if (
       threshold.operator === 'withinRadius' ||
       threshold.operator === 'outsideRadius'
@@ -2837,7 +2890,7 @@ function displayAddCommandThresholdsList() {
           endsWith: 'ends with',
           stringEquals: 'equals',
         }[threshold.operator] || threshold.operator;
-      description = `${operatorSymbol} ${threshold.value !== undefined ? threshold.value : ''}`;
+      description = `${operatorSymbol} ${threshold.value !== undefined ? describeThresholdValue(threshold.watchPath, threshold.value) : ''}`;
     }
 
     const action = threshold.activateOnMatch ? 'ON' : 'OFF';
@@ -2848,7 +2901,7 @@ function displayAddCommandThresholdsList() {
     html += `
             <div style="background: white; border: 1px solid #ddd; border-radius: 4px; padding: 10px; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center;">
                 <div>
-                    <strong>${threshold.watchPath}</strong> ${description} → ${action}${hysteresis}
+                    <strong>${escapeHtml(threshold.watchPath)}</strong> ${escapeHtml(description)} → ${action}${hysteresis}
                 </div>
                 <button onclick="removeAddCommandThreshold(${index})" style="background: #f44336; color: white; border: none; padding: 4px 8px; border-radius: 3px; font-size: 0.8em;">
                     ❌ Remove
