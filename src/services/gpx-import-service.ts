@@ -892,8 +892,16 @@ class GroupWriterPool {
     // caller aborts the rest of the pool in that case.
     await appender.close();
     this.openCount--;
+    try {
+      await fs.rename(group.tempPath!, group.finalPath!);
+    } catch (error) {
+      // The appender is closed, so abortAll() cannot discard this file any
+      // more; do it here rather than leave a .tmp in the partition.
+      await fs.remove(group.tempPath!).catch(() => undefined);
+      this.groups.delete(group.key);
+      throw error;
+    }
     this.groups.delete(group.key);
-    await fs.rename(group.tempPath!, group.finalPath!);
     this.options.onClosed(group, rows, group.finalPath!);
   }
 }

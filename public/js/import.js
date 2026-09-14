@@ -72,7 +72,8 @@ async function loadGpxPathOptions() {
     gpxPathOptionsLoaded = true;
   } catch (error) {
     gpxPathOptionsLoaded = false;
-    container.textContent = `Could not load the path list: ${error.message}`;
+    const message = error instanceof Error ? error.message : String(error);
+    container.textContent = `Could not load the path list: ${message}`;
     container.style.color = '#c62828';
   }
   refreshStartButtonState();
@@ -214,7 +215,7 @@ async function explainHttpError(response) {
     return 'Not logged in. Open the Signal K admin UI, log in, then try again from this tab.';
   }
   if (response.status === 413) {
-    return 'Upload too large (over 500 MB per file or 500 files total).';
+    return 'Upload too large (over 500 MB per file, 2 GB in total, or 500 files).';
   }
   try {
     const d = await response.json();

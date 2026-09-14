@@ -181,7 +181,9 @@ async function refreshMigrationPanel() {
     panel.style.display =
       data.success && data.legacyDirectoryPresent ? 'block' : 'none';
   } catch (error) {
-    // Leave the panel hidden; the API remains available.
+    // Hide the panel, including one an earlier check showed; the API
+    // remains available.
+    panel.style.display = 'none';
     console.error('Legacy data check failed:', error);
   }
 }

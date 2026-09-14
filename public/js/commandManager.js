@@ -1195,9 +1195,15 @@ function toBaseOrAlert(unit, value) {
 }
 
 /** Resolves once the lookup for the path last chosen in the form has settled. */
-function pathMetadataSettled(operatorSelectId) {
-  const state = pathMetadataLoads.get(operatorSelectId);
-  return state ? state.promise.catch(() => null) : Promise.resolve(null);
+async function pathMetadataSettled(operatorSelectId) {
+  // A path chosen while a lookup is pending starts a newer lookup; keep
+  // waiting until the one that settled is still the latest.
+  for (;;) {
+    const state = pathMetadataLoads.get(operatorSelectId);
+    if (!state) return null;
+    const result = await state.promise.catch(() => null);
+    if (pathMetadataLoads.get(operatorSelectId) === state) return result;
+  }
 }
 
 // Update operator dropdown based on detected path type

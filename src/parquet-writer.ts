@@ -350,17 +350,24 @@ export class ParquetWriter {
         const isValid = await this.validateParquetFile(filepath);
         if (!isValid) {
           const quarantineDir = path.join(path.dirname(filepath), 'quarantine');
-          await fs.ensureDir(quarantineDir);
           const quarantineFile = path.join(
             quarantineDir,
             path.basename(filepath)
           );
-          await fs.move(filepath, quarantineFile, { overwrite: true });
-          await this.logQuarantine(
-            quarantineFile,
-            'write',
-            'File failed validation after write'
-          );
+          try {
+            await fs.ensureDir(quarantineDir);
+            await fs.move(filepath, quarantineFile, { overwrite: true });
+            await this.logQuarantine(
+              quarantineFile,
+              'write',
+              'File failed validation after write'
+            );
+          } catch (quarantineError) {
+            // abort() is a no-op once closed; the invalid file must not
+            // linger where a later scan would read it.
+            await fs.remove(filepath).catch(() => undefined);
+            throw quarantineError;
+          }
           throw new Error(
             `Parquet file failed validation after write, moved to quarantine: ${quarantineFile}`
           );
