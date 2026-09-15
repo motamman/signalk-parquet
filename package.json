@@ -77,9 +77,9 @@
     "appIcon": "parquet.png"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.118.0",
+    "@anthropic-ai/sdk": "^0.124.0",
     "@aws-sdk/client-s3": "^3.1068.0",
-    "@dsnp/parquetjs": "~1.8.9",
+    "@dsnp/parquetjs": "~1.9.3",
     "@duckdb/node-api": "^1.5.3-r.3",
     "@js-joda/core": "^6.0.1",
     "@js-temporal/polyfill": "^0.5.1",
