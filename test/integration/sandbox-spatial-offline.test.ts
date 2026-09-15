@@ -67,7 +67,11 @@ describe('sandbox instance without the spatial extension', function () {
         error = err as Error;
       }
       expect(error, 'configuration must be locked').to.be.an('error');
+      // The file must exist: a missing file fails in read_csv() before the
+      // sandbox's directory check runs, which would pass this test for the
+      // wrong reason.
       const outside = path.join(os.tmpdir(), 'sk-nospatial-outside.csv');
+      await fs.writeFile(outside, 'id\n1\n');
       let readError: Error | undefined;
       try {
         await connection.runAndReadAll(
@@ -79,8 +83,10 @@ describe('sandbox instance without the spatial extension', function () {
       expect(readError, 'reads outside the data dir must be refused').to.be.an(
         'error'
       );
+      expect(readError!.message).to.not.match(/No files found|not exist/i);
     } finally {
       connection.disconnectSync();
+      await fs.remove(path.join(os.tmpdir(), 'sk-nospatial-outside.csv'));
     }
   });
 });

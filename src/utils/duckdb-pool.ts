@@ -265,6 +265,10 @@ export class DuckDBPool {
       this.closeQuietly(this.sandboxInstance);
       this.sandboxInstance = null;
     }
+    // Forget the directories chosen at initialize(). A sandbox created before
+    // the next initialize() must not point at the previous lifecycle's
+    // (possibly removed) extension and temp directories.
+    this.instanceConfig = {};
   }
 
   /**
