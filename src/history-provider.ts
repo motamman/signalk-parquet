@@ -5,6 +5,8 @@
  * this plugin as the official history data provider for the SignalK server.
  */
 
+import * as fs from 'fs-extra';
+import * as path from 'path';
 import { Temporal } from '@js-temporal/polyfill';
 import { ZonedDateTime, ZoneOffset, Instant } from '@js-joda/core';
 import { Context, Timestamp, ServerAPI } from '@signalk/server-api';
@@ -33,7 +35,12 @@ import {
   validateContext,
   validateSignalKPath,
 } from './utils/signalk-validation';
-import { getPathComponentSchema } from './utils/schema-cache';
+import {
+  getPathComponentSchema,
+  inferDataTypeCategory,
+  ComponentInfo,
+  PathComponentSchema,
+} from './utils/schema-cache';
 import { HivePathBuilder } from './utils/hive-path-builder';
 import { isAngularPath } from './utils/angular-paths';
 import { middleIndexSql } from './utils/aggregate-sql';
@@ -173,6 +180,49 @@ const MAX_EXPANDED_COLUMNS = 64;
 
 /** The stored column a source ref lives in, as registered in path-filters. */
 const SOURCE_FILTER = { field: 'sourceRef', column: 'source_label' } as const;
+
+/** DuckDB's error for a read_parquet glob that matches no file. */
+function isNoFilesError(err: unknown): boolean {
+  return (err as Error)?.message?.includes('No files found') ?? false;
+}
+
+/** Buffer columns that are metadata rather than object components. */
+const NON_COMPONENT_COLUMNS = new Set([
+  'value_json',
+  'value_units',
+  'value_description',
+  'value_age',
+]);
+
+/**
+ * Component schema of an object path from its buffer table, for a path that
+ * has no raw parquet yet (a vessel or AIS target seen for the first time
+ * since the last daily export). The buffer stores object values as
+ * `value_<component>` columns, the same layout the parquet files use, so the
+ * object branch can run against it unchanged. Null when the table has no
+ * such columns, which is what a scalar path looks like.
+ */
+function componentSchemaFromBuffer(
+  schema: Array<{ name: string; type: string }> | undefined
+): PathComponentSchema | null {
+  if (!schema) return null;
+  const components = new Map<string, ComponentInfo>();
+  for (const column of schema) {
+    if (
+      !column.name.startsWith('value_') ||
+      NON_COMPONENT_COLUMNS.has(column.name)
+    ) {
+      continue;
+    }
+    const name = column.name.replace(/^value_/, '');
+    components.set(name, {
+      name,
+      columnName: column.name,
+      dataType: inferDataTypeCategory(column.type),
+    });
+  }
+  return components.size > 0 ? { components, timestamp: Date.now() } : null;
+}
 
 /**
  * History API Provider implementation
@@ -339,7 +389,9 @@ export class HistoryProvider implements HistoryApi {
       }
     }
 
-    if (columns.length > MAX_EXPANDED_COLUMNS) {
+    // The cap is on source expansion only; an ordinary request is one
+    // column per spec and is not limited here.
+    if (expand && columns.length > MAX_EXPANDED_COLUMNS) {
       throw new Error(
         `sourcePolicy=all expands these paths into ${columns.length} columns (max ${MAX_EXPANDED_COLUMNS} columns); request fewer paths or name the sources with paths=<path>|<sourceRef>`
       );
@@ -491,6 +543,19 @@ export class HistoryProvider implements HistoryApi {
     );
     this.debug(`[HistoryProvider] Querying Hive path: ${filePath}`);
 
+    // A path recorded since the last daily export has buffer rows and no raw
+    // directory yet. read_parquet on a glob with no files throws, so the
+    // parquet side is only included when the directory exists, and the
+    // buffer answers alone otherwise (as the v1 routes and the Track API do).
+    const hasParquetDir = await fs.pathExists(
+      path.join(
+        this.dataDir,
+        'tier=raw',
+        `context=${hiveBuilder.sanitizeContext(context)}`,
+        `path=${hiveBuilder.sanitizePath(pathSpec.path)}`
+      )
+    );
+
     // Stage this path's buffer rows into a temp table if the buffer is available
     const hasBuffer = DuckDBPool.isSQLiteBufferInitialized();
     const connection = await DuckDBPool.getConnection();
@@ -508,12 +573,18 @@ export class HistoryProvider implements HistoryApi {
               (msg: string) => this.debug(msg)
             )
           : null;
-      // Check if this is an object path (has value_* columns)
-      const componentSchema = await getPathComponentSchema(
-        this.dataDir,
-        context,
-        pathSpec.path
-      );
+      if (!hasParquetDir && !stagedBufferTable) {
+        return [];
+      }
+      // Check if this is an object path (has value_* columns). With no
+      // parquet yet, the buffer table's columns say what shape the path has.
+      const componentSchema =
+        (hasParquetDir
+          ? await getPathComponentSchema(this.dataDir, context, pathSpec.path)
+          : null) ??
+        componentSchemaFromBuffer(
+          this.sqliteBuffer?.getTableSchema(pathSpec.path as string)
+        );
 
       // sma/ema bucket like average, so angular data needs the same
       // circular-mean bucket value before the moving window is applied.
@@ -526,15 +597,45 @@ export class HistoryProvider implements HistoryApi {
       // `filters` carries the column's source filter, explicit or expanded.
       // This provider only queries raw-tier parquet; probe it for the filter
       // columns so files without them are excluded rather than throwing.
-      const available = await availableFilterColumns(
-        connection,
-        [filePath],
-        filters
-      );
+      const available = hasParquetDir
+        ? await availableFilterColumns(connection, [filePath], filters)
+        : new Set<string>();
       const sourceFilter = buildParquetFilterClause(filters, available);
 
       // Build parquet FROM clause with filename filtering
-      const parquetFrom = `(SELECT * FROM read_parquet('${escapeSqlString(filePath)}', union_by_name=true, filename=true) WHERE filename NOT LIKE '%/processed/%' AND filename NOT LIKE '%/quarantine/%' AND filename NOT LIKE '%/failed/%' AND filename NOT LIKE '%/repaired/%'${sourceFilter})`;
+      const parquetFrom = hasParquetDir
+        ? `(SELECT * FROM read_parquet('${escapeSqlString(filePath)}', union_by_name=true, filename=true) WHERE filename NOT LIKE '%/processed/%' AND filename NOT LIKE '%/quarantine/%' AND filename NOT LIKE '%/failed/%' AND filename NOT LIKE '%/repaired/%'${sourceFilter})`
+        : null;
+
+      /**
+       * Run the bucketed query over the parquet and buffer sides, each a
+       * parenthesised subquery projecting the same columns. A raw directory
+       * that exists but holds no day files (only quarantined ones, say) still
+       * makes read_parquet throw "No files found"; the buffer then answers
+       * alone. With neither side there is nothing to read.
+       */
+      const runFederatedSides = async (
+        parquetSide: string | null,
+        bufferSide: string | null,
+        sql: (federatedFrom: string) => string
+      ): Promise<Array<Record<string, unknown>>> => {
+        const both =
+          parquetSide && bufferSide
+            ? `(SELECT * FROM ${parquetSide} UNION ALL SELECT * FROM ${bufferSide})`
+            : (parquetSide ?? bufferSide);
+        if (!both) return [];
+        try {
+          const result = await connection.runAndReadAll(sql(both));
+          return result.getRowObjects() as Array<Record<string, unknown>>;
+        } catch (err) {
+          if (!isNoFilesError(err) || !parquetSide || !bufferSide) throw err;
+          this.debug(
+            `[HistoryProvider] no parquet files for ${pathSpec.path}; answering from the buffer alone`
+          );
+          const result = await connection.runAndReadAll(sql(bufferSide));
+          return result.getRowObjects() as Array<Record<string, unknown>>;
+        }
+      };
 
       if (componentSchema && componentSchema.components.size > 0) {
         // Object path - aggregate each component
@@ -588,8 +689,11 @@ export class HistoryProvider implements HistoryApi {
           .map(c => c.columnName)
           .join(', ');
 
-        // Build federated FROM: parquet UNION ALL buffer
-        let federatedFrom: string;
+        // Both sides project the same component columns so they union.
+        const parquetSide = parquetFrom
+          ? `(SELECT signalk_timestamp, ${componentCols} FROM ${parquetFrom})`
+          : null;
+        let bufferSide: string | null = null;
         if (stagedBufferTable) {
           const bufferTableCols = this.sqliteBuffer?.getTableColumns(
             pathSpec.path as string
@@ -603,16 +707,13 @@ export class HistoryProvider implements HistoryApi {
             bufferTableCols,
             filters
           );
-          federatedFrom = `(
-              SELECT signalk_timestamp, ${componentCols} FROM ${parquetFrom}
-              UNION ALL
-              SELECT signalk_timestamp, ${componentCols} FROM ${bufferSubquery}
-            )`;
-        } else {
-          federatedFrom = parquetFrom;
+          bufferSide = `(SELECT signalk_timestamp, ${componentCols} FROM ${bufferSubquery})`;
         }
 
-        const query = `
+        const rows = await runFederatedSides(
+          parquetSide,
+          bufferSide,
+          federatedFrom => `
           SELECT
             strftime(DATE_TRUNC('seconds',
               EPOCH_MS(CAST(FLOOR(EPOCH_MS(signalk_timestamp::TIMESTAMP) / ${resolutionMs}) * ${resolutionMs} AS BIGINT))
@@ -625,10 +726,8 @@ export class HistoryProvider implements HistoryApi {
             AND (${componentWhereConditions})
           GROUP BY timestamp
           ORDER BY timestamp
-        `;
-
-        const result = await connection.runAndReadAll(query);
-        const rows = result.getRowObjects();
+        `
+        );
 
         return rows.map((row: any) => {
           const timestamp = row.timestamp as Timestamp;
@@ -665,27 +764,24 @@ export class HistoryProvider implements HistoryApi {
                 'TRY_CAST(value AS DOUBLE)'
               );
 
-        // Build federated FROM: parquet UNION ALL buffer
-        let federatedFrom: string;
-        if (stagedBufferTable) {
-          const bufferSubquery = buildBufferScalarSubquery(
-            stagedBufferTable,
-            context,
-            pathSpec.path,
-            fromIso,
-            toIso,
-            filters
-          );
-          federatedFrom = `(
-              SELECT signalk_timestamp, value FROM ${parquetFrom}
-              UNION ALL
-              SELECT signalk_timestamp, value FROM ${bufferSubquery}
-            )`;
-        } else {
-          federatedFrom = parquetFrom;
-        }
+        const parquetSide = parquetFrom
+          ? `(SELECT signalk_timestamp, value FROM ${parquetFrom})`
+          : null;
+        const bufferSide = stagedBufferTable
+          ? `(SELECT signalk_timestamp, value FROM ${buildBufferScalarSubquery(
+              stagedBufferTable,
+              context,
+              pathSpec.path,
+              fromIso,
+              toIso,
+              filters
+            )})`
+          : null;
 
-        const query = `
+        const rows = await runFederatedSides(
+          parquetSide,
+          bufferSide,
+          federatedFrom => `
           SELECT
             strftime(DATE_TRUNC('seconds',
               EPOCH_MS(CAST(FLOOR(EPOCH_MS(signalk_timestamp::TIMESTAMP) / ${resolutionMs}) * ${resolutionMs} AS BIGINT))
@@ -698,10 +794,8 @@ export class HistoryProvider implements HistoryApi {
             AND value IS NOT NULL
           GROUP BY timestamp
           ORDER BY timestamp
-        `;
-
-        const result = await connection.runAndReadAll(query);
-        const rows = result.getRowObjects();
+        `
+        );
 
         return rows.map((row: any) => [row.timestamp as Timestamp, row.value]);
       }

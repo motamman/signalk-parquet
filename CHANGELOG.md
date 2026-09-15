@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **V2 History API returned nothing for a path with no raw parquet yet** — a vessel or AIS target recorded since the last daily export has rows in the SQLite buffer and no raw-tier directory. The V2 provider read the parquet glob unconditionally, DuckDB threw "No files found", and the provider turned that into an empty column, so `/signalk/v2/api/history/values` was empty for such a vessel while the V1 routes and the Track API answered from the buffer. The provider now includes the parquet side only when the raw directory exists, retries from the buffer alone if the directory holds no day files (quarantined files only), and, with no parquet schema to consult, reads an object path's components from the buffer table's `value_*` columns so `navigation.position` takes the object branch. Found on a test server whose sample data mints a new vessel id per launch.
+
 ### Changed
 
 - **V2 History API reports the per-column source as `$source`** (breaking for V2 clients) — signalk-server [#2817](https://github.com/SignalK/signalk-server/pull/2817) renamed the response key from `sourceRef` to `$source`, matching what V1 playback has always emitted; `@signalk/server-api` 2.32.0 types it that way. Requests are unchanged: `paths=<path>|<sourceRef>` still uses that name, and the plugin's own V1 routes still echo `sourceRef`.
