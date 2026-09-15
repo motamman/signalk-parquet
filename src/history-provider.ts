@@ -225,6 +225,25 @@ function componentSchemaFromBuffer(
 }
 
 /**
+ * Union of the parquet and buffer component schemas for one path. Parquet
+ * entries win on a name shared by both (their DuckDB type came from the
+ * files themselves); buffer-only components are appended. Null when neither
+ * side has any component, which is what a scalar path looks like.
+ */
+function mergeComponentSchemas(
+  parquet: PathComponentSchema | null,
+  buffer: PathComponentSchema | null
+): PathComponentSchema | null {
+  if (!parquet) return buffer;
+  if (!buffer) return parquet;
+  const components = new Map(parquet.components);
+  for (const [name, info] of buffer.components) {
+    if (!components.has(name)) components.set(name, info);
+  }
+  return { components, timestamp: Date.now() };
+}
+
+/**
  * History API Provider implementation
  */
 export class HistoryProvider implements HistoryApi {
@@ -576,15 +595,22 @@ export class HistoryProvider implements HistoryApi {
       if (!hasParquetDir && !stagedBufferTable) {
         return [];
       }
-      // Check if this is an object path (has value_* columns). With no
-      // parquet yet, the buffer table's columns say what shape the path has.
-      const componentSchema =
-        (hasParquetDir
-          ? await getPathComponentSchema(this.dataDir, context, pathSpec.path)
-          : null) ??
-        componentSchemaFromBuffer(
-          this.sqliteBuffer?.getTableSchema(pathSpec.path as string)
-        );
+      // Check if this is an object path (has value_* columns). The parquet
+      // schema is the union over the day files; the buffer table's columns
+      // say what shape the path has since the last export. Take the union of
+      // both, so a component that only one side has recorded (a new
+      // component that first appeared today, or one that has stopped being
+      // sent) is still projected, as NULL on the side that lacks it.
+      const parquetSchema = hasParquetDir
+        ? await getPathComponentSchema(this.dataDir, context, pathSpec.path)
+        : null;
+      const bufferSchema = componentSchemaFromBuffer(
+        this.sqliteBuffer?.getTableSchema(pathSpec.path as string)
+      );
+      const componentSchema = mergeComponentSchemas(
+        parquetSchema,
+        bufferSchema
+      );
 
       // sma/ema bucket like average, so angular data needs the same
       // circular-mean bucket value before the moving window is applied.
@@ -689,9 +715,20 @@ export class HistoryProvider implements HistoryApi {
           .map(c => c.columnName)
           .join(', ');
 
-        // Both sides project the same component columns so they union.
+        // Both sides project the same component columns so they union. A
+        // component the parquet files have never held is a typed NULL there,
+        // matching the type the buffer subquery casts it to.
+        const parquetComponentCols = Array.from(
+          componentSchema.components.values()
+        )
+          .map(c =>
+            parquetSchema?.components.has(c.name)
+              ? c.columnName
+              : `NULL::${c.dataType === 'numeric' ? 'DOUBLE' : 'VARCHAR'} AS ${c.columnName}`
+          )
+          .join(', ');
         const parquetSide = parquetFrom
-          ? `(SELECT signalk_timestamp, ${componentCols} FROM ${parquetFrom})`
+          ? `(SELECT signalk_timestamp, ${parquetComponentCols} FROM ${parquetFrom})`
           : null;
         let bufferSide: string | null = null;
         if (stagedBufferTable) {

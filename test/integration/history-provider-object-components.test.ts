@@ -30,8 +30,7 @@ function makeEngineRecord(
   temperature: number,
   state: string | null
 ): DataRecord {
-  const value =
-    state === null ? { temperature } : { temperature, state };
+  const value = state === null ? { temperature } : { temperature, state };
   const record: DataRecord = {
     received_timestamp: isoTime,
     signalk_timestamp: isoTime,
@@ -127,5 +126,39 @@ describe('History API v2 provider: non-numeric object components', function () {
       'earliest non-NULL state by signalk_timestamp must survive bucketing'
     ).to.equal('running');
     expect(obj.temperature as number).to.be.closeTo(81, 1e-9);
+  });
+
+  it('projects a component the buffer has but the parquet files lack', async () => {
+    // The day files hold `temperature` only. `state` first appears in the
+    // buffer after the export, so it exists in the buffer table's schema and
+    // nowhere in parquet. The provider used to take the parquet schema alone
+    // whenever it existed, dropping the buffer-only component from every row.
+    buffer.insert(makeEngineRecord('2024-06-01T10:00:10.000Z', 80, null));
+    await exportService.exportDayToParquet(DAY);
+    buffer.insert(makeEngineRecord('2024-06-01T10:01:10.000Z', 82, 'running'));
+    provider.setSqliteBuffer(buffer);
+    DuckDBPool.initializeSQLiteBuffer(path.join(host.dataDir, 'buffer.db'));
+
+    const res = await provider.getValues({
+      from: '2024-06-01T00:00:00Z',
+      to: '2024-06-01T23:59:59Z',
+      context: 'vessels.self',
+      resolution: 60,
+      pathSpecs: [{ path: ENGINE, aggregate: 'average', parameter: [] }],
+    } as unknown as ValuesRequest);
+
+    expect(res.data.map(r => r[0])).to.deep.equal([
+      '2024-06-01T10:00:00Z',
+      '2024-06-01T10:01:00Z',
+    ]);
+    const fromParquet = res.data[0][1] as Record<string, unknown>;
+    const fromBuffer = res.data[1][1] as Record<string, unknown>;
+    expect(fromParquet).to.not.have.property('state');
+    expect(fromParquet.temperature as number).to.be.closeTo(80, 1e-9);
+    expect(
+      fromBuffer.state,
+      'buffer-only component must survive the merge'
+    ).to.equal('running');
+    expect(fromBuffer.temperature as number).to.be.closeTo(82, 1e-9);
   });
 });
