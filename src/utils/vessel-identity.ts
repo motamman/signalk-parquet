@@ -48,7 +48,10 @@ export const IDENTITY_PATHS = [
 ] as const;
 
 function asString(v: unknown): string | undefined {
-  if (typeof v === 'string') return v.trim() === '' ? undefined : v;
+  if (typeof v === 'string') {
+    const trimmed = v.trim();
+    return trimmed === '' ? undefined : trimmed;
+  }
   if (typeof v === 'number' && Number.isFinite(v)) return String(v);
   return undefined;
 }

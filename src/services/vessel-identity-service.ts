@@ -218,24 +218,36 @@ export class VesselIdentityService {
         undefined,
         false
       );
+      // The snapshot row carries the newest leaf stamp and its source, not
+      // whichever leaf happened to come last in IDENTITY_PATHS order.
+      let newestMs = Number.NEGATIVE_INFINITY;
+      let newest: { timestamp: string; source?: string } | undefined;
       for (const p of IDENTITY_PATHS) {
         const leaf = getDotted(root, p);
         if (leaf === undefined || leaf === null) continue;
-        this.absorb(
-          context,
-          p,
-          unwrapLeaf(leaf),
-          leafField(leaf, 'timestamp'),
-          leafField(leaf, '$source'),
-          false
-        );
+        const timestamp = leafField(leaf, 'timestamp');
+        const source = leafField(leaf, '$source');
+        this.absorb(context, p, unwrapLeaf(leaf), timestamp, source, false);
+        if (timestamp === undefined) continue;
+        const ms = Date.parse(timestamp);
+        if (Number.isNaN(ms) || ms <= newestMs) continue;
+        newestMs = ms;
+        newest = { timestamp, source };
       }
       // One row per vessel for the whole seeded identity, not one per part.
       const vessel = this.tracked.get(context);
-      if (vessel?.dirty) this.write(context, vessel);
+      if (vessel?.dirty) {
+        if (newest) {
+          vessel.timestamp = newest.timestamp;
+          vessel.source = newest.source;
+        }
+        this.write(context, vessel);
+      }
       seeded += 1;
     }
-    this.debug(`[Identity] Seeded identity from the model for ${seeded} vessel(s)`);
+    this.debug(
+      `[Identity] Seeded identity from the model for ${seeded} vessel(s)`
+    );
   }
 
   private write(context: string, vessel: TrackedVessel): void {

@@ -1414,7 +1414,7 @@ export default function (app: ServerAPI): SignalKPlugin {
         type: 'boolean',
         title: 'Record Vessel Identity',
         description:
-          "Record each vessel's name, MMSI, AIS ship type, length, beam, callsign and AIS class as one 'identity' object path, written when the vessel is first recorded and again only when something changes. Retention-exempt and never aggregated. Applies to every vessel that has any other recorded data.",
+          "Record each vessel's name, MMSI, AIS ship type, length, beam, callsign and AIS class as one 'identity' object path, written when the vessel is first heard and again only when something changes. Retention-exempt and never aggregated. Applies to every vessel the server hears that reports any of these fields, whether or not it has other recorded data.",
         default: true,
       },
       enableRawSql: {

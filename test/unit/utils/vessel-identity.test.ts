@@ -23,6 +23,9 @@ describe('vessel identity', () => {
       identityFromDelta('', { name: 'Ariel', mmsi: 244813000, other: 1 })
     ).to.deep.equal({ name: 'Ariel', mmsi: '244813000' });
     expect(identityFromDelta('', { name: '   ' })).to.deep.equal({});
+    expect(
+      identityFromDelta('', { name: '  Ariel ', mmsi: ' 1 ' })
+    ).to.deep.equal({ name: 'Ariel', mmsi: '1' });
     expect(identityFromDelta('', 'not an object')).to.deep.equal({});
   });
 
@@ -40,16 +43,18 @@ describe('vessel identity', () => {
       identityFromDelta('design.length', { overall: 12.4, hull: 11 })
     ).to.deep.equal({ lengthOverall: 12.4 });
     expect(identityFromDelta('design.beam', 3.9)).to.deep.equal({ beam: 3.9 });
-    expect(identityFromDelta('communication.callsignVhf', 'PD1234')).to.deep.equal(
-      { callsignVhf: 'PD1234' }
-    );
+    expect(
+      identityFromDelta('communication.callsignVhf', 'PD1234')
+    ).to.deep.equal({ callsignVhf: 'PD1234' });
     expect(identityFromDelta('sensors.ais.class', 'B')).to.deep.equal({
       aisClass: 'B',
     });
   });
 
   it('ignores paths that carry no identity and non-finite numbers', () => {
-    expect(identityFromDelta('navigation.speedOverGround', 5)).to.deep.equal({});
+    expect(identityFromDelta('navigation.speedOverGround', 5)).to.deep.equal(
+      {}
+    );
     expect(identityFromDelta('design.beam', NaN)).to.deep.equal({});
   });
 
