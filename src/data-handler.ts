@@ -723,6 +723,7 @@ function handleStreamData(
     // Use actual context + path as buffer key to separate data from different vessels
     const bufferKey = `${normalizedDelta.context}:${pathConfig.path}`;
     bufferData(bufferKey, record, config, state, app);
+    // A vessel with a recorded row of its own earns an identity row.
   } catch (error) {
     app.error(
       `[DataHandler] Failed to buffer delta for ${normalizedDelta.context}:${pathConfig.path}: ${(error as Error).message}`

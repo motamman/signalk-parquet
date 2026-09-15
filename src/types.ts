@@ -80,6 +80,7 @@ export interface PluginConfig {
   dailyExportHour?: number; // Hour (0-23 UTC) to run daily export (default 4 = 4 AM UTC)
   autoDiscovery?: AutoDiscoveryConfig; // Auto-discovery configuration
   enableRawSql?: boolean; // Enable raw SQL queries via /api/query endpoint
+  recordVesselIdentity?: boolean; // Record each vessel's identity on the `identity` path (default true)
 }
 
 import type { ClaudeModel } from './claude-models';
@@ -659,6 +660,8 @@ export interface PluginState {
   // Auto-discovery service
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   autoDiscoveryService?: any; // AutoDiscoveryService - avoiding circular import
+  // Vessel identity capture (typed loosely to avoid a circular import)
+  identityService?: { stop(): void };
   // History API (V1 routes). Registered once and reused across reconfigure so
   // the express routes are never left bound to a closed SQLite buffer.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any

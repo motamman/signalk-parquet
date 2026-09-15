@@ -57,6 +57,11 @@ Vessel data Parquet file archive with automated value and geospatial triggers. H
   - The importable paths (and their default checkboxes) come from `GET /api/import/gpx/options`, so the UI and the importer cannot disagree
   - Job-based with per-`jobId` cancellation, progress polling, and 30-minute TTL on finished jobs
   - Browser upload caps: 500 MB per file (was 50 MB before v0.7.44-beta.6), 500 files and 2 GB in total per request
+- **Vessel Identity** (v0.7.44-beta.7+): every vessel the server hears gets an `identity` object path holding its name, MMSI, AIS ship type (`aisShipTypeId`, `aisShipTypeName`), `lengthOverall`, `beam`, `callsignVhf` and `aisClass`, folded from the root bus and the `design.*`, `communication.callsignVhf` and `sensors.ais.class` deltas
+  - One row per vessel when first heard, then one per actual change: the six-minute repeat of an AIS static report writes nothing, and a restart does not rewrite known vessels (last-written state is kept in `identity-state.json` in the data directory)
+  - One object path per vessel rather than one path per attribute, so a busy AIS coast adds one file per vessel to a day's export instead of seven
+  - Retention-exempt and excluded from tier aggregation; readable through the History API like any object path (`paths=identity`)
+  - Independent of path configuration; a configured `name` path for `vessels.*` is no longer needed and can be removed
 
 ### Data Validation & Schema Repair
 - **Schema Validation**: Comprehensive validation of Parquet file schemas against SignalK metadata standards
@@ -223,6 +228,7 @@ Configure basic plugin settings (path configuration is managed separately in the
 | **Export Batch Size** | Max records to export per cycle (1,000-200,000) | 50000 |
 | **Buffer Retention Hours** | How long to keep exported records in SQLite (hours) | 48 |
 | **Enable Raw SQL** | Enable /api/query endpoint for raw SQL queries | `false` |
+| **Record Vessel Identity** | Record each vessel's name, MMSI, AIS ship type, length, beam, callsign and AIS class as one `identity` object path for every vessel the server hears, written when the vessel is first heard and again only on change; retention-exempt, never aggregated (v0.7.44-beta.7+) | `true` |
 
 ### Auto-Discovery Configuration
 

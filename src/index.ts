@@ -44,6 +44,7 @@ import {
   unregisterTrackApiProvider,
 } from './track-provider';
 import { SQLiteBuffer } from './utils/sqlite-buffer';
+import { VesselIdentityService } from './services/vessel-identity-service';
 import { ParquetExportService } from './services/parquet-export-service';
 import {
   AggregationService,
@@ -333,6 +334,7 @@ export default function (app: ServerAPI): SignalKPlugin {
       exportBatchSize: options?.exportBatchSize || 50000,
       // Enable raw SQL queries via /api/query endpoint
       enableRawSql: options?.enableRawSql || false,
+      recordVesselIdentity: options?.recordVesselIdentity !== false,
       // Daily export hour (0-23 UTC, default 4 AM), validated above
       dailyExportHour,
     };
@@ -548,6 +550,18 @@ export default function (app: ServerAPI): SignalKPlugin {
     // Start threshold monitoring AFTER commands are registered
     // Pass config so pluginConfig (with homePort) is available
     startThresholdMonitoring(app, state.currentConfig);
+
+    // Vessel identity capture, independent of the path configuration.
+    if (state.currentConfig.recordVesselIdentity) {
+      const identity = new VesselIdentityService(
+        app,
+        state,
+        state.currentConfig.outputDirectory,
+        msg => app.debug(msg)
+      );
+      identity.start();
+      state.identityService = identity;
+    }
 
     // Subscribe to data paths based on initial regimen states
     updateDataSubscriptions(currentPaths, state, state.currentConfig, app);
@@ -1100,6 +1114,16 @@ export default function (app: ServerAPI): SignalKPlugin {
       state.streamSubscriptions = [];
     }
 
+    // Stop identity capture before the buffer closes; it persists its state.
+    if (state.identityService) {
+      try {
+        state.identityService.stop();
+      } catch (error) {
+        app.error(`Error stopping identity capture: ${error}`);
+      }
+      state.identityService = undefined;
+    }
+
     // Save any remaining buffered data (inflow is stopped, so this is final)
     if (state.currentConfig) {
       saveAllBuffers(state.currentConfig, state, app);
@@ -1385,6 +1409,13 @@ export default function (app: ServerAPI): SignalKPlugin {
             ],
           },
         },
+      },
+      recordVesselIdentity: {
+        type: 'boolean',
+        title: 'Record Vessel Identity',
+        description:
+          "Record each vessel's name, MMSI, AIS ship type, length, beam, callsign and AIS class as one 'identity' object path, written when the vessel is first recorded and again only when something changes. Retention-exempt and never aggregated. Applies to every vessel that has any other recorded data.",
+        default: true,
       },
       enableRawSql: {
         type: 'boolean',
