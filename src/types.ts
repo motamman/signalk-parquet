@@ -569,6 +569,32 @@ export interface SQLiteBufferInterface {
     limit: number
   ): Array<Record<string, unknown>>;
   hasTable(signalkPath: string): boolean;
+  getRowsForPlayback(
+    fromIso: string,
+    toIso: string,
+    contexts: string[] | null,
+    limitPerPath: number
+  ): Array<{
+    path: string;
+    context: string;
+    signalk_timestamp: string;
+    source_label: string | null;
+    value: string | null;
+    value_json: string | null;
+  }>;
+  hasRowsSince(fromIso: string, contexts: string[] | null): boolean;
+  getNextRowTime(fromIso: string, contexts: string[] | null): string | null;
+  getLatestObjectRowAt(
+    signalkPath: string,
+    context: string,
+    atIso: string
+  ):
+    | {
+        signalk_timestamp: string;
+        source_label: string | null;
+        value_json: string | null;
+      }
+    | undefined;
   getDbPath(): string;
   close(): void;
   checkpoint(): void;

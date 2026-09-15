@@ -62,6 +62,11 @@ Vessel data Parquet file archive with automated value and geospatial triggers. H
   - One object path per vessel rather than one path per attribute, so a busy AIS coast adds one file per vessel to a day's export instead of seven
   - Retention-exempt and excluded from tier aggregation; readable through the History API like any object path (`paths=identity`)
   - Independent of path configuration; a configured `name` path for `vessels.*` is no longer needed and can be removed
+- **History Playback** (v0.7.44-beta.7+): registers as the server's v1 playback provider, so Freeboard-SK's History Playback (and any client of `/signalk/v1/playback?startTime=…&playbackRate=…`) replays the recorded store as live-shaped delta messages
+  - Rows from the raw parquet tier and the not-yet-exported SQLite buffer are regrouped into one delta per instant, vessel and source, with `$source` from the recorded source label; object paths (position, attitude) come back as objects
+  - Each vessel's last known identity is sent ahead of its first delta, in the shape the live AIS feed uses (`name`/`mmsi` at the root, `design.*`, `communication.callsignVhf`, `sensors.ais.class`), so plotters label targets at once
+  - Paced by `playbackRate`; silence is skipped rather than waited out; on reaching the present the buffer is polled so playback runs on into live data; `subscribe=self` (the default) limits the stream to the own vessel
+  - Nothing runs at plugin start: the first read happens when a playback connection opens, and each day of playback costs one metadata-only index of that day's files
 
 ### Data Validation & Schema Repair
 - **Schema Validation**: Comprehensive validation of Parquet file schemas against SignalK metadata standards
@@ -811,6 +816,22 @@ The plugin provides full SignalK History API compliance, allowing you to query h
 > ⚠️ **Extension**: The `/contexts` and `/paths` endpoints accept time range parameters as **optional**. The official spec requires time parameters; without them, these endpoints return all available data (more permissive behavior).
 
 > **Exact context ids (v0.7.44-beta.3+):** the contexts endpoints return vessel context strings exactly as recorded — resolved from the stored data rather than reconstructed from partition directory names, whose encoding is lossy. Earlier versions mangled UUID-identified vessels (`urn:mrn:signalk:uuid:…`, the default when no MMSI is configured) by turning the UUID's dashes into colons.
+
+### History Playback (v1 websocket)
+
+The plugin registers as the server's v1 history playback provider (v0.7.44-beta.7+). A client opens
+
+```text
+ws://<server>/signalk/v1/playback?startTime=2026-09-15T10:00:00Z&playbackRate=10&subscribe=all
+```
+
+and receives the server's hello followed by delta messages replayed from the store, in the same shape as the live stream: one update per instant, vessel and source, `$source` from the recorded source label, object values as objects. Freeboard-SK's History Playback dialog uses exactly this connection.
+
+- `startTime` (required) is where playback begins; `playbackRate` (default 1) scales time, so 10 plays ten minutes of data per minute.
+- `subscribe=self` (the default when omitted) limits playback to the own vessel; `subscribe=all` replays every recorded vessel; the server applies this filter.
+- Before a vessel's first delta its last known identity is sent (`name`/`mmsi` at the root path, `design.aisShipType`, `design.length`, `design.beam`, `communication.callsignVhf`, `sensors.ais.class`), taken from the `identity` object path.
+- Stretches with nothing recorded are skipped. On reaching the present the buffer is polled once a second, so playback continues into live data until the client disconnects.
+- Rows come from the raw parquet tier plus the SQLite buffer. Scalars exported to parquet keep their stored type; scalars still in the buffer are text and are parsed back (a string that looks like a number is replayed as a number).
 
 ### Standard Time Range Patterns
 

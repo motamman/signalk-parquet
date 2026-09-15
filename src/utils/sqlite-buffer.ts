@@ -1192,6 +1192,142 @@ export class SQLiteBuffer {
   }
 
   /**
+   * Unexported rows of every path in a time window, for playback. Object
+   * paths carry `value_json`, scalar paths the text `value`. `contexts`
+   * narrows to those vessels; null means every vessel. Each path is capped
+   * at `limitPerPath` rows so a wide window cannot flood memory; the caller
+   * shrinks its window when a cap is hit.
+   */
+  getRowsForPlayback(
+    fromIso: string,
+    toIso: string,
+    contexts: string[] | null,
+    limitPerPath: number
+  ): Array<{
+    path: string;
+    context: string;
+    signalk_timestamp: string;
+    source_label: string | null;
+    value: string | null;
+    value_json: string | null;
+  }> {
+    if (!this._open) return [];
+    const out: Array<{
+      path: string;
+      context: string;
+      signalk_timestamp: string;
+      source_label: string | null;
+      value: string | null;
+      value_json: string | null;
+    }> = [];
+    const contextClause =
+      contexts && contexts.length > 0
+        ? ` AND context IN (${contexts.map(() => '?').join(', ')})`
+        : '';
+    for (const [signalkPath, info] of this.tableMap) {
+      const valueCols = info.isObject
+        ? 'NULL AS value, value_json'
+        : 'value, NULL AS value_json';
+      const rows = this.db
+        .prepare(
+          `SELECT context, signalk_timestamp, source_label, ${valueCols}
+           FROM ${info.tableName}
+           WHERE signalk_timestamp >= ? AND signalk_timestamp < ?
+             AND exported = 0${contextClause}
+           ORDER BY signalk_timestamp ASC
+           LIMIT ?`
+        )
+        .all(fromIso, toIso, ...(contexts ?? []), limitPerPath) as Array<{
+        context: string;
+        signalk_timestamp: string;
+        source_label: string | null;
+        value: string | null;
+        value_json: string | null;
+      }>;
+      for (const row of rows) out.push({ path: signalkPath, ...row });
+    }
+    return out;
+  }
+
+  /** True when any path has an unexported row at or after `fromIso`. */
+  hasRowsSince(fromIso: string, contexts: string[] | null): boolean {
+    if (!this._open) return false;
+    const contextClause =
+      contexts && contexts.length > 0
+        ? ` AND context IN (${contexts.map(() => '?').join(', ')})`
+        : '';
+    for (const info of this.tableMap.values()) {
+      const row = this.db
+        .prepare(
+          `SELECT 1 AS hit FROM ${info.tableName}
+           WHERE signalk_timestamp >= ? AND exported = 0${contextClause}
+           LIMIT 1`
+        )
+        .get(fromIso, ...(contexts ?? []));
+      if (row) return true;
+    }
+    return false;
+  }
+
+  /**
+   * The earliest unexported row timestamp at or after `fromIso` across every
+   * path, or null when there is none. Lets playback jump over silence.
+   */
+  getNextRowTime(fromIso: string, contexts: string[] | null): string | null {
+    if (!this._open) return null;
+    const contextClause =
+      contexts && contexts.length > 0
+        ? ` AND context IN (${contexts.map(() => '?').join(', ')})`
+        : '';
+    let best: string | null = null;
+    for (const info of this.tableMap.values()) {
+      const row = this.db
+        .prepare(
+          `SELECT MIN(signalk_timestamp) AS t FROM ${info.tableName}
+           WHERE signalk_timestamp >= ? AND exported = 0${contextClause}`
+        )
+        .get(fromIso, ...(contexts ?? [])) as { t: string | null } | undefined;
+      const t = row?.t ?? null;
+      if (t && (best === null || t < best)) best = t;
+    }
+    return best;
+  }
+
+  /**
+   * The newest row of an object path for a vessel at or before `atIso`,
+   * exported or not (an exported row is still the truth until retention
+   * removes it). Used to look up a vessel's identity for playback.
+   */
+  getLatestObjectRowAt(
+    signalkPath: string,
+    context: string,
+    atIso: string
+  ):
+    | {
+        signalk_timestamp: string;
+        source_label: string | null;
+        value_json: string | null;
+      }
+    | undefined {
+    if (!this._open) return undefined;
+    const info = this.tableMap.get(signalkPath);
+    if (!info || !info.isObject) return undefined;
+    return this.db
+      .prepare(
+        `SELECT signalk_timestamp, source_label, value_json FROM ${info.tableName}
+         WHERE context = ? AND signalk_timestamp <= ?
+         ORDER BY signalk_timestamp DESC LIMIT 1`
+      )
+      .get(context, atIso) as
+      | {
+          signalk_timestamp: string;
+          source_label: string | null;
+          value_json: string | null;
+        }
+      | undefined;
+  }
+
+  /**
    * Get the database path
    */
   getDbPath(): string {

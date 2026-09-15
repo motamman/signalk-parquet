@@ -45,6 +45,10 @@ import {
 } from './track-provider';
 import { SQLiteBuffer } from './utils/sqlite-buffer';
 import { VesselIdentityService } from './services/vessel-identity-service';
+import {
+  PlaybackProvider,
+  registerPlaybackProvider,
+} from './playback-provider';
 import { ParquetExportService } from './services/parquet-export-service';
 import {
   AggregationService,
@@ -934,6 +938,21 @@ export default function (app: ServerAPI): SignalKPlugin {
       );
     } catch (error) {
       app.error(`Failed to register as History API provider: ${error}`);
+    }
+
+    // Register as the v1 history playback provider (`/signalk/v1/playback`),
+    // so Freeboard's History Playback and any other playback client can
+    // replay the store. The server unregisters it when the plugin stops.
+    try {
+      const playback = new PlaybackProvider(
+        app,
+        state.currentConfig.outputDirectory,
+        state.sqliteBuffer,
+        app.debug
+      );
+      registerPlaybackProvider(app, playback, app.debug);
+    } catch (error) {
+      app.error(`Failed to register as history playback provider: ${error}`);
     }
 
     // Register as a Track API provider (SignalK/signalk-server#2995). Only a
