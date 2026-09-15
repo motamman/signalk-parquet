@@ -384,16 +384,53 @@ function canonical(components: IdentityComponents): string {
   return JSON.stringify(sorted);
 }
 
+/** Expected value type of every supported identity component. */
+const IDENTITY_FIELD_TYPES: Record<
+  keyof IdentityComponents,
+  'string' | 'number'
+> = {
+  name: 'string',
+  mmsi: 'string',
+  aisShipTypeId: 'number',
+  aisShipTypeName: 'string',
+  lengthOverall: 'number',
+  beam: 'number',
+  callsignVhf: 'string',
+  aisClass: 'string',
+};
+
+/**
+ * Parse persisted identity JSON (state file or buffer row). Only the
+ * supported components with values of the expected type are accepted; an
+ * unknown key or a wrongly typed value makes the whole record invalid, so
+ * arbitrary persisted keys never reach `write` as `value_*` columns.
+ */
 function parseIdentity(json: string | undefined): IdentityComponents | null {
   if (!json) return null;
+  let parsed: unknown;
   try {
-    const parsed = JSON.parse(json) as unknown;
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
-      ? (parsed as IdentityComponents)
-      : null;
+    parsed = JSON.parse(json);
   } catch {
     return null;
   }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return null;
+  }
+  const out: IdentityComponents = {};
+  for (const [key, value] of Object.entries(
+    parsed as Record<string, unknown>
+  )) {
+    if (!Object.prototype.hasOwnProperty.call(IDENTITY_FIELD_TYPES, key)) {
+      return null;
+    }
+    const field = key as keyof IdentityComponents;
+    if (value === undefined || value === null) continue;
+    const expected = IDENTITY_FIELD_TYPES[field];
+    if (typeof value !== expected) return null;
+    if (expected === 'number' && !Number.isFinite(value as number)) return null;
+    (out as Record<string, unknown>)[field] = value;
+  }
+  return out;
 }
 
 /**
