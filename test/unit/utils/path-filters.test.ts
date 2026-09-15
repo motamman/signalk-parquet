@@ -271,3 +271,33 @@ describe('availableFilterColumns', () => {
     expect(available.size).to.equal(0);
   });
 });
+
+describe('unattributed (null-valued) filters', () => {
+  const unattributed: PathFilter = {
+    field: 'sourceRef',
+    column: 'source_label',
+    value: null,
+  };
+
+  it('selects NULL rows on the parquet side when the column exists', () => {
+    expect(
+      buildParquetFilterClause([unattributed], new Set(['source_label']))
+    ).to.equal(' AND source_label IS NULL');
+  });
+
+  it('adds no parquet clause when no file has the column (every row is unattributed)', () => {
+    expect(buildParquetFilterClause([unattributed], new Set())).to.equal('');
+  });
+
+  it('selects NULL rows on the buffer side', () => {
+    expect(buildBufferFilterClause([unattributed])).to.equal(
+      '\n    AND source_label IS NULL'
+    );
+  });
+
+  it('is not echoed in the response', () => {
+    expect(filterEcho([unattributed, sourceFilter('gps.1')])).to.deep.equal({
+      sourceRef: 'gps.1',
+    });
+  });
+});

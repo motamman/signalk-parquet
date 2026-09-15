@@ -26,11 +26,18 @@
 
 import { escapeSqlString } from './sql-escape';
 
-/** A resolved filter: match `column` = `value`, echoed back under `field`. */
+/**
+ * A resolved filter: match `column` = `value`, echoed back under `field`.
+ *
+ * A `null` value matches rows whose column is NULL, or that predate the
+ * column entirely: the "unattributed" rows a `sourcePolicy=all` expansion
+ * returns as their own column. It is never parsed from a request and is not
+ * echoed.
+ */
 export interface PathFilter {
   field: string;
   column: string;
-  value: string;
+  value: string | null;
 }
 
 interface PathFilterDef {
@@ -129,17 +136,25 @@ export function filterColumns(filters: PathFilter[]): string[] {
  * `AND column = 'value'`; otherwise append `AND 1=0` so the parquet side
  * contributes nothing — legacy/imported files without the column cannot match,
  * and the always-tagged SQLite buffer answers through its own filtered subquery.
+ *
+ * A null-valued filter selects the unattributed rows: `AND column IS NULL`
+ * when the column exists (files that lack it read as NULL through
+ * union_by_name), and no clause at all when no file has it, since every row
+ * is then unattributed.
  */
 export function buildParquetFilterClause(
   filters: PathFilter[],
   availableColumns: Set<string>
 ): string {
   return filters
-    .map(f =>
-      availableColumns.has(f.column)
+    .map(f => {
+      if (f.value === null) {
+        return availableColumns.has(f.column) ? ` AND ${f.column} IS NULL` : '';
+      }
+      return availableColumns.has(f.column)
         ? ` AND ${f.column} = '${escapeSqlString(f.value)}'`
-        : ' AND 1=0'
-    )
+        : ' AND 1=0';
+    })
     .join('');
 }
 
@@ -152,13 +167,22 @@ export function buildBufferFilterClause(filters?: PathFilter[]): string {
     return '';
   }
   return filters
-    .map(f => `\n    AND ${f.column} = '${escapeSqlString(f.value)}'`)
+    .map(f =>
+      f.value === null
+        ? `\n    AND ${f.column} IS NULL`
+        : `\n    AND ${f.column} = '${escapeSqlString(f.value)}'`
+    )
     .join('');
 }
 
-/** Response-echo properties for a set of filters, e.g. { sourceRef: '...' }. */
+/**
+ * Response-echo properties for a set of filters, e.g. { sourceRef: '...' }.
+ * Unattributed (null) filters are not echoed: the column carries no claim.
+ */
 export function filterEcho(filters: PathFilter[]): Record<string, string> {
-  return Object.fromEntries(filters.map(f => [f.field, f.value]));
+  return Object.fromEntries(
+    filters.filter(f => f.value !== null).map(f => [f.field, f.value as string])
+  );
 }
 
 /** Minimal view of a DuckDB connection needed to probe a parquet schema. */

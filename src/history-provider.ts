@@ -20,10 +20,10 @@ import {
   AggregateMethod,
 } from '@signalk/server-api/dist/history';
 import {
+  PathFilter,
   filtersFromFields,
   buildParquetFilterClause,
   availableFilterColumns,
-  filterEcho,
 } from './utils/path-filters';
 import { getAvailablePathsArray } from './utils/path-discovery';
 import { getAvailableContextsForTimeRange } from './utils/context-discovery';
@@ -142,20 +142,37 @@ function parseTimeRange(
 }
 
 /**
- * Unique key for a requested path spec. The same path may be requested more
- * than once with a different filter, aggregate, or parameters; keying stored
- * results by path alone would collapse those into one column, so the key
- * includes every distinguishing field. Fields never contain spaces
- * (paths/aggregates/filter values are sanitised upstream), so a space
- * separator is unambiguous.
+ * One column of a values response: the requested spec, the filters that
+ * narrow it, and the source it claims in the response (`$source`), if any.
+ *
+ * Columns are positional. The same path may appear more than once with a
+ * different filter, aggregate or parameters, and under `sourcePolicy=all`
+ * one spec fans out into several columns, so results are keyed by column
+ * index rather than by path.
  */
-function pathSpecKey(ps: SignalKPathSpec): string {
-  const parameter = (ps.parameter ?? []).join(',');
-  const filters = filtersFromFields(ps as unknown as Record<string, unknown>)
-    .map(f => `${f.column}=${f.value}`)
-    .join(' ');
-  return [ps.path, ps.aggregate, parameter, filters].join(' ');
+interface ColumnSpec {
+  spec: SignalKPathSpec;
+  filters: PathFilter[];
+  source?: string;
 }
+
+/**
+ * Upper bound on the columns one path may expand into under
+ * `sourcePolicy=all`. A busy bus can accumulate many source refs for one
+ * path; each becomes a query, so the fan-out is capped and the first
+ * sources in sorted order win.
+ */
+const MAX_EXPANDED_SOURCES = 16;
+
+/**
+ * Upper bound on the columns a whole request may expand into. Exceeding it
+ * fails the request rather than truncating it: returning some of the asked-
+ * for series without saying so would be worse than refusing.
+ */
+const MAX_EXPANDED_COLUMNS = 64;
+
+/** The stored column a source ref lives in, as registered in path-filters. */
+const SOURCE_FILTER = { field: 'sourceRef', column: 'source_label' } as const;
 
 /**
  * History API Provider implementation
@@ -215,17 +232,18 @@ export class HistoryProvider implements HistoryApi {
     const fromIso = from.toInstant().toString();
     const toIso = to.toInstant().toString();
 
-    // Query each path
-    const allData: { [key: string]: Array<[Timestamp, unknown]> } = {};
+    const columns = await this.resolveColumns(query, context, fromIso, toIso);
 
-    for (const pathSpec of query.pathSpecs) {
-      // Key by the full spec, not just path: the same path may appear multiple
-      // times with different sourceRef/aggregate and must stay separate.
-      const key = pathSpecKey(pathSpec);
+    // Query each column
+    const allData: Array<Array<[Timestamp, unknown]>> = [];
+
+    for (const column of columns) {
+      const { spec } = column;
       try {
         let pathData = await this.queryPath(
           context,
-          pathSpec,
+          spec,
+          column.filters,
           fromIso,
           toIso,
           resolutionMs
@@ -233,20 +251,20 @@ export class HistoryProvider implements HistoryApi {
         // Apply the sma/ema moving window on this path's time-ordered,
         // federated (parquet + buffer) bucket series, before mergePathData
         // combines paths into columns.
-        if (pathSpec.aggregate === 'sma' || pathSpec.aggregate === 'ema') {
-          pathData = this.applySmoothing(pathData, pathSpec, context);
+        if (spec.aggregate === 'sma' || spec.aggregate === 'ema') {
+          pathData = this.applySmoothing(pathData, spec, context);
         }
-        allData[key] = pathData;
+        allData.push(pathData);
       } catch (error) {
         this.debug(
-          `[HistoryProvider] Error querying path ${pathSpec.path}: ${error}`
+          `[HistoryProvider] Error querying path ${spec.path}: ${error}`
         );
-        allData[key] = [];
+        allData.push([]);
       }
     }
 
-    // Merge all path data into time-ordered rows
-    const mergedData = this.mergePathData(allData, query.pathSpecs);
+    // Merge all column data into time-ordered rows
+    const mergedData = this.mergePathData(allData);
 
     return {
       context,
@@ -254,16 +272,160 @@ export class HistoryProvider implements HistoryApi {
         from: fromIso as Timestamp,
         to: toIso as Timestamp,
       },
-      // Echo each filter (e.g. sourceRef) back per path. Cast covers the
-      // @signalk/server-api version gap until ValueList declares the field.
-      values: query.pathSpecs.map(ps => {
-        const echo = filterEcho(
-          filtersFromFields(ps as unknown as Record<string, unknown>)
-        );
-        return { path: ps.path, method: ps.aggregate, ...echo };
-      }) as ValuesResponse['values'],
+      // `$source` is the per-column source in the response (signalk-server
+      // #2817); the request side keeps the name `sourceRef`. A column that
+      // merges every source, or holds the unattributed rows, makes no claim.
+      values: columns.map(({ spec, source }) => ({
+        path: spec.path,
+        method: spec.aggregate,
+        ...(source !== undefined ? { $source: source } : {}),
+      })) as ValuesResponse['values'],
       data: mergedData,
     };
+  }
+
+  /**
+   * The columns a request produces. Without `sourcePolicy=all`, one per
+   * spec, filtered by any explicit `sourceRef`. With it, a spec that names no
+   * source fans out into one column per source that recorded the path in
+   * range (named sources first, sorted, so the order is stable between
+   * requests), plus a trailing unattributed column when rows exist with no
+   * source, or in files that predate the column. An explicit `sourceRef` is
+   * a filter and is never expanded, per the contract.
+   */
+  private async resolveColumns(
+    query: ValuesRequest,
+    context: Context,
+    fromIso: string,
+    toIso: string
+  ): Promise<ColumnSpec[]> {
+    const expand = query.sourcePolicy === 'all';
+    const columns: ColumnSpec[] = [];
+
+    for (const spec of query.pathSpecs) {
+      const filters = filtersFromFields(
+        spec as unknown as Record<string, unknown>
+      );
+      if (!expand || spec.sourceRef) {
+        columns.push({ spec, filters, source: spec.sourceRef });
+        continue;
+      }
+      // Checked before discovery as well as after: discovery costs a query
+      // per path, so a request far past the ceiling should be refused
+      // before paying for it.
+      if (columns.length > MAX_EXPANDED_COLUMNS) {
+        throw new Error(
+          `sourcePolicy=all expands these paths past the limit (max ${MAX_EXPANDED_COLUMNS} columns); request fewer paths or name the sources with paths=<path>|<sourceRef>`
+        );
+      }
+      const sources = await this.discoverSources(context, spec, fromIso, toIso);
+      if (sources.length === 0) {
+        // Nothing recorded in range: keep the unexpanded column so the path
+        // still appears in the response, empty, rather than vanishing.
+        columns.push({ spec, filters });
+        continue;
+      }
+      for (const source of sources) {
+        const filter: PathFilter = {
+          field: SOURCE_FILTER.field,
+          column: SOURCE_FILTER.column,
+          value: source,
+        };
+        columns.push({
+          spec,
+          filters: [...filters, filter],
+          ...(source !== null ? { source } : {}),
+        });
+      }
+    }
+
+    if (columns.length > MAX_EXPANDED_COLUMNS) {
+      throw new Error(
+        `sourcePolicy=all expands these paths into ${columns.length} columns (max ${MAX_EXPANDED_COLUMNS} columns); request fewer paths or name the sources with paths=<path>|<sourceRef>`
+      );
+    }
+    return columns;
+  }
+
+  /**
+   * Distinct sources that recorded `spec.path` for the context in range:
+   * the raw-tier parquet files (where the column exists) unioned with the
+   * live buffer. Named sources come back sorted; a trailing `null` means
+   * rows with no source were found, which includes every row of a parquet
+   * file that predates the column. Capped at MAX_EXPANDED_SOURCES.
+   */
+  private async discoverSources(
+    context: Context,
+    spec: SignalKPathSpec,
+    fromIso: string,
+    toIso: string
+  ): Promise<(string | null)[]> {
+    validateSignalKPath(spec.path as string);
+    const filePath = new HivePathBuilder().getGlobPattern(
+      this.dataDir,
+      'raw',
+      context,
+      spec.path
+    );
+    const column = SOURCE_FILTER.column;
+    const found = new Set<string | null>();
+    const connection = await DuckDBPool.getConnection();
+    try {
+      const timeWindow = `signalk_timestamp >= '${fromIso}' AND signalk_timestamp < '${toIso}'`;
+      const excluded = `filename NOT LIKE '%/processed/%' AND filename NOT LIKE '%/quarantine/%' AND filename NOT LIKE '%/failed/%' AND filename NOT LIKE '%/repaired/%'`;
+      // Parquet side. A glob that matches no files throws; that is "no data
+      // here", not a failure, and the buffer may still answer.
+      const available = await availableFilterColumns(
+        connection,
+        [filePath],
+        [{ field: SOURCE_FILTER.field, column, value: null }]
+      );
+      try {
+        const selectExpr = available.has(column) ? column : 'NULL';
+        const result = await connection.runAndReadAll(
+          `SELECT DISTINCT ${selectExpr} AS src FROM read_parquet('${escapeSqlString(filePath)}', union_by_name=true, filename=true) WHERE ${excluded} AND ${timeWindow}`
+        );
+        for (const row of result.getRowObjects() as Array<{ src: unknown }>) {
+          found.add(typeof row.src === 'string' ? row.src : null);
+        }
+      } catch (error) {
+        this.debug(
+          `[HistoryProvider] source discovery on parquet skipped for ${spec.path}: ${error}`
+        );
+      }
+      // Buffer side.
+      if (DuckDBPool.isSQLiteBufferInitialized() && this.sqliteBuffer) {
+        const staged = await stageBufferTable(
+          connection,
+          this.sqliteBuffer,
+          String(context),
+          String(spec.path),
+          fromIso,
+          toIso,
+          (msg: string) => this.debug(msg)
+        );
+        if (staged) {
+          const result = await connection.runAndReadAll(
+            `SELECT DISTINCT ${column} AS src FROM ${staged} WHERE context = '${escapeSqlString(String(context))}' AND ${timeWindow} AND exported = 0`
+          );
+          for (const row of result.getRowObjects() as Array<{ src: unknown }>) {
+            found.add(typeof row.src === 'string' ? row.src : null);
+          }
+        }
+      }
+    } finally {
+      connection.disconnectSync();
+    }
+
+    const named = [...found].filter((s): s is string => s !== null).sort();
+    const all: (string | null)[] = found.has(null) ? [...named, null] : named;
+    if (all.length > MAX_EXPANDED_SOURCES) {
+      this.debug(
+        `[HistoryProvider] ${spec.path} has ${all.length} sources in range; expanding the first ${MAX_EXPANDED_SOURCES} only`
+      );
+      return all.slice(0, MAX_EXPANDED_SOURCES);
+    }
+    return all;
   }
 
   /**
@@ -309,6 +471,7 @@ export class HistoryProvider implements HistoryApi {
   private async queryPath(
     context: Context,
     pathSpec: SignalKPathSpec,
+    filters: PathFilter[],
     fromIso: string,
     toIso: string,
     resolutionMs: number
@@ -360,14 +523,9 @@ export class HistoryProvider implements HistoryApi {
         pathSpec.aggregate === 'sma' ||
         pathSpec.aggregate === 'ema';
 
-      // Inline filters (e.g. sourceRef) come from the server-parsed PathSpec.
-      // The fields are populated by a newer @signalk/server-api than this plugin
-      // pins, so they are read defensively via the registry. This provider only
-      // queries raw-tier parquet; probe it for the filter columns so files
-      // without them are excluded rather than throwing.
-      const filters = filtersFromFields(
-        pathSpec as unknown as Record<string, unknown>
-      );
+      // `filters` carries the column's source filter, explicit or expanded.
+      // This provider only queries raw-tier parquet; probe it for the filter
+      // columns so files without them are excluded rather than throwing.
       const available = await availableFilterColumns(
         connection,
         [filePath],
@@ -715,34 +873,32 @@ export class HistoryProvider implements HistoryApi {
   }
 
   /**
-   * Merge data from multiple paths into time-aligned rows
+   * Merge the per-column series (one entry per column, in column order) into
+   * time-aligned rows.
    */
   private mergePathData(
-    allData: { [key: string]: Array<[Timestamp, unknown]> },
-    pathSpecs: SignalKPathSpec[]
+    allData: Array<Array<[Timestamp, unknown]>>
   ): Array<[Timestamp, ...unknown[]]> {
     // Collect all unique timestamps
     const timestampSet = new Set<string>();
-    Object.values(allData).forEach(pathData => {
+    allData.forEach(pathData => {
       pathData.forEach(([ts]) => timestampSet.add(ts));
     });
 
     // Sort timestamps
     const timestamps = Array.from(timestampSet).sort();
 
-    // One lookup map per spec (by position), each fetched with the same
-    // composite key used to store it, so duplicate paths with different
-    // sourceRef/aggregate remain distinct columns.
-    const specMaps = pathSpecs.map(ps => {
+    // One lookup map per column, by position.
+    const columnMaps = allData.map(pathData => {
       const map = new Map<string, unknown>();
-      (allData[pathSpecKey(ps)] || []).forEach(([ts, val]) => map.set(ts, val));
+      pathData.forEach(([ts, val]) => map.set(ts, val));
       return map;
     });
 
     // Build merged rows
     return timestamps.map(ts => {
       const row: [Timestamp, ...unknown[]] = [ts as Timestamp];
-      specMaps.forEach(map => row.push(map.get(ts) ?? null));
+      columnMaps.forEach(map => row.push(map.get(ts) ?? null));
       return row;
     });
   }

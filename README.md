@@ -898,8 +898,40 @@ curl "http://localhost:3000/signalk/v1/history/values?duration=1h&paths=navigati
 ```
 
 Source filtering always reads raw data: aggregated tiers blend every source
-into each time bucket, so they cannot be filtered by source. Each `values`
-entry in the response echoes the `sourceRef` it was restricted to.
+into each time bucket, so they cannot be filtered by source. On the V1 routes
+each `values` entry echoes the `sourceRef` it was restricted to; on the V2
+provider (`/signalk/v2/api/history/values`) the per-column source is reported
+as `$source`, the key signalk-server settled on in
+[#2817](https://github.com/SignalK/signalk-server/pull/2817) (v0.7.44-beta.7+;
+earlier betas reported it as `sourceRef`).
+
+#### Splitting by source (V2 provider, `sourcePolicy=all`)
+
+`sourcePolicy=all` asks for every source separated without naming them: each
+path that does not already carry a `|sourceRef` is expanded into one column per
+source that recorded it in the range, with the source in that column's
+`$source`. Named sources come first, sorted, so column order is stable between
+requests; rows recorded with no source (or in parquet files written before the
+`source_label` column existed) form one trailing column with no `$source`.
+A path with an explicit `|sourceRef` stays a single filtered column.
+
+```bash
+curl "http://localhost:3000/signalk/v2/api/history/values?duration=PT1H&paths=navigation.speedOverGround&sourcePolicy=all"
+```
+
+```jsonc
+"values": [
+  { "path": "navigation.speedOverGround", "method": "average", "$source": "gps.backup" },
+  { "path": "navigation.speedOverGround", "method": "average", "$source": "gps.main" },
+  { "path": "navigation.speedOverGround", "method": "average" }   // unattributed rows
+]
+```
+
+Expansion multiplies the work one request asks for, so it is bounded: at most
+16 sources per path (the first in sorted order are kept), and at most 64
+columns per request, beyond which the request is rejected with a 400 naming the
+limit. Sources are discovered from the raw tier and the live buffer for the
+requested range only.
 
 #### Extension Parameters (non-standard)
 

@@ -1,5 +1,21 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+- **V2 History API reports the per-column source as `$source`** (breaking for V2 clients) — signalk-server [#2817](https://github.com/SignalK/signalk-server/pull/2817) renamed the response key from `sourceRef` to `$source`, matching what V1 playback has always emitted; `@signalk/server-api` 2.32.0 types it that way. Requests are unchanged: `paths=<path>|<sourceRef>` still uses that name, and the plugin's own V1 routes still echo `sourceRef`.
+
+### Added
+
+- **`sourcePolicy=all` on the V2 History API** ([#2817](https://github.com/SignalK/signalk-server/pull/2817)) — a path with no explicit source expands into one column per source that recorded it in range, named sources first in sorted order and one trailing unattributed column for rows with no source or from parquet files that predate the `source_label` column. Sources are discovered from the raw tier and the live buffer for the requested range. Bounded at 16 sources per path and 64 columns per request; a request past the column cap is rejected with a 400 naming the limit. An explicit `|sourceRef` is never expanded. The filter registry gains a null-valued (unattributed) filter that renders as `IS NULL`, or as no clause where no file has the column.
+
+### Dependencies
+
+- `@signalk/server-api` `^2.25.0` → `^2.32.0` for the `$source` and `sourcePolicy` types.
+
+---
+
 ## [0.7.44-beta.6] - 2026-09-13
 
 Closes the open issues @msallin filed in June (#54, #55, #68, #69, #70, #74) and hides the migration panel on migrated installs. 0.7.44-beta.5 was committed but never published to npm; its changes ship here.
