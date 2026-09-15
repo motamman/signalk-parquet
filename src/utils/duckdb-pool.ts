@@ -41,6 +41,11 @@ export class DuckDBPool {
   private static sqliteInitialized: boolean = false;
   private static spatialAvailable: boolean = false;
   private static sandboxInstance: DuckDBInstance | null = null;
+  // Instance configuration chosen at initialize() (extension and temp
+  // directories, optional extension repository). The sandbox instance is
+  // created with the same one so it finds the extensions the main pool cached.
+  private static instanceConfig: Record<string, string> = {};
+  private static warn: ((message: string) => void) | undefined;
 
   /**
    * Initialize the DuckDB instance and load extensions
@@ -50,11 +55,13 @@ export class DuckDBPool {
    */
   static async initialize(
     homeBaseDir?: string,
-    warn?: (message: string) => void
+    warn?: (message: string) => void,
+    options: { extensionRepository?: string } = {}
   ): Promise<void> {
     if (this.instance) {
       return; // Already initialized
     }
+    this.warn = warn;
 
     // DuckDB defaults its extension/home directory to `$HOME/.duckdb`. On hosts
     // where $HOME is read-only — e.g. the Signal K App Store CI sandbox, which
@@ -71,6 +78,13 @@ export class DuckDBPool {
       config.extension_directory = path.join(duckdbHome, 'extensions');
       config.temp_directory = path.join(duckdbHome, 'tmp');
     }
+    // Where INSTALL fetches extensions from. DuckDB's default repository
+    // unless overridden, e.g. for an air-gapped mirror or a test that must
+    // exercise the no-network path deterministically.
+    if (options.extensionRepository) {
+      config.custom_extension_repository = options.extensionRepository;
+    }
+    this.instanceConfig = config;
 
     // Fully set up on a local variable and only publish to this.instance once
     // the core (non-extension) setup succeeds, so a failure in instance
@@ -149,19 +163,36 @@ export class DuckDBPool {
    */
   static async getSandboxConnection(dataDir: string) {
     if (!this.sandboxInstance) {
-      const instance = await DuckDBInstance.create();
+      // Same directories as the main pool, so the spatial extension it cached
+      // is found here rather than looked for under DuckDB's default home.
+      const instance = await DuckDBInstance.create(':memory:', {
+        ...this.instanceConfig,
+      });
       const setup = await instance.connect();
       // Cap memory on this untrusted-SQL instance, matching the main pool, so a
       // heavy query can't exhaust the Node process.
       await setup.runAndReadAll("SET memory_limit = '512MB';");
-      // Spatial must be available before access is locked down (extensions
-      // cannot load once external access is disabled). It is already installed
-      // globally by the main instance, so LOAD normally succeeds without network.
+      // Spatial must be loaded before access is locked down (extensions cannot
+      // load once external access is disabled). Best-effort, like the main
+      // pool: with no cached copy and no network, INSTALL fails, and that must
+      // degrade spatial queries on this instance rather than make every raw
+      // SQL and analysis query fail until a restart with connectivity. (The
+      // Signal K plugin registry runs the test suite with no network; this
+      // was the only thing that failed there.)
       try {
         await setup.runAndReadAll('LOAD spatial;');
       } catch {
-        await setup.runAndReadAll('INSTALL spatial;');
-        await setup.runAndReadAll('LOAD spatial;');
+        try {
+          await setup.runAndReadAll('INSTALL spatial;');
+          await setup.runAndReadAll('LOAD spatial;');
+        } catch (err) {
+          this.warn?.(
+            `DuckDB spatial extension unavailable on the sandbox instance ` +
+              `(likely no network on first start): ${(err as Error).message}. ` +
+              `Spatial functions in raw SQL and analysis queries will fail ` +
+              `until the plugin next starts with connectivity.`
+          );
+        }
       }
       // Order matters: allowed_directories can only be set while external access
       // is still enabled; disabling it afterwards confines file access to that

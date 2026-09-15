@@ -138,6 +138,7 @@
     "public/**/*",
     "tsconfig.json",
     "README.md",
+    "CHANGELOG.md",
     "LICENSE"
   ]
 }
