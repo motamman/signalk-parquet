@@ -13,7 +13,7 @@ import { ParquetExportService } from '../../src/services/parquet-export-service'
 import { DuckDBPool } from '../../src/utils/duckdb-pool';
 import { clearSchemaCache } from '../../src/utils/schema-cache';
 import { clearFileListCache } from '../../src/utils/context-discovery';
-import { PlaybackProvider } from '../../src/playback-provider';
+import { PlaybackProvider, parseContextParam } from '../../src/playback-provider';
 import type { PlaybackDelta } from '../../src/utils/playback-deltas';
 import { createFakeSignalK, FakeSignalK } from './helpers/fake-signalk';
 import type { DataRecord } from '../../src/types';
@@ -69,7 +69,8 @@ function collect(
   provider: PlaybackProvider,
   options: { startTime: Date; playbackRate?: number; subscribe?: string },
   count: number,
-  timeoutMs = 15000
+  timeoutMs = 15000,
+  query: Record<string, unknown> = {}
 ): Promise<{ deltas: PlaybackDelta[]; stop: () => void }> {
   return new Promise(resolve => {
     const deltas: PlaybackDelta[] = [];
@@ -82,7 +83,7 @@ function collect(
       resolve({ deltas, stop });
     };
     const timer = setTimeout(finish, timeoutMs);
-    stop = provider.streamHistory({}, options, delta => {
+    stop = provider.streamHistory({ query }, options, delta => {
       if (done) return;
       deltas.push(delta);
       if (deltas.length >= count) finish();
@@ -203,6 +204,34 @@ describe('v1 history playback provider', function () {
     expect(deltas[7].updates[0].values[0].value).to.equal(8);
   });
 
+  it('replays only the vessels named by the context query extension', async () => {
+    const { deltas, stop } = await collect(
+      provider,
+      { startTime: new Date('2024-06-01T10:00:00Z'), playbackRate: 1000, subscribe: 'all' },
+      2,
+      15000,
+      { context: '244813000' }
+    );
+    stops.push(stop);
+    stop();
+    expect(deltas.map(d => d.context)).to.deep.equal([OTHER, OTHER]);
+    expect(deltas[0].updates[0].values.map(v => v.path)).to.include('');
+    expect(deltas[1].updates[0].values[0].path).to.equal(POSITION);
+  });
+
+  it('parses the context query extension', () => {
+    expect(parseContextParam(undefined, SELF)).to.equal(null);
+    expect(parseContextParam('', SELF)).to.equal(null);
+    expect(parseContextParam(' , ', SELF)).to.equal(null);
+    expect(parseContextParam('self', SELF)).to.deep.equal([SELF]);
+    expect(parseContextParam('244813000', SELF)).to.deep.equal([OTHER]);
+    expect(parseContextParam(OTHER, SELF)).to.deep.equal([OTHER]);
+    expect(parseContextParam(` self ,244813000, ${OTHER}`, SELF)).to.deep.equal([SELF, OTHER]);
+    expect(parseContextParam('urn:mrn:signalk:uuid:abc', SELF)).to.deep.equal([
+      'vessels.urn:mrn:signalk:uuid:abc',
+    ]);
+  });
+
   it('limits a self subscription to the own vessel', async () => {
     const { deltas, stop } = await collect(
       provider,
@@ -245,6 +274,51 @@ describe('v1 history playback provider', function () {
     const elapsed = Date.now() - started;
     expect(elapsed).to.be.at.least(400);
     expect(elapsed).to.be.below(3000);
+  });
+
+  it('waits between reads once it reaches the present instead of spinning', async () => {
+    // One fresh row just behind the live lag; nothing after it. Once the
+    // session has replayed it every further read is at the present and
+    // must be paced by the live poll, about one a second.
+    const recent = new Date(Date.now() - 4000).toISOString();
+    buffer.insert(sog(SELF, recent, 9, 'gps.main'));
+    // Reads take a few milliseconds each, as they do against a real buffer
+    // of any size; the caught-up decision must not depend on their speed.
+    let reads = 0;
+    const counting = new Proxy(buffer, {
+      get(target, prop, receiver) {
+        const v = Reflect.get(target, prop, receiver);
+        if (prop !== 'getNextRowTime') {
+          return typeof v === 'function' ? v.bind(target) : v;
+        }
+        return (...args: unknown[]) => {
+          reads += 1;
+          const until = Date.now() + 3;
+          while (Date.now() < until) {
+            /* busy: a synchronous query */
+          }
+          return (v as (...a: unknown[]) => unknown).apply(target, args);
+        };
+      },
+    });
+    const live = new PlaybackProvider(
+      { selfId: SELF_ID, selfContext: SELF },
+      host.dataDir,
+      counting,
+      () => {}
+    );
+    const { deltas, stop } = await collect(
+      live,
+      { startTime: new Date(Date.now() - 5000), playbackRate: 1000, subscribe: 'self' },
+      2
+    );
+    stops.push(stop);
+    // Identity first, then the row.
+    expect(deltas[1].updates[0].values[0].value).to.equal(9);
+    const before = reads;
+    await new Promise(r => setTimeout(r, 2500));
+    stop();
+    expect(reads - before).to.be.at.most(4);
   });
 
   it('emits nothing after stop', async () => {

@@ -832,6 +832,7 @@ and receives the server's hello followed by delta messages replayed from the sto
 - Before a vessel's first delta its last known identity is sent (`name`/`mmsi` at the root path, `design.aisShipType`, `design.length`, `design.beam`, `communication.callsignVhf`, `sensors.ais.class`), taken from the `identity` object path.
 - Stretches with nothing recorded are skipped. On reaching the present the buffer is polled once a second, so playback continues into live data until the client disconnects.
 - Rows come from the raw parquet tier plus the SQLite buffer. Scalars exported to parquet keep their stored type; scalars still in the buffer are text and are parsed back (a string that looks like a number is replayed as a number).
+- ⚠️ **Extension:** `context` names the vessels to replay, comma-separated, each a full context (`vessels.urn:mrn:imo:mmsi:367390130`), a bare MMSI (`367390130`) or `self`. The spec offers only `subscribe=self` or `all` and the server closes a playback connection that sends a subscribe message, so this is the only way to follow one vessel or a chosen few. Pair it with `subscribe=all`; under `subscribe=self` the server drops every other vessel regardless. Reads are narrowed to the named vessels, so a single-vessel replay is also cheaper. Proposed upstream as a server feature; if the server grows its own way to scope playback this parameter will be retired in its favour.
 
 ### Standard Time Range Patterns
 

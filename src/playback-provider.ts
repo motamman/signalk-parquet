@@ -10,6 +10,12 @@
  * delta messages they came from, paced by the playback rate, until the
  * client disconnects.
  *
+ * One extension: a `context` query parameter (a signalk-parquet addition,
+ * not in the spec) names the vessels to replay, comma-separated, each a
+ * full context, a bare MMSI or `self`. It narrows every read to those
+ * vessels; the client pairs it with `subscribe=all` so the server's own
+ * filter lets them through.
+ *
  * Reading is done in windows of playback time. For each window the raw-tier
  * parquet files that overlap it are read (a per-day index of every file's
  * time span, built from parquet metadata alone, says which) together with
@@ -65,6 +71,32 @@ export interface PlaybackOptions {
   startTime: Date;
   playbackRate?: number;
   subscribe?: string;
+}
+
+/** The slice of the server's connection object the provider reads. */
+interface PlaybackSpark {
+  query?: Record<string, unknown>;
+}
+
+/**
+ * Parse the `context` query extension: a comma-separated list of full
+ * contexts, bare MMSIs or `self`. Null when absent or empty.
+ */
+export function parseContextParam(
+  raw: unknown,
+  selfContext: string
+): string[] | null {
+  if (typeof raw !== 'string') return null;
+  const out = new Set<string>();
+  for (const part of raw.split(',')) {
+    const p = part.trim();
+    if (!p) continue;
+    if (p === 'self') out.add(selfContext);
+    else if (/^\d{9}$/.test(p)) out.add(`vessels.urn:mrn:imo:mmsi:${p}`);
+    else if (p.includes('.')) out.add(p);
+    else out.add(`vessels.${p}`);
+  }
+  return out.size > 0 ? [...out] : null;
 }
 
 /** The slice of SQLiteBuffer playback needs. */
@@ -126,6 +158,12 @@ interface Chunk {
   rows: PlaybackRow[];
   /** True when a row cap was hit and the window must shrink. */
   capped: boolean;
+  /**
+   * True when the window ends at the present (the wall clock less the live
+   * lag) as `fetch` saw it: there is nothing further to read yet, and the
+   * next read must wait rather than follow at once.
+   */
+  live: boolean;
 }
 
 type DeltaSink = (delta: PlaybackDelta) => void;
@@ -259,15 +297,17 @@ export class PlaybackProvider {
    * Start replaying. Returns the function the server calls on disconnect.
    */
   streamHistory(
-    _spark: unknown,
+    spark: unknown,
     options: PlaybackOptions,
     onChange: DeltaSink
   ): () => void {
+    const query = (spark as PlaybackSpark | null | undefined)?.query;
+    const named = parseContextParam(query?.context, this.selfContext);
     const session = new PlaybackSession(
       this,
       this.dataDir,
       this.buffer,
-      this.scope(options),
+      named ?? this.scope(options),
       options,
       onChange,
       this.debug
@@ -669,7 +709,21 @@ class PlaybackSession {
         this.windowMs = Math.min(WINDOW_MS, this.windowMs * 2);
       }
       const chunkEnd = new Date(chunk.toIso);
-      const caughtUp = chunkEnd.getTime() >= Date.now() - LIVE_LAG_MS - 1;
+      // Every turn of this loop must either move the cursor forward or
+      // sleep. An empty window at the present cannot move it, so it waits;
+      // an empty window in the past is silence and is skipped at once. A
+      // window that is neither is a bug, and waits rather than spins.
+      let caughtUp = chunk.live;
+      if (
+        !caughtUp &&
+        chunk.rows.length === 0 &&
+        chunkEnd.getTime() <= cursor.getTime()
+      ) {
+        this.debug(
+          `[Playback] window ${chunk.fromIso}..${chunk.toIso} made no progress; waiting`
+        );
+        caughtUp = true;
+      }
       // Read the next window while this one plays; once caught up, wait a
       // moment first so the buffer has something new.
       next = caughtUp
@@ -726,7 +780,7 @@ class PlaybackSession {
           : now;
       }
       const toIso = new Date(jumpMs).toISOString();
-      return { fromIso, toIso, rows: [], capped: false };
+      return { fromIso, toIso, rows: [], capped: false, live: jumpMs >= now };
     }
     const startMs = firstMs;
     const endMs = Math.min(startMs + this.windowMs, dayEndMs);
@@ -774,7 +828,13 @@ class PlaybackSession {
       }
       if (rows.length > MAX_ROWS_PER_WINDOW) capped = true;
     }
-    return { fromIso: startIso, toIso: endIso, rows, capped };
+    return {
+      fromIso: startIso,
+      toIso: endIso,
+      rows,
+      capped,
+      live: endMs >= now,
+    };
   }
 
   private async ensureDayIndex(day: Date): Promise<void> {
