@@ -489,15 +489,71 @@ export class SQLiteBuffer {
   }
 
   /**
-   * Insert a single record into the buffer
+   * Insert a single record into the buffer. Returns the new row's id.
    */
-  insert(record: DataRecord): void {
+  insert(record: DataRecord): number {
     if (!this._open) {
       throw new Error('SQLite buffer is closed');
     }
     const tableInfo = this.ensureTable(record.path, record);
     const params = this.prepareRecord(record, tableInfo);
-    tableInfo.insertStmt.run(params as Record<string, SQLInputValue>);
+    const result = tableInfo.insertStmt.run(
+      params as Record<string, SQLInputValue>
+    );
+    return Number(result.lastInsertRowid);
+  }
+
+  /**
+   * Overwrite a row that has not been exported yet with `record`. Returns
+   * false when the row is gone or already exported (an exported row is on
+   * disk in Parquet and immutable), in which case the caller inserts.
+   */
+  updateUnexportedRow(
+    signalkPath: string,
+    id: number,
+    record: DataRecord
+  ): boolean {
+    if (!this._open) {
+      throw new Error('SQLite buffer is closed');
+    }
+    const tableInfo = this.tableMap.get(signalkPath);
+    if (!tableInfo) return false;
+    const params = this.prepareRecord(record, tableInfo);
+    const sets = Object.keys(params).map(col => `${col} = @${col}`);
+    const result = this.db
+      .prepare(
+        `UPDATE ${tableInfo.tableName} SET ${sets.join(', ')} WHERE id = @id AND exported = 0`
+      )
+      .run({ ...params, id } as Record<string, SQLInputValue>);
+    return Number(result.changes) > 0;
+  }
+
+  /**
+   * The newest row per context for a path, exported or not: its id, its
+   * exported flag and its value_json. This is the record of what was
+   * actually written, whatever happened to the process that wrote it.
+   */
+  getLatestRowPerContext(signalkPath: string): Array<{
+    id: number;
+    context: string;
+    value_json: string | null;
+    exported: number;
+  }> {
+    if (!this._open) return [];
+    const tableInfo = this.tableMap.get(signalkPath);
+    if (!tableInfo) return [];
+    const valueJson = tableInfo.isObject ? 'value_json' : 'NULL AS value_json';
+    return this.db
+      .prepare(
+        `SELECT id, context, ${valueJson}, exported FROM ${tableInfo.tableName}
+         WHERE id IN (SELECT MAX(id) FROM ${tableInfo.tableName} GROUP BY context)`
+      )
+      .all() as Array<{
+      id: number;
+      context: string;
+      value_json: string | null;
+      exported: number;
+    }>;
   }
 
   /**

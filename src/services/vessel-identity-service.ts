@@ -7,8 +7,14 @@
  *   - identity is written once when a vessel is first heard and again only
  *     when a component changes, never on the six-minute repeat of an AIS
  *     static report;
- *   - what was last written per vessel is persisted to a small JSON file in
- *     the data directory, so a plugin restart does not rewrite every vessel.
+ *   - a write that only completes the last row (more fields, nothing
+ *     different) extends that row in place while it is still in the buffer,
+ *     so a vessel whose identity arrives one path per message, as an
+ *     upstream Signal K server replays its cache, still ends up as one row;
+ *   - what was last written per vessel is read back from the buffer at
+ *     start, so a restart does not rewrite known vessels however the
+ *     previous run ended. A small JSON file in the data directory keeps the
+ *     same record for vessels older than the buffer's retention.
  *
  * Rows go through the ordinary SQLite buffer and daily export, so the history
  * providers read them like any other object path.
@@ -66,8 +72,10 @@ interface DeltaEmitter {
 
 export class VesselIdentityService {
   private readonly tracked = new Map<string, TrackedVessel>();
-  /** JSON of the components last written per context (persisted). */
+  /** Canonical JSON of the components last written per context (persisted). */
   private lastWritten = new Map<string, string>();
+  /** Buffer row id of the last identity row per context, while known. */
+  private readonly lastRowIds = new Map<string, number>();
   private readonly onDeltaBound = (delta: DeltaMessage) => this.onDelta(delta);
   private persistTimer?: NodeJS.Timeout;
   private stateDirty = false;
@@ -88,6 +96,7 @@ export class VesselIdentityService {
     if (this.running) return;
     this.running = true;
     this.loadState();
+    this.readBackFromBuffer();
 
     // Whole delta messages, before the server splits them per path, so one
     // AIS static report folds into one row.
@@ -183,8 +192,7 @@ export class VesselIdentityService {
     if (mergeIdentity(vessel.known, incoming)) {
       vessel.timestamp = timestamp;
       vessel.source = source;
-      vessel.dirty =
-        JSON.stringify(vessel.known) !== this.lastWritten.get(context);
+      vessel.dirty = canonical(vessel.known) !== this.lastWritten.get(context);
       if (vessel.dirty && writeNow) this.write(context, vessel);
     }
   }
@@ -250,6 +258,11 @@ export class VesselIdentityService {
     );
   }
 
+  /**
+   * Write the vessel's identity. When the last row is still in the buffer
+   * and the new identity only completes it, that row is extended in place;
+   * otherwise a new row is inserted.
+   */
   private write(context: string, vessel: TrackedVessel): void {
     const buffer = this.state.sqliteBuffer;
     if (!buffer || !buffer.isOpen()) {
@@ -270,8 +283,18 @@ export class VesselIdentityService {
     for (const [key, v] of Object.entries(value)) {
       if (v !== undefined) record[`value_${key}`] = v;
     }
+    let rowId: number;
     try {
-      buffer.insert(record);
+      const previous = this.lastRowIds.get(context);
+      if (
+        previous !== undefined &&
+        completes(this.lastWrittenIdentity(context), vessel.known) &&
+        buffer.updateUnexportedRow(IDENTITY_PATH, previous, record)
+      ) {
+        rowId = previous;
+      } else {
+        rowId = buffer.insert(record);
+      }
     } catch (error) {
       this.app.error(
         `[Identity] Failed to record identity for ${context}: ${(error as Error).message}`
@@ -279,21 +302,44 @@ export class VesselIdentityService {
       return;
     }
     vessel.dirty = false;
-    this.lastWritten.set(context, JSON.stringify(vessel.known));
+    this.lastWritten.set(context, canonical(vessel.known));
+    this.lastRowIds.set(context, rowId);
     this.stateDirty = true;
   }
 
   private lastWrittenIdentity(context: string): IdentityComponents {
-    const raw = this.lastWritten.get(context);
-    if (!raw) return {};
+    return parseIdentity(this.lastWritten.get(context)) ?? {};
+  }
+
+  /**
+   * The buffer holds what was actually written, however the previous run
+   * ended; the state file holds only what a clean stop or the periodic
+   * flush managed to save. Lay the buffer over the file, so a killed server
+   * does not rewrite the vessels it heard in its last minutes.
+   */
+  private readBackFromBuffer(): void {
+    const buffer = this.state.sqliteBuffer;
+    if (!buffer || !buffer.isOpen()) return;
+    let rows: ReturnType<typeof buffer.getLatestRowPerContext>;
     try {
-      const parsed = JSON.parse(raw) as unknown;
-      return parsed && typeof parsed === 'object'
-        ? (parsed as IdentityComponents)
-        : {};
-    } catch {
-      return {};
+      rows = buffer.getLatestRowPerContext(IDENTITY_PATH);
+    } catch (error) {
+      this.app.error(
+        `[Identity] Could not read identity rows back from the buffer: ${(error as Error).message}`
+      );
+      return;
     }
+    for (const row of rows) {
+      this.lastRowIds.set(row.context, row.id);
+      const known = parseIdentity(row.value_json ?? undefined);
+      if (!known) continue;
+      const written = canonical(known);
+      if (this.lastWritten.get(row.context) !== written) {
+        this.lastWritten.set(row.context, written);
+        this.stateDirty = true;
+      }
+    }
+    this.persistState();
   }
 
   private loadState(): void {
@@ -302,7 +348,11 @@ export class VesselIdentityService {
         lastWritten?: Record<string, string>;
       };
       if (raw && raw.lastWritten && typeof raw.lastWritten === 'object') {
-        this.lastWritten = new Map(Object.entries(raw.lastWritten));
+        this.lastWritten = new Map();
+        for (const [context, json] of Object.entries(raw.lastWritten)) {
+          const known = parseIdentity(json);
+          if (known) this.lastWritten.set(context, canonical(known));
+        }
       }
     } catch {
       this.lastWritten = new Map();
@@ -322,6 +372,41 @@ export class VesselIdentityService {
       );
     }
   }
+}
+
+/** JSON of the components with keys in a fixed order, so equal identities compare equal. */
+function canonical(components: IdentityComponents): string {
+  const sorted: Record<string, unknown> = {};
+  for (const key of Object.keys(components).sort()) {
+    const v = (components as Record<string, unknown>)[key];
+    if (v !== undefined) sorted[key] = v;
+  }
+  return JSON.stringify(sorted);
+}
+
+function parseIdentity(json: string | undefined): IdentityComponents | null {
+  if (!json) return null;
+  try {
+    const parsed = JSON.parse(json) as unknown;
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? (parsed as IdentityComponents)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * True when `next` carries everything `previous` did, unchanged: the new
+ * identity only completes the old one, so the old row can be extended.
+ */
+function completes(
+  previous: IdentityComponents,
+  next: IdentityComponents
+): boolean {
+  const keys = Object.keys(previous) as Array<keyof IdentityComponents>;
+  if (keys.length === 0) return false;
+  return keys.every(key => previous[key] === next[key]);
 }
 
 /** Walk a dotted path through nested plain objects. */

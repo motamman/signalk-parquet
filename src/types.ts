@@ -528,8 +528,22 @@ export interface ProcessState {
 // Forward declaration for SQLiteBuffer to avoid circular dependency
 export interface SQLiteBufferInterface {
   isOpen(): boolean;
-  insert(record: DataRecord): void;
+  /** Returns the new row's id. */
+  insert(record: DataRecord): number;
   insertBatch(records: DataRecord[]): void;
+  /** Overwrite a not-yet-exported row; false when it is gone or exported. */
+  updateUnexportedRow(
+    signalkPath: string,
+    id: number,
+    record: DataRecord
+  ): boolean;
+  /** Newest row per context for a path, exported or not. */
+  getLatestRowPerContext(signalkPath: string): Array<{
+    id: number;
+    context: string;
+    value_json: string | null;
+    exported: number;
+  }>;
   cleanup(): number;
   getStats(): {
     totalRecords: number;

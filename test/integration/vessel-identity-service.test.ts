@@ -8,6 +8,7 @@
 import { expect } from 'chai';
 import * as path from 'path';
 import * as fs from 'fs-extra';
+import { EventEmitter } from 'events';
 import { SQLiteBuffer } from '../../src/utils/sqlite-buffer';
 import { DuckDBPool } from '../../src/utils/duckdb-pool';
 import { HistoryProvider } from '../../src/history-provider';
@@ -88,7 +89,8 @@ describe('vessel identity capture', function () {
     host.emitDelta(delta(OTHER, report, '2024-06-01T10:06:00.000Z', 'ais.1'));
     expect(rows(buffer, OTHER)).to.have.lengthOf(1);
 
-    // Ship type arrives: the identity changed, so one more row.
+    // Ship type arrives: it only completes the identity, so the row still in
+    // the buffer is extended rather than joined by a second one.
     host.emitDelta(
       delta(
         OTHER,
@@ -97,15 +99,32 @@ describe('vessel identity capture', function () {
         'ais.1'
       )
     );
+    const completed = rows(buffer, OTHER);
+    expect(completed).to.have.lengthOf(1);
+    expect(completed[0].value_name).to.equal('Ariel');
+    expect(completed[0].value_mmsi).to.equal('244813000');
+    expect(completed[0].value_aisShipTypeId).to.equal(36);
+    expect(completed[0].value_aisShipTypeName).to.equal('Sailing');
+    expect(completed[0].source_label).to.equal('ais.1');
+    expect(completed[0].signalk_timestamp).to.equal('2024-06-01T10:07:00.000Z');
+
+    // A component changes: one more row carrying the whole identity.
+    host.emitDelta(
+      delta(
+        OTHER,
+        [{ path: '', value: { name: 'Ariel II' } }],
+        '2024-06-01T10:08:00.000Z',
+        'ais.1'
+      )
+    );
     const after = rows(buffer, OTHER);
     expect(after).to.have.lengthOf(2);
     const latest = after[after.length - 1];
-    expect(latest.value_name).to.equal('Ariel');
+    expect(latest.value_name).to.equal('Ariel II');
     expect(latest.value_mmsi).to.equal('244813000');
     expect(latest.value_aisShipTypeId).to.equal(36);
-    expect(latest.value_aisShipTypeName).to.equal('Sailing');
-    expect(latest.source_label).to.equal('ais.1');
-    expect(latest.signalk_timestamp).to.equal('2024-06-01T10:07:00.000Z');
+    expect(latest.value_callsignVhf).to.equal('PD1234');
+    expect(latest.signalk_timestamp).to.equal('2024-06-01T10:08:00.000Z');
   });
 
   it('records the identity of the own vessel too', () => {
@@ -153,13 +172,80 @@ describe('vessel identity capture', function () {
 
     // A real change still writes one row carrying the whole identity.
     host.emitDelta(
-      delta(OTHER, [{ path: 'communication.callsignVhf', value: 'PD1234' }], '2024-06-02T10:00:00.000Z')
+      delta(OTHER, [{ path: 'design.beam', value: 4.5 }], '2024-06-02T10:00:00.000Z')
     );
     const got = rows(buffer, OTHER);
     expect(got).to.have.lengthOf(2);
     expect(got[1].value_name).to.equal('Ariel');
     expect(got[1].value_lengthOverall).to.equal(12.5);
-    expect(got[1].value_callsignVhf).to.equal('PD1234');
+    expect(got[1].value_beam).to.equal(4.5);
+  });
+
+  it('folds a one-path-per-message first hearing into one row', () => {
+    // An upstream server replays its cache one path per message. A vessel
+    // not yet on file arrives as class, then mmsi, then dimensions, then
+    // name, each in its own delta.
+    host.emitDelta(delta(OTHER, [{ path: 'sensors.ais.class', value: 'A' }], T0, 'ais.1'));
+    host.emitDelta(delta(OTHER, [{ path: '', value: { mmsi: 244813000 } }], T0, 'ais.1'));
+    host.emitDelta(
+      delta(OTHER, [{ path: 'design.length', value: { overall: 40 } }], '2024-06-01T10:00:01.000Z', 'ais.1')
+    );
+    host.emitDelta(
+      delta(OTHER, [{ path: '', value: { name: 'Ariel' } }], '2024-06-01T10:00:01.000Z', 'ais.1')
+    );
+    const got = rows(buffer, OTHER);
+    expect(got).to.have.lengthOf(1);
+    expect(got[0].value_aisClass).to.equal('A');
+    expect(got[0].value_mmsi).to.equal('244813000');
+    expect(got[0].value_lengthOverall).to.equal(40);
+    expect(got[0].value_name).to.equal('Ariel');
+    expect(got[0].signalk_timestamp).to.equal('2024-06-01T10:00:01.000Z');
+    expect(buffer.getStats().totalRecords).to.equal(1);
+  });
+
+  it('does not extend a row that has already been exported', () => {
+    host.emitDelta(delta(OTHER, [{ path: 'sensors.ais.class', value: 'A' }], T0, 'ais.1'));
+    // The daily export took the row to Parquet; it is immutable now.
+    buffer.markDateExported(OTHER, 'identity', new Date(), 'batch-1');
+    expect(rows(buffer, OTHER)).to.have.lengthOf(0);
+
+    host.emitDelta(delta(OTHER, [{ path: '', value: { mmsi: 244813000 } }], T0, 'ais.1'));
+    const got = rows(buffer, OTHER);
+    expect(got).to.have.lengthOf(1);
+    expect(got[0].value_aisClass).to.equal('A');
+    expect(got[0].value_mmsi).to.equal('244813000');
+    expect(buffer.getStats().totalRecords).to.equal(2);
+  });
+
+  it('trusts the buffer over a stale state file after a kill', () => {
+    host.emitDelta(delta(OTHER, [{ path: '', value: { name: 'Ariel' } }], T0, 'ais.1'));
+    service.stop(); // state file now says: name only
+    service = new VesselIdentityService(host.app, state, host.dataDir, () => {});
+    service.start();
+    host.emitDelta(
+      delta(OTHER, [{ path: 'design.beam', value: 4.1 }], '2024-06-01T10:01:00.000Z', 'ais.1')
+    );
+    expect(rows(buffer, OTHER)).to.have.lengthOf(1);
+    expect(rows(buffer, OTHER)[0].value_beam).to.equal(4.1);
+
+    // The server is killed: neither stop() nor the periodic flush runs, so
+    // the state file still says "name only" while the buffer has the beam.
+    const killed = service;
+    (host.app as unknown as { signalk: EventEmitter }).signalk.removeAllListeners('delta');
+    service = new VesselIdentityService(host.app, state, host.dataDir, () => {});
+    service.start();
+
+    // The upstream replay repeats everything, one path per message.
+    host.emitDelta(delta(OTHER, [{ path: 'design.beam', value: 4.1 }], '2024-06-02T10:00:00.000Z'));
+    host.emitDelta(delta(OTHER, [{ path: '', value: { name: 'Ariel' } }], '2024-06-02T10:00:00.000Z'));
+    expect(rows(buffer, OTHER)).to.have.lengthOf(1);
+    expect(buffer.getStats().totalRecords).to.equal(1);
+
+    // Still one row after a further completion across the restart.
+    host.emitDelta(delta(OTHER, [{ path: 'sensors.ais.class', value: 'B' }], '2024-06-02T10:00:00.000Z'));
+    expect(buffer.getStats().totalRecords).to.equal(1);
+    expect(rows(buffer, OTHER)[0].value_aisClass).to.equal('B');
+    killed.stop();
   });
 
   describe('seeding from the full model at start', () => {
