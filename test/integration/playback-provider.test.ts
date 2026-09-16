@@ -321,6 +321,22 @@ describe('v1 history playback provider', function () {
     expect(reads - before).to.be.at.most(4);
   });
 
+  it('caps buffer rows per window across all paths, not per path', () => {
+    // Three paths with rows in the window; a budget of 4 must yield at most 4
+    // rows in total, however many paths have rows.
+    const t = '2024-06-01T12:00:00.000Z';
+    for (let i = 0; i < 5; i++) {
+      const iso = `2024-06-01T12:00:0${i}.000Z`;
+      buffer.insert(sog(SELF, iso, i, 'gps.main'));
+      buffer.insert(position(SELF, iso, 47 + i, 8, 'gps.main'));
+      buffer.insert(identity(OTHER, iso, { name: `v${i}` }));
+    }
+    const rows = buffer.getRowsForPlayback(t, '2024-06-01T13:00:00.000Z', null, 4);
+    expect(rows.length).to.be.at.most(4);
+    const all = buffer.getRowsForPlayback(t, '2024-06-01T13:00:00.000Z', null, 1000);
+    expect(all.length).to.equal(15);
+  });
+
   it('emits nothing after stop', async () => {
     const seen: PlaybackDelta[] = [];
     const stop = provider.streamHistory(

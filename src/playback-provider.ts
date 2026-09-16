@@ -106,7 +106,7 @@ export interface PlaybackBufferSource {
     fromIso: string,
     toIso: string,
     contexts: string[] | null,
-    limitPerPath: number
+    limit: number
   ): Array<{
     path: string;
     context: string;
@@ -694,14 +694,14 @@ class PlaybackSession {
       `[Playback] start ${start.toISOString()} rate ${this.rate} scope ${this.contexts ? this.contexts.join(',') : 'all vessels'}`
     );
     let cursor = start;
-    let next = this.fetch(cursor);
+    let next = this.observePrefetch(this.fetch(cursor));
     while (!this.stopped) {
       const chunk = await next;
       if (this.stopped) break;
       if (chunk.capped) {
         this.windowMs = Math.max(MIN_WINDOW_MS, Math.floor(this.windowMs / 2));
         if (this.windowMs > MIN_WINDOW_MS || chunk.rows.length === 0) {
-          next = this.fetch(cursor);
+          next = this.observePrefetch(this.fetch(cursor));
           continue;
         }
         // At the smallest window the flood plays as read.
@@ -726,13 +726,27 @@ class PlaybackSession {
       }
       // Read the next window while this one plays; once caught up, wait a
       // moment first so the buffer has something new.
-      next = caughtUp
-        ? this.sleep(LIVE_POLL_MS).then(() => this.fetch(chunkEnd))
-        : this.fetch(chunkEnd);
+      next = this.observePrefetch(
+        caughtUp
+          ? this.sleep(LIVE_POLL_MS).then(() => this.fetch(chunkEnd))
+          : this.fetch(chunkEnd)
+      );
       await this.play(chunk);
       cursor = chunkEnd;
     }
     this.debug('[Playback] stopped');
+  }
+
+  /**
+   * A prefetch runs while the current window plays, so when `stop()` ends
+   * the loop mid-play the promise is abandoned. Give it a handler of its
+   * own so a read that fails afterwards cannot become an unhandled
+   * rejection; the promise itself is returned unchanged, so an awaited
+   * read still throws into `run()` as before.
+   */
+  private observePrefetch(promise: Promise<Chunk>): Promise<Chunk> {
+    void promise.catch(err => this.debug(`[Playback] read failed: ${err}`));
+    return promise;
   }
 
   /**
@@ -801,17 +815,18 @@ class PlaybackSession {
     const rows = parquet.rows;
     let capped = parquet.capped;
     if (this.buffer?.isOpen()) {
-      const perPath = MAX_ROWS_PER_WINDOW;
+      // One row past the cap is enough to know the window must shrink.
+      const budget = Math.max(0, MAX_ROWS_PER_WINDOW - rows.length) + 1;
       const bufferRows = this.buffer.getRowsForPlayback(
         startIso,
         endIso,
         this.contexts,
-        perPath + 1
+        budget
       );
       let count = 0;
       for (const r of bufferRows) {
         count += 1;
-        if (count > perPath) {
+        if (count >= budget) {
           capped = true;
           break;
         }
@@ -826,7 +841,6 @@ class PlaybackSession {
               : decodeScalar(r.value, 'unknown'),
         });
       }
-      if (rows.length > MAX_ROWS_PER_WINDOW) capped = true;
     }
     return {
       fromIso: startIso,

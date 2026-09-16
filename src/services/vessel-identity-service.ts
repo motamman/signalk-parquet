@@ -362,9 +362,13 @@ export class VesselIdentityService {
   private persistState(): void {
     if (!this.stateDirty) return;
     try {
-      fs.outputJsonSync(this.stateFile, {
+      // Write beside the file and rename over it, so a crash mid-write
+      // leaves the previous state intact rather than a truncated file.
+      const tmp = `${this.stateFile}.tmp`;
+      fs.outputJsonSync(tmp, {
         lastWritten: Object.fromEntries(this.lastWritten),
       });
+      fs.renameSync(tmp, this.stateFile);
       this.stateDirty = false;
     } catch (error) {
       this.debug(

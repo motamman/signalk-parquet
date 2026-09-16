@@ -1194,15 +1194,17 @@ export class SQLiteBuffer {
   /**
    * Unexported rows of every path in a time window, for playback. Object
    * paths carry `value_json`, scalar paths the text `value`. `contexts`
-   * narrows to those vessels; null means every vessel. Each path is capped
-   * at `limitPerPath` rows so a wide window cannot flood memory; the caller
-   * shrinks its window when a cap is hit.
+   * narrows to those vessels; null means every vessel. `limit` caps the
+   * rows returned across all paths together: each path's query asks only
+   * for what is left of it, and the walk stops once it is spent, so a
+   * wide window on an install with many paths cannot flood memory. The
+   * caller shrinks its window when the cap is hit.
    */
   getRowsForPlayback(
     fromIso: string,
     toIso: string,
     contexts: string[] | null,
-    limitPerPath: number
+    limit: number
   ): Array<{
     path: string;
     context: string;
@@ -1225,6 +1227,8 @@ export class SQLiteBuffer {
         ? ` AND context IN (${contexts.map(() => '?').join(', ')})`
         : '';
     for (const [signalkPath, info] of this.tableMap) {
+      const remaining = limit - out.length;
+      if (remaining <= 0) break;
       const valueCols = info.isObject
         ? 'NULL AS value, value_json'
         : 'value, NULL AS value_json';
@@ -1237,7 +1241,7 @@ export class SQLiteBuffer {
            ORDER BY signalk_timestamp ASC
            LIMIT ?`
         )
-        .all(fromIso, toIso, ...(contexts ?? []), limitPerPath) as Array<{
+        .all(fromIso, toIso, ...(contexts ?? []), remaining) as Array<{
         context: string;
         signalk_timestamp: string;
         source_label: string | null;

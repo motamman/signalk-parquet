@@ -573,7 +573,7 @@ export interface SQLiteBufferInterface {
     fromIso: string,
     toIso: string,
     contexts: string[] | null,
-    limitPerPath: number
+    limit: number
   ): Array<{
     path: string;
     context: string;

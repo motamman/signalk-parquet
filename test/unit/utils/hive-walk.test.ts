@@ -26,6 +26,11 @@ describe('hive-walk', () => {
     await fs.remove(base);
   });
 
+  /** A path relative to the fixture, with '/' separators on every platform. */
+  function rel(file: string): string {
+    return path.relative(base, file).split(path.sep).join('/');
+  }
+
   async function touch(...segments: string[]): Promise<string> {
     const file = path.join(base, ...segments);
     await fs.ensureDir(path.dirname(file));
@@ -54,7 +59,7 @@ describe('hive-walk', () => {
     await seed();
     const years = await listHiveDirs(base, { level: 'year' });
     expect(
-      years.map(d => path.relative(base, d.yearDir)).sort()
+      years.map(d => rel(d.yearDir)).sort()
     ).to.deep.equal([
       'tier=5s/context=a/path=p/year=2026',
       'tier=raw/context=a/path=p/year=2025',
@@ -74,7 +79,7 @@ describe('hive-walk', () => {
       days: [dayKey(2026, 1)],
     });
     expect(
-      days.map(d => path.relative(base, d.dayDir!)).sort()
+      days.map(d => rel(d.dayDir!)).sort()
     ).to.deep.equal([
       'tier=5s/context=a/path=p/year=2026/day=001',
       'tier=raw/context=a/path=p/year=2026/day=001',
@@ -91,7 +96,7 @@ describe('hive-walk', () => {
       tiers: ['raw'],
       years: [2025],
     });
-    expect(days.map(d => path.relative(base, d.dayDir!))).to.deep.equal([
+    expect(days.map(d => rel(d.dayDir!))).to.deep.equal([
       'tier=raw/context=a/path=p/year=2025/day=364',
     ]);
   });
