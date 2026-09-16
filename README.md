@@ -1489,7 +1489,7 @@ When the plugin starts, it runs the following initialization steps:
 1. **Configuration & State** — Load plugin config, vessel identity, output directory, cloud credentials
 2. **SQLite Buffer** — Open WAL-mode database; auto-migrate legacy `buffer_records` table to per-path tables if needed
 3. **Cloud Client** — Initialize S3 or R2 SDK if a cloud provider is configured
-3a. **Crash-Recovery Sweeps** — Remove stranded compaction/aggregation temp files, recover compaction trash, quarantine 0-byte parquet stubs. Run in a short-lived forked worker so walking a large store never holds the server's main thread; awaited, so they finish before DuckDB opens
+3a. **Crash-Recovery Sweeps** — Remove stranded compaction/aggregation temp files, recover compaction trash, quarantine 0-byte parquet stubs. Run in a short-lived forked worker so walking a large store never holds the server's main thread; awaited, so they finish before DuckDB opens (v0.7.44-beta.7+)
 4. **DuckDB Pool** — Initialize connection pool; attach SQLite buffer for federated queries; register cloud credentials
 5. **Data Subscriptions** — Subscribe to configured SignalK paths and start threshold monitoring
 6. **Periodic Save** — Start flush interval (default: every 30s) from memory buffer to SQLite

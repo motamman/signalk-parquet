@@ -1,6 +1,8 @@
 # Changelog
 
-## [Unreleased]
+## [0.7.44-beta.7] - 2026-09-15
+
+Vessel identity capture, a v1 history playback provider (Freeboard's History Playback works on a parquet-only boat), per-source history on the V2 API, and a fix for plugin start holding the server's main thread for minutes on a large store.
 
 ### Fixed
 
