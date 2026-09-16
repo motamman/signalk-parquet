@@ -1194,11 +1194,18 @@ export class SQLiteBuffer {
   /**
    * Unexported rows of every path in a time window, for playback. Object
    * paths carry `value_json`, scalar paths the text `value`. `contexts`
-   * narrows to those vessels; null means every vessel. `limit` caps the
-   * rows returned across all paths together: each path's query asks only
-   * for what is left of it, and the walk stops once it is spent, so a
-   * wide window on an install with many paths cannot flood memory. The
-   * caller shrinks its window when the cap is hit.
+   * narrows to those vessels; null means every vessel.
+   *
+   * `limit` caps the rows returned across all paths together, and what
+   * comes back is the EARLIEST `limit` rows of the window, not the first
+   * `limit` a path-by-path walk happened to reach: each path is read in
+   * timestamp order, merged into the result, and the merge truncated, so
+   * once the result is full its last timestamp becomes an upper bound that
+   * the remaining paths are queried with. A path registered late can
+   * therefore still contribute rows earlier than one registered first,
+   * which a per-path or first-come budget would have dropped. Memory is
+   * bounded by the result plus one path's read, never by the path count.
+   * The caller shrinks its window when it gets `limit` rows back.
    */
   getRowsForPlayback(
     fromIso: string,
@@ -1226,9 +1233,13 @@ export class SQLiteBuffer {
       contexts && contexts.length > 0
         ? ` AND context IN (${contexts.map(() => '?').join(', ')})`
         : '';
+    if (limit <= 0) return out;
+    // Narrows to the result's last timestamp once it is full, so the paths
+    // still to read are pruned in SQL rather than in memory. Inclusive, so a
+    // tie at the boundary is still read and settled by the merge below.
+    let cutoff = toIso;
+    let cutoffInclusive = false;
     for (const [signalkPath, info] of this.tableMap) {
-      const remaining = limit - out.length;
-      if (remaining <= 0) break;
       const valueCols = info.isObject
         ? 'NULL AS value, value_json'
         : 'value, NULL AS value_json';
@@ -1236,19 +1247,33 @@ export class SQLiteBuffer {
         .prepare(
           `SELECT context, signalk_timestamp, source_label, ${valueCols}
            FROM ${info.tableName}
-           WHERE signalk_timestamp >= ? AND signalk_timestamp < ?
+           WHERE signalk_timestamp >= ? AND signalk_timestamp ${cutoffInclusive ? '<=' : '<'} ?
              AND exported = 0${contextClause}
            ORDER BY signalk_timestamp ASC
            LIMIT ?`
         )
-        .all(fromIso, toIso, ...(contexts ?? []), remaining) as Array<{
+        .all(fromIso, cutoff, ...(contexts ?? []), limit) as Array<{
         context: string;
         signalk_timestamp: string;
         source_label: string | null;
         value: string | null;
         value_json: string | null;
       }>;
+      if (rows.length === 0) continue;
       for (const row of rows) out.push({ path: signalkPath, ...row });
+      // Stable: equal timestamps keep the order the paths were read in.
+      out.sort((a, b) =>
+        a.signalk_timestamp < b.signalk_timestamp
+          ? -1
+          : a.signalk_timestamp > b.signalk_timestamp
+            ? 1
+            : 0
+      );
+      if (out.length > limit) out.length = limit;
+      if (out.length === limit) {
+        cutoff = out[limit - 1].signalk_timestamp;
+        cutoffInclusive = true;
+      }
     }
     return out;
   }

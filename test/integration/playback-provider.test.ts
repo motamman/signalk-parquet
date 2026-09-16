@@ -321,6 +321,49 @@ describe('v1 history playback provider', function () {
     expect(reads - before).to.be.at.most(4);
   });
 
+  it('returns the earliest rows under the cap, whatever order the paths were registered in', () => {
+    // `buffer_navigation_speedOverGround` is registered first (the fixture
+    // inserts it before anything else), so a first-come budget would fill up
+    // on its rows and never reach the depth table registered here, whose rows
+    // are earlier. The merge must prefer the earlier rows regardless.
+    const from = '2024-06-01T14:00:00.000Z';
+    const to = '2024-06-01T15:00:00.000Z';
+    for (let i = 0; i < 10; i++) {
+      const iso = `2024-06-01T14:00:${String(30 + i).padStart(2, '0')}.000Z`;
+      buffer.insert(sog(SELF, iso, i, 'gps.main'));
+    }
+    for (let i = 0; i < 10; i++) {
+      const iso = `2024-06-01T14:00:${String(i).padStart(2, '0')}.000Z`;
+      buffer.insert({
+        received_timestamp: iso,
+        signalk_timestamp: iso,
+        context: SELF,
+        path: 'environment.depth.belowKeel',
+        value: 3 + i,
+        source_label: 'sounder.1',
+      } as DataRecord);
+    }
+
+    const capped = buffer.getRowsForPlayback(from, to, null, 5);
+    expect(capped).to.have.lengthOf(5);
+    expect(capped.map(r => r.signalk_timestamp)).to.deep.equal([
+      '2024-06-01T14:00:00.000Z',
+      '2024-06-01T14:00:01.000Z',
+      '2024-06-01T14:00:02.000Z',
+      '2024-06-01T14:00:03.000Z',
+      '2024-06-01T14:00:04.000Z',
+    ]);
+    expect(new Set(capped.map(r => r.path))).to.deep.equal(
+      new Set(['environment.depth.belowKeel'])
+    );
+
+    // Uncapped, both paths come back and the whole window is in time order.
+    const all = buffer.getRowsForPlayback(from, to, null, 1000);
+    expect(all).to.have.lengthOf(20);
+    const times = all.map(r => r.signalk_timestamp);
+    expect([...times].sort()).to.deep.equal(times);
+  });
+
   it('caps buffer rows per window across all paths, not per path', () => {
     // Three paths with rows in the window; a budget of 4 must yield at most 4
     // rows in total, however many paths have rows.
