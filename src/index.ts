@@ -2,14 +2,11 @@ import * as fs from 'fs-extra';
 import * as path from 'path';
 import { fork, ChildProcess } from 'child_process';
 import { Router } from 'express';
-import { ParquetWriter, quarantineEmptyParquetFiles } from './parquet-writer';
+import { ParquetWriter } from './parquet-writer';
 import { registerHistoryApiRoute } from './HistoryAPI';
 import { registerApiRoutes } from './api-routes';
-import {
-  cleanupStrandedCompactionTempFiles,
-  quiesceAllCompactionJobs,
-  recoverStrandedCompactionTrash,
-} from './services/compaction-service';
+import { quiesceAllCompactionJobs } from './services/compaction-service';
+import { runStartupSweepsInWorker } from './services/startup-sweeps';
 import { CACHE_SIZE } from './config/cache-defaults';
 import { SignalKPlugin, PluginConfig, PluginState, PathConfig } from './types';
 import { Context, SourceRef, Timestamp, Path } from '@signalk/server-api';
@@ -382,6 +379,17 @@ export default function (app: ServerAPI): SignalKPlugin {
       app: app,
     });
 
+    // Export requests can arrive over HTTP (POST /api/buffer/export ->
+    // forceExport) as soon as the webapp router is live, which is before the
+    // crash-recovery sweeps below have finished. A trash restore moves whole
+    // day directories back into place, so a file an export wrote meanwhile can
+    // be clobbered. Forced exports wait on this gate; it opens the moment the
+    // sweeps return, and exporting is normal from then on.
+    let markStartupSweepsDone: () => void = () => {};
+    const startupSweepsDone = new Promise<void>(resolve => {
+      markStartupSweepsDone = resolve;
+    });
+
     // Initialize SQLite buffer if enabled
     if (state.currentConfig.useSqliteBuffer) {
       // Use absolute path for buffer.db
@@ -427,6 +435,7 @@ export default function (app: ServerAPI): SignalKPlugin {
               enabled: state.currentConfig.cloudUpload.provider !== 'none',
             },
             dailyExportHour: state.currentConfig.dailyExportHour ?? 4,
+            waitForStartupSweeps: () => startupSweepsDone,
           },
           app
         );
@@ -444,40 +453,33 @@ export default function (app: ServerAPI): SignalKPlugin {
       );
     }
 
-    // Ensure output directory exists
-    fs.ensureDirSync(state.currentConfig.outputDirectory);
+    // Crash-recovery sweeps: remove *.tmp files left by a crash mid-COPY,
+    // recover `.compaction-trash-*` dirs from a crash between move-to-trash
+    // and publish-rename, and quarantine zero-byte parquet stubs left
+    // between ParquetWriter.openFile() and close(). They walk the store,
+    // which on a large one takes tens of seconds, so they run in a forked
+    // worker and the server's main thread stays free. Awaited so they still
+    // finish before DuckDB opens and before any new data subscription lands,
+    // so a trash restore can't clobber fresh files. Best-effort throughout.
+    // The gate opens in `finally`, so a failure in here can never leave a
+    // forced export waiting forever.
+    try {
+      // Ensure output directory exists
+      fs.ensureDirSync(state.currentConfig.outputDirectory);
 
-    // Clean up any *.tmp files left behind by a previous SignalK crash
-    // mid-COPY. Best-effort; failures are logged but do not block start.
-    await cleanupStrandedCompactionTempFiles(
-      app,
-      state.currentConfig.outputDirectory
-    ).catch(err => {
-      app.error(`Compaction startup cleanup failed: ${(err as Error).message}`);
-    });
-
-    // Recover any stranded `.compaction-trash-*` dirs from a crash
-    // between move-to-trash and publish-rename. Runs before any new
-    // data subscriptions land so a restore can't clobber fresh files.
-    await recoverStrandedCompactionTrash(
-      app,
-      state.currentConfig.outputDirectory
-    ).catch(err => {
-      app.error(`Compaction trash recovery failed: ${(err as Error).message}`);
-    });
-
-    // Quarantine zero-byte parquet stubs left by a crash between
-    // ParquetWriter.openFile() and close(). The read-path filename
-    // filter already excludes /quarantine/, so once these are moved
-    // they won't break DuckDB queries.
-    await quarantineEmptyParquetFiles(
-      app,
-      state.currentConfig.outputDirectory
-    ).catch(err => {
-      app.error(
-        `Empty parquet startup sweep failed: ${(err as Error).message}`
+      const sweeps = await runStartupSweepsInWorker(
+        app,
+        state.currentConfig.outputDirectory,
+        state.activeAggregationWorkers
       );
-    });
+      app.debug(
+        `[StartupSweep] ${sweeps.complete ? 'done' : 'incomplete'} in ${(sweeps.durationMs / 1000).toFixed(1)}s: ` +
+          `temp removed=${sweeps.removed} trash restored=${sweeps.restored} cleaned=${sweeps.cleaned} failed=${sweeps.failed} ` +
+          `stubs quarantined=${sweeps.quarantined} failed=${sweeps.quarantineFailed}`
+      );
+    } finally {
+      markStartupSweepsDone();
+    }
 
     // Initialize DuckDB connection pool once. Pass the (writable) plugin data
     // directory so DuckDB puts its extension/home dir there instead of the

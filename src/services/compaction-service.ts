@@ -33,6 +33,8 @@
 import * as fs from 'fs-extra';
 import * as path from 'path';
 import { globIn } from '../utils/glob-in';
+import type { Dirent } from 'fs';
+import { listHiveDirs, listEntries } from '../utils/hive-walk';
 import { ServerAPI } from '@signalk/server-api';
 import { DuckDBPool } from '../utils/duckdb-pool';
 import { HivePathBuilder, AggregationTier } from '../utils/hive-path-builder';
@@ -231,13 +233,24 @@ export async function cleanupStrandedCompactionTempFiles(
   baseDirectory: string
 ): Promise<{ removed: number }> {
   if (!(await fs.pathExists(baseDirectory))) return { removed: 0 };
-  const pattern = `tier=*/context=*/path=*/year=*/${COMPACTION_OUTPUT_PREFIX}_*${COMPACTION_TEMP_SUFFIX}`;
-  const aggregationPattern =
-    'tier=*/context=*/path=*/year=*/day=*/*_aggregated.parquet.tmp';
-  const stragglers = [
-    ...(await globIn(baseDirectory, pattern)),
-    ...(await globIn(baseDirectory, aggregationPattern)),
-  ];
+  // Compaction writes its temp file beside the year's day directories;
+  // aggregation writes its own inside a day directory. Walk the known
+  // levels for each rather than glob the store with `**`.
+  const isCompactionTemp = (e: Dirent): boolean =>
+    e.isFile() &&
+    e.name.startsWith(`${COMPACTION_OUTPUT_PREFIX}_`) &&
+    e.name.endsWith(COMPACTION_TEMP_SUFFIX);
+  const isAggregationTemp = (e: Dirent): boolean =>
+    e.isFile() && e.name.endsWith('_aggregated.parquet.tmp');
+  const stragglers: string[] = [];
+  for (const y of await listHiveDirs(baseDirectory, { level: 'year' })) {
+    stragglers.push(...(await listEntries(y.yearDir, isCompactionTemp)));
+  }
+  for (const d of await listHiveDirs(baseDirectory, { level: 'day' })) {
+    if (d.dayDir) {
+      stragglers.push(...(await listEntries(d.dayDir, isAggregationTemp)));
+    }
+  }
   let removed = 0;
   for (const f of stragglers) {
     try {
@@ -280,10 +293,12 @@ export async function recoverStrandedCompactionTrash(
   if (!(await fs.pathExists(baseDirectory))) {
     return { restored: 0, cleaned: 0, failed: 0 };
   }
-  const trashDirs = await globIn(
-    baseDirectory,
-    `tier=*/context=*/path=*/year=*/${COMPACTION_TRASH_PREFIX}*`
-  );
+  const isTrashDir = (e: Dirent): boolean =>
+    e.isDirectory() && e.name.startsWith(COMPACTION_TRASH_PREFIX);
+  const trashDirs: string[] = [];
+  for (const y of await listHiveDirs(baseDirectory, { level: 'year' })) {
+    trashDirs.push(...(await listEntries(y.yearDir, isTrashDir)));
+  }
 
   let restored = 0;
   let cleaned = 0;

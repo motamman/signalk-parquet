@@ -1489,11 +1489,12 @@ When the plugin starts, it runs the following initialization steps:
 1. **Configuration & State** — Load plugin config, vessel identity, output directory, cloud credentials
 2. **SQLite Buffer** — Open WAL-mode database; auto-migrate legacy `buffer_records` table to per-path tables if needed
 3. **Cloud Client** — Initialize S3 or R2 SDK if a cloud provider is configured
+3a. **Crash-Recovery Sweeps** — Remove stranded compaction/aggregation temp files, recover compaction trash, quarantine 0-byte parquet stubs. Run in a short-lived forked worker so walking a large store never holds the server's main thread; awaited, so they finish before DuckDB opens
 4. **DuckDB Pool** — Initialize connection pool; attach SQLite buffer for federated queries; register cloud credentials
 5. **Data Subscriptions** — Subscribe to configured SignalK paths and start threshold monitoring
 6. **Periodic Save** — Start flush interval (default: every 30s) from memory buffer to SQLite
 7. **Daily Export Schedule** — Schedule next export at configured UTC hour (default: 4 AM); includes aggregation and cloud upload
-8. **Startup Catch-Up** (10s delay) — Export any unexported historical data from SQLite, re-aggregate affected dates, and sync recent files to cloud (7-day lookback, raw-tier-only prefix scan)
+8. **Startup Catch-Up** (10s delay) — Export any unexported historical data from SQLite, re-aggregate affected dates, and sync recent files to cloud (7-day lookback, raw-tier-only prefix scan; the local listing opens only the seven wanted day directories per path, never a `**` walk of the store)
 9. **History API** — Register HTTP routes and SignalK HistoryApi provider
 10. **Auto-Discovery** — Initialize service for on-demand path configuration
 

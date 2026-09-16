@@ -7,6 +7,7 @@ import {
   ParquetAppender,
 } from './types';
 import { ServerAPI } from '@signalk/server-api';
+import { yieldToEventLoop } from './utils/hive-walk';
 import { SchemaService } from './schema-service';
 
 // Try to import ParquetJS, fall back if not available
@@ -917,8 +918,14 @@ export async function quarantineEmptyParquetFiles(
 
   let quarantined = 0;
   let failed = 0;
+  let visited = 0;
 
   const walk = async (dir: string): Promise<void> => {
+    // Every directory is descended (an ancestor's mtime says nothing about
+    // files deep below it), so on a large store this is a long walk; give
+    // the event loop a turn every hundred directories.
+    visited += 1;
+    if (visited % 100 === 0) await yieldToEventLoop();
     let entries: import('fs').Dirent[];
     try {
       entries = await fs.readdir(dir, { withFileTypes: true });

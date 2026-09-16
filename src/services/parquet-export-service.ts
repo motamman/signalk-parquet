@@ -20,6 +20,13 @@ export interface ExportServiceConfig {
   s3Upload?: {
     enabled: boolean;
   };
+  /**
+   * Resolves once the plugin's crash-recovery startup sweeps have finished.
+   * Forced exports wait on it: the sweeps move files under the store (trash
+   * restore, stub quarantine), so a file written while they run can be
+   * clobbered. Omitted when there are no sweeps to wait for.
+   */
+  waitForStartupSweeps?: () => Promise<void>;
 }
 
 export interface ExportResult {
@@ -84,6 +91,12 @@ export class ParquetExportService {
    * Force an immediate export of completed days (excludes today)
    */
   async forceExport(): Promise<ExportResult> {
+    // An HTTP-triggered export can land during plugin start, while the
+    // crash-recovery sweeps are still walking the store. Wait them out rather
+    // than writing files a trash restore could overwrite.
+    if (this.config.waitForStartupSweeps) {
+      await this.config.waitForStartupSweeps();
+    }
     this.lastExportTrigger = 'forced';
     return this.exportAllUnexported();
   }
