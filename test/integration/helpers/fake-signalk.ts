@@ -16,6 +16,7 @@
 import * as os from 'os';
 import * as path from 'path';
 import * as fs from 'fs-extra';
+import { EventEmitter } from 'events';
 import type { ServerAPI } from '@signalk/server-api';
 
 /** A single registered streambundle handler for one bus (path). */
@@ -49,6 +50,8 @@ export interface FakeSignalK {
   emitBus(path: string, delta: Record<string, unknown>): void;
   /** Push a command delta to the active command subscription callback(s). */
   emitCommand(delta: Record<string, unknown>): void;
+  /** Emit a whole delta message on app.signalk, as the server does. */
+  emitDelta(delta: Record<string, unknown>): void;
   /** Remove the temp data directory. */
   cleanup(): Promise<void>;
 }
@@ -60,6 +63,8 @@ export interface FakeSignalKOptions {
   selfPaths?: Record<string, unknown>;
   /** Metadata returned by getMetadata(path). */
   metadata?: Record<string, unknown>;
+  /** Full-model vessels map returned by getPath('vessels'), keyed by id. */
+  vessels?: Record<string, unknown>;
 }
 
 /**
@@ -72,6 +77,7 @@ export function createFakeSignalK(
   const selfId = options.selfId ?? 'test-self';
   const selfPaths = options.selfPaths ?? {};
   const metadata = options.metadata ?? {};
+  const vessels = options.vessels ?? {};
 
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sk-parquet-it-'));
   const logs = { debug: [] as string[], error: [] as string[] };
@@ -84,6 +90,7 @@ export function createFakeSignalK(
 
   const busHandlers = new Map<string, BusHandler[]>();
   const commandSubs: CommandSub[] = [];
+  const signalk = new EventEmitter();
 
   function makeBus(busPath: string) {
     let filter: (delta: unknown) => boolean = () => true;
@@ -128,6 +135,8 @@ export function createFakeSignalK(
       return selfPaths[key];
     },
     getMetadata: (key: string) => metadata[key],
+    // Full model access; only the vessels map is modelled.
+    getPath: (key: string) => (key === 'vessels' ? vessels : undefined),
     handleMessage: (source: string, delta: unknown) => {
       published.push({ source, delta });
     },
@@ -170,6 +179,8 @@ export function createFakeSignalK(
       getBus: (busPath: string) => makeBus(busPath),
       getSelfBus: (busPath: string) => makeBus(busPath),
     },
+    // Whole-delta emitter; the real one is the server's FullSignalK.
+    signalk,
   };
 
   // Proxy so any unmodelled ServerAPI access fails loudly rather than
@@ -210,6 +221,9 @@ export function createFakeSignalK(
       for (const sub of active) {
         sub.deltaCb(delta);
       }
+    },
+    emitDelta(delta) {
+      signalk.emit('delta', delta);
     },
     async cleanup() {
       await fs.remove(dataDir);

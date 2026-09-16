@@ -57,6 +57,16 @@ Vessel data Parquet file archive with automated value and geospatial triggers. H
   - The importable paths (and their default checkboxes) come from `GET /api/import/gpx/options`, so the UI and the importer cannot disagree
   - Job-based with per-`jobId` cancellation, progress polling, and 30-minute TTL on finished jobs
   - Browser upload caps: 500 MB per file (was 50 MB before v0.7.44-beta.6), 500 files and 2 GB in total per request
+- **Vessel Identity** (v0.7.44-beta.7+): every vessel the server hears gets an `identity` object path holding its name, MMSI, AIS ship type (`aisShipTypeId`, `aisShipTypeName`), `lengthOverall`, `beam`, `callsignVhf` and `aisClass`, folded from the root bus and the `design.*`, `communication.callsignVhf` and `sensors.ais.class` deltas
+  - One row per vessel when first heard, then one per actual change: the six-minute repeat of an AIS static report writes nothing, a later report that only adds fields (say the name from a static report after a position report) completes the same row while it is still in the buffer, and a restart does not rewrite known vessels (what was last written is read back from the buffer at start; `identity-state.json` in the data directory keeps the same record for vessels older than the buffer's retention)
+  - One object path per vessel rather than one path per attribute, so a busy AIS coast adds one file per vessel to a day's export instead of seven
+  - Retention-exempt and excluded from tier aggregation; readable through the History API like any object path (`paths=identity`)
+  - Independent of path configuration; a configured `name` path for `vessels.*` is no longer needed and can be removed
+- **History Playback** (v0.7.44-beta.7+): registers as the server's v1 playback provider, so Freeboard-SK's History Playback (and any client of `/signalk/v1/playback?startTime=…&playbackRate=…`) replays the recorded store as live-shaped delta messages
+  - Rows from the raw parquet tier and the not-yet-exported SQLite buffer are regrouped into one delta per instant, vessel and source, with `$source` from the recorded source label; object paths (position, attitude) come back as objects
+  - Each vessel's last known identity is sent ahead of its first delta, in the shape the live AIS feed uses (`name`/`mmsi` at the root, `design.*`, `communication.callsignVhf`, `sensors.ais.class`), so plotters label targets at once
+  - Paced by `playbackRate`; silence is skipped rather than waited out; on reaching the present the buffer is polled so playback runs on into live data; `subscribe=self` (the default) limits the stream to the own vessel
+  - Nothing runs at plugin start: the first read happens when a playback connection opens, and each day of playback costs one metadata-only index of that day's files
 
 ### Data Validation & Schema Repair
 - **Schema Validation**: Comprehensive validation of Parquet file schemas against SignalK metadata standards
@@ -223,6 +233,7 @@ Configure basic plugin settings (path configuration is managed separately in the
 | **Export Batch Size** | Max records to export per cycle (1,000-200,000) | 50000 |
 | **Buffer Retention Hours** | How long to keep exported records in SQLite (hours) | 48 |
 | **Enable Raw SQL** | Enable /api/query endpoint for raw SQL queries | `false` |
+| **Record Vessel Identity** | Record each vessel's name, MMSI, AIS ship type, length, beam, callsign and AIS class as one `identity` object path for every vessel the server hears, written when the vessel is first heard and again only on change; retention-exempt, never aggregated (v0.7.44-beta.7+) | `true` |
 
 ### Auto-Discovery Configuration
 
@@ -806,6 +817,23 @@ The plugin provides full SignalK History API compliance, allowing you to query h
 
 > **Exact context ids (v0.7.44-beta.3+):** the contexts endpoints return vessel context strings exactly as recorded — resolved from the stored data rather than reconstructed from partition directory names, whose encoding is lossy. Earlier versions mangled UUID-identified vessels (`urn:mrn:signalk:uuid:…`, the default when no MMSI is configured) by turning the UUID's dashes into colons.
 
+### History Playback (v1 websocket)
+
+The plugin registers as the server's v1 history playback provider (v0.7.44-beta.7+). A client opens
+
+```text
+ws://<server>/signalk/v1/playback?startTime=2026-09-15T10:00:00Z&playbackRate=10&subscribe=all
+```
+
+and receives the server's hello followed by delta messages replayed from the store, in the same shape as the live stream: one update per instant, vessel and source, `$source` from the recorded source label, object values as objects. Freeboard-SK's History Playback dialog uses exactly this connection.
+
+- `startTime` (required) is where playback begins; `playbackRate` (default 1) scales time, so 10 plays ten minutes of data per minute.
+- `subscribe=self` (the default when omitted) limits playback to the own vessel; `subscribe=all` replays every recorded vessel; the server applies this filter.
+- Before a vessel's first delta its last known identity is sent (`name`/`mmsi` at the root path, `design.aisShipType`, `design.length`, `design.beam`, `communication.callsignVhf`, `sensors.ais.class`), taken from the `identity` object path.
+- Stretches with nothing recorded are skipped. On reaching the present the buffer is polled once a second, so playback continues into live data until the client disconnects.
+- Rows come from the raw parquet tier plus the SQLite buffer. Scalars exported to parquet keep their stored type; scalars still in the buffer are text and are parsed back (a string that looks like a number is replayed as a number).
+- ⚠️ **Extension:** `context` names the vessels to replay, comma-separated, each a full context (`vessels.urn:mrn:imo:mmsi:367390130`), a bare MMSI (`367390130`) or `self`. The spec offers only `subscribe=self` or `all` and the server closes a playback connection that sends a subscribe message, so this is the only way to follow one vessel or a chosen few. Pair it with `subscribe=all`; under `subscribe=self` the server drops every other vessel regardless. Reads are narrowed to the named vessels, so a single-vessel replay is also cheaper. Proposed upstream as a server feature; if the server grows its own way to scope playback this parameter will be retired in its favour.
+
 ### Standard Time Range Patterns
 
 The History API supports 5 standard SignalK time query patterns:
@@ -898,8 +926,40 @@ curl "http://localhost:3000/signalk/v1/history/values?duration=1h&paths=navigati
 ```
 
 Source filtering always reads raw data: aggregated tiers blend every source
-into each time bucket, so they cannot be filtered by source. Each `values`
-entry in the response echoes the `sourceRef` it was restricted to.
+into each time bucket, so they cannot be filtered by source. On the V1 routes
+each `values` entry echoes the `sourceRef` it was restricted to; on the V2
+provider (`/signalk/v2/api/history/values`) the per-column source is reported
+as `$source`, the key signalk-server settled on in
+[#2817](https://github.com/SignalK/signalk-server/pull/2817) (v0.7.44-beta.7+;
+earlier betas reported it as `sourceRef`).
+
+#### Splitting by source (V2 provider, `sourcePolicy=all`)
+
+`sourcePolicy=all` asks for every source separated without naming them: each
+path that does not already carry a `|sourceRef` is expanded into one column per
+source that recorded it in the range, with the source in that column's
+`$source`. Named sources come first, sorted, so column order is stable between
+requests; rows recorded with no source (or in parquet files written before the
+`source_label` column existed) form one trailing column with no `$source`.
+A path with an explicit `|sourceRef` stays a single filtered column.
+
+```bash
+curl "http://localhost:3000/signalk/v2/api/history/values?duration=PT1H&paths=navigation.speedOverGround&sourcePolicy=all"
+```
+
+```jsonc
+"values": [
+  { "path": "navigation.speedOverGround", "method": "average", "$source": "gps.backup" },
+  { "path": "navigation.speedOverGround", "method": "average", "$source": "gps.main" },
+  { "path": "navigation.speedOverGround", "method": "average" }   // unattributed rows
+]
+```
+
+Expansion multiplies the work one request asks for, so it is bounded: at most
+16 sources per path (the first in sorted order are kept), and at most 64
+columns per request, beyond which the request is rejected with a 400 naming the
+limit. Sources are discovered from the raw tier and the live buffer for the
+requested range only.
 
 #### Extension Parameters (non-standard)
 
@@ -1429,11 +1489,12 @@ When the plugin starts, it runs the following initialization steps:
 1. **Configuration & State** — Load plugin config, vessel identity, output directory, cloud credentials
 2. **SQLite Buffer** — Open WAL-mode database; auto-migrate legacy `buffer_records` table to per-path tables if needed
 3. **Cloud Client** — Initialize S3 or R2 SDK if a cloud provider is configured
+3a. **Crash-Recovery Sweeps** — Remove stranded compaction/aggregation temp files, recover compaction trash, quarantine 0-byte parquet stubs. Run in a short-lived forked worker so walking a large store never holds the server's main thread; awaited, so they finish before DuckDB opens (v0.7.44-beta.7+)
 4. **DuckDB Pool** — Initialize connection pool; attach SQLite buffer for federated queries; register cloud credentials
 5. **Data Subscriptions** — Subscribe to configured SignalK paths and start threshold monitoring
 6. **Periodic Save** — Start flush interval (default: every 30s) from memory buffer to SQLite
 7. **Daily Export Schedule** — Schedule next export at configured UTC hour (default: 4 AM); includes aggregation and cloud upload
-8. **Startup Catch-Up** (10s delay) — Export any unexported historical data from SQLite, re-aggregate affected dates, and sync recent files to cloud (7-day lookback, raw-tier-only prefix scan)
+8. **Startup Catch-Up** (10s delay) — Export any unexported historical data from SQLite, re-aggregate affected dates, and sync recent files to cloud (7-day lookback, raw-tier-only prefix scan; the local listing opens only the seven wanted day directories per path, never a `**` walk of the store)
 9. **History API** — Register HTTP routes and SignalK HistoryApi provider
 10. **Auto-Discovery** — Initialize service for on-demand path configuration
 

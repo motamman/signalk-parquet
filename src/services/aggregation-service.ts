@@ -18,6 +18,7 @@ import { ServerAPI } from '@signalk/server-api';
 import { DuckDBPool } from '../utils/duckdb-pool';
 import { HivePathBuilder, AggregationTier } from '../utils/hive-path-builder';
 import { isAngularPath } from '../utils/angular-paths';
+import { isIdentityPath } from '../utils/vessel-identity';
 import { CLEANUP_YIELD_INTERVAL, POSITION_MAX_SPEED_MPS } from '../constants';
 import { PathRetentionRule, RetentionRuleSet } from '../utils/retention-rules';
 
@@ -252,6 +253,8 @@ export class AggregationService {
       try {
         const { context, signalkPath } = this.parseGroupKey(key);
         if (pathFilter && !pathFilter(signalkPath)) continue;
+        // Vessel identity is a change log, not a time series: never rolled up.
+        if (isIdentityPath(signalkPath)) continue;
         // Honour per-path skipAggregation. These paths live only in
         // tier=raw and are cleaned up directly via cleanupOldData.
         if (this.retentionRules.shouldSkipAggregation(signalkPath)) {
@@ -867,6 +870,9 @@ export class AggregationService {
     tierDefaultDays: number,
     tierMultiplier: number
   ): number | null {
+    // Identity is written once per vessel and on change only; expiring it
+    // would leave a long-known vessel with no name. Kept forever.
+    if (isIdentityPath(signalkPath)) return null;
     if (signalkPath) {
       const matched = this.retentionRules.match(signalkPath);
       if (matched) {

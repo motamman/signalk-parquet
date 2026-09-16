@@ -80,6 +80,7 @@ export interface PluginConfig {
   dailyExportHour?: number; // Hour (0-23 UTC) to run daily export (default 4 = 4 AM UTC)
   autoDiscovery?: AutoDiscoveryConfig; // Auto-discovery configuration
   enableRawSql?: boolean; // Enable raw SQL queries via /api/query endpoint
+  recordVesselIdentity?: boolean; // Record each vessel's identity on the `identity` path (default true)
 }
 
 import type { ClaudeModel } from './claude-models';
@@ -527,8 +528,22 @@ export interface ProcessState {
 // Forward declaration for SQLiteBuffer to avoid circular dependency
 export interface SQLiteBufferInterface {
   isOpen(): boolean;
-  insert(record: DataRecord): void;
+  /** Returns the new row's id. */
+  insert(record: DataRecord): number;
   insertBatch(records: DataRecord[]): void;
+  /** Overwrite a not-yet-exported row; false when it is gone or exported. */
+  updateUnexportedRow(
+    signalkPath: string,
+    id: number,
+    record: DataRecord
+  ): boolean;
+  /** Newest row per context for a path, exported or not. */
+  getLatestRowPerContext(signalkPath: string): Array<{
+    id: number;
+    context: string;
+    value_json: string | null;
+    exported: number;
+  }>;
   cleanup(): number;
   getStats(): {
     totalRecords: number;
@@ -554,6 +569,32 @@ export interface SQLiteBufferInterface {
     limit: number
   ): Array<Record<string, unknown>>;
   hasTable(signalkPath: string): boolean;
+  getRowsForPlayback(
+    fromIso: string,
+    toIso: string,
+    contexts: string[] | null,
+    limit: number
+  ): Array<{
+    path: string;
+    context: string;
+    signalk_timestamp: string;
+    source_label: string | null;
+    value: string | null;
+    value_json: string | null;
+  }>;
+  hasRowsSince(fromIso: string, contexts: string[] | null): boolean;
+  getNextRowTime(fromIso: string, contexts: string[] | null): string | null;
+  getLatestObjectRowAt(
+    signalkPath: string,
+    context: string,
+    atIso: string
+  ):
+    | {
+        signalk_timestamp: string;
+        source_label: string | null;
+        value_json: string | null;
+      }
+    | undefined;
   getDbPath(): string;
   close(): void;
   checkpoint(): void;
@@ -659,6 +700,8 @@ export interface PluginState {
   // Auto-discovery service
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   autoDiscoveryService?: any; // AutoDiscoveryService - avoiding circular import
+  // Vessel identity capture (typed loosely to avoid a circular import)
+  identityService?: { stop(): void };
   // History API (V1 routes). Registered once and reused across reconfigure so
   // the express routes are never left bound to a closed SQLite buffer.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any

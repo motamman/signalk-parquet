@@ -42,3 +42,6 @@ reports/
 
 .vscode
 tests/*.py
+
+# Local working notes, never committed
+other.md

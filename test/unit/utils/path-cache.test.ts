@@ -37,18 +37,25 @@ const PATHS = ['navigation.position', 'navigation.speedOverGround'] as Path[];
 const realNow = Date.now;
 let clock = 1_000_000;
 
-beforeEach(() => {
-  clock = 1_000_000;
-  Date.now = () => clock;
-  clearAllCaches();
-});
+// Registered inside each describe below, not at the root: a root-level hook
+// would run for every test in the whole mocha run and hand the other suites
+// a frozen clock.
+function useFrozenClock(): void {
+  beforeEach(() => {
+    clock = 1_000_000;
+    Date.now = () => clock;
+    clearAllCaches();
+  });
 
-afterEach(() => {
-  Date.now = realNow;
-  clearAllCaches();
-});
+  afterEach(() => {
+    Date.now = realNow;
+    clearAllCaches();
+  });
+}
 
 describe('path cache', () => {
+  useFrozenClock();
+
   it('returns null on a miss', () => {
     expect(getCachedPaths(DATA_DIR, CTX, FROM, TO)).to.equal(null);
   });
@@ -168,6 +175,8 @@ describe('path cache', () => {
 });
 
 describe('context cache', () => {
+  useFrozenClock();
+
   const CONTEXTS = [
     'vessels.self',
     'vessels.urn:mrn:imo:mmsi:123',
@@ -224,6 +233,8 @@ describe('context cache', () => {
 });
 
 describe('clearAllCaches', () => {
+  useFrozenClock();
+
   it('empties both caches', () => {
     setCachedPaths(DATA_DIR, CTX, FROM, TO, PATHS);
     setCachedContexts(DATA_DIR, FROM, TO, [CTX]);

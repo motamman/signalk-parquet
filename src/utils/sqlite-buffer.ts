@@ -489,15 +489,71 @@ export class SQLiteBuffer {
   }
 
   /**
-   * Insert a single record into the buffer
+   * Insert a single record into the buffer. Returns the new row's id.
    */
-  insert(record: DataRecord): void {
+  insert(record: DataRecord): number {
     if (!this._open) {
       throw new Error('SQLite buffer is closed');
     }
     const tableInfo = this.ensureTable(record.path, record);
     const params = this.prepareRecord(record, tableInfo);
-    tableInfo.insertStmt.run(params as Record<string, SQLInputValue>);
+    const result = tableInfo.insertStmt.run(
+      params as Record<string, SQLInputValue>
+    );
+    return Number(result.lastInsertRowid);
+  }
+
+  /**
+   * Overwrite a row that has not been exported yet with `record`. Returns
+   * false when the row is gone or already exported (an exported row is on
+   * disk in Parquet and immutable), in which case the caller inserts.
+   */
+  updateUnexportedRow(
+    signalkPath: string,
+    id: number,
+    record: DataRecord
+  ): boolean {
+    if (!this._open) {
+      throw new Error('SQLite buffer is closed');
+    }
+    const tableInfo = this.tableMap.get(signalkPath);
+    if (!tableInfo) return false;
+    const params = this.prepareRecord(record, tableInfo);
+    const sets = Object.keys(params).map(col => `${col} = @${col}`);
+    const result = this.db
+      .prepare(
+        `UPDATE ${tableInfo.tableName} SET ${sets.join(', ')} WHERE id = @id AND exported = 0`
+      )
+      .run({ ...params, id } as Record<string, SQLInputValue>);
+    return Number(result.changes) > 0;
+  }
+
+  /**
+   * The newest row per context for a path, exported or not: its id, its
+   * exported flag and its value_json. This is the record of what was
+   * actually written, whatever happened to the process that wrote it.
+   */
+  getLatestRowPerContext(signalkPath: string): Array<{
+    id: number;
+    context: string;
+    value_json: string | null;
+    exported: number;
+  }> {
+    if (!this._open) return [];
+    const tableInfo = this.tableMap.get(signalkPath);
+    if (!tableInfo) return [];
+    const valueJson = tableInfo.isObject ? 'value_json' : 'NULL AS value_json';
+    return this.db
+      .prepare(
+        `SELECT id, context, ${valueJson}, exported FROM ${tableInfo.tableName}
+         WHERE id IN (SELECT MAX(id) FROM ${tableInfo.tableName} GROUP BY context)`
+      )
+      .all() as Array<{
+      id: number;
+      context: string;
+      value_json: string | null;
+      exported: number;
+    }>;
   }
 
   /**
@@ -1133,6 +1189,171 @@ export class SQLiteBuffer {
       .all(context, fromIso, toIso, afterId, limit) as Array<
       Record<string, unknown>
     >;
+  }
+
+  /**
+   * Unexported rows of every path in a time window, for playback. Object
+   * paths carry `value_json`, scalar paths the text `value`. `contexts`
+   * narrows to those vessels; null means every vessel.
+   *
+   * `limit` caps the rows returned across all paths together, and what
+   * comes back is the EARLIEST `limit` rows of the window, not the first
+   * `limit` a path-by-path walk happened to reach: each path is read in
+   * timestamp order, merged into the result, and the merge truncated, so
+   * once the result is full its last timestamp becomes an upper bound that
+   * the remaining paths are queried with. A path registered late can
+   * therefore still contribute rows earlier than one registered first,
+   * which a per-path or first-come budget would have dropped. Memory is
+   * bounded by the result plus one path's read, never by the path count.
+   * The caller shrinks its window when it gets `limit` rows back.
+   */
+  getRowsForPlayback(
+    fromIso: string,
+    toIso: string,
+    contexts: string[] | null,
+    limit: number
+  ): Array<{
+    path: string;
+    context: string;
+    signalk_timestamp: string;
+    source_label: string | null;
+    value: string | null;
+    value_json: string | null;
+  }> {
+    if (!this._open) return [];
+    const out: Array<{
+      path: string;
+      context: string;
+      signalk_timestamp: string;
+      source_label: string | null;
+      value: string | null;
+      value_json: string | null;
+    }> = [];
+    const contextClause =
+      contexts && contexts.length > 0
+        ? ` AND context IN (${contexts.map(() => '?').join(', ')})`
+        : '';
+    if (limit <= 0) return out;
+    // Narrows to the result's last timestamp once it is full, so the paths
+    // still to read are pruned in SQL rather than in memory. Inclusive, so a
+    // tie at the boundary is still read and settled by the merge below.
+    let cutoff = toIso;
+    let cutoffInclusive = false;
+    for (const [signalkPath, info] of this.tableMap) {
+      const valueCols = info.isObject
+        ? 'NULL AS value, value_json'
+        : 'value, NULL AS value_json';
+      const rows = this.db
+        .prepare(
+          `SELECT context, signalk_timestamp, source_label, ${valueCols}
+           FROM ${info.tableName}
+           WHERE signalk_timestamp >= ? AND signalk_timestamp ${cutoffInclusive ? '<=' : '<'} ?
+             AND exported = 0${contextClause}
+           ORDER BY signalk_timestamp ASC
+           LIMIT ?`
+        )
+        .all(fromIso, cutoff, ...(contexts ?? []), limit) as Array<{
+        context: string;
+        signalk_timestamp: string;
+        source_label: string | null;
+        value: string | null;
+        value_json: string | null;
+      }>;
+      if (rows.length === 0) continue;
+      for (const row of rows) out.push({ path: signalkPath, ...row });
+      // Stable: equal timestamps keep the order the paths were read in.
+      out.sort((a, b) =>
+        a.signalk_timestamp < b.signalk_timestamp
+          ? -1
+          : a.signalk_timestamp > b.signalk_timestamp
+            ? 1
+            : 0
+      );
+      if (out.length > limit) out.length = limit;
+      if (out.length === limit) {
+        cutoff = out[limit - 1].signalk_timestamp;
+        cutoffInclusive = true;
+      }
+    }
+    return out;
+  }
+
+  /** True when any path has an unexported row at or after `fromIso`. */
+  hasRowsSince(fromIso: string, contexts: string[] | null): boolean {
+    if (!this._open) return false;
+    const contextClause =
+      contexts && contexts.length > 0
+        ? ` AND context IN (${contexts.map(() => '?').join(', ')})`
+        : '';
+    for (const info of this.tableMap.values()) {
+      const row = this.db
+        .prepare(
+          `SELECT 1 AS hit FROM ${info.tableName}
+           WHERE signalk_timestamp >= ? AND exported = 0${contextClause}
+           LIMIT 1`
+        )
+        .get(fromIso, ...(contexts ?? []));
+      if (row) return true;
+    }
+    return false;
+  }
+
+  /**
+   * The earliest unexported row timestamp at or after `fromIso` across every
+   * path, or null when there is none. Lets playback jump over silence.
+   */
+  getNextRowTime(fromIso: string, contexts: string[] | null): string | null {
+    if (!this._open) return null;
+    const contextClause =
+      contexts && contexts.length > 0
+        ? ` AND context IN (${contexts.map(() => '?').join(', ')})`
+        : '';
+    let best: string | null = null;
+    for (const info of this.tableMap.values()) {
+      const row = this.db
+        .prepare(
+          `SELECT MIN(signalk_timestamp) AS t FROM ${info.tableName}
+           WHERE signalk_timestamp >= ? AND exported = 0${contextClause}`
+        )
+        .get(fromIso, ...(contexts ?? [])) as { t: string | null } | undefined;
+      const t = row?.t ?? null;
+      if (t && (best === null || t < best)) best = t;
+    }
+    return best;
+  }
+
+  /**
+   * The newest row of an object path for a vessel at or before `atIso`,
+   * exported or not (an exported row is still the truth until retention
+   * removes it). Used to look up a vessel's identity for playback.
+   */
+  getLatestObjectRowAt(
+    signalkPath: string,
+    context: string,
+    atIso: string
+  ):
+    | {
+        signalk_timestamp: string;
+        source_label: string | null;
+        value_json: string | null;
+      }
+    | undefined {
+    if (!this._open) return undefined;
+    const info = this.tableMap.get(signalkPath);
+    if (!info || !info.isObject) return undefined;
+    return this.db
+      .prepare(
+        `SELECT signalk_timestamp, source_label, value_json FROM ${info.tableName}
+         WHERE context = ? AND signalk_timestamp <= ?
+         ORDER BY signalk_timestamp DESC LIMIT 1`
+      )
+      .get(context, atIso) as
+      | {
+          signalk_timestamp: string;
+          source_label: string | null;
+          value_json: string | null;
+        }
+      | undefined;
   }
 
   /**

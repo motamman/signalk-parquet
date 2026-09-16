@@ -1,25 +1,7 @@
 import * as fs from 'fs-extra';
 import * as path from 'path';
-import { glob as globOriginal } from 'glob';
-import { promisify } from 'util';
-
-// Wrap glob for compatibility with both glob@7.x (callbacks) and glob@11.x (promises)
-const glob = async (pattern: string, options?: object): Promise<string[]> => {
-  // If glob returns a Promise (glob@11.x), use it directly
-  const result = globOriginal(pattern, options || {}) as unknown;
-  if (result && typeof (result as Promise<string[]>).then === 'function') {
-    return result as Promise<string[]>;
-  }
-  // Otherwise use promisify for glob@7.x callback style
-  const globPromise = promisify(
-    globOriginal as (
-      pattern: string,
-      options: object,
-      cb: (err: Error | null, matches: string[]) => void
-    ) => void
-  );
-  return globPromise(pattern, options || {}) as Promise<string[]>;
-};
+import { HivePathBuilder } from './utils/hive-path-builder';
+import { listHiveDirs, listParquetFiles, dayKey } from './utils/hive-walk';
 import {
   PluginConfig,
   PathConfig,
@@ -723,6 +705,7 @@ function handleStreamData(
     // Use actual context + path as buffer key to separate data from different vessels
     const bufferKey = `${normalizedDelta.context}:${pathConfig.path}`;
     bufferData(bufferKey, record, config, state, app);
+    // A vessel with a recorded row of its own earns an identity row.
   } catch (error) {
     app.error(
       `[DataHandler] Failed to buffer delta for ${normalizedDelta.context}:${pathConfig.path}: ${(error as Error).message}`
@@ -905,6 +888,33 @@ export function initializeRegimenStates(
 // These functions have been replaced by the daily export system in parquet-export-service.ts
 // The new exportDayToParquet() creates consolidated daily files directly
 
+const hivePaths = new HivePathBuilder();
+
+/**
+ * Every parquet file recorded on the given UTC days, across all tiers. Walks
+ * the known tier/context/path/year levels and opens only the wanted day
+ * directories, so the cost is one readdir per path per year, not one per
+ * day in the store.
+ */
+export async function listParquetFilesForDays(
+  dataDir: string,
+  days: Date[]
+): Promise<string[]> {
+  const years = new Set<number>();
+  const keys = new Set<string>();
+  for (const day of days) {
+    const year = day.getUTCFullYear();
+    years.add(year);
+    keys.add(dayKey(year, hivePaths.getDayOfYear(day)));
+  }
+  const dirs = await listHiveDirs(dataDir, { level: 'day', years, days: keys });
+  const files: string[] = [];
+  for (const dir of dirs) {
+    if (dir.dayDir) files.push(...(await listParquetFiles(dir.dayDir)));
+  }
+  return files;
+}
+
 // List all existing keys in cloud bucket (paginated)
 async function listCloudKeys(
   client: any,
@@ -1068,26 +1078,18 @@ export async function uploadAllConsolidatedFilesToS3(
     const daysToCheck = 7;
     const today = new Date();
 
-    // Gather local files for the lookback window first (fast, local I/O)
-    const allLocalFiles: string[] = [];
+    // Gather local files for the lookback window first: the wanted day
+    // directories only, never a `**` walk of the store.
+    const days: Date[] = [];
     for (let daysAgo = 1; daysAgo <= daysToCheck; daysAgo++) {
       const targetDate = new Date(today);
       targetDate.setUTCDate(today.getUTCDate() - daysAgo);
-      const year = targetDate.getUTCFullYear();
-      const dayOfYear = String(
-        Math.floor((targetDate.getTime() - Date.UTC(year, 0, 1)) / 86400000) + 1
-      ).padStart(3, '0');
-
-      const files = await glob(
-        `tier=*/**/year=${year}/day=${dayOfYear}/*.parquet`,
-        {
-          cwd: config.outputDirectory,
-          absolute: true,
-          nodir: true,
-        }
-      );
-      allLocalFiles.push(...files);
+      days.push(targetDate);
     }
+    const allLocalFiles = await listParquetFilesForDays(
+      config.outputDirectory,
+      days
+    );
 
     app.debug(
       `[StartupSync] Found ${allLocalFiles.length} local files in last ${daysToCheck} days`
@@ -1191,20 +1193,11 @@ export async function uploadConsolidatedFilesToS3(
   if (!target) return;
 
   try {
-    const year = date.getUTCFullYear();
-    const dayOfYear = String(
-      Math.floor((date.getTime() - Date.UTC(year, 0, 1)) / 86400000) + 1
-    ).padStart(3, '0');
     const dateStr = date.toISOString().slice(0, 10);
 
-    const localFiles = await glob(
-      `tier=*/**/year=${year}/day=${dayOfYear}/*.parquet`,
-      {
-        cwd: config.outputDirectory,
-        absolute: true,
-        nodir: true,
-      }
-    );
+    const localFiles = await listParquetFilesForDays(config.outputDirectory, [
+      date,
+    ]);
 
     if (localFiles.length === 0) return;
 
