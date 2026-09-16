@@ -139,13 +139,30 @@ describe('hive-walk', () => {
 
   it('gives the event loop turns while walking', async () => {
     await seed();
-    let ticks = 0;
-    const timer = setInterval(() => (ticks += 1), 0);
-    try {
-      await listHiveDirs(base, { level: 'day', yieldEvery: 1 });
-    } finally {
-      clearInterval(timer);
-    }
-    expect(ticks).to.be.greaterThan(0);
+    // Count the walk's own yields instead of racing a timer against it. A
+    // setInterval(0) is clamped to 1ms and this walk finishes in well under
+    // that, so the timer often never came due even though the walk yielded on
+    // every readdir, and the test failed at random.
+    const yields = async (yieldEvery: number): Promise<number> => {
+      const real = global.setImmediate;
+      let count = 0;
+      global.setImmediate = ((
+        fn: (...args: unknown[]) => void,
+        ...args: unknown[]
+      ) => {
+        count += 1;
+        return real(fn, ...args);
+      }) as unknown as typeof setImmediate;
+      try {
+        await listHiveDirs(base, { level: 'day', yieldEvery });
+      } finally {
+        global.setImmediate = real;
+      }
+      return count;
+    };
+    // One yield per readdir when asked for one, and none at all when the
+    // threshold is past every directory in the store.
+    expect(await yields(1)).to.be.greaterThan(0);
+    expect(await yields(1_000_000)).to.equal(0);
   });
 });
