@@ -9,6 +9,36 @@ import { DuckDBPool } from './duckdb-pool';
 import { escapeSqlString } from './sql-escape';
 import { SpatialFilter, buildSpatialSqlClause } from './spatial-queries';
 
+// Same guarded load as parquet-writer.ts: a missing library leaves the DuckDB
+// data read as the only resolver rather than failing module load.
+type FooterReader = {
+  ParquetReader: {
+    openFile(file: string): Promise<{
+      metadata: {
+        row_groups: Array<{
+          columns: Array<{
+            meta_data?: {
+              path_in_schema?: string[];
+              statistics?: {
+                min_value?: unknown;
+                max_value?: unknown;
+              };
+            };
+          }>;
+        }>;
+      } | null;
+      close(): Promise<void>;
+    }>;
+  };
+};
+let parquetjs: FooterReader | null = null;
+try {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  parquetjs = require('@dsnp/parquetjs') as FooterReader;
+} catch {
+  parquetjs = null;
+}
+
 // Cache for context list
 interface ContextListCache {
   contexts: string[];
@@ -146,25 +176,33 @@ function isNoFilesError(err: unknown): boolean {
 }
 
 /**
- * The distinct contexts of one directory, read from the parquet FOOTERS.
+ * The distinct contexts of one directory, read from the parquet FOOTERS with
+ * parquetjs — plain JavaScript, no DuckDB.
  *
  * A file holds exactly one context (the hive layout writes one file per
  * context/path/day), so the `context` column's min and max statistics are
- * that context. Reading them costs a footer per file instead of the whole
- * column of every file, which is what made this the most expensive thing the
- * plugin did: on a store with thousands of AIS contexts a single
- * `/signalk/v1/history/contexts` call took 39s and permanently added 1.4 GB
- * to the server process, because DuckDB's freed buffers are not returned to
- * the OS by the allocator.
+ * that context. Reading them is a footer per file rather than a column scan,
+ * and doing it in JavaScript keeps the allocations in V8's heap, which is
+ * collected. That second point is the one that matters: the same work done
+ * through DuckDB left its memory in native allocator arenas that glibc never
+ * returns — measured on a shore station, one seven-day
+ * `/signalk/v1/history/contexts` call took 7s and permanently added 504 MB to
+ * the server, and repeating it kept climbing. With parquetjs the identical
+ * work over the same 528 files took 0.5s and 3 MB, and a GC took that back.
  *
- * Only rows where min equals max are trusted. Parquet allows a writer to
- * truncate string statistics, which would round min down and max up and yield
- * a prefix rather than the context; equality rules that out. A file whose
- * stats are missing or truncated leaves the directory unresolved here and the
- * caller falls back to reading the data.
+ * Only a chunk whose min equals max is trusted: parquet lets a writer truncate
+ * string statistics, which would round min down and max up and yield a prefix
+ * rather than the context. Any file that cannot be opened or lacks exact
+ * context statistics (or, with a range, timestamp statistics) leaves the
+ * whole directory unresolved: the answer is null rather than the contexts of
+ * the other files, and the caller falls back to reading the data with DuckDB.
  *
- * `range` restricts to files whose `signalk_timestamp` statistics overlap the
- * window, which is likewise decided from the footer.
+ * `range` restricts to files with a row group whose `signalk_timestamp`
+ * statistics overlap the window, decided from the same footer. Each row group
+ * is tested on its own: the envelope of all of them would bridge the gap
+ * between two groups and admit a file with no rows in the window. Files come
+ * from the requested day partitions only, so a week's question opens a week's
+ * files, not the store.
  *
  * Exported so a test can assert this path actually answers for files the
  * plugin writes. If the writer ever stops emitting usable statistics the
@@ -175,55 +213,126 @@ export async function queryContextsFromFooters(
   sanitized: string,
   range?: { fromIso: string; toIso: string }
 ): Promise<string[] | null> {
-  const globs = contextGlobs(dataDir, sanitized, range);
-  if (globs.length === 0) return [];
-  // A day directory bounds a file only to the day; the timestamp statistics
-  // still decide whether it overlaps the requested window. A file whose
-  // context statistics are unusable is kept whatever its timestamps say, so
-  // the caller below can see that the directory is not fully resolved.
-  const where = range
-    ? `WHERE ctx IS NULL
-         OR (t0 IS NOT NULL AND t1 IS NOT NULL
-             AND t1 >= '${escapeSqlString(range.fromIso)}'
-             AND t0 <= '${escapeSqlString(range.toIso)}')`
-    : '';
-  try {
-    const connection = await DuckDBPool.getConnection();
+  if (!parquetjs) return null;
+  const files = await listContextFiles(dataDir, sanitized, range);
+  if (files === null) return null;
+  const found = new Set<string>();
+  for (const file of files) {
+    let reader: Awaited<ReturnType<FooterReader['ParquetReader']['openFile']>>;
     try {
-      const result = await connection.runAndReadAll(
-        `SELECT DISTINCT ctx FROM (
-           SELECT
-             file_name,
-             MIN(CASE WHEN path_in_schema = 'context'
-                      AND stats_min = stats_max THEN stats_min END) AS ctx,
-             MIN(CASE WHEN path_in_schema = 'signalk_timestamp'
-                      THEN stats_min END) AS t0,
-             MAX(CASE WHEN path_in_schema = 'signalk_timestamp'
-                      THEN stats_max END) AS t1
-           FROM parquet_metadata(${globList(globs)})
-           GROUP BY file_name
-         ) ${where}`
+      reader = await parquetjs.ParquetReader.openFile(file);
+    } catch (error) {
+      debugLogger.warn(
+        `[Context Discovery] Could not open footer of ${file}:`,
+        error
       );
-      const contexts: string[] = [];
-      for (const row of result.getRowObjects()) {
-        // Dropping a file with missing or truncated `context` statistics would
-        // return a confidently partial list, silently losing whatever context
-        // only that file holds. One unusable file leaves the whole directory
-        // unresolved, so the caller falls back to scanning the data.
-        if (typeof row.ctx !== 'string' || row.ctx.length === 0) return null;
-        contexts.push(row.ctx);
-      }
-      return contexts;
-    } finally {
-      connection.disconnectSync();
+      return null;
     }
-  } catch (error) {
-    if (isNoFilesError(error)) return [];
-    debugLogger.warn(
-      `[Context Discovery] Could not read context statistics under context=${sanitized}:`,
-      error
-    );
+    try {
+      let context: string | null = null;
+      const spans: Array<[string, string]> = [];
+      for (const rg of reader.metadata?.row_groups ?? []) {
+        for (const col of rg.columns) {
+          const md = col.meta_data;
+          const name = md?.path_in_schema?.[0];
+          if (name !== 'context' && name !== 'signalk_timestamp') continue;
+          const st = md?.statistics;
+          const lo = statText(st?.min_value);
+          const hi = statText(st?.max_value);
+          if (lo === null || hi === null) continue;
+          if (name === 'context') {
+            if (lo === hi && lo.length > 0) context = lo;
+          } else if (name === 'signalk_timestamp') {
+            spans.push([lo, hi]);
+          }
+        }
+      }
+      if (context === null) return null;
+      if (range) {
+        if (spans.length === 0) return null;
+        const overlaps = spans.some(
+          ([lo, hi]) => hi >= range.fromIso && lo <= range.toIso
+        );
+        if (!overlaps) continue;
+      }
+      found.add(context);
+    } finally {
+      await reader.close();
+    }
+  }
+  return [...found];
+}
+
+/**
+ * The parquet files of one sanitized context directory, from its requested
+ * day partitions (every day when no range is given). Null when the context
+ * directory itself cannot be read; an empty list when it holds nothing.
+ */
+async function listContextFiles(
+  dataDir: string,
+  sanitized: string,
+  range?: { fromIso: string; toIso: string }
+): Promise<string[] | null> {
+  const contextDir = path.join(dataDir, 'tier=raw', `context=${sanitized}`);
+  let pathEntries: import('fs').Dirent[];
+  try {
+    pathEntries = await fs.readdir(contextDir, { withFileTypes: true });
+  } catch {
     return null;
+  }
+  const wantedDays = range
+    ? new Set(
+        hiveBuilder
+          .getDaysInRange(new Date(range.fromIso), new Date(range.toIso))
+          .map(d => `${d.year}/${String(d.dayOfYear).padStart(3, '0')}`)
+      )
+    : null;
+  if (wantedDays && wantedDays.size === 0) return [];
+
+  const files: string[] = [];
+  for (const pathEntry of pathEntries) {
+    if (!pathEntry.isDirectory() || !pathEntry.name.startsWith('path='))
+      continue;
+    const pathDir = path.join(contextDir, pathEntry.name);
+    for (const yearEntry of await readDirSafe(pathDir)) {
+      if (!yearEntry.isDirectory() || !yearEntry.name.startsWith('year='))
+        continue;
+      const year = yearEntry.name.slice('year='.length);
+      const yearDir = path.join(pathDir, yearEntry.name);
+      for (const dayEntry of await readDirSafe(yearDir)) {
+        if (!dayEntry.isDirectory() || !dayEntry.name.startsWith('day='))
+          continue;
+        const day = dayEntry.name.slice('day='.length);
+        if (wantedDays && !wantedDays.has(`${year}/${day}`)) continue;
+        const dayDir = path.join(yearDir, dayEntry.name);
+        for (const f of await readDirSafe(dayDir)) {
+          if (f.isFile() && f.name.endsWith('.parquet')) {
+            files.push(path.join(dayDir, f.name));
+          }
+        }
+      }
+    }
+  }
+  return files;
+}
+
+/**
+ * A string statistic as text. parquetjs hands back a decoded value whose JS
+ * type follows the column: bytes for a string column, a number for a numeric
+ * one. Only the two string columns read here are wanted, and anything else
+ * is treated as no statistic rather than coerced.
+ */
+function statText(v: unknown): string | null {
+  if (typeof v === 'string') return v;
+  if (v instanceof Uint8Array) return Buffer.from(v).toString('utf8');
+  return null;
+}
+
+async function readDirSafe(dir: string): Promise<import('fs').Dirent[]> {
+  try {
+    return await fs.readdir(dir, { withFileTypes: true });
+  } catch {
+    return [];
   }
 }
 
@@ -232,10 +341,11 @@ export async function queryContextsFromFooters(
  * optionally constrained to a signalk_timestamp range. Returns null when the
  * query fails (caller falls back).
  *
- * This reads the data and is therefore expensive — see
- * queryContextsFromFooters, which answers the same question from the file
- * footers and is tried first. This remains as the fallback for files written
- * without usable column statistics.
+ * This reads the data through DuckDB and is therefore expensive in both time
+ * and memory that is never returned — see queryContextsFromFooters, which
+ * answers the same question from the file footers in JavaScript and is tried
+ * first. This remains as the fallback for files written without usable
+ * column statistics, or when parquetjs is unavailable.
  */
 async function queryDistinctContexts(
   dataDir: string,

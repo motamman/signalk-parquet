@@ -263,7 +263,11 @@ function finish(code: number): void {
   } catch {
     // already closing
   }
-  process.exit(code);
+  // Let stdout drain and the socket close on their own: a hard exit here can
+  // truncate the report when it is piped. The unref'd timer only ends the
+  // process if the server never answers the close frame.
+  process.exitCode = code;
+  setTimeout(() => process.exit(code), 5000).unref();
 }
 
 ws.onopen = () => {
@@ -275,9 +279,14 @@ ws.onopen = () => {
 };
 ws.onerror = e => console.error('websocket error:', (e as ErrorEvent).message ?? e);
 ws.onclose = e => {
+  // The close finish() itself asked for: the report is already out.
+  if (reported) return;
   if (totalMessages === 0) {
     console.error(`closed before any data (code ${e.code} ${e.reason || ''})`);
-    process.exit(1);
+    reported = true;
+    if (timer) clearTimeout(timer);
+    process.exitCode = 1;
+    return;
   }
   // Closed early: report the measured duration now rather than let the timer
   // fire later and present a short sample as a full window. Non-zero exit
@@ -289,19 +298,29 @@ ws.onclose = e => {
   finish(1);
 };
 ws.onmessage = ev => {
-  let d: { context?: string; updates?: Array<{ timestamp?: string; values?: Array<{ path?: string; value?: unknown }> }> };
+  let parsed: unknown;
   try {
-    d = JSON.parse(String((ev as MessageEvent).data));
+    parsed = JSON.parse(String((ev as MessageEvent).data));
   } catch {
     return;
   }
-  if (!d.updates) return;
+  // A frame of the wrong shape is skipped, not fatal: an exception thrown in
+  // here would end the whole sample.
+  if (typeof parsed !== 'object' || parsed === null) return;
+  const d = parsed as { context?: unknown; updates?: unknown };
+  if (!Array.isArray(d.updates)) return;
   totalMessages += 1;
   const now = Date.now();
-  for (const u of d.updates) {
-    for (const v of u.values ?? []) {
+  const context = typeof d.context === 'string' ? d.context : '(none)';
+  for (const u of d.updates as unknown[]) {
+    if (typeof u !== 'object' || u === null) continue;
+    const values = (u as { values?: unknown }).values ?? [];
+    if (!Array.isArray(values)) continue;
+    for (const v of values as unknown[]) {
+      if (typeof v !== 'object' || v === null) continue;
+      const { path, value } = v as { path?: unknown; value?: unknown };
       totalValues += 1;
-      observe(v.path === '' || v.path === undefined ? '(root)' : v.path, d.context ?? '(none)', v.value, now);
+      observe(typeof path === 'string' && path !== '' ? path : '(root)', context, value, now);
     }
   }
 };

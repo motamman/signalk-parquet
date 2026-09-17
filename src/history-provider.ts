@@ -9,7 +9,7 @@ import * as fs from 'fs-extra';
 import * as path from 'path';
 import { Temporal } from '@js-temporal/polyfill';
 import { ZonedDateTime, ZoneOffset, Instant } from '@js-joda/core';
-import { Context, Timestamp, ServerAPI } from '@signalk/server-api';
+import { Context, Path, Timestamp, ServerAPI } from '@signalk/server-api';
 import {
   HistoryApi,
   ValuesRequest,
@@ -55,6 +55,7 @@ import {
   smoothCircularDeg,
   SmoothMethod,
 } from './utils/smoothing';
+import { AutoDiscoveryService } from './services/auto-discovery';
 
 /** The slice of SQLiteBuffer the provider needs: staging plus schema lookups. */
 type ProviderBufferSource = BufferStagingSource & {
@@ -248,6 +249,7 @@ function mergeComponentSchemas(
  */
 export class HistoryProvider implements HistoryApi {
   private sqliteBuffer?: ProviderBufferSource;
+  private autoDiscoveryService?: AutoDiscoveryService;
 
   constructor(
     private selfId: string,
@@ -258,6 +260,16 @@ export class HistoryProvider implements HistoryApi {
 
   setSqliteBuffer(buffer: ProviderBufferSource): void {
     this.sqliteBuffer = buffer;
+  }
+
+  /**
+   * Auto-discovery is the v1 route's behaviour of configuring a requested
+   * path for recording when the query finds nothing for it. The v2 requests
+   * this provider serves have to get the same treatment, or a client that
+   * moved from v1 to v2 silently loses it (see maybeAutoDiscover).
+   */
+  setAutoDiscoveryService(service: AutoDiscoveryService | undefined): void {
+    this.autoDiscoveryService = service;
   }
 
   /**
@@ -335,6 +347,8 @@ export class HistoryProvider implements HistoryApi {
     // Merge all column data into time-ordered rows
     const mergedData = this.mergePathData(allData);
 
+    await this.maybeAutoDiscover(columns, mergedData, context);
+
     return {
       context,
       range: {
@@ -351,6 +365,51 @@ export class HistoryProvider implements HistoryApi {
       })) as ValuesResponse['values'],
       data: mergedData,
     };
+  }
+
+  /**
+   * Offer every requested path that came back empty to auto-discovery, which
+   * decides for itself whether to configure it (enabled, not already
+   * configured, under the cap, matches the patterns, has live data). Same
+   * rule as the v1 route in HistoryAPI.getValues, applied to the merged rows:
+   * a path is empty when none of its columns has a value in any row. Under
+   * `sourcePolicy=all` one path can own several columns, so paths are
+   * checked once each, not once per column.
+   *
+   * The v2 ValuesResponse has no `meta` field to announce the configuration
+   * in, as v1 does, so the outcome is logged only.
+   */
+  private async maybeAutoDiscover(
+    columns: ColumnSpec[],
+    rows: Array<[Timestamp, ...unknown[]]>,
+    context: Context
+  ): Promise<void> {
+    const service = this.autoDiscoveryService;
+    if (!service || columns.length === 0) return;
+
+    const pathHasData = new Map<string, boolean>();
+    columns.forEach((column, i) => {
+      const p = String(column.spec.path);
+      const hasData =
+        pathHasData.get(p) ||
+        rows.some(row => row[i + 1] !== null && row[i + 1] !== undefined);
+      pathHasData.set(p, hasData);
+    });
+
+    for (const [p, hasData] of pathHasData) {
+      if (hasData) continue;
+      this.debug(
+        `[AutoDiscovery] No data found for path ${p}, checking auto-discovery`
+      );
+      const result = await service.maybeAutoConfigurePath(p as Path, context);
+      if (result.configured) {
+        this.debug(`[AutoDiscovery] Auto-configured path: ${p}`);
+      } else {
+        this.debug(
+          `[AutoDiscovery] Path ${p} not auto-configured: ${result.reason}`
+        );
+      }
+    }
   }
 
   /**
@@ -1043,12 +1102,14 @@ export function registerHistoryApiProvider(
   selfId: string,
   dataDir: string,
   debug: (msg: string) => void,
-  sqliteBuffer?: ProviderBufferSource
+  sqliteBuffer?: ProviderBufferSource,
+  autoDiscoveryService?: AutoDiscoveryService
 ): void {
   const provider = new HistoryProvider(selfId, dataDir, app, debug);
   if (sqliteBuffer) {
     provider.setSqliteBuffer(sqliteBuffer);
   }
+  provider.setAutoDiscoveryService(autoDiscoveryService);
 
   // Debug: Check if registerHistoryApiProvider exists on app
   console.log(

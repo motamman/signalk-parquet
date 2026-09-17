@@ -790,9 +790,10 @@ async function saveBufferToParquet(
 ): Promise<void> {
   try {
     // Buffer-only rows are stamped at insert and are never written to Parquet,
-    // whichever buffer holds them. They stay in the in-memory buffer for its
-    // short-term query lifecycle and are dropped here, at the persistence
-    // boundary — the same rule the SQLite path enforces with `exported = 0`.
+    // whichever buffer holds them. Their retention window lives in the SQLite
+    // buffer, which the plugin always enables (index.ts). The in-memory buffer
+    // has no retention clock and is cleared by every caller right after this
+    // write, so with SQLite off a buffer-only row is dropped here for good.
     const records = buffer.filter(
       record => record.exported !== EXPORTED_BUFFER_ONLY
     );
