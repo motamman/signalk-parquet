@@ -62,6 +62,11 @@ Vessel data Parquet file archive with automated value and geospatial triggers. H
   - One object path per vessel rather than one path per attribute, so a busy AIS coast adds one file per vessel to a day's export instead of seven
   - Retention-exempt and excluded from tier aggregation; readable through the History API like any object path (`paths=identity`)
   - Independent of path configuration; a configured `name` path for `vessels.*` is no longer needed and can be removed
+- **Short-term paths** (v0.7.44-beta.8+): a path can be kept in the SQLite buffer for the retention window only, queryable through the History API for that window, and never written to Parquet or the cloud
+  - Set per path in the webapp under **Keep**; a path with no setting behaves exactly as before, so existing configurations are unchanged
+  - Optional **Keep forever while regimen** writes the path to Parquet as well for as long as that regimen is active, so a path can be buffered continuously and kept only for a passage
+  - The decision is stamped on the row when it is written and never revisited: promoting a path starts its Parquet history at that moment rather than reaching back, and demoting one still exports what it had already captured
+  - Worth it because most of what a boat emits is not a time series: on a real install, 1,638 of 2,161 live paths never changed value over ten minutes. `tools/path-profile.ts` samples a running server and reports which paths change, how often, and what recording each would cost
 - **History Playback** (v0.7.44-beta.7+): registers as the server's v1 playback provider, so Freeboard-SK's History Playback (and any client of `/signalk/v1/playback?startTime=…&playbackRate=…`) replays the recorded store as live-shaped delta messages
   - Rows from the raw parquet tier and the not-yet-exported SQLite buffer are regrouped into one delta per instant, vessel and source, with `$source` from the recorded source label; object paths (position, attitude) come back as objects
   - Each vessel's last known identity is sent ahead of its first delta, in the shape the live AIS feed uses (`name`/`mmsi` at the root, `design.*`, `communication.callsignVhf`, `sensors.ais.class`), so plotters label targets at once
@@ -234,6 +239,7 @@ Configure basic plugin settings (path configuration is managed separately in the
 | **Buffer Retention Hours** | How long to keep exported records in SQLite (hours) | 48 |
 | **Enable Raw SQL** | Enable /api/query endpoint for raw SQL queries | `false` |
 | **Record Vessel Identity** | Record each vessel's name, MMSI, AIS ship type, length, beam, callsign and AIS class as one `identity` object path for every vessel the server hears, written when the vessel is first heard and again only on change; retention-exempt, never aggregated (v0.7.44-beta.7+) | `true` |
+| **Keep** (per path) | How long a path's data is kept: **Forever** buffers it and then writes Parquet and cloud, as before; **Buffer only** keeps it in the SQLite buffer for the retention window, queryable through the History API, never written to Parquet. Optional **Keep forever while regimen** promotes a buffer-only path for as long as that regimen is active (v0.7.44-beta.8+) | `Forever` |
 
 ### Auto-Discovery Configuration
 

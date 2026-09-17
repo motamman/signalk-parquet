@@ -281,6 +281,24 @@ export class ParquetExportService {
    * @param targetDate The date to export (UTC). Typically yesterday.
    * @returns Export result with details about files created
    */
+  /**
+   * Age out rows whose fate is settled: exported ones, and buffer-only ones
+   * that were never going to be exported. Called on every path through the
+   * daily export, including the one where there was nothing to export.
+   */
+  private runCleanup(): void {
+    try {
+      const cleaned = this.sqliteBuffer.cleanup();
+      if (cleaned > 0) {
+        this.app.debug(`[DailyExport] Cleaned up ${cleaned} settled records`);
+      }
+    } catch (error) {
+      this.app.error(
+        `[DailyExport] Retention cleanup failed: ${(error as Error).message}`
+      );
+    }
+  }
+
   async exportDayToParquet(targetDate: Date): Promise<ExportResult> {
     if (this.isExporting) {
       this.app.debug('Export already in progress, skipping daily export');
@@ -309,6 +327,10 @@ export class ParquetExportService {
 
       if (pathsForDate.length === 0) {
         this.app.debug(`[DailyExport] No data found for ${dateStr}`);
+        // Retention still has to run. Buffer-only paths never produce
+        // anything to export, so a config made mostly of them lands here
+        // every night — and this is the only place cleanup is called from.
+        this.runCleanup();
         this.lastExportTime = new Date();
         this.lastBatchExported = 0;
         this.lastExportTrigger = 'daily';
@@ -390,13 +412,7 @@ export class ParquetExportService {
         }
       }
 
-      // Cleanup old exported records
-      const cleaned = this.sqliteBuffer.cleanup();
-      if (cleaned > 0) {
-        this.app.debug(
-          `[DailyExport] Cleaned up ${cleaned} old exported records`
-        );
-      }
+      this.runCleanup();
 
       // Truncate WAL after heavy export+cleanup batch
       try {

@@ -1,6 +1,7 @@
 import * as fs from 'fs-extra';
 import * as path from 'path';
 import { HivePathBuilder } from './utils/hive-path-builder';
+import { resolveRetentionStamp } from './utils/retention-mode';
 import { listHiveDirs, listParquetFiles, dayKey } from './utils/hive-walk';
 import {
   PluginConfig,
@@ -656,6 +657,9 @@ function handleStreamData(
         ? normalizedDelta.source.src
         : undefined,
       meta: metadata,
+      // Stamped once, here, from the mode in force at this instant. Nothing
+      // re-stamps it later.
+      exported: resolveRetentionStamp(pathConfig, state.activeRegimens),
     };
 
     // Handle complex values

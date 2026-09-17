@@ -477,7 +477,7 @@ export class HistoryProvider implements HistoryApi {
         );
         if (staged) {
           const result = await connection.runAndReadAll(
-            `SELECT DISTINCT ${column} AS src FROM ${staged} WHERE context = '${escapeSqlString(String(context))}' AND ${timeWindow} AND exported = 0`
+            `SELECT DISTINCT ${column} AS src FROM ${staged} WHERE context = '${escapeSqlString(String(context))}' AND ${timeWindow} AND exported IN (0, -1)`
           );
           for (const row of result.getRowObjects() as Array<{ src: unknown }>) {
             found.add(typeof row.src === 'string' ? row.src : null);

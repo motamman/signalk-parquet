@@ -1,5 +1,22 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- **Short-term (buffer-only) paths** — a path can now be kept in the SQLite buffer for the retention window without ever being written to Parquet or the cloud, and it stays queryable through the History API for that window because the V2 provider already federates the buffer. Set per path in the webapp ("Keep": Forever or Buffer only). Paths with no setting are unchanged, so every existing config keeps behaving exactly as before. Intended for paths worth looking back at but not worth keeping: on a sample of a real boat, 1,638 of 2,161 live paths never changed value in ten minutes, so recording everything to Parquet is mostly recording constants.
+- **`fullWhileRegimen` on a buffer-only path** — while the named regimen is active the path is written to Parquet as well, so it can be buffered continuously and kept only for a passage. This works because the retention decision lives on the row rather than the path: one subscription, one row per delta, the mode resolved at insert.
+- **`tools/path-profile.ts`** — samples a live server's delta stream and classifies every path as periodic, episodic, irregular, stable or static, with its update rate, how often the value actually changes, how many vessels carry it, and the rows and files per day recording it would cost. `--buffer=<buffer.db>` marks what is already recorded. Not shipped in the package; run it with `npx tsx`.
+
+### Fixed
+
+- **Retention never ran on a day with nothing to export** — `exportDayToParquet` returned early when no path had data for the day, before reaching `cleanup()`, which is its only caller. Previously self-correcting, because the next day with data ran it; with short-term paths it would not have been, since a config made mostly of them produces exactly that state every night. Cleanup now runs on every path through the export, and its failure is logged rather than propagated.
+- **Retention cleanup scanned every buffer table** — the query plan on a real boat was `SCAN buffer_navigation_position`: the `(context, exported)` index cannot answer a predicate on `exported` alone and `created_at` was not indexed at all. Each per-path table now carries `(exported, created_at)` for retention and `(exported, signalk_timestamp)` for the playback probes, created idempotently so existing databases pick them up at startup. The predicates are written as `IN` lists rather than `<>`, because an inequality cannot seek an index and would have left both queries as full scans.
+
+### Changed
+
+- **The buffer's `exported` flag has a third state.** `0` owes a Parquet write, `1` has been written, `-1` is short-term and never will be. A row is stamped once at insert and nothing re-stamps it, so changing a path's mode affects only rows written from then on: promoting a path starts its Parquet history at that moment, with a gap before it, and demoting one still exports what it had already captured. A pending row is never deleted however old, so an export failure costs a retry rather than the data. Buffer statistics report the three states separately (`bufferOnlyRecords`).
+
 ## [0.7.44-beta.7] - 2026-09-15
 
 Vessel identity capture, a v1 history playback provider (Freeboard's History Playback works on a parquet-only boat), per-source history on the V2 API, and a fix for plugin start holding the server's main thread for minutes on a large store.

@@ -1805,6 +1805,39 @@
                 />
               </div>
               <div class="form-group">
+                <label for="pathRetention">Keep:</label>
+                <select id="pathRetention">
+                  <option value="full" selected>
+                    Forever (buffer, then Parquet and cloud)
+                  </option>
+                  <option value="buffer">
+                    Buffer only (short-term, never written to Parquet)
+                  </option>
+                </select>
+                <small style="color: #666; display: block; margin-top: 5px">
+                  "Buffer only" keeps the path in the SQLite buffer for the
+                  retention window, where the History API can still query it,
+                  and never writes it to Parquet or the cloud. Use it for paths
+                  worth looking back at but not worth keeping.
+                </small>
+              </div>
+              <div class="form-group">
+                <label for="pathFullWhileRegimen"
+                  >Keep forever while regimen (optional):</label
+                >
+                <input
+                  type="text"
+                  id="pathFullWhileRegimen"
+                  placeholder="e.g., capturePassage"
+                />
+                <small style="color: #666; display: block; margin-top: 5px">
+                  Only applies to "Buffer only" paths. While this regimen is
+                  active the path is written to Parquet as well, so a path can
+                  be buffered continuously and kept only for a passage. Rows
+                  already written keep whatever they were recorded as.
+                </small>
+              </div>
+              <div class="form-group">
                 <label for="pathSource">Source Filter (optional):</label>
                 <input
                   type="text"
