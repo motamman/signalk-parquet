@@ -183,6 +183,11 @@ const MAX_EXPANDED_COLUMNS = 64;
 const SOURCE_FILTER = { field: 'sourceRef', column: 'source_label' } as const;
 
 /** DuckDB's error for a read_parquet glob that matches no file. */
+/** A DuckDB list literal of globs, each escaped. */
+function globList(globs: string[]): string {
+  return `[${globs.map(g => `'${escapeSqlString(g)}'`).join(', ')}]`;
+}
+
 function isNoFilesError(err: unknown): boolean {
   return (err as Error)?.message?.includes('No files found') ?? false;
 }
@@ -275,6 +280,45 @@ export class HistoryProvider implements HistoryApi {
   /**
    * Get historical values for the specified query
    */
+  /**
+   * The raw-tier globs for one path, narrowed to the days the query covers.
+   *
+   * The earlier single wildcard glob (`year=*\/day=*`) opened a path's entire
+   * history to answer a one-day question; DuckDB has to read every file's
+   * footer before it can prune by timestamp, and on a store with years of
+   * daily files that cost 366 MB of native memory per call — memory the
+   * allocator never returns — for a dashboard polling P1D once a minute.
+   * One glob per day keeps a day's question to a day's files. Past a year
+   * the list falls back to one glob per year rather than thousands of
+   * entries; the timestamp predicate still does the exact filtering.
+   */
+  private dayGlobs(
+    context: Context,
+    signalkPath: string,
+    fromIso: string,
+    toIso: string
+  ): string[] {
+    const hive = new HivePathBuilder();
+    const days = hive.getDaysInRange(new Date(fromIso), new Date(toIso));
+    if (days.length === 0) return [];
+    if (days.length > 366) {
+      const years = [...new Set(days.map(d => d.year))];
+      return years.map(y =>
+        hive.getGlobPattern(this.dataDir, 'raw', context, signalkPath, y)
+      );
+    }
+    return days.map(d =>
+      hive.getGlobPattern(
+        this.dataDir,
+        'raw',
+        context,
+        signalkPath,
+        d.year,
+        d.dayOfYear
+      )
+    );
+  }
+
   async getValues(query: ValuesRequest): Promise<ValuesResponse> {
     this.debug(
       `[HistoryProvider] getValues called with: ${JSON.stringify(
@@ -491,12 +535,7 @@ export class HistoryProvider implements HistoryApi {
     toIso: string
   ): Promise<(string | null)[]> {
     validateSignalKPath(spec.path as string);
-    const filePath = new HivePathBuilder().getGlobPattern(
-      this.dataDir,
-      'raw',
-      context,
-      spec.path
-    );
+    const globs = this.dayGlobs(context, spec.path, fromIso, toIso);
     const column = SOURCE_FILTER.column;
     const found = new Set<string | null>();
     const connection = await DuckDBPool.getConnection();
@@ -505,15 +544,16 @@ export class HistoryProvider implements HistoryApi {
       const excluded = `filename NOT LIKE '%/processed/%' AND filename NOT LIKE '%/quarantine/%' AND filename NOT LIKE '%/failed/%' AND filename NOT LIKE '%/repaired/%'`;
       // Parquet side. A glob that matches no files throws; that is "no data
       // here", not a failure, and the buffer may still answer.
-      const available = await availableFilterColumns(
-        connection,
-        [filePath],
-        [{ field: SOURCE_FILTER.field, column, value: null }]
-      );
+      const available =
+        globs.length > 0
+          ? await availableFilterColumns(connection, globs, [
+              { field: SOURCE_FILTER.field, column, value: null },
+            ])
+          : new Set<string>();
       try {
         const selectExpr = available.has(column) ? column : 'NULL';
         const result = await connection.runAndReadAll(
-          `SELECT DISTINCT ${selectExpr} AS src FROM read_parquet('${escapeSqlString(filePath)}', union_by_name=true, filename=true) WHERE ${excluded} AND ${timeWindow}`
+          `SELECT DISTINCT ${selectExpr} AS src FROM read_parquet(${globList(globs)}, union_by_name=true, filename=true) WHERE ${excluded} AND ${timeWindow}`
         );
         for (const row of result.getRowObjects() as Array<{ src: unknown }>) {
           found.add(typeof row.src === 'string' ? row.src : null);
@@ -609,30 +649,28 @@ export class HistoryProvider implements HistoryApi {
     // Reject a malformed path before it reaches the read_parquet glob.
     validateSignalKPath(pathSpec.path as string);
 
-    // Use HivePathBuilder for correct Hive-partitioned paths
     const hiveBuilder = new HivePathBuilder();
 
-    // Build glob pattern for Hive partitions
-    const filePath = hiveBuilder.getGlobPattern(
-      this.dataDir,
-      'raw',
-      context,
-      pathSpec.path
+    // One glob per requested day, never the path's whole history.
+    const globs = this.dayGlobs(context, pathSpec.path, fromIso, toIso);
+    this.debug(
+      `[HistoryProvider] Querying ${globs.length} day partition(s) for ${pathSpec.path}${globs.length ? `, first ${globs[0]}` : ''}`
     );
-    this.debug(`[HistoryProvider] Querying Hive path: ${filePath}`);
 
     // A path recorded since the last daily export has buffer rows and no raw
     // directory yet. read_parquet on a glob with no files throws, so the
     // parquet side is only included when the directory exists, and the
     // buffer answers alone otherwise (as the v1 routes and the Track API do).
-    const hasParquetDir = await fs.pathExists(
-      path.join(
-        this.dataDir,
-        'tier=raw',
-        `context=${hiveBuilder.sanitizeContext(context)}`,
-        `path=${hiveBuilder.sanitizePath(pathSpec.path)}`
-      )
-    );
+    const hasParquetDir =
+      globs.length > 0 &&
+      (await fs.pathExists(
+        path.join(
+          this.dataDir,
+          'tier=raw',
+          `context=${hiveBuilder.sanitizeContext(context)}`,
+          `path=${hiveBuilder.sanitizePath(pathSpec.path)}`
+        )
+      ));
 
     // Stage this path's buffer rows into a temp table if the buffer is available
     const hasBuffer = DuckDBPool.isSQLiteBufferInitialized();
@@ -683,13 +721,13 @@ export class HistoryProvider implements HistoryApi {
       // This provider only queries raw-tier parquet; probe it for the filter
       // columns so files without them are excluded rather than throwing.
       const available = hasParquetDir
-        ? await availableFilterColumns(connection, [filePath], filters)
+        ? await availableFilterColumns(connection, globs, filters)
         : new Set<string>();
       const sourceFilter = buildParquetFilterClause(filters, available);
 
       // Build parquet FROM clause with filename filtering
       const parquetFrom = hasParquetDir
-        ? `(SELECT * FROM read_parquet('${escapeSqlString(filePath)}', union_by_name=true, filename=true) WHERE filename NOT LIKE '%/processed/%' AND filename NOT LIKE '%/quarantine/%' AND filename NOT LIKE '%/failed/%' AND filename NOT LIKE '%/repaired/%'${sourceFilter})`
+        ? `(SELECT * FROM read_parquet(${globList(globs)}, union_by_name=true, filename=true) WHERE filename NOT LIKE '%/processed/%' AND filename NOT LIKE '%/quarantine/%' AND filename NOT LIKE '%/failed/%' AND filename NOT LIKE '%/repaired/%'${sourceFilter})`
         : null;
 
       /**
