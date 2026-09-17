@@ -183,7 +183,19 @@ export async function queryContextsFromFooters(
     while (!aborted) {
       const idx = next++;
       if (idx >= files.length) return;
-      const r = await contextOfFile(lib, files[idx], range);
+      let r: FooterVerdict;
+      try {
+        r = await contextOfFile(lib, files[idx], range);
+      } catch (error) {
+        // A rejection here (a close() failure, malformed metadata) must not
+        // escape Promise.all: that would fail the whole directory listing
+        // instead of handing it to the DuckDB fallback.
+        debugLogger.warn(
+          `[Context Discovery] Could not read footer of ${files[idx]}:`,
+          error
+        );
+        r = { kind: 'abort' };
+      }
       if (r.kind === 'abort') aborted = true;
       else if (r.kind === 'context') found.add(r.value);
     }
@@ -217,7 +229,14 @@ async function contextOfFile(
   try {
     let context: string | null = null;
     const spans: Array<[string, string]> = [];
+    // Every row group must answer on its own. Skipping one that lacks an
+    // exact context statistic would let a later group speak for it, and
+    // skipping one that lacks timestamp statistics would let the range test
+    // miss rows that were in the window. Either case aborts the file to the
+    // DuckDB data read, as does a file whose row groups disagree on context.
     for (const rg of reader.metadata?.row_groups ?? []) {
+      let rgContext: string | null = null;
+      let rgSpan: [string, string] | null = null;
       for (const col of rg.columns) {
         const md = col.meta_data;
         const name = md?.path_in_schema?.[0];
@@ -225,19 +244,29 @@ async function contextOfFile(
         const st = md?.statistics;
         const lo = statText(st?.min_value);
         const hi = statText(st?.max_value);
-        if (lo === null || hi === null) continue;
         if (name === 'context') {
-          if (lo === hi && lo.length > 0) context = lo;
-        } else if (name === 'signalk_timestamp') {
-          spans.push([lo, hi]);
+          if (lo === null || hi === null || lo !== hi || lo.length === 0) {
+            return { kind: 'abort' };
+          }
+          rgContext = lo;
+        } else if (lo !== null && hi !== null) {
+          rgSpan = [lo, hi];
         }
+      }
+      if (rgContext === null) return { kind: 'abort' };
+      if (context !== null && rgContext !== context) return { kind: 'abort' };
+      context = rgContext;
+      if (range) {
+        if (rgSpan === null) return { kind: 'abort' };
+        spans.push(rgSpan);
       }
     }
     if (context === null) return { kind: 'abort' };
     if (range) {
       if (spans.length === 0) return { kind: 'abort' };
+      // [from, to): the same half-open window the data queries use.
       const overlaps = spans.some(
-        ([lo, hi]) => hi >= range.fromIso && lo <= range.toIso
+        ([lo, hi]) => hi >= range.fromIso && lo < range.toIso
       );
       if (!overlaps) return { kind: 'skip' };
     }
@@ -339,7 +368,7 @@ async function queryDistinctContexts(
   const globs = contextGlobs(dataDir, sanitized, range);
   if (globs.length === 0) return [];
   const rangeClause = range
-    ? ` WHERE signalk_timestamp >= '${escapeSqlString(range.fromIso)}' AND signalk_timestamp <= '${escapeSqlString(range.toIso)}'`
+    ? ` WHERE signalk_timestamp >= '${escapeSqlString(range.fromIso)}' AND signalk_timestamp < '${escapeSqlString(range.toIso)}'`
     : '';
   try {
     const connection = await DuckDBPool.getConnection();
