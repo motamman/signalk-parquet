@@ -82,8 +82,11 @@ export async function cleanupDuckDbTempFiles(
   let entries: string[];
   try {
     entries = await fs.readdir(tmpDir);
-  } catch {
-    return { removed: 0 };
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+      return { removed: 0 };
+    }
+    throw err;
   }
   let removed = 0;
   for (const name of entries) {
