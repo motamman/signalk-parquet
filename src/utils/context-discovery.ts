@@ -90,7 +90,7 @@ async function resolveTrueContexts(
     return cached.contexts;
   }
 
-  const contexts = await queryDistinctContexts(dataDir, sanitized);
+  const contexts = await resolveContextsFor(dataDir, sanitized);
   if (contexts !== null && contexts.length > 0) {
     trueContextCache.set(key, { contexts, timestamp: Date.now() });
     return contexts;
@@ -99,24 +99,142 @@ async function resolveTrueContexts(
 }
 
 /**
+ * The data files of one sanitized context directory, narrowed to the days the
+ * caller asked about.
+ *
+ * Without a range this is every day ever recorded, which is what the contexts
+ * listing used to read in order to answer a question about one week. A day is
+ * a directory, so restricting the glob to the window's day partitions is the
+ * difference between opening a store's entire history and opening seven days
+ * of it. Returns one glob per day, which DuckDB takes as a list.
+ */
+function contextGlobs(
+  dataDir: string,
+  sanitized: string,
+  range?: { fromIso: string; toIso: string }
+): string[] {
+  const dir = path.join(dataDir, 'tier=raw', `context=${sanitized}`);
+  if (!range) {
+    return [path.join(dir, 'path=*', 'year=*', 'day=*', '*.parquet')];
+  }
+  const days = hiveBuilder.getDaysInRange(
+    new Date(range.fromIso),
+    new Date(range.toIso)
+  );
+  if (days.length === 0) {
+    return [];
+  }
+  return days.map(d =>
+    path.join(
+      dir,
+      'path=*',
+      `year=${d.year}`,
+      `day=${String(d.dayOfYear).padStart(3, '0')}`,
+      '*.parquet'
+    )
+  );
+}
+
+/** A DuckDB list literal of globs. */
+function globList(globs: string[]): string {
+  return `[${globs.map(g => `'${escapeSqlString(g)}'`).join(', ')}]`;
+}
+
+/** DuckDB's "there is nothing here", which is an answer rather than a failure. */
+function isNoFilesError(err: unknown): boolean {
+  return err instanceof Error && /No files found/i.test(err.message);
+}
+
+/**
+ * The distinct contexts of one directory, read from the parquet FOOTERS.
+ *
+ * A file holds exactly one context (the hive layout writes one file per
+ * context/path/day), so the `context` column's min and max statistics are
+ * that context. Reading them costs a footer per file instead of the whole
+ * column of every file, which is what made this the most expensive thing the
+ * plugin did: on a store with thousands of AIS contexts a single
+ * `/signalk/v1/history/contexts` call took 39s and permanently added 1.4 GB
+ * to the server process, because DuckDB's freed buffers are not returned to
+ * the OS by the allocator.
+ *
+ * Only rows where min equals max are trusted. Parquet allows a writer to
+ * truncate string statistics, which would round min down and max up and yield
+ * a prefix rather than the context; equality rules that out. A file whose
+ * stats are missing or truncated leaves the directory unresolved here and the
+ * caller falls back to reading the data.
+ *
+ * `range` restricts to files whose `signalk_timestamp` statistics overlap the
+ * window, which is likewise decided from the footer.
+ *
+ * Exported so a test can assert this path actually answers for files the
+ * plugin writes. If the writer ever stops emitting usable statistics the
+ * fallback would quietly take over and the cost would return unnoticed.
+ */
+export async function queryContextsFromFooters(
+  dataDir: string,
+  sanitized: string,
+  range?: { fromIso: string; toIso: string }
+): Promise<string[] | null> {
+  const globs = contextGlobs(dataDir, sanitized, range);
+  if (globs.length === 0) return [];
+  // A day directory bounds a file only to the day; the timestamp statistics
+  // still decide whether it overlaps the requested window.
+  const overlap = range
+    ? `AND t0 IS NOT NULL AND t1 IS NOT NULL
+         AND t1 >= '${escapeSqlString(range.fromIso)}'
+         AND t0 <= '${escapeSqlString(range.toIso)}'`
+    : '';
+  try {
+    const connection = await DuckDBPool.getConnection();
+    try {
+      const result = await connection.runAndReadAll(
+        `SELECT DISTINCT ctx FROM (
+           SELECT
+             file_name,
+             MIN(CASE WHEN path_in_schema = 'context'
+                      AND stats_min = stats_max THEN stats_min END) AS ctx,
+             MIN(CASE WHEN path_in_schema = 'signalk_timestamp'
+                      THEN stats_min END) AS t0,
+             MAX(CASE WHEN path_in_schema = 'signalk_timestamp'
+                      THEN stats_max END) AS t1
+           FROM parquet_metadata(${globList(globs)})
+           GROUP BY file_name
+         ) WHERE ctx IS NOT NULL ${overlap}`
+      );
+      return result
+        .getRowObjects()
+        .map(row => row.ctx)
+        .filter((c): c is string => typeof c === 'string' && c.length > 0);
+    } finally {
+      connection.disconnectSync();
+    }
+  } catch (error) {
+    if (isNoFilesError(error)) return [];
+    debugLogger.warn(
+      `[Context Discovery] Could not read context statistics under context=${sanitized}:`,
+      error
+    );
+    return null;
+  }
+}
+
+/**
  * SELECT DISTINCT context over one sanitized context directory's data files,
  * optionally constrained to a signalk_timestamp range. Returns null when the
  * query fails (caller falls back).
+ *
+ * This reads the data and is therefore expensive — see
+ * queryContextsFromFooters, which answers the same question from the file
+ * footers and is tried first. This remains as the fallback for files written
+ * without usable column statistics.
  */
 async function queryDistinctContexts(
   dataDir: string,
   sanitized: string,
   range?: { fromIso: string; toIso: string }
 ): Promise<string[] | null> {
-  const glob = path.join(
-    dataDir,
-    'tier=raw',
-    `context=${sanitized}`,
-    'path=*',
-    'year=*',
-    'day=*',
-    '*.parquet'
-  );
+  const globs = contextGlobs(dataDir, sanitized, range);
+  if (globs.length === 0) return [];
   const rangeClause = range
     ? ` WHERE signalk_timestamp >= '${escapeSqlString(range.fromIso)}' AND signalk_timestamp <= '${escapeSqlString(range.toIso)}'`
     : '';
@@ -127,7 +245,7 @@ async function queryDistinctContexts(
       // key=value path segments otherwise, and the (sanitized) partition
       // value shadows the files' `context` data column.
       const result = await connection.runAndReadAll(
-        `SELECT DISTINCT context FROM read_parquet('${escapeSqlString(glob)}', hive_partitioning=false, union_by_name=true)${rangeClause}`
+        `SELECT DISTINCT context FROM read_parquet(${globList(globs)}, hive_partitioning=false, union_by_name=true)${rangeClause}`
       );
       return result
         .getRowObjects()
@@ -137,12 +255,29 @@ async function queryDistinctContexts(
       connection.disconnectSync();
     }
   } catch (error) {
+    if (isNoFilesError(error)) return [];
     debugLogger.warn(
       `[Context Discovery] Could not read context column under context=${sanitized}:`,
       error
     );
     return null;
   }
+}
+
+/**
+ * The distinct contexts of one directory: from the footers when they answer,
+ * from the data when they do not.
+ */
+async function resolveContextsFor(
+  dataDir: string,
+  sanitized: string,
+  range?: { fromIso: string; toIso: string }
+): Promise<string[] | null> {
+  const fromFooters = await queryContextsFromFooters(dataDir, sanitized, range);
+  if (fromFooters !== null && fromFooters.length > 0) {
+    return fromFooters;
+  }
+  return queryDistinctContexts(dataDir, sanitized, range);
 }
 
 /**
@@ -238,7 +373,7 @@ export async function getAvailableContextsForTimeRange(
         // whose data lies entirely outside the range isn't reported. Rare
         // (requires ids differing only colon-vs-dash), so the extra query
         // costs nothing in the common single-context case.
-        const inRange = await queryDistinctContexts(dataDir, sanitized, {
+        const inRange = await resolveContextsFor(dataDir, sanitized, {
           fromIso,
           toIso,
         });
