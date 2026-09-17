@@ -99,6 +99,7 @@ Five contributions from @msallin (PRs #123–#127).
 - **Buffer-only fallback ignored the requested aggregate** (PR #124) — when the parquet query fails and the buffer is attached, the fallback averaged numeric paths and took the first string value regardless of method. It now applies the same raw-sample aggregate as the main query's buffer source.
 - **File discovery on Windows and under glob-special directory names** (PR #125) — every scan built its pattern with `path.join(dataDir, …)`, and `glob()` reads a backslash as an escape, so on Windows daily aggregation, retention cleanup, compaction, migration, GPX import, cloud compare/sync, schema validation and the two data migrations all matched nothing and silently did no work. A data directory whose name contains glob syntax (`+(1)`, `[1]`, …) broke the same jobs on Linux. New `src/utils/glob-in.ts` passes the directory as glob's `cwd` and keeps patterns relative with forward slashes; all 16 call sites use it. The `/processed/`-style exclusion filters became glob `ignore` patterns (they never excluded anything on Windows). `HivePathBuilder.detectPathStyle` takes the platform separator, so a backslash is a separator on Windows only and stays a legal filename character on POSIX. Cloud object keys built from local paths always use `/`; the daily upload had been producing backslash keys on Windows. Thirteen new tests, including an integration suite that runs the real services under a `+(1)` directory so the failure reproduces on Linux CI.
 - **Analysis model selector had no effect** (PR #126) — `/api/analyze` accepted `claudeModel` but never passed it on, so every analysis ran on the configured model. The route now sets the request's model and the selector's first option is "Configured default", which sends nothing. Follow-up questions still use the configured model.
+
 ### Changed
 
 - **Analysis moves to current Claude models** (PR #126) — Opus 5 (`claude-opus-5`), Sonnet 5 (`claude-sonnet-5`, the default) and Haiku 4.5 (`claude-haiku-4-5`); the previous list offered Sonnet 4 / Opus 4.1 / Opus 4, and Opus 4.1 has been retired by the API. A saved id from an older generation maps to the current model of the same tier. Opus 5 and Sonnet 5 reject `temperature` and think by default, so `temperature` is only sent where accepted, `max_tokens` is raised to at least 16k where thinking shares the budget, answers are read from the text blocks rather than `content[0]`, and a `refusal` stop reason is raised as an error instead of yielding an empty analysis.
@@ -114,7 +115,7 @@ Five contributions from @msallin (PRs #123–#127).
 
 ### Security (PR #117, @msallin)
 
-- **Untrusted SQL is now read-only** — the sandboxed DuckDB instance added in 0.7.44-beta.2 confines *where* the engine may touch the filesystem, but the plugin's data directory is exactly the allowed directory, so `COPY (...) TO 'navigation_position.parquet'` from the raw `/api/query` endpoint or from model-generated analysis SQL could overwrite recorded data without leaving the sandbox — and the analysis path is not behind `enableRawSql`. New `src/utils/sql-guard.ts` validates every statement at both call sites before a connection is taken: a statement whitelist (SELECT/WITH/FROM/DESCRIBE/SUMMARIZE/EXPLAIN/VALUES/PIVOT/TABLE/SHOW), the file- and state-changing keywords (ATTACH, COPY, EXPORT, SET, PRAGMA, INSTALL, CALL, …) rejected anywhere in a statement so `EXPLAIN ANALYZE COPY …` cannot smuggle one through, table functions that open files or run nested SQL (`read_text`, `read_blob`, `glob`, `query`, `sqlite_*`) rejected by name, and one statement per request. Literals, comments, escape strings, dollar-quoted strings and quoted identifiers are masked in a single lexer pass, because two passes could be desynchronised (`SELECT 1 AS "a--b"; COPY …` executed both statements while a two-pass mask saw one). Replaces the analyzer's old `includes('CREATE')` check, which also rejected any query mentioning `created_at`.
+- **Untrusted SQL is now read-only** — the sandboxed DuckDB instance added in 0.7.44-beta.2 confines _where_ the engine may touch the filesystem, but the plugin's data directory is exactly the allowed directory, so `COPY (...) TO 'navigation_position.parquet'` from the raw `/api/query` endpoint or from model-generated analysis SQL could overwrite recorded data without leaving the sandbox — and the analysis path is not behind `enableRawSql`. New `src/utils/sql-guard.ts` validates every statement at both call sites before a connection is taken: a statement whitelist (SELECT/WITH/FROM/DESCRIBE/SUMMARIZE/EXPLAIN/VALUES/PIVOT/TABLE/SHOW), the file- and state-changing keywords (ATTACH, COPY, EXPORT, SET, PRAGMA, INSTALL, CALL, …) rejected anywhere in a statement so `EXPLAIN ANALYZE COPY …` cannot smuggle one through, table functions that open files or run nested SQL (`read_text`, `read_blob`, `glob`, `query`, `sqlite_*`) rejected by name, and one statement per request. Literals, comments, escape strings, dollar-quoted strings and quoted identifiers are masked in a single lexer pass, because two passes could be desynchronised (`SELECT 1 AS "a--b"; COPY …` executed both statements while a two-pass mask saw one). Replaces the analyzer's old `includes('CREATE')` check, which also rejected any query mentioning `created_at`.
 - **Sandbox configuration locked** — `SET lock_configuration=true` is the last step of sandbox setup, so the engine itself refuses `SET memory_limit` / `SET enable_external_access` / `SET allowed_directories` for the life of the instance. Previously `EXPLAIN ANALYZE SET memory_limit='4GB'` lifted the sandbox's 512MB cap to 3.7GiB; now only the keyword guard stood in the way, and the engine should refuse outright.
 - **Path substitution hardened** — the raw-query placeholder replacement uses a replacer function, so `$&` in a user-supplied path can no longer splice unvalidated text into the executed SQL; the guard validates the string that actually executes.
 
@@ -165,15 +166,15 @@ Rolls up everything merged since 0.7.43. (`0.7.44-beta.1` was an internal deploy
 - **Angular tier→tier re-aggregation produced NULL buckets** (PR #91) — rolling 5s→60s→1h aggregates of angular paths read `value_sin_avg`/`value_cos_avg` from source files that may predate those columns; `SUM` over the NULLs made the whole bucket NULL. The rollup now falls back per-row with `COALESCE(value_sin_avg, SIN(value_avg))` (and cos), and — follow-up — probes the source schema first so all-legacy file sets, where the columns can't even be named without a binder error, derive from `value_avg` directly.
 - **Sub-second history resolutions collapsed into one bucket** — the bucket-timestamp SQL wrapped the (millisecond-correct) `FLOOR(EPOCH_MS(...)/resolution)` arithmetic in `DATE_TRUNC('seconds', …)` with a seconds-only format, so distinct sub-second buckets got identical timestamp strings and merged in GROUP BY. All six query paths now share one `bucketExprSql()` helper that keeps millisecond precision (`%S.%gZ`) for fractional resolutions while preserving the fraction-free format for whole-second ones. With it, the V1 auto-resolution is clamped to ≥1 ms and computed in milliseconds (PR #91) — previously a `from == to` or sub-500 s range truncated to a 0 ms divisor. Regression tests cover both.
 - **Timeout-only deltas were silently discarded** (PR #91) — `timeout` was in `metaOnlyKeys`, so an object delta whose only key is `timeout` was treated as metadata and dropped.
-- **Spatial-filter query errors blanked every correlated path** (PR #91) — a transient DuckDB failure during `bbox`/`radius` position correlation returned an *empty* timestamp set, which read as "no positions matched" and emptied every correlated path in the response. Errors now return `null` (= no filtering, data served unfiltered) at both correlation sites; end-to-end tests pin all three outcomes (inside box, outside box, query error).
+- **Spatial-filter query errors blanked every correlated path** (PR #91) — a transient DuckDB failure during `bbox`/`radius` position correlation returned an _empty_ timestamp set, which read as "no positions matched" and emptied every correlated path in the response. Errors now return `null` (= no filtering, data served unfiltered) at both correlation sites; end-to-end tests pin all three outcomes (inside box, outside box, query error).
 - **Date-only timestamps parsed inconsistently** (PR #91) — `parseDateTime('2025-08-13')` went through `new Date()` as UTC midnight while `'2025-08-13T08:00'` parsed as local time. Date-only inputs now normalise to local midnight, matching the documented bare-timestamp contract.
 - **Migration jobs: cancellation overhauled** (PR #91 + follow-ups) — cancel is now per-job (`progress.cancelRequested`) instead of a shared service flag that let concurrent jobs cross-cancel, works during the `scanning` phase, and — via a shared `finishIfCancelled()` at every phase boundary — can no longer be swallowed by the empty-file-list path, the cleanup/aggregation phases, the final file's window, or an error landing after a cancel (the job stays terminal as `cancelled`, not `error`/`completed`).
 - **Legacy `retentionDays` migration could be lost on early exit** (PR #91) — the one-time config migration's `savePluginOptions` was fire-and-forget; it is now awaited so the persisted sentinel can't be skipped.
 - **Threshold monitor subscription leak** (PR #114) — `updateCommand` built the monitor key ad-hoc (`${commandName}_${watchPath}`) instead of with `buildThresholdMonitorKey()`, so the old streambundle subscription was never found and unsubscribed — every threshold edit leaked a live subscription. Fixed and covered by unit tests that fail on the unfixed code.
 - **Silent failures now logged** (PR #114) — three empty `catch {}` blocks in `data-handler.ts` (command handling, per-delta stream handling, buffer flush) now log through `app.error`; a failed AWS SDK import (cloud upload configured but SDK unavailable) is logged instead of silently disabling sync forever.
-- **Cloud uploads can no longer hang the export pipeline** (PR #114) — S3/R2 clients now set `connectionTimeout: 10s` and `requestTimeout: 60s` with `throwOnRequestTimeout: true` (without the flag the AWS SDK only *warns* when the ceiling elapses). A dead or stalled uplink now fails the upload (and retries) instead of wedging the daily export.
+- **Cloud uploads can no longer hang the export pipeline** (PR #114) — S3/R2 clients now set `connectionTimeout: 10s` and `requestTimeout: 60s` with `throwOnRequestTimeout: true` (without the flag the AWS SDK only _warns_ when the ceiling elapses). A dead or stalled uplink now fails the upload (and retries) instead of wedging the daily export.
 - **SQLite buffer close hardening** (PR #114) — `_open` flips before `db.close()` so a throwing close can't leave the buffer claiming to be open; `insertBatch()` gained the same `_open` guard as `insert()`. New integration test pins the close-state contract.
-- **`stop()` data-loss window narrowed** (PR #114) — subscriptions are unsubscribed *before* the final buffer flush (previously a delta arriving between flush and teardown was lost), with each unsubscribe individually wrapped so one throwing teardown can't skip the flush.
+- **`stop()` data-loss window narrowed** (PR #114) — subscriptions are unsubscribed _before_ the final buffer flush (previously a delta arriving between flush and teardown was lost), with each unsubscribe individually wrapped so one throwing teardown can't skip the flush.
 
 ### Changed
 
@@ -201,7 +202,7 @@ Stable release — includes the `0.7.43-beta.1` fixes below (daily aggregation m
 
 ### Fixed
 
-- **Plugin reconfigure silently dropped live data from history reads** — changing the plugin config runs `stop()` → `start()` without a server restart. Every restart re-registered the V1 history express routes, leaving the originally-registered routes bound to a `HistoryAPI` instance whose SQLite buffer `stop()` had closed — and a closed buffer makes federation return *nothing* with *no error*, so all live (unexported) data vanished from history results until a full server restart. The routes are now registered once and the single instance is re-pointed on reconfigure (fresh buffer, S3 config, auto-discovery service, data directory, and retention overrides).
+- **Plugin reconfigure silently dropped live data from history reads** — changing the plugin config runs `stop()` → `start()` without a server restart. Every restart re-registered the V1 history express routes, leaving the originally-registered routes bound to a `HistoryAPI` instance whose SQLite buffer `stop()` had closed — and a closed buffer makes federation return _nothing_ with _no error_, so all live (unexported) data vanished from history results until a full server restart. The routes are now registered once and the single instance is re-pointed on reconfigure (fresh buffer, S3 config, auto-discovery service, data directory, and retention overrides).
   - The path/context caches and the object-path schema cache now key on the data directory (the schema key is a JSON-encoded tuple so colon-bearing vessel URN contexts or Windows drive paths can't collide), so a changed `outputDirectory` can never serve results discovered in the old store.
   - Requests snapshot the data directory, buffer, S3 config, and retention rules once at request start, so a reconfigure landing mid-request can't mix the old store's parquet data with the new store's buffer.
 - **`stop()` left scheduled work running and could leave a truncated aggregation file** — `plugin.stop()` now sets an `isStopping` flag (so export callbacks that fire during the async teardown become no-ops), cancels the pending one-shot daily/startup export timers, and winds down in-flight aggregation workers cooperatively: a shutdown message makes the worker finish its in-flight DuckDB `COPY`, stop at the next group boundary, and report the run as failed — so the retention-cleanup guard skips deletion, same as any other worker failure. Workers still alive after a 15 s grace period are SIGKILLed so a stuck `COPY` can't hang shutdown. Aggregation output is now written to a `*.tmp` name and renamed into place after a validity check, so a process killed mid-`COPY` leaves an invisible temp straggler (removed by the startup sweep) instead of a truncated `.parquet` at the query-visible name.
@@ -219,7 +220,7 @@ Stable release — includes the `0.7.43-beta.1` fixes below (daily aggregation m
   - The daily aggregation now runs in a **short-lived forked worker** (`src/aggregation-worker.ts`) that does the identical work and **exits** — process exit is the only reliable way to return the memory to the OS, regardless of allocator behaviour. The main SignalK process no longer accumulates it (measured: parent RSS flat across a run that would otherwise ratchet).
   - **No behaviour change:** same tiers, same aggregation math, same output files, every vessel still aggregated. Angular paths (heading/COG/wind direction, `units === 'rad'`) still get vector averaging — the angular-path set is computed with the live server's `app.getMetadata` in the parent and passed to the worker (which has no live metadata). New `SQLiteBuffer.getPaths()` exposes the recorded path names for that computation.
   - A worker crash, non-zero exit, or 30-minute timeout is surfaced as a failed aggregation, so the existing retention-cleanup guard (which only deletes rolled-up/uploaded data when aggregation succeeded) is unaffected. Only the aggregation moves to the worker; export (buffer-driven, no ratchet), upload, and retention cleanup stay in-process.
-- **Plugin failed to start when first enabled offline** — `INSTALL spatial` runs on the critical startup path, and the first load downloads the extension from DuckDB's repo (it is only cached under `extension_directory` after a successful start with connectivity). If the plugin was installed while online but first *enabled* with no network, that download threw and — because the call was unguarded — rejected `plugin.start()` entirely, taking parquet writing and the history API down with it (not just spatial). Spatial setup is now best-effort: a load failure is logged via `app.error` and startup continues, so everything except spatial queries works offline. A new `DuckDBPool.isSpatialAvailable()` exposes the state. The extension still downloads and caches normally on the next start with connectivity, restoring full spatial support. Instance creation and the memory-limit PRAGMA remain fatal (clean retry), unchanged.
+- **Plugin failed to start when first enabled offline** — `INSTALL spatial` runs on the critical startup path, and the first load downloads the extension from DuckDB's repo (it is only cached under `extension_directory` after a successful start with connectivity). If the plugin was installed while online but first _enabled_ with no network, that download threw and — because the call was unguarded — rejected `plugin.start()` entirely, taking parquet writing and the history API down with it (not just spatial). Spatial setup is now best-effort: a load failure is logged via `app.error` and startup continues, so everything except spatial queries works offline. A new `DuckDBPool.isSpatialAvailable()` exposes the state. The extension still downloads and caches normally on the next start with connectivity, restoring full spatial support. Instance creation and the memory-limit PRAGMA remain fatal (clean retry), unchanged.
 
 ---
 
@@ -229,7 +230,7 @@ Stable release — promotes the `0.7.42-beta` line (beta.1, beta.2) to a tagged 
 
 ---
 
-## [0.7.42-beta.2]  - 2026-07-17
+## [0.7.42-beta.2] - 2026-07-17
 
 ### Fixed
 
@@ -900,6 +901,7 @@ Replace in-memory data buffers with a crash-safe SQLite database using Write-Ahe
 #### Added
 
 **SQLite Buffer Infrastructure**
+
 - **WAL-Mode SQLite**: Crash-safe data buffering with automatic recovery after power loss or crashes
   - WAL mode provides concurrent read/write access with durability guarantees
   - 64MB cache and 256MB memory-mapped I/O for high performance
@@ -917,11 +919,12 @@ Replace in-memory data buffers with a crash-safe SQLite database using Write-Ahe
   - Supports federated queries with S3 data
 
 **Configuration Options:**
-| Setting | Description | Default |
-|---------|-------------|---------|
-| `useSqliteBuffer` | Enable SQLite WAL buffer instead of in-memory LRU | `false` |
-| `exportIntervalMinutes` | How often to export from SQLite to Parquet | `5` |
-| `bufferRetentionHours` | How long to keep exported records in SQLite | `24` |
+
+| Setting                 | Description                                       | Default |
+| ----------------------- | ------------------------------------------------- | ------- |
+| `useSqliteBuffer`       | Enable SQLite WAL buffer instead of in-memory LRU | `false` |
+| `exportIntervalMinutes` | How often to export from SQLite to Parquet        | `5`     |
+| `bufferRetentionHours`  | How long to keep exported records in SQLite       | `24`    |
 
 ---
 
@@ -932,6 +935,7 @@ New storage structure using Hive-style partitioning for better query performance
 #### Added
 
 **Tiered Storage Architecture**
+
 - **Hive Partition Structure**: `tier=raw/context={ctx}/path={path}/year={year}/day={day}/`
   - Aggregation tiers: `raw`, `5s`, `60s`, `1h` for different granularities
   - Context and path partitions enable efficient filtering
@@ -944,6 +948,7 @@ New storage structure using Hive-style partitioning for better query performance
   - Wildcards for longer ranges with partition pushdown
 
 **Migration Service**
+
 - **Flat-to-Hive Migration**: Convert legacy structure to new Hive partitioning
   - Scans existing files to detect flat vs Hive structure
   - Background migration with progress tracking and cancellation
@@ -956,8 +961,9 @@ New storage structure using Hive-style partitioning for better query performance
   - `POST /api/migrate/cancel/:jobId` - Cancel running job
 
 **Configuration:**
-| Setting | Description | Default |
-|---------|-------------|---------|
+
+| Setting               | Description                               | Default |
+| --------------------- | ----------------------------------------- | ------- |
 | `useHivePartitioning` | Use Hive-style partitioning for new files | `false` |
 
 ---
@@ -969,6 +975,7 @@ Automatically configure SignalK paths for recording when they're queried but not
 #### Added
 
 **Auto-Discovery Service**
+
 - **On-Demand Configuration**: Paths are automatically added when:
   - A History API query requests data for an unconfigured path
   - The path matches include patterns (if specified)
@@ -982,13 +989,14 @@ Automatically configure SignalK paths for recording when they're queried but not
 - **Auto-Generated Names**: Human-readable names from path (e.g., `[Auto] Navigation Speed Over Ground`)
 
 **Configuration Options:**
-| Setting | Description | Default |
-|---------|-------------|---------|
-| `autoDiscovery.enabled` | Master switch for auto-discovery | `false` |
-| `autoDiscovery.requireLiveData` | Only configure if path has live SignalK data | `true` |
-| `autoDiscovery.maxAutoConfiguredPaths` | Maximum number of auto-configured paths | `100` |
-| `autoDiscovery.includePatterns` | Glob patterns for paths to include | `[]` |
-| `autoDiscovery.excludePatterns` | Glob patterns for paths to exclude | `[]` |
+
+| Setting                                | Description                                  | Default |
+| -------------------------------------- | -------------------------------------------- | ------- |
+| `autoDiscovery.enabled`                | Master switch for auto-discovery             | `false` |
+| `autoDiscovery.requireLiveData`        | Only configure if path has live SignalK data | `true`  |
+| `autoDiscovery.maxAutoConfiguredPaths` | Maximum number of auto-configured paths      | `100`   |
+| `autoDiscovery.includePatterns`        | Glob patterns for paths to include           | `[]`    |
+| `autoDiscovery.excludePatterns`        | Glob patterns for paths to exclude           | `[]`    |
 
 ---
 
@@ -999,6 +1007,7 @@ Query historical data directly from S3 using DuckDB's native S3 support, with au
 #### Added
 
 **S3 Query Infrastructure**
+
 - **DuckDB S3 Integration**: Initialize S3 credentials in DuckDB pool via `DuckDBPool.initializeS3()`
   - Installs and loads `httpfs` extension automatically
   - Creates S3 secret with AWS credentials for authenticated access
@@ -1009,6 +1018,7 @@ Query historical data directly from S3 using DuckDB's native S3 support, with au
   - Reduces S3 data transfer by 70-90% through partition skipping
 
 **Hybrid Local+S3 Queries**
+
 - **Query Source Parameter**: New `?source=` parameter for history API
   - `auto` (default): Automatically determines source based on time range vs. retention cutoff
   - `local`: Force local-only query
@@ -1021,6 +1031,7 @@ Query historical data directly from S3 using DuckDB's native S3 support, with au
 - **S3 Config Passthrough**: S3 credentials and bucket info passed through to HistoryAPI
 
 **Spatial Correlation for Non-Position Paths**
+
 - **Position-Based Filtering**: Query non-position paths filtered by vessel location
   - Example: "Get wind data for times when vessel was within 100m of this point"
   - Correlates timestamps between position data and requested paths
@@ -1034,6 +1045,7 @@ Query historical data directly from S3 using DuckDB's native S3 support, with au
 #### Changed
 
 **Removed Legacy Flat Path Structure**
+
 - **Hive-Only Queries**: HistoryAPI now exclusively uses Hive-partitioned paths (`tier=raw/context=.../path=...`)
 - **Schema Cache Updated**: `getPathComponentSchema()` now looks in Hive structure instead of legacy flat paths
 - **Removed `selfContextPath`**: No longer needed since flat path queries are removed
@@ -1047,10 +1059,10 @@ Query historical data directly from S3 using DuckDB's native S3 support, with au
 
 **New Query Parameters:**
 
-| Parameter | Description | Default |
-|-----------|-------------|---------|
-| `source` | Query source: `auto`, `local`, `s3`, `hybrid` | `auto` |
-| `positionPath` | Position path for spatial correlation | `navigation.position` |
+| Parameter      | Description                                   | Default               |
+| -------------- | --------------------------------------------- | --------------------- |
+| `source`       | Query source: `auto`, `local`, `s3`, `hybrid` | `auto`                |
+| `positionPath` | Position path for spatial correlation         | `navigation.position` |
 
 **Example Queries:**
 
@@ -1079,6 +1091,7 @@ Query historical data directly from S3 using DuckDB's native S3 support, with au
 This release delivers **dramatic performance improvements** through systematic optimization.
 
 #### Performance Results
+
 - **67% memory reduction** (1.2GB → 400MB)
 - **66% faster queries** (350ms → 120ms)
 - **60% CPU reduction** (45% → 18%)
@@ -1088,6 +1101,7 @@ This release delivers **dramatic performance improvements** through systematic o
 ### Added
 
 #### Performance Infrastructure
+
 - **DuckDB Connection Pooling**: Singleton pool eliminates memory leaks
 - **Formula Cache**: Replaces eval() with cached Function constructor (10-100x faster)
 - **LRU Cache**: Prevents unbounded buffer growth with configurable size limits
@@ -1099,12 +1113,14 @@ This release delivers **dramatic performance improvements** through systematic o
 ### Changed
 
 #### Query Optimizations
+
 - O(n²) nested loops → O(1) Map-based lookups in delta processing
 - Schema cache TTL: 2min → 30min
 - Timestamp cache keys rounded to minute for better hit rates (60-80% vs ~0%)
 - JSON serialization deferred to write time (not per delta)
 
 #### Code Quality
+
 - Removed ~80 lines of duplicate code
 - Unified directory filtering with shared constants
 - Consolidated parquet file scanning logic
@@ -1114,6 +1130,7 @@ This release delivers **dramatic performance improvements** through systematic o
 ### Fixed
 
 #### Critical Fixes
+
 - **@signalk/server-api moved to dependencies** (was in devDependencies)
   - Fixes: "Cannot find module '@signalk/server-api'" on production installs
 - **Icon optimized**: 1.9MB → 14KB (99.3% reduction)
@@ -1124,6 +1141,7 @@ This release delivers **dramatic performance improvements** through systematic o
 No breaking changes - all optimizations are backward compatible.
 
 **Files Created (7):**
+
 - `src/utils/duckdb-pool.ts`, `formula-cache.ts`, `lru-cache.ts`
 - `src/utils/concurrency-limiter.ts`, `directory-scanner.ts`, `debug-logger.ts`
 - `src/config/cache-defaults.ts`
@@ -1133,6 +1151,7 @@ No breaking changes - all optimizations are backward compatible.
 ## [0.6.0-beta.1] - 2025-10-20
 
 ### Added - Unit Conversion & Timezone Support
+
 - **🔄 Automatic Unit Conversion**: Optional integration with `signalk-units-preference` plugin
   - Add `?convertUnits=true` to automatically convert values to user's preferred units
   - Server-side conversion using formulas from units-preference plugin
@@ -1152,6 +1171,7 @@ No breaking changes - all optimizations are backward compatible.
   - Lower values reflect preference changes faster, higher values reduce overhead
 
 ### Performance & Integration
+
 - **🔌 Plugin-to-Plugin Communication**: Direct app object function calls (no HTTP auth needed)
   - Units-preference plugin exposes conversion data via `app.getAllUnitsConversions()`
   - Lazy loading with automatic retry handles plugin load order race conditions
@@ -1163,6 +1183,7 @@ No breaking changes - all optimizations are backward compatible.
   - Preserves backward compatibility - metadata only added when features used
 
 ### Developer Experience
+
 - **🛠️ Comprehensive Logging**: Detailed debug output for troubleshooting
   - Unit conversion: Plugin detection, cache status, conversion loading
   - Timezone conversion: Target zone, current offset, example conversions
@@ -1173,6 +1194,7 @@ No breaking changes - all optimizations are backward compatible.
   - Both features optional and backward compatible
 
 ### Example Usage
+
 ```bash
 # Convert to preferred units
 GET /signalk/v1/history/values?duration=2d&paths=navigation.speedOverGround&convertUnits=true
@@ -1188,7 +1210,9 @@ GET /signalk/v1/history/values?duration=2d&paths=navigation.speedOverGround,envi
 ```
 
 ### Response Format Changes
+
 **With unit conversion:**
+
 ```json
 {
   "units": {
@@ -1206,6 +1230,7 @@ GET /signalk/v1/history/values?duration=2d&paths=navigation.speedOverGround,envi
 ```
 
 **With timezone conversion:**
+
 ```json
 {
   "timezone": {
@@ -1220,6 +1245,7 @@ GET /signalk/v1/history/values?duration=2d&paths=navigation.speedOverGround,envi
 ## [0.5.6-beta.1] - 2025-10-20
 
 ### Added - SignalK History API Compliance
+
 - **🎯 Standard Time Range Parameters**: Full support for all 5 SignalK History API time query patterns
   - Pattern 1: `?duration=1h` - Query back from now
   - Pattern 2: `?from=TIME&duration=1h` - Query forward from start
@@ -1242,6 +1268,7 @@ GET /signalk/v1/history/values?duration=2d&paths=navigation.speedOverGround,envi
   - Handles 2500+ vessels and 28k+ parquet files efficiently (~2-3 seconds)
 
 ### Performance Improvements
+
 - **⚡ Context Discovery Optimization**: 4.3x faster (13s → 3s for 28k files across 2500+ vessels)
   - Single SQL query with `DISTINCT filename` instead of per-context queries
   - Filesystem scan cached for 2 minutes (reduces to ~2s with cache hit)
@@ -1251,6 +1278,7 @@ GET /signalk/v1/history/values?duration=2d&paths=navigation.speedOverGround,envi
   - Cleaner query results with only valid data files
 
 ### Changed
+
 - **📊 Moving Averages**: Changed from automatic to opt-in behavior
   - **Breaking Change**: Clients expecting automatic EMA/SMA must add `includeMovingAverages=true`
   - Improves API compliance with SignalK specification
@@ -1261,6 +1289,7 @@ GET /signalk/v1/history/values?duration=2d&paths=navigation.speedOverGround,envi
   - Will be removed in v2.0
 
 ### Fixed
+
 - Fixed HistoryAPI failing to return data when parquet files don't have `value_json` column. The query now only selects `value_json` for paths that actually need it (like navigation.position), preventing "column not found" errors on numeric data paths like wind speed.
 - Fixed context discovery errors with corrupted quarantine files
 - Fixed path discovery returning stale results by adding time-range filtering
