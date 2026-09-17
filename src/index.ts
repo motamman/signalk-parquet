@@ -475,7 +475,8 @@ export default function (app: ServerAPI): SignalKPlugin {
       app.debug(
         `[StartupSweep] ${sweeps.complete ? 'done' : 'incomplete'} in ${(sweeps.durationMs / 1000).toFixed(1)}s: ` +
           `temp removed=${sweeps.removed} trash restored=${sweeps.restored} cleaned=${sweeps.cleaned} failed=${sweeps.failed} ` +
-          `stubs quarantined=${sweeps.quarantined} failed=${sweeps.quarantineFailed}`
+          `stubs quarantined=${sweeps.quarantined} failed=${sweeps.quarantineFailed} ` +
+          `duckdb temp removed=${sweeps.duckdbTempRemoved}`
       );
     } finally {
       markStartupSweepsDone();
@@ -936,7 +937,8 @@ export default function (app: ServerAPI): SignalKPlugin {
         app.selfId,
         state.currentConfig.outputDirectory,
         app.debug,
-        state.sqliteBuffer
+        state.sqliteBuffer,
+        state.autoDiscoveryService // v2 gets the same auto-discovery as v1
       );
     } catch (error) {
       app.error(`Failed to register as History API provider: ${error}`);

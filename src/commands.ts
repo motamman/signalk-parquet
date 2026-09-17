@@ -71,17 +71,20 @@ export function loadWebAppConfig(app?: ServerAPI): WebAppPathConfig {
       const configData = fs.readFileSync(webAppConfigPath, 'utf8');
       const rawConfig = JSON.parse(configData);
 
-      // Migrate old config format to new format with backward compatibility
+      // Migrate old config format to new format with backward compatibility.
+      //
+      // Spread first, then apply the one real migration. This used to rebuild
+      // each entry from a fixed list of fields, which silently dropped
+      // anything not on it — and because the result is written straight back
+      // to disk below, a setting the UI had saved was destroyed on the next
+      // load rather than merely ignored. Any field added to PathConfig since
+      // (retention, fullWhileRegimen) has to survive this untouched.
       const migratedPaths = (rawConfig.paths || []).map(
         (path: Partial<PathConfig>) => ({
-          path: path.path,
-          name: path.name,
-          enabled: path.enabled,
-          regimen: path.regimen,
+          ...path,
+          // The migration this function exists for: a falsy source means "no
+          // source filter", stored as undefined rather than an empty string.
           source: path.source || undefined,
-          context: path.context,
-          excludeMMSI: path.excludeMMSI,
-          autoDiscovered: path.autoDiscovered,
         })
       );
 

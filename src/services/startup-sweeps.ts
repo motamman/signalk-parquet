@@ -16,6 +16,7 @@
  */
 
 import { fork, ChildProcess } from 'child_process';
+import * as fs from 'fs-extra';
 import * as path from 'path';
 import { ServerAPI } from '@signalk/server-api';
 import { quarantineEmptyParquetFiles } from '../parquet-writer';
@@ -37,6 +38,8 @@ export interface StartupSweepResult {
   quarantined: number;
   /** Undersized parquet files that could not be moved. */
   quarantineFailed: number;
+  /** DuckDB spill files removed from the store's `.duckdb/tmp`. */
+  duckdbTempRemoved: number;
   /** Whether every sweep ran to completion. */
   complete: boolean;
   durationMs: number;
@@ -57,13 +60,44 @@ export function emptySweepResult(): StartupSweepResult {
     failed: 0,
     quarantined: 0,
     quarantineFailed: 0,
+    duckdbTempRemoved: 0,
     complete: false,
     durationMs: 0,
   };
 }
 
 /**
- * Run the three sweeps in this process, in order. Each is isolated: one
+ * Remove whatever DuckDB left in the store's spill directory. Every DuckDB
+ * instance this plugin opens (the server's pool, the aggregation and
+ * compaction workers) is configured with `<dataDir>/.duckdb/tmp` as its
+ * temp_directory; a worker killed at a timeout, or a crash, skips DuckDB's
+ * own cleanup and its spill files stay behind. Discovery never looks in
+ * `.duckdb`, so they cost disk, not answers. Runs before any pool opens, so
+ * nothing here is in use.
+ */
+export async function cleanupDuckDbTempFiles(
+  dataDir: string
+): Promise<{ removed: number }> {
+  const tmpDir = path.join(dataDir, '.duckdb', 'tmp');
+  let entries: string[];
+  try {
+    entries = await fs.readdir(tmpDir);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+      return { removed: 0 };
+    }
+    throw err;
+  }
+  let removed = 0;
+  for (const name of entries) {
+    await fs.remove(path.join(tmpDir, name));
+    removed += 1;
+  }
+  return { removed };
+}
+
+/**
+ * Run the four sweeps in this process, in order. Each is isolated: one
  * failing is logged and the next still runs.
  */
 export async function runStartupSweeps(
@@ -98,6 +132,12 @@ export async function runStartupSweeps(
   } catch (err) {
     complete = false;
     log.error(`Empty parquet startup sweep failed: ${(err as Error).message}`);
+  }
+  try {
+    result.duckdbTempRemoved = (await cleanupDuckDbTempFiles(dataDir)).removed;
+  } catch (err) {
+    complete = false;
+    log.error(`DuckDB temp cleanup failed: ${(err as Error).message}`);
   }
   result.complete = complete;
   result.durationMs = Date.now() - started;

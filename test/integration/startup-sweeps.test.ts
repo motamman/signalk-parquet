@@ -48,11 +48,16 @@ describe('startup sweeps and sync listing', () => {
     const stub = await write('', 'tier=raw', 'context=a', 'path=p', 'year=2026', 'day=100', 'stub.parquet');
     const good = await write('x'.repeat(200), 'tier=raw', 'context=a', 'path=p', 'year=2026', 'day=100', 'good.parquet');
     const temp = await write('x', 'tier=raw', 'context=a', 'path=p', 'year=2026', 'year_compact_2026.parquet.tmp');
+    // A DuckDB spill file left by a killed worker.
+    const spill = await write('x', '.duckdb', 'tmp', 'duckdb_temp_storage-0.tmp');
 
     const result = await runStartupSweeps(base, log);
 
     expect(result.complete).to.equal(true);
     expect(result.removed).to.equal(1);
+    expect(result.duckdbTempRemoved).to.equal(1);
+    expect(await fs.pathExists(spill)).to.equal(false);
+    expect(await fs.pathExists(path.dirname(spill)), 'the tmp directory itself stays').to.equal(true);
     expect(result.quarantined).to.equal(1);
     expect(result.quarantineFailed).to.equal(0);
     expect(result.durationMs).to.be.at.least(0);

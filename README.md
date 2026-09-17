@@ -9,6 +9,7 @@ Vessel data Parquet file archive with automated value and geospatial triggers. H
 ## Features
 
 ### Core Data Management
+
 - **Smart Data Types**: Intelligent Parquet schema detection preserves native data types (DOUBLE, BOOLEAN) instead of forcing everything to strings
 - **Daily Export Pipeline**: Simplified daily export creates consolidated Parquet files directly
   - Data accumulates in SQLite buffer throughout the day
@@ -62,6 +63,11 @@ Vessel data Parquet file archive with automated value and geospatial triggers. H
   - One object path per vessel rather than one path per attribute, so a busy AIS coast adds one file per vessel to a day's export instead of seven
   - Retention-exempt and excluded from tier aggregation; readable through the History API like any object path (`paths=identity`)
   - Independent of path configuration; a configured `name` path for `vessels.*` is no longer needed and can be removed
+- **Short-term paths** (v0.7.44-beta.8+): a path can be kept in the SQLite buffer for the retention window only, queryable through the History API for that window, and never written to Parquet or the cloud
+  - Set per path in the webapp under **Keep**; a path with no setting behaves exactly as before, so existing configurations are unchanged
+  - Optional **Keep forever while regimen** writes the path to Parquet as well for as long as that regimen is active, so a path can be buffered continuously and kept only for a passage
+  - The decision is stamped on the row when it is written and never revisited: promoting a path starts its Parquet history at that moment rather than reaching back, and demoting one still exports what it had already captured
+  - Worth it because most of what a boat emits is not a time series: on a real install, 1,638 of 2,161 live paths never changed value over ten minutes. `tools/path-profile.ts` samples a running server and reports which paths change, how often, and what recording each would cost
 - **History Playback** (v0.7.44-beta.7+): registers as the server's v1 playback provider, so Freeboard-SK's History Playback (and any client of `/signalk/v1/playback?startTime=…&playbackRate=…`) replays the recorded store as live-shaped delta messages
   - Rows from the raw parquet tier and the not-yet-exported SQLite buffer are regrouped into one delta per instant, vessel and source, with `$source` from the recorded source label; object paths (position, attitude) come back as objects
   - Each vessel's last known identity is sent ahead of its first delta, in the shape the live AIS feed uses (`name`/`mmsi` at the root, `design.*`, `communication.callsignVhf`, `sensors.ais.class`), so plotters label targets at once
@@ -69,6 +75,7 @@ Vessel data Parquet file archive with automated value and geospatial triggers. H
   - Nothing runs at plugin start: the first read happens when a playback connection opens, and each day of playback costs one metadata-only index of that day's files
 
 ### Data Validation & Schema Repair
+
 - **Schema Validation**: Comprehensive validation of Parquet file schemas against SignalK metadata standards
 - **Automated Repair**: One-click repair of schema violations with proper data type conversion
 - **Type Correction**: Automatic conversion of incorrectly stored data types (e.g., numeric strings → DOUBLE, boolean strings → BOOLEAN)
@@ -77,7 +84,9 @@ Vessel data Parquet file archive with automated value and geospatial triggers. H
 - **Progress Tracking**: Real-time progress monitoring with cancellation support for large datasets
 
 #### Benefits of Proper Data Types
+
 Using correct data types in Parquet files provides significant advantages:
+
 - **Storage Efficiency**: Numeric data stored as DOUBLE uses ~50% less space than string representations
 - **Query Performance**: Native numeric operations are 5-10x faster than string parsing during analysis
 - **Data Integrity**: Type validation prevents data corruption and ensures consistent analysis results
@@ -85,13 +94,16 @@ Using correct data types in Parquet files provides significant advantages:
 - **Compression**: Parquet's columnar compression works optimally with correctly typed data
 
 #### Validation Process
+
 The validation system checks each Parquet file for:
+
 - **Field Type Consistency**: Ensures numeric marine data (position, speed, depth) is stored as DOUBLE
 - **Boolean Representation**: Validates true/false values are stored as BOOLEAN, not strings
 - **Metadata Alignment**: Compares file schemas against SignalK metadata for units like meters, volts, amperes
 - **Schema Standards**: Enforces data best practices for long-term data integrity
 
 ### Advanced Querying
+
 - **SignalK History API Compliance**: Full compliance with SignalK History API specifications
   - **Standard Time Parameters**: All 5 standard query patterns supported
   - **Time-Filtered Discovery**: Paths and contexts filtered by time range using hive partition directory names (no file scanning)
@@ -118,6 +130,7 @@ The validation system checks each Parquet file for:
     - Single DuckDB query on `navigation__position` files with hive partition pruning
 
 ### Management & Control
+
 - **Command Management**: Register, execute, and manage SignalK commands with automatic path configuration
 - **Regimen-Based Data Collection**: Control data collection with command-based regimens
 - **Multi-Vessel Support**: Wildcard vessel contexts (`vessels.*`) with MMSI-based exclusion filtering
@@ -126,6 +139,7 @@ The validation system checks each Parquet file for:
 - **Comprehensive REST API**: Full programmatic control of queries and configuration
 
 ### User Interface & Integration
+
 - **Responsive Web Interface**: Complete web-based management interface
 - **Map Explorer**: Interactive spatial query and visualization tab
   - Draw bounding box or radius areas on a Leaflet map to query vessel data geographically
@@ -143,6 +157,7 @@ The validation system checks each Parquet file for:
 - **Context Support**: Support for multiple vessel contexts with exclusion controls
 
 ### Regimen System (Advanced)
+
 - **Operational Context Tracking**: Define regimens for operational states (mooring, anchoring, racing, passage-making)
 - **Command-Based Episodes**: Track state transitions using SignalK commands as regimen triggers
 - **Episode Boundary Detection**: Sophisticated SQL-based detection of operational periods using CTEs and window functions
@@ -150,6 +165,7 @@ The validation system checks each Parquet file for:
 - **Web Interface Management**: Create, edit, and manage regimens and command keywords through the web UI
 
 ### Threshold Automation
+
 - **Per-Command Conditions**: Each regimen/command can define one or more thresholds that watch a single SignalK path.
 - **True-Only Actions**: On every path update the condition is evaluated; when it is true the command is set to the threshold's `activateOnMatch` state (ON/OFF). False evaluations leave the command untouched, so use a second threshold if you want a different level to switch it back.
 - **Stable Triggers**: Optional hysteresis (seconds) suppresses re-firing while the condition remains true, preventing rapid toggling in noisy data.
@@ -162,6 +178,7 @@ The validation system checks each Parquet file for:
 ## Requirements
 
 ### Core Requirements
+
 - SignalK Server v2.13+
 - Node.js 22.5+ (required for `node:sqlite` — the built-in SQLite module used for crash-safe buffering; on Node < 22.5 the buffer falls back to in-memory LRU)
 - Linux, macOS or Windows. On Windows, file discovery (daily aggregation, retention, compaction, migration, cloud compare/sync, schema validation) works from v0.7.44-beta.5; earlier versions recorded data but those jobs silently found no files.
@@ -169,6 +186,7 @@ The validation system checks each Parquet file for:
 ## Installation
 
 ### Install from GitHub
+
 ```bash
 # Navigate to folder
 cd ~/.signalk/node_modules/
@@ -221,33 +239,35 @@ Navigate to **SignalK Admin → Server → Plugin Config → SignalK Parquet Dat
 
 Configure basic plugin settings (path configuration is managed separately in the web interface):
 
-| Setting | Description | Default |
-|---------|-------------|---------|
-| **Buffer Size** | Number of records to buffer before writing | 1000 |
-| **Save Interval** | How often to save buffered data (seconds) | 30 |
-| **Output Directory** | Directory to save data files | SignalK data directory |
-| **Filename Prefix** | Prefix for generated filenames | `signalk_data` |
-| **File Format** | Output format (parquet, json, csv) | `parquet` |
-| **Retention Days** | Days to keep processed files | 7 |
-| **Daily Export Hour** | Hour (0-23 UTC) to run daily Parquet export | 4 |
-| **Export Batch Size** | Max records to export per cycle (1,000-200,000) | 50000 |
-| **Buffer Retention Hours** | How long to keep exported records in SQLite (hours) | 48 |
-| **Enable Raw SQL** | Enable /api/query endpoint for raw SQL queries | `false` |
-| **Record Vessel Identity** | Record each vessel's name, MMSI, AIS ship type, length, beam, callsign and AIS class as one `identity` object path for every vessel the server hears, written when the vessel is first heard and again only on change; retention-exempt, never aggregated (v0.7.44-beta.7+) | `true` |
+| Setting                    | Description                                                                                                                                                                                                                                                                                                                                                           | Default                |
+| -------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------- |
+| **Buffer Size**            | Number of records to buffer before writing                                                                                                                                                                                                                                                                                                                            | 1000                   |
+| **Save Interval**          | How often to save buffered data (seconds)                                                                                                                                                                                                                                                                                                                             | 30                     |
+| **Output Directory**       | Directory to save data files                                                                                                                                                                                                                                                                                                                                          | SignalK data directory |
+| **Filename Prefix**        | Prefix for generated filenames                                                                                                                                                                                                                                                                                                                                        | `signalk_data`         |
+| **File Format**            | Output format (parquet, json, csv)                                                                                                                                                                                                                                                                                                                                    | `parquet`              |
+| **Retention Days**         | Days to keep processed files                                                                                                                                                                                                                                                                                                                                          | 7                      |
+| **Daily Export Hour**      | Hour (0-23 UTC) to run daily Parquet export                                                                                                                                                                                                                                                                                                                           | 4                      |
+| **Export Batch Size**      | Max records to export per cycle (1,000-200,000)                                                                                                                                                                                                                                                                                                                       | 50000                  |
+| **Buffer Retention Hours** | How long to keep exported records in SQLite (hours)                                                                                                                                                                                                                                                                                                                   | 48                     |
+| **Enable Raw SQL**         | Enable /api/query endpoint for raw SQL queries                                                                                                                                                                                                                                                                                                                        | `false`                |
+| **Record Vessel Identity** | Record each vessel's name, MMSI, AIS ship type, length, beam, callsign and AIS class as one `identity` object path for every vessel the server hears, written when the vessel is first heard and again only on change; retention-exempt, never aggregated (v0.7.44-beta.7+)                                                                                           | `true`                 |
+| **Keep** (per path)        | How long a path's data is kept: **Forever** buffers it and then writes Parquet and cloud, as before; **Buffer only** keeps it in the SQLite buffer for the retention window, queryable through the History API, never written to Parquet. Optional **Keep forever while regimen** promotes a buffer-only path for as long as that regimen is active (v0.7.44-beta.8+) | `Forever`              |
 
 ### Auto-Discovery Configuration
 
 Configure automatic path discovery when querying unconfigured paths:
 
-| Setting | Description | Default |
-|---------|-------------|---------|
-| **Enable Auto-Discovery** | Master switch for auto-discovery | `false` |
-| **Require Live Data** | Only configure if path has live SignalK data | `true` |
-| **Max Auto-Configured Paths** | Maximum number of auto-configured paths | `100` |
-| **Include Patterns** | Glob patterns for paths to include (e.g., `navigation.*`) | `[]` |
-| **Exclude Patterns** | Glob patterns for paths to exclude (e.g., `propulsion.*`) | `[]` |
+| Setting                       | Description                                               | Default |
+| ----------------------------- | --------------------------------------------------------- | ------- |
+| **Enable Auto-Discovery**     | Master switch for auto-discovery                          | `false` |
+| **Require Live Data**         | Only configure if path has live SignalK data              | `true`  |
+| **Max Auto-Configured Paths** | Maximum number of auto-configured paths                   | `100`   |
+| **Include Patterns**          | Glob patterns for paths to include (e.g., `navigation.*`) | `[]`    |
+| **Exclude Patterns**          | Glob patterns for paths to exclude (e.g., `propulsion.*`) | `[]`    |
 
 When enabled, Auto-Discovery will automatically add path configurations when:
+
 1. A History API query requests data for an unconfigured path
 2. The path matches include patterns (if specified)
 3. The path doesn't match exclude patterns
@@ -259,19 +279,19 @@ Auto-discovered paths are marked with the `autoDiscovered: true` flag and have a
 
 Configure cloud storage upload in the plugin configuration. Uploads run as part of the daily export pipeline.
 
-| Setting | Description | Default |
-|---------|-------------|---------|
-| **Provider** | Cloud provider: `none`, `s3`, or `r2` | `none` |
-| **Bucket** | Bucket name | - |
-| **Region** | AWS region (S3 only) | `us-east-1` |
-| **Account ID** | Cloudflare account ID (R2 only) | - |
-| **Key Prefix** | Object key prefix | - |
-| **Access Key ID** | Cloud credentials | - |
-| **Secret Access Key** | Cloud credentials | - |
-| **Custom Endpoint URL** | Override the S3 endpoint for self-hosted S3-compatible storage (Garage, MinIO). Include protocol and port, e.g. `https://garage.example.com:3900` (S3 only) | - |
-| **Use Path-Style Addressing** | Path-style bucket addressing (`https://endpoint/bucket`); often required by self-hosted services. Defaults to enabled when a custom endpoint is set | auto |
-| **Allow Private/Local Endpoints** | Permit custom endpoints on private/loopback/link-local addresses (e.g. `192.168.x.x`, `localhost`). Required for self-hosted storage on the boat LAN; off by default to prevent SSRF (since v0.7.44-beta.2) | `false` |
-| **Delete After Upload** | Delete local files after upload | `false` |
+| Setting                           | Description                                                                                                                                                                                                 | Default     |
+| --------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------- |
+| **Provider**                      | Cloud provider: `none`, `s3`, or `r2`                                                                                                                                                                       | `none`      |
+| **Bucket**                        | Bucket name                                                                                                                                                                                                 | -           |
+| **Region**                        | AWS region (S3 only)                                                                                                                                                                                        | `us-east-1` |
+| **Account ID**                    | Cloudflare account ID (R2 only)                                                                                                                                                                             | -           |
+| **Key Prefix**                    | Object key prefix                                                                                                                                                                                           | -           |
+| **Access Key ID**                 | Cloud credentials                                                                                                                                                                                           | -           |
+| **Secret Access Key**             | Cloud credentials                                                                                                                                                                                           | -           |
+| **Custom Endpoint URL**           | Override the S3 endpoint for self-hosted S3-compatible storage (Garage, MinIO). Include protocol and port, e.g. `https://garage.example.com:3900` (S3 only)                                                 | -           |
+| **Use Path-Style Addressing**     | Path-style bucket addressing (`https://endpoint/bucket`); often required by self-hosted services. Defaults to enabled when a custom endpoint is set                                                         | auto        |
+| **Allow Private/Local Endpoints** | Permit custom endpoints on private/loopback/link-local addresses (e.g. `192.168.x.x`, `localhost`). Required for self-hosted storage on the boat LAN; off by default to prevent SSRF (since v0.7.44-beta.2) | `false`     |
+| **Delete After Upload**           | Delete local files after upload                                                                                                                                                                             | `false`     |
 
 > **Upload timeouts (v0.7.44+):** cloud requests are bounded (10 s to connect, 60 s per request) so a dead or stalled uplink fails the upload — which is retried — instead of hanging the daily export pipeline.
 
@@ -319,11 +339,13 @@ This eliminates the previous 3-step process of registering commands, adding path
 ### Path Configuration Storage
 
 Path configurations are stored separately from plugin configuration in:
+
 ```
 ~/.signalk/signalk-parquet/webapp-config.json
 ```
 
 This allows for:
+
 - Independent management of path configurations
 - Better separation of concerns
 - Easier backup and migration of path settings
@@ -334,6 +356,7 @@ This allows for:
 Regimens allow you to control data collection based on SignalK commands:
 
 **Example**: Weather data collection with source filtering
+
 ```json
 {
   "path": "environment.wind.angleApparent",
@@ -347,6 +370,7 @@ Regimens allow you to control data collection based on SignalK commands:
 **Note**: Source filtering accesses raw data before SignalK server arbitration, allowing collection of data from specific sources that might otherwise be filtered out.
 
 **Multi-Vessel Example**: Collect navigation data from all vessels except specific MMSI numbers
+
 ```json
 {
   "path": "navigation.position",
@@ -357,6 +381,7 @@ Regimens allow you to control data collection based on SignalK commands:
 ```
 
 **Command Path**: Command paths are automatically created when registering commands
+
 ```json
 {
   "path": "commands.captureWeather",
@@ -395,8 +420,8 @@ interface PluginConfig {
 interface CloudUploadConfig {
   provider: 'none' | 's3' | 'r2';
   bucket?: string;
-  region?: string;       // S3 only
-  accountId?: string;    // R2 only (Cloudflare account ID)
+  region?: string; // S3 only
+  accountId?: string; // R2 only (Cloudflare account ID)
   keyPrefix?: string;
   accessKeyId?: string;
   secretAccessKey?: string;
@@ -449,7 +474,8 @@ interface PluginState {
 API routes are fully typed:
 
 ```typescript
-router.get('/api/paths', 
+router.get(
+  '/api/paths',
   (_: TypedRequest, res: TypedResponse<PathsApiResponse>) => {
     // Typed request/response handling
   }
@@ -489,6 +515,7 @@ output_directory/
 ```
 
 **Partition Structure:**
+
 - `tier=` - Aggregation level: `raw`, `5s`, `60s`, `1h`
 - `context=` - Vessel context (sanitized: `.` → `__`, `:` → `-`)
 - `path=` - SignalK path (sanitized: `.` → `__`)
@@ -504,6 +531,7 @@ output_directory/
 If you have existing data in the legacy flat structure, use the Migration API to convert to Hive partitioning. The Status tab shows the **Migrate to Hive Partitioning** panel only while a legacy `vessels/` directory exists in the data directory (checked via `GET /api/migrate/legacy-check`, a directory lookup rather than a scan); on a fully migrated install the panel is hidden and the API below remains available (v0.7.44-beta.6+).
 
 **1. Scan for migratable files:**
+
 ```bash
 curl -X POST http://localhost:3000/plugins/signalk-parquet/api/migrate/scan \
   -H "Content-Type: application/json" \
@@ -511,12 +539,14 @@ curl -X POST http://localhost:3000/plugins/signalk-parquet/api/migrate/scan \
 ```
 
 Response includes:
+
 - Total files to migrate
 - Total size in bytes
 - Files grouped by SignalK path
 - Estimated migration time
 
 **2. Start migration:**
+
 ```bash
 curl -X POST http://localhost:3000/plugins/signalk-parquet/api/migrate \
   -H "Content-Type: application/json" \
@@ -529,63 +559,66 @@ curl -X POST http://localhost:3000/plugins/signalk-parquet/api/migrate \
 ```
 
 **3. Check progress:**
+
 ```bash
 curl http://localhost:3000/plugins/signalk-parquet/api/migrate/progress/{jobId}
 ```
 
 **4. Cancel if needed:**
+
 ```bash
 curl -X POST http://localhost:3000/plugins/signalk-parquet/api/migrate/cancel/{jobId}
 ```
 
 **Migration Options:**
-| Option | Description | Default |
-|--------|-------------|---------|
-| `sourceDirectory` | Source directory to scan | Plugin data directory |
-| `targetDirectory` | Target directory for Hive files | Same as source |
-| `targetTier` | Target aggregation tier | `raw` |
-| `deleteSourceAfterMigration` | Delete source files after successful migration | `false` |
+
+| Option                       | Description                                    | Default               |
+| ---------------------------- | ---------------------------------------------- | --------------------- |
+| `sourceDirectory`            | Source directory to scan                       | Plugin data directory |
+| `targetDirectory`            | Target directory for Hive files                | Same as source        |
+| `targetTier`                 | Target aggregation tier                        | `raw`                 |
+| `deleteSourceAfterMigration` | Delete source files after successful migration | `false`               |
 
 ### Data Schema
 
 Each record contains:
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `received_timestamp` | string | When the plugin received the data |
-| `signalk_timestamp` | string | Original SignalK timestamp |
-| `context` | string | SignalK context (e.g., `vessels.self`) |
-| `path` | string | SignalK path |
-| `value` | DOUBLE/BOOLEAN/INT64/UTF8 | **Smart typed values** - numbers stored as DOUBLE, booleans as BOOLEAN, etc. |
-| `value_json` | string | JSON representation for complex values |
-| `source` | string | Complete source information |
-| `source_label` | string | Source label |
-| `source_type` | string | Source type |
-| `source_pgn` | number | PGN number (if applicable) |
-| `meta` | string | Metadata information |
+| Field                | Type                      | Description                                                                  |
+| -------------------- | ------------------------- | ---------------------------------------------------------------------------- |
+| `received_timestamp` | string                    | When the plugin received the data                                            |
+| `signalk_timestamp`  | string                    | Original SignalK timestamp                                                   |
+| `context`            | string                    | SignalK context (e.g., `vessels.self`)                                       |
+| `path`               | string                    | SignalK path                                                                 |
+| `value`              | DOUBLE/BOOLEAN/INT64/UTF8 | **Smart typed values** - numbers stored as DOUBLE, booleans as BOOLEAN, etc. |
+| `value_json`         | string                    | JSON representation for complex values                                       |
+| `source`             | string                    | Complete source information                                                  |
+| `source_label`       | string                    | Source label                                                                 |
+| `source_type`        | string                    | Source type                                                                  |
+| `source_pgn`         | number                    | PGN number (if applicable)                                                   |
+| `meta`               | string                    | Metadata information                                                         |
 
 #### Aggregated Tier Schema (5s, 60s, 1h)
 
 Aggregated tiers use a different schema optimized for statistical queries:
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `bucket_time` | TIMESTAMP | Start of the aggregation time bucket |
-| `context` | UTF8 | SignalK context |
-| `path` | UTF8 | SignalK path |
-| `value_avg` | DOUBLE | Average value in bucket |
-| `value_min` | DOUBLE | Minimum value (NULL for angular paths) |
-| `value_max` | DOUBLE | Maximum value (NULL for angular paths) |
-| `sample_count` | INT64 | Number of raw samples aggregated |
-| `value_sin_avg` | DOUBLE | Average of sin(value) — angular paths only, for lossless re-aggregation |
-| `value_cos_avg` | DOUBLE | Average of cos(value) — angular paths only, for lossless re-aggregation |
+| Field           | Type      | Description                                                             |
+| --------------- | --------- | ----------------------------------------------------------------------- |
+| `bucket_time`   | TIMESTAMP | Start of the aggregation time bucket                                    |
+| `context`       | UTF8      | SignalK context                                                         |
+| `path`          | UTF8      | SignalK path                                                            |
+| `value_avg`     | DOUBLE    | Average value in bucket                                                 |
+| `value_min`     | DOUBLE    | Minimum value (NULL for angular paths)                                  |
+| `value_max`     | DOUBLE    | Maximum value (NULL for angular paths)                                  |
+| `sample_count`  | INT64     | Number of raw samples aggregated                                        |
+| `value_sin_avg` | DOUBLE    | Average of sin(value) — angular paths only, for lossless re-aggregation |
+| `value_cos_avg` | DOUBLE    | Average of cos(value) — angular paths only, for lossless re-aggregation |
 
 #### Smart Data Types
 
 The plugin now intelligently detects and preserves native data types:
 
 - **Numbers**: Stored as `DOUBLE` (floating point) or `INT64` (integers)
-- **Booleans**: Stored as `BOOLEAN` 
+- **Booleans**: Stored as `BOOLEAN`
 - **Strings**: Stored as `UTF8`
 - **Objects**: Serialized to JSON and stored as `UTF8`
 - **Mixed Types**: Falls back to `UTF8` when a path contains multiple data types
@@ -607,60 +640,65 @@ This provides better compression, faster queries, and proper type safety for dat
 
 ### API Endpoints
 
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/api/paths` | GET | List available data paths |
-| `/api/files/:path` | GET | List files for a path |
-| `/api/sample/:path` | GET | Sample data from a path |
-| `/api/query` | POST | Execute SQL query (⚠️ disabled by default; enabled when **either** the `Enable Raw SQL` plugin setting is on **or** the `SIGNALK_PARQUET_RAW_SQL=true` environment variable is set — one gate is sufficient, both are not required). Runs on a sandboxed DuckDB instance (v0.7.44+): no network access, no cloud credentials, reads restricted to the data directory. From v0.7.44-beta.4 the SQL must be a single read-only statement (ATTACH/COPY/EXPORT/SET/PRAGMA and file- or database-opening table functions are rejected with a 400 naming the reason), the sandbox configuration is locked, and results are capped at 10,000 rows with `truncated: true` in the response when the cap applied |
-| `/api/config/paths` | GET/POST/PUT/DELETE | Manage path configurations |
-| `/api/test-cloud` | POST | Test cloud storage connection |
-| `/api/health` | GET | Health check |
-| `/api/version` | GET | Plugin version |
-| `/api/store/stats` | GET | Data store statistics |
-| **SignalK History API** | | |
-| `/signalk/v1/history/values` | GET | SignalK History API - Get historical values |
-| `/signalk/v1/history/contexts` | GET | SignalK History API - Get available contexts |
-| `/api/history/contexts/spatial` | GET | Get contexts with position data in bbox or radius |
-| `/signalk/v1/history/paths` | GET | SignalK History API - Get available paths |
-| `/signalk/v2/api/history/*` | GET | SignalK v2 API - handled by registered HistoryApi provider (spec-compliant) |
-| **Migration API** | | |
-| `/api/migrate/legacy-check` | GET | Whether a legacy flat-layout `vessels/` directory exists (drives the Status tab panel; no tree walk) |
-| `/api/migrate/scan` | POST | Scan directory for migratable files |
-| `/api/migrate` | POST | Start migration job |
-| `/api/migrate/progress/:jobId` | GET | Get migration job progress |
-| `/api/migrate/cancel/:jobId` | POST | Cancel running migration job |
-| `/api/migrate/jobs` | GET | List all migration jobs |
-| `/api/import/gpx/options` | GET | Importable SignalK paths with default-checked flag, source GPX element and unit (the UI builds its checkboxes from this) |
-| `/api/import/gpx/upload` | POST | Multipart upload of `.gpx` files (field `files`); starts an import job |
-| `/api/import/gpx/scan` | POST | Scan a server directory for `.gpx` files |
-| `/api/import/gpx` | POST | Start an import from a server directory or file list |
-| `/api/import/gpx/progress/:jobId` | GET | Get import job progress |
-| `/api/import/gpx/cancel/:jobId` | POST | Cancel a running import job |
-| `/api/import/gpx/jobs` | GET | List import jobs |
-| **Buffer Status API** | | |
-| `/api/buffer/stats` | GET | Get SQLite buffer statistics |
-| `/api/buffer/export` | POST | Force immediate export of pending records |
-| `/api/buffer/health` | GET | Get buffer health status |
-| **Validation & Repair API** | | |
-| `/api/validate-schemas` | POST | Scan and validate Parquet schemas |
-| `/api/validate-schemas/progress/:jobId` | GET | Get validation progress |
-| `/api/validate-schemas/cancel/:jobId` | POST | Cancel validation job |
-| `/api/repair-schemas` | POST | Repair schema violations |
-| `/api/repair-schemas/progress/:jobId` | GET | Get repair progress |
-| `/api/repair-schemas/cancel/:jobId` | POST | Cancel repair job |
-| **Vector Averaging Migration** | | |
-| `/api/migrate/vector-averaging` | POST | Migrate to vector averaging aggregation |
-| `/api/migrate/vector-averaging/:jobId` | GET | Get migration progress |
-| `/api/migrate/vector-averaging/cancel/:jobId` | POST | Cancel migration |
-| **Aggregation API** | | |
-| `/api/aggregate` | POST | Trigger aggregation for all tiers |
-| `/api/aggregate/:sourceTier/:targetTier` | POST | Aggregate specific tier pair |
-| **Cloud Sync API** | | |
-| `/api/cloud/compare` | POST | Compare local vs cloud data |
-| `/api/cloud/compare/:jobId` | GET | Get comparison progress |
-| `/api/cloud/sync` | POST | Sync data to cloud |
-| `/api/cloud/sync/:jobId` | GET | Get sync progress |
+| Endpoint                                      | Method              | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| --------------------------------------------- | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `/api/paths`                                  | GET                 | List available data paths                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| `/api/files/:path`                            | GET                 | List files for a path                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `/api/sample/:path`                           | GET                 | Sample data from a path                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| `/api/query`                                  | POST                | Execute SQL query (⚠️ disabled by default; enabled when **either** the `Enable Raw SQL` plugin setting is on **or** the `SIGNALK_PARQUET_RAW_SQL=true` environment variable is set — one gate is sufficient, both are not required). Runs on a sandboxed DuckDB instance (v0.7.44+): no network access, no cloud credentials, reads restricted to the data directory. From v0.7.44-beta.4 the SQL must be a single read-only statement (ATTACH/COPY/EXPORT/SET/PRAGMA and file- or database-opening table functions are rejected with a 400 naming the reason), the sandbox configuration is locked, and results are capped at 10,000 rows with `truncated: true` in the response when the cap applied |
+| `/api/config/paths`                           | GET/POST/PUT/DELETE | Manage path configurations                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `/api/test-cloud`                             | POST                | Test cloud storage connection                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `/api/health`                                 | GET                 | Health check                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| `/api/version`                                | GET                 | Plugin version                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `/api/store/stats`                            | GET                 | Data store statistics                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| **SignalK History API**                       |                     |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `/signalk/v1/history/values`                  | GET                 | SignalK History API - Get historical values                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `/signalk/v1/history/contexts`                | GET                 | SignalK History API - Get available contexts                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| `/api/history/contexts/spatial`               | GET                 | Get contexts with position data in bbox or radius                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `/signalk/v1/history/paths`                   | GET                 | SignalK History API - Get available paths                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| `/signalk/v2/api/history/*`                   | GET                 | SignalK v2 API - handled by registered HistoryApi provider (spec-compliant)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| **Migration API**                             |                     |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `/api/migrate/legacy-check`                   | GET                 | Whether a legacy flat-layout `vessels/` directory exists (drives the Status tab panel; no tree walk)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `/api/migrate/scan`                           | POST                | Scan directory for migratable files                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `/api/migrate`                                | POST                | Start migration job                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `/api/migrate/progress/:jobId`                | GET                 | Get migration job progress                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `/api/migrate/cancel/:jobId`                  | POST                | Cancel running migration job                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| `/api/migrate/jobs`                           | GET                 | List all migration jobs                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| `/api/compact/scan`                           | POST                | Plan a per-year compaction of one tier (`tier`, `beforeYear`, optional `pathFilter`): the (context, path, year) groups with more than one day file, without changing anything                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `/api/compact`                                | POST                | Start a compaction job: each group's day files are merged into one `year_compact_<year>_<stamp>.parquet` in the year directory and the day files removed. Runs in a short-lived forked worker (v0.7.44-beta.8+) so the memory DuckDB takes for the merge leaves with it; earlier versions merged in-process and kept roughly the merged volume's worth of memory until restart                                                                                                                                                                                                                                                                                                                         |
+| `/api/compact/progress/:jobId`                | GET                 | Compaction job progress                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| `/api/compact/cancel/:jobId`                  | POST                | Cancel a running compaction at the next group boundary                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `/api/compact/jobs`                           | GET                 | List compaction jobs                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `/api/import/gpx/options`                     | GET                 | Importable SignalK paths with default-checked flag, source GPX element and unit (the UI builds its checkboxes from this)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| `/api/import/gpx/upload`                      | POST                | Multipart upload of `.gpx` files (field `files`); starts an import job                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `/api/import/gpx/scan`                        | POST                | Scan a server directory for `.gpx` files                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| `/api/import/gpx`                             | POST                | Start an import from a server directory or file list                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `/api/import/gpx/progress/:jobId`             | GET                 | Get import job progress                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| `/api/import/gpx/cancel/:jobId`               | POST                | Cancel a running import job                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `/api/import/gpx/jobs`                        | GET                 | List import jobs                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| **Buffer Status API**                         |                     |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `/api/buffer/stats`                           | GET                 | Get SQLite buffer statistics                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| `/api/buffer/export`                          | POST                | Force immediate export of pending records                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| `/api/buffer/health`                          | GET                 | Get buffer health status                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| **Validation & Repair API**                   |                     |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `/api/validate-schemas`                       | POST                | Scan and validate Parquet schemas                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `/api/validate-schemas/progress/:jobId`       | GET                 | Get validation progress                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| `/api/validate-schemas/cancel/:jobId`         | POST                | Cancel validation job                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `/api/repair-schemas`                         | POST                | Repair schema violations                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| `/api/repair-schemas/progress/:jobId`         | GET                 | Get repair progress                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `/api/repair-schemas/cancel/:jobId`           | POST                | Cancel repair job                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| **Vector Averaging Migration**                |                     |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `/api/migrate/vector-averaging`               | POST                | Migrate to vector averaging aggregation                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| `/api/migrate/vector-averaging/:jobId`        | GET                 | Get migration progress                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `/api/migrate/vector-averaging/cancel/:jobId` | POST                | Cancel migration                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| **Aggregation API**                           |                     |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `/api/aggregate`                              | POST                | Trigger aggregation for all tiers                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `/api/aggregate/:sourceTier/:targetTier`      | POST                | Aggregate specific tier pair                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| **Cloud Sync API**                            |                     |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `/api/cloud/compare`                          | POST                | Compare local vs cloud data                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `/api/cloud/compare/:jobId`                   | GET                 | Get comparison progress                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| `/api/cloud/sync`                             | POST                | Sync data to cloud                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `/api/cloud/sync/:jobId`                      | GET                 | Get sync progress                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 
 ## DuckDB Integration
 
@@ -669,6 +707,7 @@ This provides better compression, faster queries, and proper type safety for dat
 > **Globbing the Hive-partitioned store:** paths under `tier=.../context=.../path=.../` are partitioned as `year=*/day=*/`. Glob them with `year=*/day=*/*.parquet` — **not** `**/*.parquet`. The recursive `**` descends into the sibling `quarantine/`, `failed/`, `processed/`, and `repaired/` directories, and DuckDB will abort the whole query if it hits a quarantined 0-byte file (`too small to be a Parquet file`). The Query Database "Generate Query" button produces the correct glob automatically.
 
 #### Basic Queries
+
 ```sql
 -- Get latest 10 records from navigation position
 SELECT * FROM read_parquet('/path/to/navigation/position/*.parquet', union_by_name=true)
@@ -792,6 +831,7 @@ ORDER BY time_bucket;
 ```
 
 #### Available Spatial Functions
+
 - `ST_Point(longitude, latitude)` - Create point geometries
 - `ST_Distance_Sphere(point1, point2)` - Calculate distances in meters
 - `ST_AsText(geometry)` - Convert to Well-Known Text format
@@ -804,16 +844,18 @@ The plugin provides full SignalK History API compliance, allowing you to query h
 
 ### Available Endpoints
 
-| Endpoint | Description | Parameters |
-|----------|-------------|------------|
-| `/signalk/v1/history/values` | Get historical values for specified paths | **Standard patterns** (see below)<br>**Optional**: `resolution`, `includeMovingAverages`, `bbox`, `radius` |
-| `/signalk/v1/history/contexts` | Get available vessel contexts for time range | **Time Range**: Any standard pattern (see below) ⚠️<br>Returns only contexts with data in specified range |
-| `/signalk/v1/history/paths` | Get available SignalK paths for time range | **Time Range**: Any standard pattern (see below) ⚠️<br>Returns only paths with data in specified range |
-| `/signalk/v2/api/history/*` | **Spec-compliant** - handled by registered `HistoryApi` provider | Per SignalK spec (ISO 8601 durations, no extensions) |
+| Endpoint                       | Description                                                      | Parameters                                                                                                 |
+| ------------------------------ | ---------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `/signalk/v1/history/values`   | Get historical values for specified paths                        | **Standard patterns** (see below)<br>**Optional**: `resolution`, `includeMovingAverages`, `bbox`, `radius` |
+| `/signalk/v1/history/contexts` | Get available vessel contexts for time range                     | **Time Range**: Any standard pattern (see below) ⚠️<br>Returns only contexts with data in specified range  |
+| `/signalk/v1/history/paths`    | Get available SignalK paths for time range                       | **Time Range**: Any standard pattern (see below) ⚠️<br>Returns only paths with data in specified range     |
+| `/signalk/v2/api/history/*`    | **Spec-compliant** - handled by registered `HistoryApi` provider | Per SignalK spec (ISO 8601 durations, no extensions)                                                       |
 
 > **Note:** V2 routes (`/signalk/v2/api/history/*`) are handled by the registered `HistoryApi` provider (`history-provider.ts`) for SignalK server multi-provider support. V1 routes include signalk-parquet extensions (spatial filtering, shorthand durations, etc.) not available in V2.
 
 > ⚠️ **Extension**: The `/contexts` and `/paths` endpoints accept time range parameters as **optional**. The official spec requires time parameters; without them, these endpoints return all available data (more permissive behavior).
+
+> **Bounded reads (v0.7.44-beta.8+):** every history read opens only the parquet files of the days the window touches (plus a compacted year's file) and takes file metadata from parquet footers in JavaScript rather than from DuckDB. Earlier versions opened a path's whole history per request and the memory DuckDB used for that stayed in the server; on a station with thousands of AIS vessels a seven-day contexts or paths call added hundreds of megabytes each time.
 
 > **Exact context ids (v0.7.44-beta.3+):** the contexts endpoints return vessel context strings exactly as recorded — resolved from the stored data rather than reconstructed from partition directory names, whose encoding is lossy. Earlier versions mangled UUID-identified vessels (`urn:mrn:signalk:uuid:…`, the default when no MMSI is configured) by turning the UUID's dashes into colons.
 
@@ -838,35 +880,35 @@ and receives the server's hello followed by delta messages replayed from the sto
 
 The History API supports 5 standard SignalK time query patterns:
 
-| Pattern | Parameters | Description | Example |
-|---------|-----------|-------------|---------|
-| **1** | `duration` | Query back from now | `?duration=1h` |
-| **2** | `from` + `duration` | Query forward from start | `?from=2025-01-01T00:00:00Z&duration=1h` |
-| **3** | `to` + `duration` | Query backward to end | `?to=2025-01-01T12:00:00Z&duration=1h` |
-| **4** | `from` | From start to now | `?from=2025-01-01T00:00:00Z` |
-| **5** | `from` + `to` | Specific range | `?from=2025-01-01T00:00:00Z&to=2025-01-02T00:00:00Z` |
+| Pattern | Parameters          | Description              | Example                                              |
+| ------- | ------------------- | ------------------------ | ---------------------------------------------------- |
+| **1**   | `duration`          | Query back from now      | `?duration=1h`                                       |
+| **2**   | `from` + `duration` | Query forward from start | `?from=2025-01-01T00:00:00Z&duration=1h`             |
+| **3**   | `to` + `duration`   | Query backward to end    | `?to=2025-01-01T12:00:00Z&duration=1h`               |
+| **4**   | `from`              | From start to now        | `?from=2025-01-01T00:00:00Z`                         |
+| **5**   | `from` + `to`       | Specific range           | `?from=2025-01-01T00:00:00Z&to=2025-01-02T00:00:00Z` |
 
 ### Query Parameters
 
-| Parameter | Description | Format | Examples |
-|-----------|-------------|---------|----------|
-| **Required for `/values`:** | | | |
-| `paths` | SignalK paths with optional aggregation | `path:method` | `navigation.speedOverGround:average` |
-| **Time Range:** | Use one of the 5 standard patterns above | | |
-| `duration` | Time period (see Duration Formats below) | Multiple formats | `PT1H`, `3600`, `1h` |
-| `from` | Start time (ISO 8601) | ISO datetime | `2025-01-01T00:00:00Z` |
-| `to` | End time (ISO 8601) | ISO datetime | `2025-01-01T06:00:00Z` |
-| **Optional:** | | | |
-| `context` | Vessel context | `vessels.self` or `vessels.<id>` | `vessels.self` (default) |
-| `resolution` | Time bucket size in **seconds** | Seconds or time expression | `60`, `1m` (1 minute buckets) |
+| Parameter                   | Description                              | Format                           | Examples                             |
+| --------------------------- | ---------------------------------------- | -------------------------------- | ------------------------------------ |
+| **Required for `/values`:** |                                          |                                  |                                      |
+| `paths`                     | SignalK paths with optional aggregation  | `path:method`                    | `navigation.speedOverGround:average` |
+| **Time Range:**             | Use one of the 5 standard patterns above |                                  |                                      |
+| `duration`                  | Time period (see Duration Formats below) | Multiple formats                 | `PT1H`, `3600`, `1h`                 |
+| `from`                      | Start time (ISO 8601)                    | ISO datetime                     | `2025-01-01T00:00:00Z`               |
+| `to`                        | End time (ISO 8601)                      | ISO datetime                     | `2025-01-01T06:00:00Z`               |
+| **Optional:**               |                                          |                                  |                                      |
+| `context`                   | Vessel context                           | `vessels.self` or `vessels.<id>` | `vessels.self` (default)             |
+| `resolution`                | Time bucket size in **seconds**          | Seconds or time expression       | `60`, `1m` (1 minute buckets)        |
 
 #### Duration Formats
 
-| Format | Example | Description |
-|--------|---------|-------------|
-| ISO 8601 | `PT1H`, `PT30M`, `P1D`, `PT1H30M` | Standard ISO duration |
-| Integer seconds | `3600`, `60` | Plain number as seconds |
-| Shorthand ⚠️ | `1h`, `30m`, `5s`, `2d` | Human-friendly format (extension) |
+| Format          | Example                           | Description                       |
+| --------------- | --------------------------------- | --------------------------------- |
+| ISO 8601        | `PT1H`, `PT30M`, `P1D`, `PT1H30M` | Standard ISO duration             |
+| Integer seconds | `3600`, `60`                      | Plain number as seconds           |
+| Shorthand ⚠️    | `1h`, `30m`, `5s`, `2d`           | Human-friendly format (extension) |
 
 > ⚠️ Shorthand format is a non-standard extension for convenience. Use ISO 8601 or integer seconds for maximum compatibility.
 
@@ -874,29 +916,34 @@ The History API supports 5 standard SignalK time query patterns:
 
 > **BREAKING CHANGE (v0.7.0+)**: Resolution is now in **seconds** (was milliseconds).
 
-| Old (v0.6.x) | New (v0.7.0+) |
-|--------------|---------------|
-| `?resolution=60000` | `?resolution=60` or `?resolution=1m` |
-| `?resolution=5000` | `?resolution=5` or `?resolution=5s` |
+| Old (v0.6.x)         | New (v0.7.0+)                         |
+| -------------------- | ------------------------------------- |
+| `?resolution=60000`  | `?resolution=60` or `?resolution=1m`  |
+| `?resolution=5000`   | `?resolution=5` or `?resolution=5s`   |
 | `?resolution=300000` | `?resolution=300` or `?resolution=5m` |
 
 #### Aggregation Methods
 
-| Method | Description | Example |
-|--------|-------------|---------|
-| `average` | Average of values in bucket | `path:average` |
-| `min` | Minimum value in bucket | `path:min` |
-| `max` | Maximum value in bucket | `path:max` |
-| `first` | First value in bucket | `path:first` |
-| `last` | Last value in bucket | `path:last` |
-| `mid` | Median value in bucket | `path:mid` |
+| Method         | Description                                                                                            | Example             |
+| -------------- | ------------------------------------------------------------------------------------------------------ | ------------------- |
+| `average`      | Average of values in bucket                                                                            | `path:average`      |
+| `min`          | Minimum value in bucket                                                                                | `path:min`          |
+| `max`          | Maximum value in bucket                                                                                | `path:max`          |
+| `first`        | First value in bucket                                                                                  | `path:first`        |
+| `last`         | Last value in bucket                                                                                   | `path:last`         |
+| `mid`          | Median value in bucket                                                                                 | `path:mid`          |
 | `middle_index` | Value of the chronologically middle sample in bucket (first of the two middle samples for even counts) | `path:middle_index` |
-| `sma` | Simple Moving Average, window default 5 samples (returns only smoothed value) | `path:sma:5` |
-| `ema` | Exponential Moving Average, alpha default 0.2 (returns only smoothed value) | `path:ema:0.2` |
+| `sma`          | Simple Moving Average, window default 5 samples (returns only smoothed value)                          | `path:sma:5`        |
+| `ema`          | Exponential Moving Average, alpha default 0.2 (returns only smoothed value)                            | `path:ema:0.2`      |
 
 > **`middle_index` (v0.7.44-beta.5+):** earlier versions documented this method but did not implement it — the raw tier and v2 provider returned `first`, and the aggregated tiers returned nothing. It now returns the chronologically middle sample on every query path, with all components of an object path (e.g. position) taken from the same sample.
 
+> **`first` / `last` (v0.7.44-beta.8+):** the earliest and latest sample of the bucket by timestamp. Earlier versions returned an arbitrary sample of the bucket, and two identical requests could disagree.
+
+> **Window edges (v0.7.44-beta.8+):** a window is `[from, to)` to the millisecond. Earlier versions shifted a window whose bound had zero milliseconds by up to a second at each edge.
+
 **SMA/EMA as aggregation methods (official SignalK syntax):**
+
 ```bash
 # SMA with window of 5 - returns ONLY the smoothed value (V1 with shorthand duration)
 curl "http://localhost:3000/signalk/v1/history/values?duration=1h&paths=navigation.speedOverGround:sma:5"
@@ -915,9 +962,9 @@ receivers or heading sensors) and you want the history of just one of them. The
 source reference is the delta's `$source` value, and the filter applies after
 any optional aggregation method.
 
-| Format | Description | Example |
-|--------|-------------|---------|
-| `path\|sourceRef` | Filter a path to one source | `navigation.headingMagnetic\|n2k-on-ve.can0.115` |
+| Format                   | Description                    | Example                                              |
+| ------------------------ | ------------------------------ | ---------------------------------------------------- |
+| `path\|sourceRef`        | Filter a path to one source    | `navigation.headingMagnetic\|n2k-on-ve.can0.115`     |
 | `path:method\|sourceRef` | Aggregate and filter by source | `navigation.speedOverGround:max\|n2k-on-ve.can0.115` |
 
 ```bash
@@ -963,18 +1010,19 @@ requested range only.
 
 #### Extension Parameters (non-standard)
 
-| Parameter | Description | Format | Examples |
-|-----------|-------------|---------|----------|
-| `paths` ⚠️ | Extended smoothing syntax: `path:method:smoothing:param` (returns raw AND smoothed) | Extended format | `navigation.speedOverGround:average:sma:5` |
-| `includeMovingAverages` ⚠️ | Include EMA/SMA calculations | `true` or `1` | `includeMovingAverages=true` |
-| `bbox` ⚠️ | Bounding box filter: `west,south,east,north` | Coordinates | `bbox=-74.5,40.2,-73.8,40.9` |
-| `radius` ⚠️ | Radius filter: `lon,lat,meters` (GeoJSON convention) | Coordinates + meters | `radius=-73.981,40.646,100` |
+| Parameter                  | Description                                                                         | Format               | Examples                                   |
+| -------------------------- | ----------------------------------------------------------------------------------- | -------------------- | ------------------------------------------ |
+| `paths` ⚠️                 | Extended smoothing syntax: `path:method:smoothing:param` (returns raw AND smoothed) | Extended format      | `navigation.speedOverGround:average:sma:5` |
+| `includeMovingAverages` ⚠️ | Include EMA/SMA calculations                                                        | `true` or `1`        | `includeMovingAverages=true`               |
+| `bbox` ⚠️                  | Bounding box filter: `west,south,east,north`                                        | Coordinates          | `bbox=-74.5,40.2,-73.8,40.9`               |
+| `radius` ⚠️                | Radius filter: `lon,lat,meters` (GeoJSON convention)                                | Coordinates + meters | `radius=-73.981,40.646,100`                |
 
 > ⚠️ **Extensions**: Parameters marked with ⚠️ are non-standard extensions to the SignalK History API specification. They provide additional functionality but may not be supported by other SignalK history providers.
 
 ### Query Examples
 
 #### Pattern 1: Duration Only (Query back from now)
+
 ```bash
 # Last hour of wind data
 curl "http://localhost:3000/signalk/v1/history/values?duration=1h&paths=environment.wind.speedApparent"
@@ -985,24 +1033,28 @@ curl "http://localhost:3000/signalk/v1/history/values?duration=30m&paths=environ
 ```
 
 #### Pattern 2: From + Duration (Query forward)
+
 ```bash
 # 6 hours forward from specific time
 curl "http://localhost:3000/signalk/v1/history/values?from=2025-01-01T00:00:00Z&duration=6h&paths=navigation.position"
 ```
 
 #### Pattern 3: To + Duration (Query backward)
+
 ```bash
 # 2 hours backward to specific time
 curl "http://localhost:3000/signalk/v1/history/values?to=2025-01-01T12:00:00Z&duration=2h&paths=environment.wind.speedApparent"
 ```
 
 #### Pattern 4: From Only (From start to now)
+
 ```bash
 # From specific time until now
 curl "http://localhost:3000/signalk/v1/history/values?from=2025-01-01T00:00:00Z&paths=navigation.speedOverGround"
 ```
 
 #### Pattern 5: From + To (Specific range)
+
 ```bash
 # Specific 24-hour period
 curl "http://localhost:3000/signalk/v1/history/values?from=2025-01-01T00:00:00Z&to=2025-01-02T00:00:00Z&paths=navigation.position"
@@ -1011,31 +1063,37 @@ curl "http://localhost:3000/signalk/v1/history/values?from=2025-01-01T00:00:00Z&
 #### Advanced Query Examples
 
 **Multiple paths with time alignment:**
+
 ```bash
 curl "http://localhost:3000/signalk/v1/history/values?duration=6h&paths=environment.wind.angleApparent,environment.wind.speedApparent,navigation.position&resolution=1m"
 ```
 
 **Multiple aggregations of same path:**
+
 ```bash
 curl "http://localhost:3000/signalk/v1/history/values?from=2025-01-01T00:00:00Z&to=2025-01-01T06:00:00Z&paths=environment.wind.speedApparent:average,environment.wind.speedApparent:min,environment.wind.speedApparent:max&resolution=60"
 ```
 
 **With moving averages for trend analysis:**
+
 ```bash
 curl "http://localhost:3000/signalk/v1/history/values?duration=24h&paths=electrical.batteries.512.voltage&includeMovingAverages=true&resolution=5m"
 ```
 
 **Different temporal samples:**
+
 ```bash
 curl "http://localhost:3000/signalk/v1/history/values?duration=1h&paths=navigation.position:first,navigation.position:middle_index,navigation.position:last&resolution=1m"
 ```
 
 **Using ISO 8601 duration format:**
+
 ```bash
 curl "http://localhost:3000/signalk/v1/history/values?duration=PT1H30M&paths=navigation.speedOverGround&resolution=30"
 ```
 
 **Using integer seconds for duration:**
+
 ```bash
 curl "http://localhost:3000/signalk/v1/history/values?duration=3600&paths=navigation.speedOverGround&resolution=10s"
 ```
@@ -1043,36 +1101,43 @@ curl "http://localhost:3000/signalk/v1/history/values?duration=3600&paths=naviga
 #### Context and Path Discovery
 
 **Get contexts with data in last hour:**
+
 ```bash
 curl "http://localhost:3000/signalk/v1/history/contexts?duration=1h"
 ```
 
 **Get contexts for specific time range:**
+
 ```bash
 curl "http://localhost:3000/signalk/v1/history/contexts?from=2025-01-01T00:00:00Z&to=2025-01-07T00:00:00Z"
 ```
 
 **Get vessels in a bounding box:**
+
 ```bash
 curl "http://localhost:3000/api/history/contexts/spatial?duration=7d&bbox=-74.1,40.5,-73.8,40.8"
 ```
 
 **Get vessels within radius (lon,lat,meters):**
+
 ```bash
 curl "http://localhost:3000/api/history/contexts/spatial?duration=24h&radius=-74.01,40.66,5000"
 ```
 
 **Get available paths with recent data:**
+
 ```bash
 curl "http://localhost:3000/signalk/v1/history/paths?duration=24h"
 ```
 
 **Get all paths (no time filter):**
+
 ```bash
 curl "http://localhost:3000/signalk/v1/history/paths"
 ```
 
 #### Duration Formats
+
 - `30s` - 30 seconds
 - `15m` - 15 minutes
 - `2h` - 2 hours
@@ -1083,18 +1148,21 @@ curl "http://localhost:3000/signalk/v1/history/paths"
 Filter data by geographic location using bounding boxes or radius queries:
 
 **Bounding Box Filter:**
+
 ```bash
 # Position data within a bounding box (west,south,east,north)
 curl "http://localhost:3000/signalk/v1/history/values?duration=1h&paths=navigation.position&bbox=-74.5,40.2,-73.8,40.9"
 ```
 
 **Radius Filter:**
+
 ```bash
 # Position data within 100m of a point (lon,lat,meters — GeoJSON convention)
 curl "http://localhost:3000/signalk/v1/history/values?duration=1h&paths=navigation.position&radius=-73.981,40.646,100"
 ```
 
 **Spatial Correlation (filter non-position paths by location):**
+
 ```bash
 # Wind data when vessel was within 100m of point
 curl "http://localhost:3000/signalk/v1/history/values?duration=24h&paths=environment.wind.speedApparent&radius=-73.981,40.646,100"
@@ -1105,6 +1173,7 @@ curl "http://localhost:3000/signalk/v1/history/values?duration=7d&paths=environm
 ```
 
 **How Spatial Correlation Works:**
+
 - For **position paths** (e.g., `navigation.position`): Filters directly on lat/lon
 - For **non-position paths** (e.g., `environment.wind.speedApparent`): First queries position data to find timestamps when vessel was within the spatial filter, then returns only data from those times
 - Spatial correlation always uses `navigation.position` for location lookup
@@ -1121,12 +1190,14 @@ For queries spanning multiple sources, results are combined with UNION.
 
 **Cloud Query Optimization:**
 DuckDB's native cloud storage support provides:
+
 - **Partition pruning**: Hive structure (`year=/day=`) allows skipping irrelevant files
 - **Predicate pushdown**: WHERE clauses filter at Parquet level before transfer
 - **Projection pushdown**: Only SELECT columns are transferred
 - **Combined effect**: 70-99% reduction vs downloading full files
 
 **Requirements for cloud queries:**
+
 - Cloud upload must be configured (`provider: 's3'` or `'r2'`)
 - Valid credentials configured
 - Data must be uploaded using Hive partition structure
@@ -1134,6 +1205,7 @@ DuckDB's native cloud storage support provides:
 ### Timestamp Handling
 
 All timestamps follow ISO 8601 conventions:
+
 - **Bare timestamps** (e.g., `2025-08-13T09:00:00`) are treated as server local time
 - **Z-suffix** (e.g., `2025-08-13T09:00:00Z`) is UTC
 - **Explicit offset** (e.g., `2025-08-13T09:00:00-04:00`) is parsed as-is
@@ -1152,6 +1224,7 @@ curl "http://localhost:3000/signalk/v1/history/values?context=vessels.self&to=20
 ```
 
 **Get available contexts:**
+
 ```bash
 curl "http://localhost:3000/signalk/v1/history/contexts"
 ```
@@ -1160,30 +1233,34 @@ curl "http://localhost:3000/signalk/v1/history/contexts"
 
 The History API automatically aligns data from different paths using time bucketing to solve the common problem of misaligned timestamps. This enables:
 
-- **Plotting**: Data points align properly on charts  
+- **Plotting**: Data points align properly on charts
 - **Correlation**: Compare values from different sensors at the same time
 - **Export**: Clean, aligned datasets for analysis
 
 **Key Features:**
+
 - **Smart Type Handling**: Automatically handles numeric values (wind speed) and JSON objects (position)
 - **Robust Aggregation**: Uses proper SQL type casting to prevent type errors
 - **Configurable Resolution**: Time bucket size in seconds (default: auto-calculated based on time range)
 - **Multiple Aggregation Methods**: `average` for numeric data, `first` for complex objects
 
 **Parameters:**
+
 - `resolution` - Time bucket size in seconds (default: auto-calculated)
 - **Aggregation methods**: `average`, `min`, `max`, `first`, `last`, `mid`, `middle_index`
 
 **Aggregation Methods:**
+
 - **`average`** - Average value in time bucket (default for numeric data)
 - **`min`** - Minimum value in time bucket
 - **`max`** - Maximum value in time bucket
 - **`first`** - First value in time bucket (default for objects)
 - **`last`** - Last value in time bucket
-- **`mid`** ⚠️ - Median value (average of middle values for even counts) - *extension*
-- **`middle_index`** ⚠️ - Middle value by index (first of two middle values for even counts) - *extension*
+- **`mid`** ⚠️ - Median value (average of middle values for even counts) - _extension_
+- **`middle_index`** ⚠️ - Middle value by index (first of two middle values for even counts) - _extension_
 
 **When to Use Each Method:**
+
 - **Numeric data** (wind speed, voltage, etc.): Use `average`, `min`, `max` for statistics
 - **Position data**: Use `first`, `last`, `middle_index` for specific readings
 - **String/object data**: Avoid `mid` (unpredictable), prefer `first`, `last`, `middle_index`
@@ -1213,9 +1290,21 @@ The History API returns time-aligned data in standard SignalK format.
     }
   ],
   "data": [
-    ["2025-01-01T00:00:00Z", 12.5, {"latitude": 37.7749, "longitude": -122.4194}],
-    ["2025-01-01T00:01:00Z", 13.2, {"latitude": 37.7750, "longitude": -122.4195}],
-    ["2025-01-01T00:02:00Z", 11.8, {"latitude": 37.7751, "longitude": -122.4196}]
+    [
+      "2025-01-01T00:00:00Z",
+      12.5,
+      { "latitude": 37.7749, "longitude": -122.4194 }
+    ],
+    [
+      "2025-01-01T00:01:00Z",
+      13.2,
+      { "latitude": 37.775, "longitude": -122.4195 }
+    ],
+    [
+      "2025-01-01T00:02:00Z",
+      11.8,
+      { "latitude": 37.7751, "longitude": -122.4196 }
+    ]
   ]
 }
 ```
@@ -1248,14 +1337,33 @@ The History API returns time-aligned data in standard SignalK format.
     }
   ],
   "data": [
-    ["2025-01-01T00:00:00Z", 12.5, 12.5, 12.5, {"latitude": 37.7749, "longitude": -122.4194}],
-    ["2025-01-01T00:01:00Z", 13.2, 12.64, 12.85, {"latitude": 37.7750, "longitude": -122.4195}],
-    ["2025-01-01T00:02:00Z", 11.8, 12.45, 12.5, {"latitude": 37.7751, "longitude": -122.4196}]
+    [
+      "2025-01-01T00:00:00Z",
+      12.5,
+      12.5,
+      12.5,
+      { "latitude": 37.7749, "longitude": -122.4194 }
+    ],
+    [
+      "2025-01-01T00:01:00Z",
+      13.2,
+      12.64,
+      12.85,
+      { "latitude": 37.775, "longitude": -122.4195 }
+    ],
+    [
+      "2025-01-01T00:02:00Z",
+      11.8,
+      12.45,
+      12.5,
+      { "latitude": 37.7751, "longitude": -122.4196 }
+    ]
   ]
 }
 ```
 
 **Notes**:
+
 - Each data array element is `[timestamp, value1, value2, ...]` corresponding to the paths in the `values` array
 - Moving averages (EMA/SMA) are **opt-in** - add `includeMovingAverages=true` to include them
 - EMA/SMA are only calculated for numeric values; non-numeric values (objects, strings) show `null` for their EMA/SMA columns
@@ -1265,12 +1373,11 @@ The History API returns time-aligned data in standard SignalK format.
 
 When using extension parameters, the response may include additional non-standard fields:
 
-| Field | Added by | Description |
-|-------|----------|-------------|
+| Field                 | Added by       | Description                                        |
+| --------------------- | -------------- | -------------------------------------------------- |
 | `meta.autoConfigured` | Auto-discovery | Indicates paths were auto-configured for recording |
 
 These fields are extensions and may not be present in responses from other SignalK history providers.
-
 
 ## Moving Averages (EMA & SMA)
 
@@ -1298,12 +1405,14 @@ curl "http://localhost:3000/signalk/v1/history/values?duration=1h&paths=navigati
 ```
 
 **Path Syntax Format:** `path:aggregateMethod:smoothingType:smoothingParam`
+
 - `path` - SignalK path (e.g., `navigation.speedOverGround`)
 - `aggregateMethod` - Aggregation method: `average`, `min`, `max`, `first`, `last`, `mid`, `middle_index` (default: `average`)
 - `smoothingType` - `sma` (Simple Moving Average) or `ema` (Exponential Moving Average)
 - `smoothingParam` - For SMA: window size (default: 10), for EMA: alpha value 0-1 (default: 0.2)
 
 **Per-Path Response Format:**
+
 ```json
 {
   "values": [
@@ -1331,29 +1440,34 @@ curl "http://localhost:3000/signalk/v1/history/values?duration=1h&paths=navigati
 ### Global Moving Averages (Legacy)
 
 **History API:**
+
 ```bash
 # Add includeMovingAverages=true to any query
 curl "http://localhost:3000/signalk/v1/history/values?duration=1h&paths=environment.wind.speedApparent&includeMovingAverages=true"
 ```
 
 **Default Behavior (v0.5.6+):**
+
 - Moving averages are **opt-in** - not included by default
 - Reduces response size by ~66% when not needed
 - Better API compliance with SignalK specification
 
 **Legacy Behavior (pre-v0.5.6):**
+
 - Moving averages were automatically included for all queries
 - To maintain old behavior, add `includeMovingAverages=true` to all requests
 
 ### Calculation Details
 
 #### Exponential Moving Average (EMA)
+
 - **Period**: ~10 equivalent (α = 0.2)
 - **Formula**: `EMA = α × currentValue + (1 - α) × previousEMA`
 - **Characteristic**: Responds faster to recent changes, emphasizes recent data
 - **Use Case**: Trend detection, rapid response to data changes
 
 #### Simple Moving Average (SMA)
+
 - **Period**: 10 data points
 - **Formula**: Average of the last 10 values
 - **Characteristic**: Smooths out fluctuations, equal weight to all values in window
@@ -1383,14 +1497,15 @@ Point 5: Value=5.5, EMA=5.42,  SMA=5.5  // Rolling 10-point SMA window
 ### Real-world Applications
 
 **Marine Data Examples:**
+
 - **Wind Speed**: EMA detects gusts quickly, SMA shows general wind conditions
 - **Battery Voltage**: EMA shows charging/discharging trends, SMA indicates overall battery health
 - **Engine RPM**: EMA responds to throttle changes, SMA shows average operating level
 - **Water Temperature**: EMA detects thermal changes, SMA provides stable baseline
 
 **Available in:**
-- 📊 **History API**: Add `includeMovingAverages=true` to include EMA/SMA calculations
 
+- 📊 **History API**: Add `includeMovingAverages=true` to include EMA/SMA calculations
 
 ## Track API Integration
 
@@ -1400,27 +1515,27 @@ The plugin registers a `TrackProvider` (`src/track-provider.ts`) the same way it
 
 ### Endpoints (served by the server)
 
-| Endpoint | Description |
-|----------|-------------|
-| `GET /signalk/v2/api/tracks` | Tracks matching the query, as a GeoJSON `FeatureCollection`, one `Feature` per context |
-| `GET /signalk/v2/api/tracks/contexts` | Contexts with track data in the window, without geometry |
+| Endpoint                                | Description                                                                                   |
+| --------------------------------------- | --------------------------------------------------------------------------------------------- |
+| `GET /signalk/v2/api/tracks`            | Tracks matching the query, as a GeoJSON `FeatureCollection`, one `Feature` per context        |
+| `GET /signalk/v2/api/tracks/contexts`   | Contexts with track data in the window, without geometry                                      |
 | `GET /signalk/v2/api/tracks/_providers` | Registered providers; `?provider=signalk-parquet` selects this one when several are installed |
 
 All registered providers are queried and their features concatenated; each feature carries `properties.providerId`, so a server running both this plugin and `@signalk/tracks-plugin` returns one feature from each.
 
 ### Query parameters
 
-| Parameter | Description |
-|-----------|-------------|
-| `context` / `contexts` | Vessel(s) to return. Defaults to the own vessel. Bare ids are qualified with `vessels.` |
-| `from`, `to`, `duration` | Time window. `duration` measures back from `to` (default now); with `from` as well, the later start wins. Required unless a single context is requested |
-| `bbox` | `west,south,east,north`. **Selects** tracks that pass through the box during the window; a matching track is returned whole, not clipped |
-| `resolution` | Minimum spacing between points (ISO 8601 or seconds). The spacing actually applied is reported in `properties.resolution` |
-| `maxPoints` | Point budget per track; the spacing is widened until it fits. Default budget 5000 |
-| `simplify`, `epsilon` | Douglas-Peucker simplification, tolerance in metres; the applied tolerance is reported |
-| `times` | Include the recording time of every point as `properties.coordTimes`, nested like `coordinates` |
-| `properties` | Comma-separated paths to return alongside each position (e.g. `navigation.speedOverGround`), nested like `coordinates` under `properties.values`. Only paths the store holds are returned; `properties.appliedProperties` lists them. Values are matched to the nearest sample within a few seconds, because different talkers stamp position and speed a few hundred milliseconds apart. Angular paths use a circular mean |
-| `geometry=false` | Metadata only, no coordinates |
+| Parameter                | Description                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `context` / `contexts`   | Vessel(s) to return. Defaults to the own vessel. Bare ids are qualified with `vessels.`                                                                                                                                                                                                                                                                                                                                     |
+| `from`, `to`, `duration` | Time window. `duration` measures back from `to` (default now); with `from` as well, the later start wins. Required unless a single context is requested                                                                                                                                                                                                                                                                     |
+| `bbox`                   | `west,south,east,north`. **Selects** tracks that pass through the box during the window; a matching track is returned whole, not clipped                                                                                                                                                                                                                                                                                    |
+| `resolution`             | Minimum spacing between points (ISO 8601 or seconds). The spacing actually applied is reported in `properties.resolution`                                                                                                                                                                                                                                                                                                   |
+| `maxPoints`              | Point budget per track; the spacing is widened until it fits. Default budget 5000                                                                                                                                                                                                                                                                                                                                           |
+| `simplify`, `epsilon`    | Douglas-Peucker simplification, tolerance in metres; the applied tolerance is reported                                                                                                                                                                                                                                                                                                                                      |
+| `times`                  | Include the recording time of every point as `properties.coordTimes`, nested like `coordinates`                                                                                                                                                                                                                                                                                                                             |
+| `properties`             | Comma-separated paths to return alongside each position (e.g. `navigation.speedOverGround`), nested like `coordinates` under `properties.values`. Only paths the store holds are returned; `properties.appliedProperties` lists them. Values are matched to the nearest sample within a few seconds, because different talkers stamp position and speed a few hundred milliseconds apart. Angular paths use a circular mean |
+| `geometry=false`         | Metadata only, no coordinates                                                                                                                                                                                                                                                                                                                                                                                               |
 
 ### How the provider answers
 
@@ -1466,6 +1581,7 @@ For Cloudflare R2, use `provider: "r2"` and supply `accountId` instead of `regio
 ### Cloud Key Structure
 
 With prefix `marine-data/` and Hive partitioning:
+
 ```
 marine-data/tier=raw/context=vessels__self/path=navigation__position/year=2026/day=062/signalk_data_2026-03-03T0400.parquet
 ```
@@ -1489,7 +1605,7 @@ When the plugin starts, it runs the following initialization steps:
 1. **Configuration & State** — Load plugin config, vessel identity, output directory, cloud credentials
 2. **SQLite Buffer** — Open WAL-mode database; auto-migrate legacy `buffer_records` table to per-path tables if needed
 3. **Cloud Client** — Initialize S3 or R2 SDK if a cloud provider is configured
-3a. **Crash-Recovery Sweeps** — Remove stranded compaction/aggregation temp files, recover compaction trash, quarantine 0-byte parquet stubs. Run in a short-lived forked worker so walking a large store never holds the server's main thread; awaited, so they finish before DuckDB opens (v0.7.44-beta.7+)
+   3a. **Crash-Recovery Sweeps** — Remove stranded compaction/aggregation temp files, recover compaction trash, quarantine 0-byte parquet stubs. Run in a short-lived forked worker so walking a large store never holds the server's main thread; awaited, so they finish before DuckDB opens (v0.7.44-beta.7+)
 4. **DuckDB Pool** — Initialize connection pool; attach SQLite buffer for federated queries; register cloud credentials
 5. **Data Subscriptions** — Subscribe to configured SignalK paths and start threshold monitoring
 6. **Periodic Save** — Start flush interval (default: every 30s) from memory buffer to SQLite
@@ -1590,6 +1706,7 @@ The plugin uses strict TypeScript configuration:
 ### Common Issues
 
 **Build Errors**
+
 ```bash
 # Clean and rebuild
 npm run clean
@@ -1597,15 +1714,18 @@ npm run build
 ```
 
 **DuckDB Not Available**
+
 - Check that `@duckdb/node-api` is installed
 - Verify Node.js version compatibility (>=22.5.0)
 
 **Cloud Upload Failures**
+
 - Verify cloud credentials and permissions
 - Check bucket exists and is accessible
 - Test connection using web interface
 
 **No Data Collection**
+
 - Verify path configurations are correct
 - Check if regimens are properly activated
 - Review SignalK logs for subscription errors
@@ -1621,7 +1741,6 @@ Enable debug logging in SignalK:
   }
 }
 ```
-
 
 ### Runtime Dependencies
 
@@ -1642,7 +1761,6 @@ Enable debug logging in SignalK:
 ## License
 
 MIT License - See LICENSE file for details.
-
 
 ## Testing
 
@@ -1698,6 +1816,7 @@ The `processed` directories contain legacy files from the old consolidation syst
 ### Legacy Flat File Structure
 
 Pre-Hive versions stored data in a flat directory structure:
+
 ```
 output_directory/
 ├── vessels/

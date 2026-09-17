@@ -28,3 +28,19 @@ export function middleIndexSql(
 ): string {
   return `list(${valueExpr} ORDER BY ${timestampColumn})[(count(*) + 1) // 2]`;
 }
+
+/**
+ * `first` / `last`: the value of the chronologically first (last) sample in a
+ * bucket. DuckDB's FIRST(x) and LAST(x) without ORDER BY are "some row of the
+ * group", and which row changes between runs of the same query under a
+ * parallel scan (measured on a shore station, 2026-09-17: 11 of 281 buckets
+ * changed between two runs). The ORDER BY makes the pick the earliest
+ * (latest) sample, which is what the method names promise.
+ */
+export function firstSql(valueExpr: string, timestampColumn: string): string {
+  return `FIRST(${valueExpr} ORDER BY ${timestampColumn})`;
+}
+
+export function lastSql(valueExpr: string, timestampColumn: string): string {
+  return `LAST(${valueExpr} ORDER BY ${timestampColumn})`;
+}

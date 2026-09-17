@@ -34,8 +34,6 @@
  * is duck-typed so the plugin still loads on servers without it.
  */
 
-import * as fs from 'fs-extra';
-import * as path from 'path';
 import { Context, Path, ServerAPI } from '@signalk/server-api';
 import { DuckDBPool } from './utils/duckdb-pool';
 import { escapeSqlString } from './utils/sql-escape';
@@ -56,6 +54,13 @@ import {
   isPointInBoundingBox,
 } from './utils/geo-calculator';
 import { isAngularPath } from './utils/angular-paths';
+import { firstSql } from './utils/aggregate-sql';
+import { filesFor, readParquetSql } from './utils/parquet-files';
+import {
+  footerReaderAvailable,
+  overlapsWindow,
+  readFooters,
+} from './utils/parquet-footer';
 import { parseDurationToMillis } from './utils/duration-parser';
 import {
   boundingBoxOf,
@@ -176,11 +181,6 @@ const DEFAULT_EPSILON_M = 10;
  * context has no parquet to anchor the start on: the buffer's own retention.
  */
 const BUFFER_LOOKBACK_MS = 48 * 60 * 60 * 1000;
-
-/** Excludes the sidecar directories the write path leaves next to data. */
-const FILENAME_EXCLUSIONS =
-  "filename NOT LIKE '%/processed/%' AND filename NOT LIKE '%/quarantine/%' " +
-  "AND filename NOT LIKE '%/failed/%' AND filename NOT LIKE '%/repaired/%'";
 
 const POSITION_COMPONENTS = new Map<string, ComponentInfo>([
   [
@@ -407,10 +407,6 @@ function defaultEpsilonMetres(bbox?: TrackBoundingBox): number {
   return Math.max(1, diagonal / 1000);
 }
 
-function isNoFilesError(err: unknown): boolean {
-  return (err as Error)?.message?.includes('No files found') ?? false;
-}
-
 /** Root-level paths without dots (name, mmsi, ...) are string properties. */
 function isStringPath(signalkPath: string): boolean {
   return !signalkPath.includes('.');
@@ -533,8 +529,13 @@ export class TrackProvider implements TrackApi {
 
   /**
    * Contexts with a position fix in the window (and inside the box, when
-   * given): one DISTINCT scan over every context's raw position partitions,
-   * plus the buffer for fixes recorded today and not yet exported.
+   * given): every context's raw position files for the window's days, plus
+   * the buffer for fixes recorded today and not yet exported.
+   *
+   * Without a box the footers answer on their own: each file holds exactly
+   * one context, and its timestamp span says whether it is in the window.
+   * With a box the data has to be read, so DuckDB scans the bounded list;
+   * a file whose footer cannot say goes to DuckDB either way.
    */
   private async contextsWithPositions(
     window: TimeWindow,
@@ -544,38 +545,54 @@ export class TrackProvider implements TrackApi {
   ): Promise<Context[]> {
     const found = new Set<string>();
 
-    const glob = path.join(
+    const files = await filesFor({
       dataDir,
-      'tier=raw',
-      'context=*',
-      `path=${this.hive.sanitizePath(POSITION_PATH)}`,
-      'year=*',
-      'day=*',
-      '*.parquet'
-    );
-    const spatial = filter ? ` AND ${buildSpatialSqlClause(filter)}` : '';
-    // hive_partitioning=false so `context` is the data column holding the
-    // true context string, not the lossy sanitized directory name.
-    const sql = `
-      SELECT DISTINCT context
-      FROM read_parquet('${escapeSqlString(glob)}', hive_partitioning=false, union_by_name=true)
-      WHERE signalk_timestamp >= '${escapeSqlString(window.fromIso)}'
-        AND signalk_timestamp < '${escapeSqlString(window.toIso)}'${spatial}`;
-
-    const connection = await DuckDBPool.getConnection();
-    try {
-      const result = await connection.runAndReadAll(sql);
-      for (const row of result.getRowObjects()) {
-        if (typeof row.context === 'string' && row.context.length > 0) {
-          found.add(row.context);
+      contexts: 'all',
+      paths: [POSITION_PATH],
+      fromIso: window.fromIso,
+      toIso: window.toIso,
+    });
+    let viaDuckDb = files;
+    if (files.length > 0 && !filter && footerReaderAvailable()) {
+      try {
+        const footers = await readFooters(files);
+        const undecided: string[] = [];
+        for (const footer of footers) {
+          const overlaps = overlapsWindow(footer, window.fromIso, window.toIso);
+          if (footer.context === null || overlaps === null) {
+            undecided.push(footer.file);
+          } else if (overlaps) {
+            found.add(footer.context);
+          }
         }
+        viaDuckDb = undecided;
+      } catch {
+        // An unreadable file: DuckDB decides over all of them rather than a
+        // guess at which one failed.
+        viaDuckDb = files;
       }
-    } catch (err) {
-      if (!isNoFilesError(err)) {
-        throw err;
+    }
+    if (viaDuckDb.length > 0) {
+      const spatial = filter ? ` AND ${buildSpatialSqlClause(filter)}` : '';
+      // `context` is the data column holding the true context string, not
+      // the lossy sanitized directory name; readParquetSql sets
+      // hive_partitioning=false for exactly that.
+      const sql = `
+        SELECT DISTINCT context
+        FROM ${readParquetSql(viaDuckDb)}
+        WHERE signalk_timestamp >= '${escapeSqlString(window.fromIso)}'
+          AND signalk_timestamp < '${escapeSqlString(window.toIso)}'${spatial}`;
+      const connection = await DuckDBPool.getConnection();
+      try {
+        const result = await connection.runAndReadAll(sql);
+        for (const row of result.getRowObjects()) {
+          if (typeof row.context === 'string' && row.context.length > 0) {
+            found.add(row.context);
+          }
+        }
+      } finally {
+        connection.disconnectSync();
       }
-    } finally {
-      connection.disconnectSync();
     }
 
     // The buffer is keyed by path, not context, and its unexported rows are
@@ -841,13 +858,20 @@ export class TrackProvider implements TrackApi {
 
   // -- queries --------------------------------------------------------------
 
-  private positionDir(dataDir: string, context: Context): string {
-    return path.join(
+  /** The raw files of one path of one context for the window's days. */
+  private rawFiles(
+    dataDir: string,
+    context: Context,
+    signalkPath: string,
+    window: TimeWindow
+  ): Promise<string[]> {
+    return filesFor({
       dataDir,
-      'tier=raw',
-      `context=${this.hive.sanitizeContext(context)}`,
-      `path=${this.hive.sanitizePath(POSITION_PATH)}`
-    );
+      contexts: [context],
+      paths: [signalkPath],
+      fromIso: window.fromIso,
+      toIso: window.toIso,
+    });
   }
 
   /**
@@ -863,25 +887,19 @@ export class TrackProvider implements TrackApi {
     dataDir: string,
     buffer: TrackBufferSource | undefined
   ): Promise<TrackPoint[]> {
-    const hasParquet = await fs.pathExists(this.positionDir(dataDir, context));
+    const files = await this.rawFiles(dataDir, context, POSITION_PATH, window);
     const hasBufferTable = buffer?.hasTable(POSITION_PATH) ?? false;
-    if (!hasParquet && !hasBufferTable) {
+    if (files.length === 0 && !hasBufferTable) {
       return [];
     }
 
     const connection = await DuckDBPool.getConnection();
     try {
       const sources: string[] = [];
-      if (hasParquet) {
-        const glob = this.hive.getGlobPattern(
-          dataDir,
-          'raw',
-          context,
-          POSITION_PATH
-        );
+      if (files.length > 0) {
         sources.push(
           `SELECT signalk_timestamp, TRY_CAST(value_latitude AS DOUBLE) AS lat, TRY_CAST(value_longitude AS DOUBLE) AS lon ` +
-            `FROM (SELECT * FROM read_parquet('${escapeSqlString(glob)}', union_by_name=true, filename=true) WHERE ${FILENAME_EXCLUSIONS})`
+            `FROM ${readParquetSql(files)}`
         );
       }
       if (hasBufferTable && buffer) {
@@ -928,12 +946,9 @@ export class TrackProvider implements TrackApi {
         GROUP BY bucket_ms
         ORDER BY bucket_ms`;
 
-      const rows = await this.runWithParquetFallback(
-        connection,
-        sources,
-        hasParquet,
-        buildSql
-      );
+      const rows = (
+        await connection.runAndReadAll(buildSql(sources))
+      ).getRowObjects();
       return rows.map(row => ({
         bucketMs: Number(row.bucket_ms),
         tMs: Number(row.t_ms),
@@ -960,16 +975,9 @@ export class TrackProvider implements TrackApi {
     dataDir: string,
     buffer: TrackBufferSource | undefined
   ): Promise<PropertySeries | null> {
-    const hasParquet = await fs.pathExists(
-      path.join(
-        dataDir,
-        'tier=raw',
-        `context=${this.hive.sanitizeContext(context)}`,
-        `path=${this.hive.sanitizePath(signalkPath)}`
-      )
-    );
+    const files = await this.rawFiles(dataDir, context, signalkPath, window);
     const hasBufferTable = buffer?.hasTable(signalkPath) ?? false;
-    if (!hasParquet && !hasBufferTable) {
+    if (files.length === 0 && !hasBufferTable) {
       return null;
     }
 
@@ -982,7 +990,7 @@ export class TrackProvider implements TrackApi {
     // Angular paths take the circular mean, folded back into [0, 2π) since
     // ATAN2 answers in (-π, π] and SignalK angles are never negative.
     const aggregate = stringValued
-      ? 'FIRST(value ORDER BY signalk_timestamp)'
+      ? firstSql('value', 'signalk_timestamp')
       : angular
         ? 'MOD(ATAN2(AVG(SIN(value)), AVG(COS(value))) + 2 * PI(), 2 * PI())'
         : 'AVG(value)';
@@ -990,16 +998,10 @@ export class TrackProvider implements TrackApi {
     const connection = await DuckDBPool.getConnection();
     try {
       const sources: string[] = [];
-      if (hasParquet) {
-        const glob = this.hive.getGlobPattern(
-          dataDir,
-          'raw',
-          context,
-          signalkPath
-        );
+      if (files.length > 0) {
         sources.push(
           `SELECT signalk_timestamp, ${parquetValue} AS value ` +
-            `FROM (SELECT * FROM read_parquet('${escapeSqlString(glob)}', union_by_name=true, filename=true) WHERE ${FILENAME_EXCLUSIONS})`
+            `FROM ${readParquetSql(files)}`
         );
       }
       if (hasBufferTable && buffer) {
@@ -1036,12 +1038,9 @@ export class TrackProvider implements TrackApi {
         GROUP BY bucket_ms
         ORDER BY bucket_ms`;
 
-      const rows = await this.runWithParquetFallback(
-        connection,
-        sources,
-        hasParquet,
-        buildSql
-      );
+      const rows = (
+        await connection.runAndReadAll(buildSql(sources))
+      ).getRowObjects();
       const series: PropertySeries = { bucketsMs: [], values: [] };
       for (const row of rows) {
         const value = row.value;
@@ -1064,34 +1063,6 @@ export class TrackProvider implements TrackApi {
       return null;
     } finally {
       connection.disconnectSync();
-    }
-  }
-
-  /**
-   * Run a query over the given sources. A position directory that exists but
-   * holds no day-partition files (only quarantined ones, say) makes
-   * read_parquet fail with "No files found"; in that case the parquet source
-   * is dropped and the buffer alone answers, matching the History API.
-   */
-  private async runWithParquetFallback(
-    connection: Awaited<ReturnType<typeof DuckDBPool.getConnection>>,
-    sources: string[],
-    parquetFirst: boolean,
-    buildSql: (from: string[]) => string
-  ): Promise<Array<Record<string, unknown>>> {
-    try {
-      const result = await connection.runAndReadAll(buildSql(sources));
-      return result.getRowObjects() as Array<Record<string, unknown>>;
-    } catch (err) {
-      if (!isNoFilesError(err) || !parquetFirst) {
-        throw err;
-      }
-      const remaining = sources.slice(1);
-      if (remaining.length === 0) {
-        return [];
-      }
-      const result = await connection.runAndReadAll(buildSql(remaining));
-      return result.getRowObjects() as Array<Record<string, unknown>>;
     }
   }
 }

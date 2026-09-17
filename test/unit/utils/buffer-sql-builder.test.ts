@@ -109,7 +109,9 @@ describe('buildBufferScalarSubquery', () => {
     expect(sql).to.contain(`WHERE context = '${CONTEXT}'`);
     expect(sql).to.contain(`signalk_timestamp >= '${FROM_ISO}'`);
     expect(sql).to.contain(`signalk_timestamp < '${TO_ISO}'`);
-    expect(sql).to.contain('exported = 0');
+    // Both states that are not yet in Parquet: pending rows and short-term
+    // (buffer-only) rows, which exist nowhere else and must not be filtered out.
+    expect(sql).to.contain('exported IN (0, -1)');
     expect(sql).to.contain('value IS NOT NULL');
     expect(sql).to.contain('signalk_timestamp');
   });
@@ -221,7 +223,19 @@ describe('buildBufferObjectSubquery', () => {
     expect(sql).to.contain("WHERE context = 'vessels.o''brien'");
     expect(sql).to.contain(`signalk_timestamp >= '${FROM_ISO}'`);
     expect(sql).to.contain(`signalk_timestamp < '${TO_ISO}'`);
-    expect(sql).to.contain('exported = 0');
+    expect(sql).to.contain('exported IN (0, -1)');
     expect(sql).to.contain('signalk_timestamp');
+  });
+
+  it('never excludes short-term rows, which exist nowhere but the buffer', () => {
+    // A predicate of `exported = 0` would silently drop every buffer-only row
+    // from history queries, which is the whole point of recording them.
+    const both = [
+      scalarSql('navigation.speedOverGround'),
+      objectSql('navigation.position', position),
+    ];
+    for (const sql of both) {
+      expect(sql).to.not.match(/exported\s*=\s*0\b/);
+    }
   });
 });

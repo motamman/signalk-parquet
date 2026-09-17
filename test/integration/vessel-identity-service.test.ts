@@ -12,7 +12,6 @@ import { EventEmitter } from 'events';
 import { SQLiteBuffer } from '../../src/utils/sqlite-buffer';
 import { DuckDBPool } from '../../src/utils/duckdb-pool';
 import { HistoryProvider } from '../../src/history-provider';
-import { clearSchemaCache } from '../../src/utils/schema-cache';
 import { VesselIdentityService } from '../../src/services/vessel-identity-service';
 import { createFakeSignalK, FakeSignalK } from './helpers/fake-signalk';
 import type { PluginState } from '../../src/types';
@@ -324,7 +323,6 @@ describe('vessel identity capture', function () {
 
   it('is readable through the v2 History API provider as an object path', async () => {
     await DuckDBPool.initialize();
-    clearSchemaCache();
     try {
       host.emitDelta(
         delta(
@@ -369,7 +367,6 @@ describe('vessel identity capture', function () {
         beam: 3.9,
       });
     } finally {
-      clearSchemaCache();
       await DuckDBPool.shutdown();
     }
   });

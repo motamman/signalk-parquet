@@ -1,6 +1,8 @@
 import * as fs from 'fs-extra';
 import * as path from 'path';
 import { HivePathBuilder } from './utils/hive-path-builder';
+import { resolveRetentionStamp } from './utils/retention-mode';
+import { EXPORTED_BUFFER_ONLY } from './utils/sqlite-buffer';
 import { listHiveDirs, listParquetFiles, dayKey } from './utils/hive-walk';
 import {
   PluginConfig,
@@ -656,6 +658,9 @@ function handleStreamData(
         ? normalizedDelta.source.src
         : undefined,
       meta: metadata,
+      // Stamped once, here, from the mode in force at this instant. Nothing
+      // re-stamps it later.
+      exported: resolveRetentionStamp(pathConfig, state.activeRegimens),
     };
 
     // Handle complex values
@@ -784,8 +789,18 @@ async function saveBufferToParquet(
   app: ServerAPI
 ): Promise<void> {
   try {
+    // Buffer-only rows are stamped at insert and are never written to Parquet,
+    // whichever buffer holds them. Their retention window lives in the SQLite
+    // buffer, which the plugin always enables (index.ts). The in-memory buffer
+    // has no retention clock and is cleared by every caller right after this
+    // write, so with SQLite off a buffer-only row is dropped here for good.
+    const records = buffer.filter(
+      record => record.exported !== EXPORTED_BUFFER_ONLY
+    );
+    if (records.length === 0) return;
+
     // Get context from first record in buffer (all records in buffer have same path/context)
-    const context = buffer.length > 0 ? buffer[0].context : 'vessels.self';
+    const context = records[0].context;
 
     // Create proper directory structure
     let contextPath: string;
@@ -827,7 +842,7 @@ async function saveBufferToParquet(
     const filepath = path.join(dirPath, filename);
 
     // Use ParquetWriter to save in the configured format
-    await state.parquetWriter!.writeRecords(filepath, buffer);
+    await state.parquetWriter!.writeRecords(filepath, records);
   } catch (error) {
     app.error(
       `[DataHandler] Failed to write buffer for ${signalkPath} to ${config.fileFormat}: ${(error as Error).message}`

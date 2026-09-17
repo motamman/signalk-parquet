@@ -13,7 +13,9 @@
 
 import * as fs from 'fs-extra';
 import * as path from 'path';
-import { globIn } from '../utils/glob-in';
+import { filesFor, readParquetSql } from '../utils/parquet-files';
+import { readFooters } from '../utils/parquet-footer';
+import { listHiveDirs } from '../utils/hive-walk';
 import { ServerAPI } from '@signalk/server-api';
 import { DuckDBPool } from '../utils/duckdb-pool';
 import { HivePathBuilder, AggregationTier } from '../utils/hive-path-builder';
@@ -128,6 +130,19 @@ const TIER_INTERVALS: Record<AggregationTier, number> = {
 
 const TIER_HIERARCHY: AggregationTier[] = ['raw', '5s', '60s', '1h'];
 
+/** The UTC day containing `date`, as the half-open window [fromIso, toIso). */
+function dayWindow(date: Date): { fromIso: string; toIso: string } {
+  const start = Date.UTC(
+    date.getUTCFullYear(),
+    date.getUTCMonth(),
+    date.getUTCDate()
+  );
+  return {
+    fromIso: new Date(start).toISOString(),
+    toIso: new Date(start + 86_400_000).toISOString(),
+  };
+}
+
 export class AggregationService {
   private readonly config: AggregationConfig;
   private readonly app: ServerAPI;
@@ -211,22 +226,17 @@ export class AggregationService {
     let recordsAggregated = 0;
     let filesCreated = 0;
 
-    const year = date.getUTCFullYear();
-    const dayOfYear = this.hivePathBuilder.getDayOfYear(date);
-
-    // Find all source files for this date
-    const allSourceFiles = await globIn(
-      this.config.outputDirectory,
-      `tier=${sourceTier}/context=*/path=*/year=${year}/day=${String(dayOfYear).padStart(3, '0')}/*.parquet`
-    );
-    // Exclude files in processed, quarantine, failed, repaired directories
-    const sourceFiles = allSourceFiles.filter(
-      f =>
-        !f.includes('/processed/') &&
-        !f.includes('/quarantine/') &&
-        !f.includes('/failed/') &&
-        !f.includes('/repaired/')
-    );
+    // The day's files of this tier, plus the year's compacted file when the
+    // year has been compacted (the lister returns both; a compacted year has
+    // no day directories). aggregateGroup keeps the two apart: a day file
+    // holds exactly the day, a year file needs the day cut out of it.
+    const sourceFiles = await filesFor({
+      dataDir: this.config.outputDirectory,
+      tier: sourceTier,
+      contexts: 'all',
+      paths: 'all',
+      ...dayWindow(date),
+    });
 
     if (sourceFiles.length === 0) {
       this.app.debug(
@@ -308,47 +318,52 @@ export class AggregationService {
   ): Promise<{ recordsAggregated: number; outputFile: string | null }> {
     const intervalSeconds = TIER_INTERVALS[targetTier];
     const isSourceRaw = sourceTier === 'raw';
-    const fileListStr = files.map(f => `'${f}'`).join(', ');
+    const window = dayWindow(date);
 
-    // Detect schema: scalar ('value' / 'value_avg'), position ('value_latitude'/'value_longitude'),
-    // or unsupported object-type (skip).
-    const connection = await DuckDBPool.getConnection();
-    let isPosition = false;
+    // The source rows: the day's files whole, and the day cut out of a
+    // compacted year file by the tier's own time column. Day files are read
+    // without a predicate so an existing day's output is unchanged.
+    const isDayFile = (f: string): boolean =>
+      path.basename(path.dirname(f)).startsWith('day=');
+    const dayFiles = files.filter(isDayFile);
+    const yearFiles = files.filter(f => !isDayFile(f));
+    const tsCol = isSourceRaw ? 'signalk_timestamp' : 'bucket_time';
+    const parts: string[] = [];
+    if (dayFiles.length > 0) {
+      parts.push(`SELECT * FROM ${readParquetSql(dayFiles)}`);
+    }
+    if (yearFiles.length > 0) {
+      parts.push(
+        `SELECT * FROM ${readParquetSql(yearFiles)} WHERE ${tsCol} >= '${window.fromIso}' AND ${tsCol} < '${window.toIso}'`
+      );
+    }
+    const sourceSql = `(${parts.join(' UNION ALL BY NAME ')}) AS src_files`;
+
+    // Detect schema from the files' footers: scalar ('value' / 'value_avg'),
+    // position ('value_latitude'/'value_longitude'), or unsupported
+    // object-type (skip). The union over the files is what DuckDB's
+    // union_by_name sees.
+    const columns = new Set<string>();
+    for (const footer of await readFooters(files)) {
+      for (const name of footer.columns.keys()) columns.add(name);
+    }
     // Legacy aggregated files may predate the angular sin/cos columns
     // entirely; referencing an absent column is a binder error (union_by_name
     // only unions columns that exist somewhere), so the angular rollup query
     // must know whether it can name them at all.
-    let hasSinAvg: boolean;
-    let hasCosAvg: boolean;
-    try {
-      const schemaQuery = `SELECT column_name FROM (DESCRIBE SELECT * FROM read_parquet([${fileListStr}], union_by_name=true))`;
-      const schemaResult = await connection.runAndReadAll(schemaQuery);
-      const columns = schemaResult
-        .getRowObjects()
-        .map((r: Record<string, unknown>) => r.column_name as string);
-
-      hasSinAvg = columns.includes('value_sin_avg');
-      hasCosAvg = columns.includes('value_cos_avg');
-
-      const hasLatLon =
-        columns.includes('value_latitude') &&
-        columns.includes('value_longitude');
-      const requiredColumn = isSourceRaw ? 'value' : 'bucket_time';
-      const hasScalarColumn = columns.includes(requiredColumn);
-
-      if (hasLatLon) {
-        isPosition = true;
-      } else if (!hasScalarColumn) {
-        this.app.debug(
-          `Skipping ${signalkPath}: no '${requiredColumn}' column (object-type data stays in raw tier)`
-        );
-        connection.disconnectSync();
-        return { recordsAggregated: 0, outputFile: null };
-      }
-    } catch (error) {
-      connection.disconnectSync();
-      throw error;
+    const hasSinAvg = columns.has('value_sin_avg');
+    const hasCosAvg = columns.has('value_cos_avg');
+    const hasLatLon =
+      columns.has('value_latitude') && columns.has('value_longitude');
+    const requiredColumn = isSourceRaw ? 'value' : 'bucket_time';
+    const isPosition = hasLatLon;
+    if (!hasLatLon && !columns.has(requiredColumn)) {
+      this.app.debug(
+        `Skipping ${signalkPath}: no '${requiredColumn}' column (object-type data stays in raw tier)`
+      );
+      return { recordsAggregated: 0, outputFile: null };
     }
+    const connection = await DuckDBPool.getConnection();
 
     // Build output path
     const outputDir = this.hivePathBuilder.buildPath(
@@ -381,13 +396,13 @@ export class AggregationService {
       !isPosition && isAngularPath(signalkPath, this.app, context);
     const query = isPosition
       ? this.buildPositionAggregationQuery(
-          fileListStr,
+          sourceSql,
           intervalSeconds,
           isSourceRaw,
           tempFile
         )
       : this.buildAggregationQuery(
-          fileListStr,
+          sourceSql,
           intervalSeconds,
           isSourceRaw,
           angular,
@@ -400,7 +415,7 @@ export class AggregationService {
       await connection.runAndReadAll(query);
 
       // Get record count from output
-      const countQuery = `SELECT COUNT(*) as cnt FROM read_parquet('${tempFile}')`;
+      const countQuery = `SELECT COUNT(*) as cnt FROM ${readParquetSql([tempFile])}`;
       const countResult = await connection.runAndReadAll(countQuery);
       const rows = countResult.getRowObjects();
       const recordCount = rows[0]?.cnt || 0;
@@ -422,7 +437,7 @@ export class AggregationService {
    * Build the aggregation SQL query, branching on angular vs scalar paths
    */
   private buildAggregationQuery(
-    fileListStr: string,
+    sourceSql: string,
     intervalSeconds: number,
     isSourceRaw: boolean,
     isAngular: boolean,
@@ -432,7 +447,7 @@ export class AggregationService {
   ): string {
     if (isAngular) {
       return this.buildAngularAggregationQuery(
-        fileListStr,
+        sourceSql,
         intervalSeconds,
         isSourceRaw,
         outputFile,
@@ -455,7 +470,7 @@ export class AggregationService {
             COUNT(*) as sample_count,
             MIN(received_timestamp) as first_timestamp,
             MAX(received_timestamp) as last_timestamp
-          FROM read_parquet([${fileListStr}], union_by_name=true)
+          FROM ${sourceSql}
           GROUP BY bucket_time, context, path
           ORDER BY bucket_time
         ) TO '${outputFile}' (FORMAT PARQUET, COMPRESSION 'SNAPPY');
@@ -476,7 +491,7 @@ export class AggregationService {
           MAX(last_timestamp) as last_timestamp
         FROM (
           SELECT bucket_time as src_bucket_time, context, path, value_avg, value_min, value_max, sample_count, first_timestamp, last_timestamp
-          FROM read_parquet([${fileListStr}], union_by_name=true)
+          FROM ${sourceSql}
         ) src
         GROUP BY time_bucket(INTERVAL '${intervalSeconds} seconds', src_bucket_time::TIMESTAMP), context, path
         ORDER BY 1
@@ -489,7 +504,7 @@ export class AggregationService {
    * ATAN2(AVG(SIN(value)), AVG(COS(value)))
    */
   private buildAngularAggregationQuery(
-    fileListStr: string,
+    sourceSql: string,
     intervalSeconds: number,
     isSourceRaw: boolean,
     outputFile: string,
@@ -515,7 +530,7 @@ export class AggregationService {
             AVG(COS(CAST(value AS DOUBLE))) as value_cos_avg,
             MIN(received_timestamp) as first_timestamp,
             MAX(received_timestamp) as last_timestamp
-          FROM read_parquet([${fileListStr}], union_by_name=true)
+          FROM ${sourceSql}
           WHERE value IS NOT NULL AND TRY_CAST(value AS DOUBLE) IS NOT NULL
           GROUP BY bucket_time, context, path
           ORDER BY bucket_time
@@ -572,7 +587,7 @@ export class AggregationService {
           MAX(last_timestamp) as last_timestamp
         FROM (
           SELECT ${srcColumns}
-          FROM read_parquet([${fileListStr}], union_by_name=true)
+          FROM ${sourceSql}
         ) src
         GROUP BY time_bucket(INTERVAL '${intervalSeconds} seconds', src_bucket_time::TIMESTAMP), context, path
         ORDER BY 1
@@ -594,7 +609,7 @@ export class AggregationService {
    * entirely of glitches still emit their least-bad candidate.
    */
   private buildPositionAggregationQuery(
-    fileListStr: string,
+    sourceSql: string,
     intervalSeconds: number,
     isSourceRaw: boolean,
     outputFile: string
@@ -633,7 +648,7 @@ export class AggregationService {
             ${srcSampleCount} AS src_sample_count,
             ${srcFirstTs}::TIMESTAMP AS src_first_ts,
             ${srcLastTs}::TIMESTAMP AS src_last_ts
-          FROM read_parquet([${fileListStr}], union_by_name=true)
+          FROM ${sourceSql}
           WHERE TRY_CAST(value_latitude AS DOUBLE) BETWEEN -90 AND 90
             AND TRY_CAST(value_longitude AS DOUBLE) BETWEEN -180 AND 180
         ),
@@ -791,10 +806,14 @@ export class AggregationService {
 
       const tierMultiplier = TIER_RETENTION_MULTIPLIER[tier];
 
-      const files = await globIn(
-        this.config.outputDirectory,
-        `tier=${tier}/**/*.parquet`
-      );
+      // Every data file of the tier. A compacted year file has no day to
+      // anchor a retention decision on and is skipped below.
+      const files = await filesFor({
+        dataDir: this.config.outputDirectory,
+        tier,
+        contexts: 'all',
+        paths: 'all',
+      });
 
       for (const file of files) {
         if (this.cancelRequested) break;
@@ -919,26 +938,21 @@ export class AggregationService {
    * Discover all unique dates in tier=raw across all contexts and paths
    */
   async discoverRawDates(startDate?: Date, endDate?: Date): Promise<Date[]> {
-    const rawDir = path.join(this.config.outputDirectory, 'tier=raw');
-    if (!(await fs.pathExists(rawDir))) return [];
-
-    const dayDirs = await globIn(rawDir, 'context=*/path=*/year=*/day=*');
-
+    // Day directories of the raw tier. A compacted year contributes none
+    // (its days are inside one file); a date in it can still be aggregated
+    // when asked for directly.
     const dateSet = new Set<string>();
-    for (const dir of dayDirs) {
-      const yearMatch = dir.match(/year=(\d{4})/);
-      const dayMatch = dir.match(/day=(\d{1,3})/);
-      if (yearMatch && dayMatch) {
-        const year = parseInt(yearMatch[1]);
-        const day = parseInt(dayMatch[1]);
-        const date = this.hivePathBuilder.dateFromDayOfYear(year, day);
-        const dateStr = date.toISOString().slice(0, 10);
-
-        if (startDate && date < startDate) continue;
-        if (endDate && date > endDate) continue;
-
-        dateSet.add(dateStr);
-      }
+    for (const d of await listHiveDirs(this.config.outputDirectory, {
+      level: 'day',
+      tiers: ['raw'],
+    })) {
+      const date = this.hivePathBuilder.dateFromDayOfYear(
+        d.year,
+        d.dayOfYear as number
+      );
+      if (startDate && date < startDate) continue;
+      if (endDate && date > endDate) continue;
+      dateSet.add(date.toISOString().slice(0, 10));
     }
 
     return Array.from(dateSet)

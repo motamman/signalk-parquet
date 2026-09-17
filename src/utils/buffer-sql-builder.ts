@@ -45,7 +45,7 @@ export function buildBufferScalarSubquery(
   WHERE context = '${escapeSqlString(String(context))}'
     AND signalk_timestamp >= '${escapeSqlString(fromIso)}'
     AND signalk_timestamp < '${escapeSqlString(toIso)}'
-    AND exported = 0
+    AND exported IN (0, -1)
     AND value IS NOT NULL${buildBufferFilterClause(filters)})`;
 }
 
@@ -90,6 +90,6 @@ export function buildBufferObjectSubquery(
   WHERE context = '${escapeSqlString(String(context))}'
     AND signalk_timestamp >= '${escapeSqlString(fromIso)}'
     AND signalk_timestamp < '${escapeSqlString(toIso)}'
-    AND exported = 0
+    AND exported IN (0, -1)
     AND value_json IS NOT NULL${buildBufferFilterClause(filters)})`;
 }

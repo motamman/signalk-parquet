@@ -101,6 +101,39 @@ describe('hive-walk', () => {
     ]);
   });
 
+  it('emits year directories alongside days when asked', async () => {
+    await seed();
+    const dirs = await listHiveDirs(base, {
+      level: 'day',
+      includeYearDirs: true,
+      tiers: ['raw'],
+      contexts: ['a'],
+      paths: ['p'],
+    });
+    expect(dirs.map(d => rel(d.dayDir ?? d.yearDir)).sort()).to.deep.equal([
+      'tier=raw/context=a/path=p/year=2025',
+      'tier=raw/context=a/path=p/year=2025/day=364',
+      'tier=raw/context=a/path=p/year=2026',
+      'tier=raw/context=a/path=p/year=2026/day=001',
+    ]);
+  });
+
+  it('prunes by context and path directory values', async () => {
+    await seed();
+    const days = await listHiveDirs(base, {
+      level: 'day',
+      tiers: ['raw'],
+      contexts: ['a'],
+      paths: ['q'],
+    });
+    expect(days.map(d => rel(d.dayDir!))).to.deep.equal([
+      'tier=raw/context=a/path=q/year=2026/day=001',
+    ]);
+    expect(
+      await listHiveDirs(base, { level: 'day', contexts: ['nope'] })
+    ).to.deep.equal([]);
+  });
+
   it('ignores partition directories that are not canonical year/day values', async () => {
     await seed();
     await Promise.all([

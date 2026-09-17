@@ -17,6 +17,7 @@ import { SQLiteBuffer } from '../../src/utils/sqlite-buffer';
 import { ParquetWriter } from '../../src/parquet-writer';
 import { ParquetExportService } from '../../src/services/parquet-export-service';
 import { DuckDBPool } from '../../src/utils/duckdb-pool';
+import { filesFor, readParquetSql } from '../../src/utils/parquet-files';
 import { stageBufferTable } from '../../src/utils/buffer-staging';
 import {
   buildBufferScalarSubquery,
@@ -367,32 +368,27 @@ describe('storage pipeline (SQLite buffer -> Parquet -> DuckDB)', function () {
     }
   });
 
-  it('builds a DuckDB glob for the day that DuckDB can read', async () => {
+  it("lists the day's file for DuckDB to read", async () => {
     buffer.insert(
       scalarRecord('navigation.speedOverGround', 7, '2024-06-01T10:00:00.000Z')
     );
     await exportService.exportDayToParquet(DAY);
 
     // Mirror how the read path locates files for a single day.
-    const glob = hive.buildDuckDBGlob(
-      host.dataDir,
-      'raw',
-      CONTEXT,
-      'navigation.speedOverGround',
-      DAY,
-      DAY
-    );
-    const globs = Array.isArray(glob) ? glob : [glob];
+    const files = await filesFor({
+      dataDir: host.dataDir,
+      contexts: [CONTEXT],
+      paths: ['navigation.speedOverGround'],
+      fromIso: DAY.toISOString(),
+      toIso: new Date(DAY.getTime() + 86_400_000).toISOString(),
+    });
+    expect(files).to.have.lengthOf(1);
     const conn = await DuckDBPool.getConnection();
     try {
-      let total = 0;
-      for (const g of globs) {
-        const res = await conn.runAndReadAll(
-          `SELECT COUNT(*) AS n FROM read_parquet('${toGlob(g)}')`
-        );
-        total += Number((res.getRowObjects()[0] as { n: bigint }).n);
-      }
-      expect(total).to.equal(1);
+      const res = await conn.runAndReadAll(
+        `SELECT COUNT(*) AS n FROM ${readParquetSql(files)}`
+      );
+      expect(Number((res.getRowObjects()[0] as { n: bigint }).n)).to.equal(1);
     } finally {
       conn.disconnectSync();
     }

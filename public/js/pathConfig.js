@@ -1,4 +1,4 @@
-import { getPluginPath } from './utils.js';
+import { getPluginPath, escapeHtml } from './utils.js';
 
 let showCommandPaths = false;
 
@@ -18,6 +18,20 @@ export async function loadPathConfigurations() {
     document.getElementById('pathConfigContainer').innerHTML =
       `<div class="error">Network error: ${error.message}</div>`;
   }
+}
+
+/**
+ * How long a path's data is kept, for the table. "Forever" is the default and
+ * means buffer then Parquet and cloud. "Buffer only" means it lives in the
+ * SQLite buffer for the retention window — queryable there through the History
+ * API — and is never written to Parquet. A promotion regimen is shown because
+ * it changes the answer for as long as that regimen is active.
+ */
+function retentionLabel(path) {
+  if (path.retention !== 'buffer') return 'Forever';
+  return path.fullWhileRegimen
+    ? `Buffer only <small>(forever while ${escapeHtml(path.fullWhileRegimen)})</small>`
+    : 'Buffer only';
 }
 
 function displayPathConfigurations(paths) {
@@ -58,7 +72,7 @@ function displayPathConfigurations(paths) {
 
   let html = '<div class="table-container"><table><thead><tr>';
   html +=
-    '<th>Path</th><th>Always Enabled</th><th>Regimen</th><th>Source</th><th>Context</th><th>Exclude MMSI</th><th>Actions</th>';
+    '<th>Path</th><th>Always Enabled</th><th>Regimen</th><th>Keep</th><th>Source</th><th>Context</th><th>Exclude MMSI</th><th>Actions</th>';
   html += '</tr></thead><tbody>';
 
   filteredPaths.forEach((path, _filteredIndex) => {
@@ -75,6 +89,7 @@ function displayPathConfigurations(paths) {
             <td><code>${path.path || ''}</code>${isCommand ? ' <span style="color: #856404; font-size: 11px;">(Command)</span>' : ''}</td>
             <td>${path.enabled ? '✅' : '❌'}</td>
             <td>${path.regimen || ''}</td>
+            <td>${retentionLabel(path)}</td>
             <td><code>${path.source || ''}</code></td>
             <td>${path.context || 'vessels.self'}</td>
             <td>${excludeMMSI}</td>
@@ -134,6 +149,12 @@ function clearAddPathForm() {
   document.getElementById('pathSource').value = '';
   document.getElementById('pathContext').value = 'vessels.self';
   document.getElementById('pathExcludeMMSI').value = '';
+  if (document.getElementById('pathRetention')) {
+    document.getElementById('pathRetention').value = 'full';
+  }
+  if (document.getElementById('pathFullWhileRegimen')) {
+    document.getElementById('pathFullWhileRegimen').value = '';
+  }
   document.getElementById('customRegimen').value = '';
 
   // Clear regimen checkboxes
@@ -587,6 +608,15 @@ export async function addPathConfiguration() {
     context:
       document.getElementById('pathContext').value.trim() || 'vessels.self',
     excludeMMSI: excludeMMSI.length > 0 ? excludeMMSI : undefined,
+    retention:
+      document.getElementById('pathRetention')?.value === 'buffer'
+        ? 'buffer'
+        : undefined,
+    fullWhileRegimen:
+      document.getElementById('pathRetention')?.value === 'buffer'
+        ? document.getElementById('pathFullWhileRegimen')?.value.trim() ||
+          undefined
+        : undefined,
   };
 
   if (!pathConfig.path) {
@@ -700,6 +730,13 @@ export async function editPathConfiguration(index) {
                         <!-- Regimen checkboxes will be populated here -->
                     </div>
                 </div>
+            </td>
+            <td>
+                <select id="editRetention${index}" style="width: 100%;">
+                    <option value="full" ${path.retention === 'buffer' ? '' : 'selected'}>Forever</option>
+                    <option value="buffer" ${path.retention === 'buffer' ? 'selected' : ''}>Buffer only</option>
+                </select>
+                <input type="text" id="editFullWhileRegimen${index}" value="${escapeHtml(path.fullWhileRegimen || '')}" style="width: 100%; margin-top: 4px;" placeholder="forever while regimen…">
             </td>
             <td><input type="text" id="editSource${index}" value="${path.source || ''}" style="width: 100%;" placeholder="e.g., mqtt-weatherflow-udp"></td>
             <td><input type="text" id="editContext${index}" value="${path.context || 'vessels.self'}" style="width: 100%;"></td>
@@ -944,6 +981,15 @@ export async function saveEdit(index) {
       document.getElementById(`editContext${index}`).value.trim() ||
       'vessels.self',
     excludeMMSI: excludeMMSI.length > 0 ? excludeMMSI : undefined,
+    retention:
+      document.getElementById(`editRetention${index}`)?.value === 'buffer'
+        ? 'buffer'
+        : undefined,
+    fullWhileRegimen:
+      document.getElementById(`editRetention${index}`)?.value === 'buffer'
+        ? document.getElementById(`editFullWhileRegimen${index}`)?.value.trim() ||
+          undefined
+        : undefined,
   };
 
   if (!updatedPath.path) {

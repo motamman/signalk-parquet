@@ -44,6 +44,8 @@ export interface BufferStats {
   totalRecords: number;
   pendingRecords: number;
   exportedRecords: number;
+  /** Rows on short-term paths: never exported, aged out by retention. */
+  bufferOnlyRecords: number;
   oldestPendingTimestamp: string | null;
   newestRecordTimestamp: string | null;
   dbSizeBytes: number;
@@ -55,6 +57,30 @@ export interface SQLiteBufferConfig {
   maxBatchSize?: number;
   retentionHours?: number;
 }
+
+/**
+ * States of the `exported` flag.
+ *
+ * A row's fate is decided when it is written and never re-stamped: changing a
+ * path's retention mode affects only rows inserted from that point on.
+ *
+ *   PENDING (0)      tracked path, owes a Parquet write
+ *   EXPORTED (1)     written to Parquet, now eligible for retention cleanup
+ *   BUFFER_ONLY (-1) short-term path, will never be written to Parquet, and is
+ *                    eligible for retention cleanup immediately
+ *
+ * Three predicates follow from this. They are written as IN lists rather than
+ * `<>`, because an inequality cannot seek an index and would turn retention
+ * and the playback probes back into full table scans:
+ *   `exported IN (0, -1)`  "not in Parquet, so a query must include it" —
+ *     every federation and playback read, since BUFFER_ONLY rows exist
+ *     nowhere else and would otherwise be invisible.
+ *   `exported IN (1, -1)`  "settled, so retention may age it out".
+ *   `exported = 0`         "owes an export" — only to select rows to write.
+ */
+export const EXPORTED_PENDING = 0;
+export const EXPORTED_DONE = 1;
+export const EXPORTED_BUFFER_ONLY = -1;
 
 interface TableInfo {
   tableName: string;
@@ -242,12 +268,7 @@ export class SQLiteBuffer {
         );
 
         this.db.exec(`CREATE TABLE ${tableName} (${columns.join(', ')})`);
-        this.db.exec(
-          `CREATE INDEX idx_${tableName}_ctx_exp ON ${tableName} (context, exported)`
-        );
-        this.db.exec(
-          `CREATE INDEX idx_${tableName}_received ON ${tableName} (received_timestamp)`
-        );
+        this.ensureIndexes(tableName);
 
         // Copy data
         const selectCols = [
@@ -317,6 +338,9 @@ export class SQLiteBuffer {
         row.is_object === 1
       );
 
+      // Tables created before an index was introduced get it here.
+      this.ensureIndexes(row.table_name);
+
       this.tableMap.set(row.path, {
         tableName: row.table_name,
         isObject: row.is_object === 1,
@@ -368,12 +392,37 @@ export class SQLiteBuffer {
       }
     }
 
-    // Automatic columns
+    // Automatic columns. `exported` is bound rather than literal so a row can
+    // be stamped BUFFER_ONLY at insert; see the EXPORTED_* constants.
     insertCols.push('exported', 'export_batch_id', 'created_at');
-    placeholders.push('0', 'NULL', "datetime('now')");
+    placeholders.push('@exported', 'NULL', "datetime('now')");
 
     return this.db.prepare(
       `INSERT INTO ${tableName} (${insertCols.join(', ')}) VALUES (${placeholders.join(', ')})`
+    );
+  }
+
+  /**
+   * Indexes every per-path table needs. Idempotent, so it doubles as the
+   * migration for tables created before an index was added.
+   *
+   * `(exported, created_at)` serves retention cleanup, which would otherwise
+   * scan the table: the `(context, exported)` index cannot answer a predicate
+   * on `exported` alone. `(exported, signalk_timestamp)` serves the playback
+   * probes, which ask for the earliest unexported row per table.
+   */
+  private ensureIndexes(tableName: string): void {
+    this.db.exec(
+      `CREATE INDEX IF NOT EXISTS idx_${tableName}_ctx_exp ON ${tableName} (context, exported)`
+    );
+    this.db.exec(
+      `CREATE INDEX IF NOT EXISTS idx_${tableName}_received ON ${tableName} (received_timestamp)`
+    );
+    this.db.exec(
+      `CREATE INDEX IF NOT EXISTS idx_${tableName}_exp_created ON ${tableName} (exported, created_at)`
+    );
+    this.db.exec(
+      `CREATE INDEX IF NOT EXISTS idx_${tableName}_exp_sk ON ${tableName} (exported, signalk_timestamp)`
     );
   }
 
@@ -429,12 +478,7 @@ export class SQLiteBuffer {
     );
 
     this.db.exec(`CREATE TABLE ${tableName} (${columnDefs.join(', ')})`);
-    this.db.exec(
-      `CREATE INDEX idx_${tableName}_ctx_exp ON ${tableName} (context, exported)`
-    );
-    this.db.exec(
-      `CREATE INDEX idx_${tableName}_received ON ${tableName} (received_timestamp)`
-    );
+    this.ensureIndexes(tableName);
 
     // Register in metadata
     this.db
@@ -519,10 +563,15 @@ export class SQLiteBuffer {
     const tableInfo = this.tableMap.get(signalkPath);
     if (!tableInfo) return false;
     const params = this.prepareRecord(record, tableInfo);
+    // A row's retention stamp is decided when it is written and never
+    // re-stamped, so the overwrite leaves `exported` as it was: re-stamping a
+    // BUFFER_ONLY row PENDING would export data recorded as buffer-only, and
+    // the reverse would drop an export the row already owes.
+    delete params.exported;
     const sets = Object.keys(params).map(col => `${col} = @${col}`);
     const result = this.db
       .prepare(
-        `UPDATE ${tableInfo.tableName} SET ${sets.join(', ')} WHERE id = @id AND exported = 0`
+        `UPDATE ${tableInfo.tableName} SET ${sets.join(', ')} WHERE id = @id AND exported IN (${EXPORTED_PENDING}, ${EXPORTED_BUFFER_ONLY})`
       )
       .run({ ...params, id } as Record<string, SQLInputValue>);
     return Number(result.changes) > 0;
@@ -668,6 +717,13 @@ export class SQLiteBuffer {
         : String(record.meta)
       : null;
 
+    // Stamped once, here, from the mode in force at insert. Anything other
+    // than an explicit BUFFER_ONLY is a tracked row that owes an export.
+    params.exported =
+      record.exported === EXPORTED_BUFFER_ONLY
+        ? EXPORTED_BUFFER_ONLY
+        : EXPORTED_PENDING;
+
     return params;
   }
 
@@ -752,14 +808,17 @@ export class SQLiteBuffer {
   }
 
   /**
-   * Clean up old exported records from all per-path tables
+   * Delete rows whose fate is settled and which are past the retention window:
+   * exported ones, and buffer-only ones that were never going to be exported.
+   * A PENDING row is never deleted, however old, so a path that failed to
+   * export keeps its data for the next attempt.
    */
   cleanup(): number {
     let totalCleaned = 0;
     for (const [, info] of this.tableMap) {
       const result = this.db
         .prepare(
-          `DELETE FROM ${info.tableName} WHERE exported = 1 AND created_at < datetime('now', '-' || ? || ' hours')`
+          `DELETE FROM ${info.tableName} WHERE exported IN (${EXPORTED_DONE}, ${EXPORTED_BUFFER_ONLY}) AND created_at < datetime('now', '-' || ? || ' hours')`
         )
         .run(this.retentionHours);
       totalCleaned += Number(result.changes);
@@ -774,6 +833,7 @@ export class SQLiteBuffer {
     let totalRecords = 0;
     let pendingRecords = 0;
     let exportedRecords = 0;
+    let bufferOnlyRecords = 0;
     let oldestPendingTimestamp: string | null = null;
     let newestRecordTimestamp: string | null = null;
 
@@ -783,9 +843,10 @@ export class SQLiteBuffer {
           `
         SELECT
           COUNT(*) as totalRecords,
-          SUM(CASE WHEN exported = 0 THEN 1 ELSE 0 END) as pendingRecords,
-          SUM(CASE WHEN exported = 1 THEN 1 ELSE 0 END) as exportedRecords,
-          MIN(CASE WHEN exported = 0 THEN received_timestamp END) as oldestPendingTimestamp,
+          SUM(CASE WHEN exported = ${EXPORTED_PENDING} THEN 1 ELSE 0 END) as pendingRecords,
+          SUM(CASE WHEN exported = ${EXPORTED_DONE} THEN 1 ELSE 0 END) as exportedRecords,
+          SUM(CASE WHEN exported = ${EXPORTED_BUFFER_ONLY} THEN 1 ELSE 0 END) as bufferOnlyRecords,
+          MIN(CASE WHEN exported = ${EXPORTED_PENDING} THEN received_timestamp END) as oldestPendingTimestamp,
           MAX(received_timestamp) as newestRecordTimestamp
         FROM ${info.tableName}
       `
@@ -794,6 +855,7 @@ export class SQLiteBuffer {
         totalRecords: number;
         pendingRecords: number;
         exportedRecords: number;
+        bufferOnlyRecords: number;
         oldestPendingTimestamp: string | null;
         newestRecordTimestamp: string | null;
       };
@@ -801,6 +863,7 @@ export class SQLiteBuffer {
       totalRecords += row.totalRecords || 0;
       pendingRecords += row.pendingRecords || 0;
       exportedRecords += row.exportedRecords || 0;
+      bufferOnlyRecords += row.bufferOnlyRecords || 0;
 
       if (row.oldestPendingTimestamp) {
         if (
@@ -841,6 +904,7 @@ export class SQLiteBuffer {
       totalRecords,
       pendingRecords,
       exportedRecords,
+      bufferOnlyRecords,
       oldestPendingTimestamp,
       newestRecordTimestamp,
       dbSizeBytes,
@@ -1180,7 +1244,7 @@ export class SQLiteBuffer {
       SELECT * FROM ${tableInfo.tableName}
       WHERE context = ?
         AND signalk_timestamp >= ? AND signalk_timestamp < ?
-        AND exported = 0
+        AND exported IN (${EXPORTED_PENDING}, ${EXPORTED_BUFFER_ONLY})
         AND id > ?
       ORDER BY id ASC
       LIMIT ?
@@ -1248,7 +1312,7 @@ export class SQLiteBuffer {
           `SELECT context, signalk_timestamp, source_label, ${valueCols}
            FROM ${info.tableName}
            WHERE signalk_timestamp >= ? AND signalk_timestamp ${cutoffInclusive ? '<=' : '<'} ?
-             AND exported = 0${contextClause}
+             AND exported IN (${EXPORTED_PENDING}, ${EXPORTED_BUFFER_ONLY})${contextClause}
            ORDER BY signalk_timestamp ASC
            LIMIT ?`
         )
@@ -1289,7 +1353,7 @@ export class SQLiteBuffer {
       const row = this.db
         .prepare(
           `SELECT 1 AS hit FROM ${info.tableName}
-           WHERE signalk_timestamp >= ? AND exported = 0${contextClause}
+           WHERE signalk_timestamp >= ? AND exported IN (${EXPORTED_PENDING}, ${EXPORTED_BUFFER_ONLY})${contextClause}
            LIMIT 1`
         )
         .get(fromIso, ...(contexts ?? []));
@@ -1313,7 +1377,7 @@ export class SQLiteBuffer {
       const row = this.db
         .prepare(
           `SELECT MIN(signalk_timestamp) AS t FROM ${info.tableName}
-           WHERE signalk_timestamp >= ? AND exported = 0${contextClause}`
+           WHERE signalk_timestamp >= ? AND exported IN (${EXPORTED_PENDING}, ${EXPORTED_BUFFER_ONLY})${contextClause}`
         )
         .get(fromIso, ...(contexts ?? [])) as { t: string | null } | undefined;
       const t = row?.t ?? null;

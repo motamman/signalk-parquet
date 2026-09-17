@@ -155,6 +155,74 @@ describe('delta ingestion and regimen control', () => {
     await host?.cleanup();
   });
 
+  describe('retention mode', () => {
+    const SHORT = 'navigation.rateOfTurn';
+
+    /** Stamps on every row of a path, in insert order. */
+    function stamps(signalkPath: string): number[] {
+      const db = (
+        buffer as unknown as {
+          db: { prepare(sql: string): { all(): unknown[] } };
+        }
+      ).db;
+      const table = `buffer_${signalkPath.replace(/\./g, '_')}`;
+      return (
+        db.prepare(`SELECT exported FROM ${table} ORDER BY id`).all() as Array<{
+          exported: number;
+        }>
+      ).map(r => r.exported);
+    }
+
+    it('records a buffer-only path as short-term, never owing an export', () => {
+      const paths = asPaths([
+        { path: SHORT, enabled: true, context: 'vessels.self', retention: 'buffer' },
+      ]);
+      updateDataSubscriptions(paths, state, config, host.app);
+      host.emitBus(SHORT, dataDelta(SHORT, 0.02));
+
+      expect(stamps(SHORT)).to.deep.equal([-1]);
+      expect(buffer.getStats().bufferOnlyRecords).to.equal(1);
+      expect(buffer.getStats().pendingRecords).to.equal(0);
+      expect(buffer.getPathsForDate(frozenDay()).map(p => p.path)).to.not.include(
+        SHORT
+      );
+    });
+
+    it('records an unmarked path as full, so existing configs are unchanged', () => {
+      updateDataSubscriptions(PATHS, state, config, host.app);
+      host.emitBus(
+        'navigation.speedOverGround',
+        dataDelta('navigation.speedOverGround', 5.2)
+      );
+      expect(stamps('navigation.speedOverGround')).to.deep.equal([0]);
+    });
+
+    it('promotes a buffer-only path while its regimen is active', () => {
+      // Buffered continuously, exported only during a passage: one
+      // subscription, one row per delta, the mode decided per row.
+      const paths = asPaths([
+        {
+          path: SHORT,
+          enabled: true,
+          context: 'vessels.self',
+          retention: 'buffer',
+          fullWhileRegimen: 'capturePassage',
+        },
+      ]);
+      updateDataSubscriptions(paths, state, config, host.app);
+
+      host.emitBus(SHORT, dataDelta(SHORT, 0.01));
+      state.activeRegimens.add('capturePassage');
+      host.emitBus(SHORT, dataDelta(SHORT, 0.02));
+      state.activeRegimens.delete('capturePassage');
+      host.emitBus(SHORT, dataDelta(SHORT, 0.03));
+
+      // Only the row written during the passage owes an export, and the
+      // earlier rows are not re-stamped when the regimen turns on.
+      expect(stamps(SHORT)).to.deep.equal([-1, 0, -1]);
+    });
+  });
+
   it('subscribes only to enabled paths, not regimen-gated ones', () => {
     updateDataSubscriptions(PATHS, state, config, host.app);
 

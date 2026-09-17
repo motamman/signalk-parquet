@@ -167,6 +167,19 @@ export interface PathConfig {
   context?: Context;
   excludeMMSI?: string[]; // Array of MMSI numbers to exclude when using vessels.*
   autoDiscovered?: boolean; // Track which paths were auto-discovered
+  /**
+   * `full` (the default, and every pre-existing config) buffers then writes to
+   * Parquet and the cloud. `buffer` keeps the path in the SQLite buffer for the
+   * retention window only: queryable through the History API, never written to
+   * Parquet. See utils/retention-mode.
+   */
+  retention?: 'buffer' | 'full';
+  /**
+   * Promote a `buffer` path to `full` while this regimen is active, so it can
+   * be buffered continuously and exported only during a passage. Ignored on a
+   * `full` path.
+   */
+  fullWhileRegimen?: string;
 }
 
 // Command Registration Types
@@ -310,6 +323,13 @@ export interface DataRecord {
   source_pgn?: number;
   source_src?: string;
   meta?: string | object; // Store as object in memory, serialize when writing
+  /**
+   * Retention stamp, applied once at insert and never changed afterwards.
+   * `-1` marks a short-term (buffer-only) row that will never be written to
+   * Parquet; anything else is a tracked row that owes an export. See the
+   * EXPORTED_* constants in utils/sqlite-buffer.
+   */
+  exported?: number;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   [key: string]: any; // For flattened object properties
 }

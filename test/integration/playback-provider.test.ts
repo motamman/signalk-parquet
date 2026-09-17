@@ -11,7 +11,6 @@ import { SQLiteBuffer } from '../../src/utils/sqlite-buffer';
 import { ParquetWriter } from '../../src/parquet-writer';
 import { ParquetExportService } from '../../src/services/parquet-export-service';
 import { DuckDBPool } from '../../src/utils/duckdb-pool';
-import { clearSchemaCache } from '../../src/utils/schema-cache';
 import { clearFileListCache } from '../../src/utils/context-discovery';
 import { PlaybackProvider, parseContextParam } from '../../src/playback-provider';
 import type { PlaybackDelta } from '../../src/utils/playback-deltas';
@@ -103,7 +102,6 @@ describe('v1 history playback provider', function () {
     host = createFakeSignalK({ selfId: SELF_ID });
     buffer = new SQLiteBuffer({ dbPath: path.join(host.dataDir, 'buffer.db') });
     await DuckDBPool.initialize();
-    clearSchemaCache();
     clearFileListCache();
 
     const writer = new ParquetWriter({ format: 'parquet', app: host.app });
@@ -145,7 +143,6 @@ describe('v1 history playback provider', function () {
 
   afterEach(async () => {
     for (const stop of stops.splice(0)) stop();
-    clearSchemaCache();
     clearFileListCache();
     await DuckDBPool.shutdown();
     if (buffer?.isOpen()) buffer.close();

@@ -13,12 +13,17 @@ import express from 'express';
 import { Server } from 'http';
 import { AddressInfo } from 'net';
 import * as path from 'path';
+import * as fs from 'fs-extra';
 import { SQLiteBuffer } from '../../src/utils/sqlite-buffer';
+import { filesFor } from '../../src/utils/parquet-files';
 import { ParquetWriter } from '../../src/parquet-writer';
 import { ParquetExportService } from '../../src/services/parquet-export-service';
 import { DuckDBPool } from '../../src/utils/duckdb-pool';
 import { registerHistoryApiRoute } from '../../src/HistoryAPI';
-import { clearFileListCache } from '../../src/utils/context-discovery';
+import {
+  clearFileListCache,
+  queryContextsFromFooters,
+} from '../../src/utils/context-discovery';
 import { clearAllCaches } from '../../src/utils/path-cache';
 import { createFakeSignalK, FakeSignalK } from './helpers/fake-signalk';
 import { makeScalarRecord, makePositionRecord } from './helpers/records';
@@ -206,6 +211,21 @@ describe('Context discovery with dash-bearing ids (issue #71)', function () {
     expect(contexts2).to.include(RANGE_DASH_CONTEXT);
   });
 
+  it('still lists a context whose year has been compacted into one file', async () => {
+    const [mmsiFile] = await filesFor({
+      dataDir: host.dataDir,
+      contexts: [MMSI_CONTEXT],
+      paths: ['navigation.position'],
+    });
+    const yearDir = path.dirname(path.dirname(mmsiFile));
+    await fs.move(mmsiFile, path.join(yearDir, 'year_compact_2024_20250101T0000_test.parquet'));
+    await fs.remove(path.dirname(mmsiFile));
+    clearFileListCache();
+    const res = await fetch(`${baseUrl}/signalk/v1/history/contexts?${RANGE}`);
+    expect(res.status).to.equal(200);
+    expect((await res.json()) as string[]).to.include(MMSI_CONTEXT);
+  });
+
   it('spatial contexts endpoint returns the exact UUID context string', async () => {
     const res = await fetch(
       `${baseUrl}/api/history/contexts/spatial?${RANGE}&${BBOX}`
@@ -221,5 +241,57 @@ describe('Context discovery with dash-bearing ids (issue #71)', function () {
     for (const c of contexts) {
       expect(c).to.not.match(/uuid:[0-9a-f]+:/i);
     }
+  });
+
+  describe('resolution reads parquet footers, not data pages', () => {
+    // Reading `SELECT DISTINCT context` over every file in a context directory
+    // is what made /signalk/v1/history/contexts cost 39s and 1.4 GB of
+    // permanently-retained memory on a store with thousands of AIS contexts.
+    // A file holds exactly one context, so its footer statistics answer the
+    // same question. These assert the footer path actually answers for files
+    // this plugin writes — if the writer ever stops emitting usable
+    // statistics the data-reading fallback would quietly take over and the
+    // cost would come back unnoticed.
+
+    const sanitized = (context: string) =>
+      context.replace(/\./g, '__').replace(/:/g, '-');
+
+    it('resolves an exact UUID context from the footer alone', async () => {
+      const found = await queryContextsFromFooters(
+        host.dataDir,
+        sanitized(UUID_CONTEXT)
+      );
+      expect(found).to.deep.equal([UUID_CONTEXT]);
+    });
+
+    it('recovers both contexts colliding into one directory', async () => {
+      const found = await queryContextsFromFooters(
+        host.dataDir,
+        sanitized(COLON_CONTEXT)
+      );
+      expect(found).to.have.members([COLON_CONTEXT, DASH_CONTEXT]);
+    });
+
+    it('range-filters a collided directory from the footer timestamps', async () => {
+      // The colon variant has June 1 data, the dash variant only June 2.
+      const june1 = await queryContextsFromFooters(
+        host.dataDir,
+        sanitized(RANGE_COLON_CONTEXT),
+        { fromIso: '2024-06-01T00:00:00.000Z', toIso: '2024-06-01T23:59:59.999Z' }
+      );
+      expect(june1).to.deep.equal([RANGE_COLON_CONTEXT]);
+
+      const both = await queryContextsFromFooters(
+        host.dataDir,
+        sanitized(RANGE_COLON_CONTEXT),
+        { fromIso: '2024-06-01T00:00:00.000Z', toIso: '2024-06-02T23:59:59.999Z' }
+      );
+      expect(both).to.have.members([RANGE_COLON_CONTEXT, RANGE_DASH_CONTEXT]);
+    });
+
+    it('reports nothing for a directory that does not exist', async () => {
+      const found = await queryContextsFromFooters(host.dataDir, 'vessels__nope');
+      expect(found === null || found.length === 0).to.equal(true);
+    });
   });
 });
