@@ -299,7 +299,13 @@ export class HistoryProvider implements HistoryApi {
     toIso: string
   ): string[] {
     const hive = new HivePathBuilder();
-    const days = hive.getDaysInRange(new Date(fromIso), new Date(toIso));
+    const from = new Date(fromIso);
+    const to = new Date(toIso);
+    // The SQL window is [from, to): an empty or reversed range reads nothing,
+    // and a `to` on a midnight boundary must not open that day's files, so
+    // the last day is the one containing the final included instant.
+    if (from >= to) return [];
+    const days = hive.getDaysInRange(from, new Date(to.getTime() - 1));
     if (days.length === 0) return [];
     if (days.length > 366) {
       const years = [...new Set(days.map(d => d.year))];

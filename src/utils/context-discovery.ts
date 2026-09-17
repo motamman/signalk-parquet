@@ -51,26 +51,9 @@ let contextListCache: ContextListCache | null = null;
 const hiveBuilder = new HivePathBuilder();
 
 /**
- * Sanitized context dir name -> ALL true context strings read from the data.
- * The directory encoding is lossy (issue #71: ':' and literal '-' both map to
- * '-', so a UUID vessel id can't be reconstructed from the dir name — and two
- * distinct contexts such as `a:b` and `a-b` can collide into one directory),
- * but every parquet record carries the original context as a data column.
- * A context's true name never changes, but the SET of contexts sharing one
- * directory can grow (a new colliding context starts recording), so entries
- * carry the same TTL as the directory-listing cache. Entries for other data
- * directories are purged on rescan so runtime reconfiguration can't
- * accumulate stale directories; clearFileListCache() clears everything.
- */
-const trueContextCache = new Map<
-  string,
-  { contexts: string[]; timestamp: number }
->();
-
-/**
  * Read context=* directory names under tier=raw/. Returns the SANITIZED
  * names — the true context strings are resolved later, per matching context,
- * from the parquet data itself (see resolveTrueContexts).
+ * from the parquet data itself (see resolveContextsFor).
  */
 async function discoverContextDirsFromHive(dataDir: string): Promise<string[]> {
   const tierRawDir = path.join(dataDir, 'tier=raw');
@@ -96,36 +79,6 @@ async function discoverContextDirsFromHive(dataDir: string): Promise<string[]> {
     );
     return [];
   }
-}
-
-/**
- * Resolve ALL true context strings for a sanitized context directory name by
- * reading them from the data (every record stores the original context).
- * The sanitization is many-to-one, so one directory can hold data for
- * multiple distinct contexts (e.g. `a:b` and `a-b`); a DISTINCT scan over
- * the directory's data files recovers every one. The glob only matches the
- * partition-shaped path=* / year=* / day=* subdirectories, so
- * quarantine/failed/processed/repaired siblings are never touched.
- * Falls back to the legacy lossy reconstruction from the directory name when
- * no file can be read; the fallback is not cached so a later successful read
- * can correct it.
- */
-async function resolveTrueContexts(
-  dataDir: string,
-  sanitized: string
-): Promise<string[]> {
-  const key = JSON.stringify([dataDir, sanitized]);
-  const cached = trueContextCache.get(key);
-  if (cached && Date.now() - cached.timestamp < CACHE_TTL.FILE_LIST) {
-    return cached.contexts;
-  }
-
-  const contexts = await resolveContextsFor(dataDir, sanitized);
-  if (contexts !== null && contexts.length > 0) {
-    trueContextCache.set(key, { contexts, timestamp: Date.now() });
-    return contexts;
-  }
-  return [hiveBuilder.unsanitizeContext(sanitized)];
 }
 
 /**
@@ -217,50 +170,81 @@ export async function queryContextsFromFooters(
   const files = await listContextFiles(dataDir, sanitized, range);
   if (files === null) return null;
   const found = new Set<string>();
-  for (const file of files) {
-    let reader: Awaited<ReturnType<FooterReader['ParquetReader']['openFile']>>;
-    try {
-      reader = await parquetjs.ParquetReader.openFile(file);
-    } catch (error) {
-      debugLogger.warn(
-        `[Context Discovery] Could not open footer of ${file}:`,
-        error
-      );
-      return null;
+  // Bounded fan-out: footers are tiny, so the cost is per-open latency, and
+  // a week of a busy vessel is hundreds of files. Sixteen in flight keeps
+  // that sub-second without opening a store's worth of descriptors at once.
+  // An unreadable file, or one without exact context statistics, aborts the
+  // whole directory to the DuckDB data read rather than silently dropping a
+  // vessel; a file whose timestamps miss the window is simply skipped.
+  const lib = parquetjs;
+  let next = 0;
+  let aborted = false;
+  const worker = async (): Promise<void> => {
+    while (!aborted) {
+      const idx = next++;
+      if (idx >= files.length) return;
+      const r = await contextOfFile(lib, files[idx], range);
+      if (r.kind === 'abort') aborted = true;
+      else if (r.kind === 'context') found.add(r.value);
     }
-    try {
-      let context: string | null = null;
-      const spans: Array<[string, string]> = [];
-      for (const rg of reader.metadata?.row_groups ?? []) {
-        for (const col of rg.columns) {
-          const md = col.meta_data;
-          const name = md?.path_in_schema?.[0];
-          if (name !== 'context' && name !== 'signalk_timestamp') continue;
-          const st = md?.statistics;
-          const lo = statText(st?.min_value);
-          const hi = statText(st?.max_value);
-          if (lo === null || hi === null) continue;
-          if (name === 'context') {
-            if (lo === hi && lo.length > 0) context = lo;
-          } else if (name === 'signalk_timestamp') {
-            spans.push([lo, hi]);
-          }
+  };
+  await Promise.all(
+    Array.from({ length: Math.min(16, files.length) }, () => worker())
+  );
+  if (aborted) return null;
+  return [...found];
+}
+
+type FooterVerdict =
+  { kind: 'context'; value: string } | { kind: 'skip' } | { kind: 'abort' };
+
+/** What one file's footer says: its context, nothing in range, or unusable. */
+async function contextOfFile(
+  lib: FooterReader,
+  file: string,
+  range?: { fromIso: string; toIso: string }
+): Promise<FooterVerdict> {
+  let reader: Awaited<ReturnType<FooterReader['ParquetReader']['openFile']>>;
+  try {
+    reader = await lib.ParquetReader.openFile(file);
+  } catch (error) {
+    debugLogger.warn(
+      `[Context Discovery] Could not open footer of ${file}:`,
+      error
+    );
+    return { kind: 'abort' };
+  }
+  try {
+    let context: string | null = null;
+    const spans: Array<[string, string]> = [];
+    for (const rg of reader.metadata?.row_groups ?? []) {
+      for (const col of rg.columns) {
+        const md = col.meta_data;
+        const name = md?.path_in_schema?.[0];
+        if (name !== 'context' && name !== 'signalk_timestamp') continue;
+        const st = md?.statistics;
+        const lo = statText(st?.min_value);
+        const hi = statText(st?.max_value);
+        if (lo === null || hi === null) continue;
+        if (name === 'context') {
+          if (lo === hi && lo.length > 0) context = lo;
+        } else if (name === 'signalk_timestamp') {
+          spans.push([lo, hi]);
         }
       }
-      if (context === null) return null;
-      if (range) {
-        if (spans.length === 0) return null;
-        const overlaps = spans.some(
-          ([lo, hi]) => hi >= range.fromIso && lo <= range.toIso
-        );
-        if (!overlaps) continue;
-      }
-      found.add(context);
-    } finally {
-      await reader.close();
     }
+    if (context === null) return { kind: 'abort' };
+    if (range) {
+      if (spans.length === 0) return { kind: 'abort' };
+      const overlaps = spans.some(
+        ([lo, hi]) => hi >= range.fromIso && lo <= range.toIso
+      );
+      if (!overlaps) return { kind: 'skip' };
+    }
+    return { kind: 'context', value: context };
+  } finally {
+    await reader.close();
   }
-  return [...found];
 }
 
 /**
@@ -427,12 +411,6 @@ export async function getAvailableContextsForTimeRange(
       debugLogger.log(
         `[Context Discovery] Scanning hive directories for contexts...`
       );
-      // Purge resolution-cache entries for other data directories so a
-      // runtime setDataDir() reconfigure can't accumulate stale entries.
-      for (const key of trueContextCache.keys()) {
-        const [cachedDataDir] = JSON.parse(key) as [string, string];
-        if (cachedDataDir !== dataDir) trueContextCache.delete(key);
-      }
       allContexts = await discoverContextDirsFromHive(dataDir);
 
       contextListCache = {
@@ -476,27 +454,26 @@ export async function getAvailableContextsForTimeRange(
     // Resolve the true context strings from the data — the dir-name
     // reconstruction is lossy for ids containing literal dashes (issue #71),
     // and one sanitized directory can hold several colliding contexts.
-    // Sequential on purpose: each resolution opens a DuckDB connection, and a
-    // large AIS store can have hundreds of context directories — a Promise.all
-    // fan-out would open them all at once. After the first request the
-    // resolutions are cached, so the sequential cost is a cold-start-only one.
+    //
+    // Each directory is resolved from the files of the requested days only,
+    // with each footer's own timestamps deciding overlap. That answers the
+    // question directly, collisions included (every file names its own
+    // context), so there is no whole-history name lookup and no long-lived
+    // per-directory name cache to go stale or to hide a collider whose data
+    // falls outside the window. A week of footers is cheap enough that the
+    // cache bought nothing but that risk.
     const fromIso = from.toInstant().toString();
     const toIso = to.toInstant().toString();
     const matchingContexts: string[] = [];
     for (const sanitized of matchingSanitized) {
-      const resolved = await resolveTrueContexts(dataDir, sanitized);
-      if (resolved.length > 1) {
-        // Collided directory (e.g. `a:b` and `a-b` share it): the day-level
-        // directory check above only proves SOME context in it has data in
-        // range. Re-query constrained to the requested range so a collider
-        // whose data lies entirely outside the range isn't reported. Rare
-        // (requires ids differing only colon-vs-dash), so the extra query
-        // costs nothing in the common single-context case.
-        const inRange = await resolveContextsFor(dataDir, sanitized, {
-          fromIso,
-          toIso,
-        });
-        matchingContexts.push(...(inRange ?? resolved));
+      const resolved = await resolveContextsFor(dataDir, sanitized, {
+        fromIso,
+        toIso,
+      });
+      if (resolved === null) {
+        // Nothing could be read at all: the lossy directory name beats
+        // dropping a vessel the day-directory check says has data.
+        matchingContexts.push(hiveBuilder.unsanitizeContext(sanitized));
       } else {
         matchingContexts.push(...resolved);
       }
@@ -671,6 +648,5 @@ export async function getContextsInSpatialFilter(
  */
 export function clearFileListCache(): void {
   contextListCache = null;
-  trueContextCache.clear();
   debugLogger.log('[Context Discovery] Context list cache cleared');
 }
