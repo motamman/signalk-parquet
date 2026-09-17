@@ -2,6 +2,7 @@ import * as fs from 'fs-extra';
 import * as path from 'path';
 import { HivePathBuilder } from './utils/hive-path-builder';
 import { resolveRetentionStamp } from './utils/retention-mode';
+import { EXPORTED_BUFFER_ONLY } from './utils/sqlite-buffer';
 import { listHiveDirs, listParquetFiles, dayKey } from './utils/hive-walk';
 import {
   PluginConfig,
@@ -788,8 +789,17 @@ async function saveBufferToParquet(
   app: ServerAPI
 ): Promise<void> {
   try {
+    // Buffer-only rows are stamped at insert and are never written to Parquet,
+    // whichever buffer holds them. They stay in the in-memory buffer for its
+    // short-term query lifecycle and are dropped here, at the persistence
+    // boundary — the same rule the SQLite path enforces with `exported = 0`.
+    const records = buffer.filter(
+      record => record.exported !== EXPORTED_BUFFER_ONLY
+    );
+    if (records.length === 0) return;
+
     // Get context from first record in buffer (all records in buffer have same path/context)
-    const context = buffer.length > 0 ? buffer[0].context : 'vessels.self';
+    const context = records[0].context;
 
     // Create proper directory structure
     let contextPath: string;
@@ -831,7 +841,7 @@ async function saveBufferToParquet(
     const filepath = path.join(dirPath, filename);
 
     // Use ParquetWriter to save in the configured format
-    await state.parquetWriter!.writeRecords(filepath, buffer);
+    await state.parquetWriter!.writeRecords(filepath, records);
   } catch (error) {
     app.error(
       `[DataHandler] Failed to write buffer for ${signalkPath} to ${config.fileFormat}: ${(error as Error).message}`

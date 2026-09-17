@@ -178,11 +178,14 @@ export async function queryContextsFromFooters(
   const globs = contextGlobs(dataDir, sanitized, range);
   if (globs.length === 0) return [];
   // A day directory bounds a file only to the day; the timestamp statistics
-  // still decide whether it overlaps the requested window.
-  const overlap = range
-    ? `AND t0 IS NOT NULL AND t1 IS NOT NULL
-         AND t1 >= '${escapeSqlString(range.fromIso)}'
-         AND t0 <= '${escapeSqlString(range.toIso)}'`
+  // still decide whether it overlaps the requested window. A file whose
+  // context statistics are unusable is kept whatever its timestamps say, so
+  // the caller below can see that the directory is not fully resolved.
+  const where = range
+    ? `WHERE ctx IS NULL
+         OR (t0 IS NOT NULL AND t1 IS NOT NULL
+             AND t1 >= '${escapeSqlString(range.fromIso)}'
+             AND t0 <= '${escapeSqlString(range.toIso)}')`
     : '';
   try {
     const connection = await DuckDBPool.getConnection();
@@ -199,12 +202,18 @@ export async function queryContextsFromFooters(
                       THEN stats_max END) AS t1
            FROM parquet_metadata(${globList(globs)})
            GROUP BY file_name
-         ) WHERE ctx IS NOT NULL ${overlap}`
+         ) ${where}`
       );
-      return result
-        .getRowObjects()
-        .map(row => row.ctx)
-        .filter((c): c is string => typeof c === 'string' && c.length > 0);
+      const contexts: string[] = [];
+      for (const row of result.getRowObjects()) {
+        // Dropping a file with missing or truncated `context` statistics would
+        // return a confidently partial list, silently losing whatever context
+        // only that file holds. One unusable file leaves the whole directory
+        // unresolved, so the caller falls back to scanning the data.
+        if (typeof row.ctx !== 'string' || row.ctx.length === 0) return null;
+        contexts.push(row.ctx);
+      }
+      return contexts;
     } finally {
       connection.disconnectSync();
     }

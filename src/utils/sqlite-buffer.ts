@@ -563,6 +563,11 @@ export class SQLiteBuffer {
     const tableInfo = this.tableMap.get(signalkPath);
     if (!tableInfo) return false;
     const params = this.prepareRecord(record, tableInfo);
+    // A row's retention stamp is decided when it is written and never
+    // re-stamped, so the overwrite leaves `exported` as it was: re-stamping a
+    // BUFFER_ONLY row PENDING would export data recorded as buffer-only, and
+    // the reverse would drop an export the row already owes.
+    delete params.exported;
     const sets = Object.keys(params).map(col => `${col} = @${col}`);
     const result = this.db
       .prepare(

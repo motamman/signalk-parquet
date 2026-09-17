@@ -44,8 +44,17 @@ interface PathStats {
 }
 
 const args = process.argv.slice(2);
-const url = args[0] ?? 'ws://localhost:3000';
-const seconds = Number(args[1] ?? 300);
+// Options may appear anywhere, so the url and the duration are read from the
+// positional arguments: `--buffer=…` in second place is an option, not a
+// duration, and must not turn the sample window into NaN.
+const positional = args.filter(a => !a.startsWith('--'));
+const DEFAULT_SECONDS = 300;
+const url = positional[0] ?? 'ws://localhost:3000';
+const requestedSeconds = Number(positional[1]);
+const seconds =
+  Number.isFinite(requestedSeconds) && requestedSeconds > 0
+    ? requestedSeconds
+    : DEFAULT_SECONDS;
 const bufferArg = args.find(a => a.startsWith('--buffer='))?.slice('--buffer='.length);
 
 const stats = new Map<string, PathStats>();
@@ -139,7 +148,10 @@ function intervalCV(s: PathStats): number {
 }
 
 function classify(s: PathStats, rate: number, changeRatio: number, cv: number): Behaviour {
-  if (s.samples <= 1) return 'single';
+  // No interval anywhere means no context was seen twice, so there is nothing
+  // to say about cadence or change — including when several contexts each
+  // reported once, which a sample count alone would read as 'static'.
+  if (s.intervals === 0) return 'single';
   if (s.changes === 0) return 'static';
   if (changeRatio < 0.05) return 'stable';
   if (Number.isNaN(cv)) return 'irregular';
@@ -152,9 +164,12 @@ function pad(s: string, n: number): string {
   return s.length > n ? s.slice(0, n - 1) + '…' : s.padEnd(n);
 }
 
-function report(recorded: Set<string>): void {
+function report(recorded: Set<string>, elapsedSeconds: number): void {
+  // Rates are per second of connected time, which is not the requested window
+  // when the server closed the stream early.
+  const span = elapsedSeconds > 0 ? elapsedSeconds : seconds;
   const rows = [...stats.values()].map(s => {
-    const rate = s.samples / seconds;
+    const rate = s.samples / span;
     const changeRatio = s.intervals > 0 ? s.changes / s.intervals : 0;
     const cv = intervalCV(s);
     return {
@@ -174,8 +189,8 @@ function report(recorded: Set<string>): void {
   const byClass = new Map<Behaviour, number>();
   for (const r of rows) byClass.set(r.behaviour, (byClass.get(r.behaviour) ?? 0) + 1);
 
-  console.log(`\nsampled ${seconds}s from ${url}`);
-  console.log(`  ${totalMessages.toLocaleString()} delta messages, ${totalValues.toLocaleString()} path values (${(totalValues / seconds).toFixed(1)}/s)`);
+  console.log(`\nsampled ${span.toFixed(0)}s from ${url}`);
+  console.log(`  ${totalMessages.toLocaleString()} delta messages, ${totalValues.toLocaleString()} path values (${(totalValues / span).toFixed(1)}/s)`);
   console.log(`  ${rows.length} distinct paths, ${new Set(rows.flatMap(r => [...r.s.contexts.keys()])).size} contexts`);
   if (recorded.size) console.log(`  ${rows.filter(r => r.isRecorded).length} of them already recorded`);
 
@@ -225,20 +240,53 @@ function describe(b: Behaviour): string {
     case 'episodic': return 'bursty, long gaps — events rather than a series';
     case 'stable': return 'arrives often, value rarely moves — dedup or fold';
     case 'static': return 'never changed in the window — metadata, not a series';
-    case 'single': return 'seen once';
+    case 'single': return 'no repeated observation in any context';
   }
 }
 
 const recorded = bufferArg ? recordedPaths(bufferArg) : new Set<string>();
 const ws = new WebSocket(`${url.replace(/\/$/, '')}/signalk/v1/stream?subscribe=all`);
 
-ws.onopen = () => console.error(`connected, sampling ${seconds}s…`);
+/** When the stream opened, and so when sampling actually began. */
+let openedMs = 0;
+let timer: ReturnType<typeof setTimeout> | undefined;
+let reported = false;
+
+/** Report the window that was actually sampled, once, and stop. */
+function finish(code: number): void {
+  if (reported) return;
+  reported = true;
+  if (timer) clearTimeout(timer);
+  report(recorded, openedMs === 0 ? 0 : (Date.now() - openedMs) / 1000);
+  try {
+    ws.close();
+  } catch {
+    // already closing
+  }
+  process.exit(code);
+}
+
+ws.onopen = () => {
+  // The clock starts with the stream, not with the process: counting the
+  // connection handshake as sample time would understate every rate.
+  openedMs = Date.now();
+  timer = setTimeout(() => finish(0), seconds * 1000);
+  console.error(`connected, sampling ${seconds}s…`);
+};
 ws.onerror = e => console.error('websocket error:', (e as ErrorEvent).message ?? e);
 ws.onclose = e => {
   if (totalMessages === 0) {
     console.error(`closed before any data (code ${e.code} ${e.reason || ''})`);
     process.exit(1);
   }
+  // Closed early: report the measured duration now rather than let the timer
+  // fire later and present a short sample as a full window. Non-zero exit
+  // marks the sample as incomplete.
+  const elapsed = openedMs === 0 ? 0 : (Date.now() - openedMs) / 1000;
+  console.error(
+    `stream closed after ${elapsed.toFixed(0)}s of the requested ${seconds}s (code ${e.code} ${e.reason || ''})`
+  );
+  finish(1);
 };
 ws.onmessage = ev => {
   let d: { context?: string; updates?: Array<{ timestamp?: string; values?: Array<{ path?: string; value?: unknown }> }> };
@@ -258,12 +306,3 @@ ws.onmessage = ev => {
   }
 };
 
-setTimeout(() => {
-  report(recorded);
-  try {
-    ws.close();
-  } catch {
-    // already closing
-  }
-  process.exit(0);
-}, seconds * 1000);

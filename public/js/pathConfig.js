@@ -1,4 +1,4 @@
-import { getPluginPath } from './utils.js';
+import { getPluginPath, escapeHtml } from './utils.js';
 
 let showCommandPaths = false;
 
@@ -30,7 +30,7 @@ export async function loadPathConfigurations() {
 function retentionLabel(path) {
   if (path.retention !== 'buffer') return 'Forever';
   return path.fullWhileRegimen
-    ? `Buffer only <small>(forever while ${path.fullWhileRegimen})</small>`
+    ? `Buffer only <small>(forever while ${escapeHtml(path.fullWhileRegimen)})</small>`
     : 'Buffer only';
 }
 
@@ -736,7 +736,7 @@ export async function editPathConfiguration(index) {
                     <option value="full" ${path.retention === 'buffer' ? '' : 'selected'}>Forever</option>
                     <option value="buffer" ${path.retention === 'buffer' ? 'selected' : ''}>Buffer only</option>
                 </select>
-                <input type="text" id="editFullWhileRegimen${index}" value="${path.fullWhileRegimen || ''}" style="width: 100%; margin-top: 4px;" placeholder="forever while regimen…">
+                <input type="text" id="editFullWhileRegimen${index}" value="${escapeHtml(path.fullWhileRegimen || '')}" style="width: 100%; margin-top: 4px;" placeholder="forever while regimen…">
             </td>
             <td><input type="text" id="editSource${index}" value="${path.source || ''}" style="width: 100%;" placeholder="e.g., mqtt-weatherflow-udp"></td>
             <td><input type="text" id="editContext${index}" value="${path.context || 'vessels.self'}" style="width: 100%;"></td>
