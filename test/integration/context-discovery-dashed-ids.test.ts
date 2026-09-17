@@ -13,7 +13,9 @@ import express from 'express';
 import { Server } from 'http';
 import { AddressInfo } from 'net';
 import * as path from 'path';
+import * as fs from 'fs-extra';
 import { SQLiteBuffer } from '../../src/utils/sqlite-buffer';
+import { filesFor } from '../../src/utils/parquet-files';
 import { ParquetWriter } from '../../src/parquet-writer';
 import { ParquetExportService } from '../../src/services/parquet-export-service';
 import { DuckDBPool } from '../../src/utils/duckdb-pool';
@@ -207,6 +209,21 @@ describe('Context discovery with dash-bearing ids (issue #71)', function () {
     const contexts2 = (await res2.json()) as string[];
     expect(contexts2).to.include(RANGE_COLON_CONTEXT);
     expect(contexts2).to.include(RANGE_DASH_CONTEXT);
+  });
+
+  it('still lists a context whose year has been compacted into one file', async () => {
+    const [mmsiFile] = await filesFor({
+      dataDir: host.dataDir,
+      contexts: [MMSI_CONTEXT],
+      paths: ['navigation.position'],
+    });
+    const yearDir = path.dirname(path.dirname(mmsiFile));
+    await fs.move(mmsiFile, path.join(yearDir, 'year_compact_2024_20250101T0000_test.parquet'));
+    await fs.remove(path.dirname(mmsiFile));
+    clearFileListCache();
+    const res = await fetch(`${baseUrl}/signalk/v1/history/contexts?${RANGE}`);
+    expect(res.status).to.equal(200);
+    expect((await res.json()) as string[]).to.include(MMSI_CONTEXT);
   });
 
   it('spatial contexts endpoint returns the exact UUID context string', async () => {

@@ -5,8 +5,6 @@
  * this plugin as the official history data provider for the SignalK server.
  */
 
-import * as fs from 'fs-extra';
-import * as path from 'path';
 import { Temporal } from '@js-temporal/polyfill';
 import { ZonedDateTime, ZoneOffset, Instant } from '@js-joda/core';
 import { Context, Path, Timestamp, ServerAPI } from '@signalk/server-api';
@@ -25,7 +23,7 @@ import {
   PathFilter,
   filtersFromFields,
   buildParquetFilterClause,
-  availableFilterColumns,
+  filterColumns,
 } from './utils/path-filters';
 import { getAvailablePathsArray } from './utils/path-discovery';
 import { getAvailableContextsForTimeRange } from './utils/context-discovery';
@@ -36,14 +34,20 @@ import {
   validateSignalKPath,
 } from './utils/signalk-validation';
 import {
-  getPathComponentSchema,
   inferDataTypeCategory,
   ComponentInfo,
   PathComponentSchema,
 } from './utils/schema-cache';
-import { HivePathBuilder } from './utils/hive-path-builder';
+import { filesFor, readParquetSql } from './utils/parquet-files';
+import {
+  componentColumns,
+  hasColumn,
+  readFooters,
+  ParquetFooter,
+} from './utils/parquet-footer';
 import { isAngularPath } from './utils/angular-paths';
-import { middleIndexSql } from './utils/aggregate-sql';
+import { firstSql, lastSql, middleIndexSql } from './utils/aggregate-sql';
+import { isoBound, isoInstant } from './utils/iso-time';
 import {
   buildBufferScalarSubquery,
   buildBufferObjectSubquery,
@@ -182,16 +186,6 @@ const MAX_EXPANDED_COLUMNS = 64;
 /** The stored column a source ref lives in, as registered in path-filters. */
 const SOURCE_FILTER = { field: 'sourceRef', column: 'source_label' } as const;
 
-/** DuckDB's error for a read_parquet glob that matches no file. */
-/** A DuckDB list literal of globs, each escaped. */
-function globList(globs: string[]): string {
-  return `[${globs.map(g => `'${escapeSqlString(g)}'`).join(', ')}]`;
-}
-
-function isNoFilesError(err: unknown): boolean {
-  return (err as Error)?.message?.includes('No files found') ?? false;
-}
-
 /** Buffer columns that are metadata rather than object components. */
 const NON_COMPONENT_COLUMNS = new Set([
   'value_json',
@@ -228,6 +222,22 @@ function componentSchemaFromBuffer(
     });
   }
   return components.size > 0 ? { components, timestamp: Date.now() } : null;
+}
+
+/**
+ * Component schema of an object path from the footers of the window's raw
+ * parquet files: the union of their `value_*` columns. Null when no file has
+ * one, which is what a scalar path looks like. The window's files are the
+ * ones the query reads, so a component recorded only outside the window is
+ * not projected; it would have been NULL in every row anyway.
+ */
+function componentSchemaFromFooters(
+  footers: ParquetFooter[]
+): PathComponentSchema | null {
+  const components = componentColumns(footers);
+  return components.size > 0
+    ? { components: new Map(components), timestamp: Date.now() }
+    : null;
 }
 
 /**
@@ -278,53 +288,27 @@ export class HistoryProvider implements HistoryApi {
   }
 
   /**
-   * Get historical values for the specified query
+   * The raw-tier parquet files of one path for the query's days: only those
+   * days, never the path's whole history (see parquet-files.ts).
    */
-  /**
-   * The raw-tier globs for one path, narrowed to the days the query covers.
-   *
-   * The earlier single wildcard glob (`year=*\/day=*`) opened a path's entire
-   * history to answer a one-day question; DuckDB has to read every file's
-   * footer before it can prune by timestamp, and on a store with years of
-   * daily files that cost 366 MB of native memory per call — memory the
-   * allocator never returns — for a dashboard polling P1D once a minute.
-   * One glob per day keeps a day's question to a day's files. Past a year
-   * the list falls back to one glob per year rather than thousands of
-   * entries; the timestamp predicate still does the exact filtering.
-   */
-  private dayGlobs(
+  private rawFiles(
     context: Context,
     signalkPath: string,
     fromIso: string,
     toIso: string
-  ): string[] {
-    const hive = new HivePathBuilder();
-    const from = new Date(fromIso);
-    const to = new Date(toIso);
-    // The SQL window is [from, to): an empty or reversed range reads nothing,
-    // and a `to` on a midnight boundary must not open that day's files, so
-    // the last day is the one containing the final included instant.
-    if (from >= to) return [];
-    const days = hive.getDaysInRange(from, new Date(to.getTime() - 1));
-    if (days.length === 0) return [];
-    if (days.length > 366) {
-      const years = [...new Set(days.map(d => d.year))];
-      return years.map(y =>
-        hive.getGlobPattern(this.dataDir, 'raw', context, signalkPath, y)
-      );
-    }
-    return days.map(d =>
-      hive.getGlobPattern(
-        this.dataDir,
-        'raw',
-        context,
-        signalkPath,
-        d.year,
-        d.dayOfYear
-      )
-    );
+  ): Promise<string[]> {
+    return filesFor({
+      dataDir: this.dataDir,
+      contexts: [context],
+      paths: [signalkPath],
+      fromIso,
+      toIso,
+    });
   }
 
+  /**
+   * Get historical values for the specified query
+   */
   async getValues(query: ValuesRequest): Promise<ValuesResponse> {
     this.debug(
       `[HistoryProvider] getValues called with: ${JSON.stringify(
@@ -360,8 +344,8 @@ export class HistoryProvider implements HistoryApi {
       `[HistoryProvider] getValues: context=${context}, from=${from}, to=${to}, resolution=${resolutionMs}ms (${resolutionFromQuery ? 'from query' : 'auto'}), paths=${query.pathSpecs.length}`
     );
 
-    const fromIso = from.toInstant().toString();
-    const toIso = to.toInstant().toString();
+    const fromIso = isoBound(from);
+    const toIso = isoBound(to);
 
     const columns = await this.resolveColumns(query, context, fromIso, toIso);
 
@@ -401,9 +385,11 @@ export class HistoryProvider implements HistoryApi {
 
     return {
       context,
+      // The range echoes the instants as js-joda spells them, as it always
+      // has; only the SQL bounds carry fixed milliseconds.
       range: {
-        from: fromIso as Timestamp,
-        to: toIso as Timestamp,
+        from: isoInstant(from) as Timestamp,
+        to: isoInstant(to) as Timestamp,
       },
       // `$source` is the per-column source in the response (signalk-server
       // #2817); the request side keeps the name `sourceRef`. A column that
@@ -541,33 +527,31 @@ export class HistoryProvider implements HistoryApi {
     toIso: string
   ): Promise<(string | null)[]> {
     validateSignalKPath(spec.path as string);
-    const globs = this.dayGlobs(context, spec.path, fromIso, toIso);
+    const files = await this.rawFiles(context, spec.path, fromIso, toIso);
     const column = SOURCE_FILTER.column;
     const found = new Set<string | null>();
     const connection = await DuckDBPool.getConnection();
     try {
       const timeWindow = `signalk_timestamp >= '${fromIso}' AND signalk_timestamp < '${toIso}'`;
-      const excluded = `filename NOT LIKE '%/processed/%' AND filename NOT LIKE '%/quarantine/%' AND filename NOT LIKE '%/failed/%' AND filename NOT LIKE '%/repaired/%'`;
-      // Parquet side. A glob that matches no files throws; that is "no data
-      // here", not a failure, and the buffer may still answer.
-      const available =
-        globs.length > 0
-          ? await availableFilterColumns(connection, globs, [
-              { field: SOURCE_FILTER.field, column, value: null },
-            ])
-          : new Set<string>();
-      try {
-        const selectExpr = available.has(column) ? column : 'NULL';
-        const result = await connection.runAndReadAll(
-          `SELECT DISTINCT ${selectExpr} AS src FROM read_parquet(${globList(globs)}, union_by_name=true, filename=true) WHERE ${excluded} AND ${timeWindow}`
-        );
-        for (const row of result.getRowObjects() as Array<{ src: unknown }>) {
-          found.add(typeof row.src === 'string' ? row.src : null);
+      // Parquet side, when there is one. A failure here is "no parquet
+      // answer", not a failure of the request: the buffer may still answer.
+      if (files.length > 0) {
+        try {
+          const footers = await readFooters(files);
+          const selectExpr = hasColumn(footers, column) ? column : 'NULL';
+          const result = await connection.runAndReadAll(
+            `SELECT DISTINCT ${selectExpr} AS src FROM ${readParquetSql(files)} WHERE ${timeWindow}`
+          );
+          for (const row of result.getRowObjects() as Array<{
+            src: unknown;
+          }>) {
+            found.add(typeof row.src === 'string' ? row.src : null);
+          }
+        } catch (error) {
+          this.debug(
+            `[HistoryProvider] source discovery on parquet skipped for ${spec.path}: ${error}`
+          );
         }
-      } catch (error) {
-        this.debug(
-          `[HistoryProvider] source discovery on parquet skipped for ${spec.path}: ${error}`
-        );
       }
       // Buffer side.
       if (DuckDBPool.isSQLiteBufferInitialized() && this.sqliteBuffer) {
@@ -652,31 +636,18 @@ export class HistoryProvider implements HistoryApi {
     toIso: string,
     resolutionMs: number
   ): Promise<Array<[Timestamp, unknown]>> {
-    // Reject a malformed path before it reaches the read_parquet glob.
+    // Reject a malformed path before it reaches the file system.
     validateSignalKPath(pathSpec.path as string);
 
-    const hiveBuilder = new HivePathBuilder();
-
-    // One glob per requested day, never the path's whole history.
-    const globs = this.dayGlobs(context, pathSpec.path, fromIso, toIso);
+    // The requested days' files, never the path's whole history. A path
+    // recorded since the last daily export has buffer rows and no files
+    // yet; the buffer then answers alone (as the v1 routes and the Track
+    // API do).
+    const files = await this.rawFiles(context, pathSpec.path, fromIso, toIso);
     this.debug(
-      `[HistoryProvider] Querying ${globs.length} day partition(s) for ${pathSpec.path}${globs.length ? `, first ${globs[0]}` : ''}`
+      `[HistoryProvider] Querying ${files.length} parquet file(s) for ${pathSpec.path}${files.length ? `, first ${files[0]}` : ''}`
     );
-
-    // A path recorded since the last daily export has buffer rows and no raw
-    // directory yet. read_parquet on a glob with no files throws, so the
-    // parquet side is only included when the directory exists, and the
-    // buffer answers alone otherwise (as the v1 routes and the Track API do).
-    const hasParquetDir =
-      globs.length > 0 &&
-      (await fs.pathExists(
-        path.join(
-          this.dataDir,
-          'tier=raw',
-          `context=${hiveBuilder.sanitizeContext(context)}`,
-          `path=${hiveBuilder.sanitizePath(pathSpec.path)}`
-        )
-      ));
+    const hasParquet = files.length > 0;
 
     // Stage this path's buffer rows into a temp table if the buffer is available
     const hasBuffer = DuckDBPool.isSQLiteBufferInitialized();
@@ -695,18 +666,17 @@ export class HistoryProvider implements HistoryApi {
               (msg: string) => this.debug(msg)
             )
           : null;
-      if (!hasParquetDir && !stagedBufferTable) {
+      if (!hasParquet && !stagedBufferTable) {
         return [];
       }
       // Check if this is an object path (has value_* columns). The parquet
-      // schema is the union over the day files; the buffer table's columns
-      // say what shape the path has since the last export. Take the union of
-      // both, so a component that only one side has recorded (a new
+      // schema is the union over the day files' footers; the buffer table's
+      // columns say what shape the path has since the last export. Take the
+      // union of both, so a component that only one side has recorded (a new
       // component that first appeared today, or one that has stopped being
       // sent) is still projected, as NULL on the side that lacks it.
-      const parquetSchema = hasParquetDir
-        ? await getPathComponentSchema(this.dataDir, context, pathSpec.path)
-        : null;
+      const footers = hasParquet ? await readFooters(files) : [];
+      const parquetSchema = componentSchemaFromFooters(footers);
       const bufferSchema = componentSchemaFromBuffer(
         this.sqliteBuffer?.getTableSchema(pathSpec.path as string)
       );
@@ -724,24 +694,22 @@ export class HistoryProvider implements HistoryApi {
         pathSpec.aggregate === 'ema';
 
       // `filters` carries the column's source filter, explicit or expanded.
-      // This provider only queries raw-tier parquet; probe it for the filter
-      // columns so files without them are excluded rather than throwing.
-      const available = hasParquetDir
-        ? await availableFilterColumns(connection, globs, filters)
-        : new Set<string>();
+      // The footers say which files carry the filter columns, so files
+      // without them are excluded rather than throwing.
+      const available = new Set(
+        filterColumns(filters).filter(c => hasColumn(footers, c))
+      );
       const sourceFilter = buildParquetFilterClause(filters, available);
 
-      // Build parquet FROM clause with filename filtering
-      const parquetFrom = hasParquetDir
-        ? `(SELECT * FROM read_parquet(${globList(globs)}, union_by_name=true, filename=true) WHERE filename NOT LIKE '%/processed/%' AND filename NOT LIKE '%/quarantine/%' AND filename NOT LIKE '%/failed/%' AND filename NOT LIKE '%/repaired/%'${sourceFilter})`
+      // The parquet side: the window's files, filtered by source when asked.
+      const parquetFrom = hasParquet
+        ? `(SELECT * FROM ${readParquetSql(files)} WHERE 1=1${sourceFilter})`
         : null;
 
       /**
        * Run the bucketed query over the parquet and buffer sides, each a
-       * parenthesised subquery projecting the same columns. A raw directory
-       * that exists but holds no day files (only quarantined ones, say) still
-       * makes read_parquet throw "No files found"; the buffer then answers
-       * alone. With neither side there is nothing to read.
+       * parenthesised subquery projecting the same columns. With neither
+       * side there is nothing to read.
        */
       const runFederatedSides = async (
         parquetSide: string | null,
@@ -753,17 +721,8 @@ export class HistoryProvider implements HistoryApi {
             ? `(SELECT * FROM ${parquetSide} UNION ALL SELECT * FROM ${bufferSide})`
             : (parquetSide ?? bufferSide);
         if (!both) return [];
-        try {
-          const result = await connection.runAndReadAll(sql(both));
-          return result.getRowObjects() as Array<Record<string, unknown>>;
-        } catch (err) {
-          if (!isNoFilesError(err) || !parquetSide || !bufferSide) throw err;
-          this.debug(
-            `[HistoryProvider] no parquet files for ${pathSpec.path}; answering from the buffer alone`
-          );
-          const result = await connection.runAndReadAll(sql(bufferSide));
-          return result.getRowObjects() as Array<Record<string, unknown>>;
-        }
+        const result = await connection.runAndReadAll(sql(both));
+        return result.getRowObjects() as Array<Record<string, unknown>>;
       };
 
       if (componentSchema && componentSchema.components.size > 0) {
@@ -948,10 +907,18 @@ export class HistoryProvider implements HistoryApi {
    * Aggregate SQL for one column of a bucketed query.
    */
   private aggregateSql(method: AggregateMethod, colExpr: string): string {
-    if (method === 'middle_index') {
-      return middleIndexSql(colExpr, 'signalk_timestamp');
+    // Methods that pick one sample by its position in time are ordered, so
+    // the answer does not depend on the order files happen to be scanned in.
+    switch (method) {
+      case 'middle_index':
+        return middleIndexSql(colExpr, 'signalk_timestamp');
+      case 'first':
+        return firstSql(colExpr, 'signalk_timestamp');
+      case 'last':
+        return lastSql(colExpr, 'signalk_timestamp');
+      default:
+        return `${this.getAggregateFunction(method)}(${colExpr})`;
     }
-    return `${this.getAggregateFunction(method)}(${colExpr})`;
   }
 
   /**
@@ -965,16 +932,14 @@ export class HistoryProvider implements HistoryApi {
         return 'MIN';
       case 'max':
         return 'MAX';
-      case 'first':
-        return 'FIRST';
-      case 'last':
-        return 'LAST';
       case 'mid':
         return 'MEDIAN';
+      case 'first':
+      case 'last':
       case 'middle_index':
-        // Needs the bucket's row count as well as its values, so it has no
-        // single-function form.
-        throw new Error('middle_index must be built with middleIndexSql()');
+        // These pick one sample by its position in time, so they need the
+        // timestamp column and are built in aggregateSql().
+        throw new Error(`${method} must be built with aggregateSql()`);
       case 'sma':
       case 'ema':
         // Moving averages bucket identically to `average`; the sma/ema window

@@ -32,9 +32,15 @@
 
 import * as fs from 'fs-extra';
 import * as path from 'path';
+import { fork, ChildProcess } from 'child_process';
 import { globIn } from '../utils/glob-in';
 import type { Dirent } from 'fs';
-import { listHiveDirs, listEntries } from '../utils/hive-walk';
+import {
+  listHiveDirs,
+  listEntries,
+  listParquetFiles,
+} from '../utils/hive-walk';
+import { readParquetSql } from '../utils/parquet-files';
 import { ServerAPI } from '@signalk/server-api';
 import { DuckDBPool } from '../utils/duckdb-pool';
 import { HivePathBuilder, AggregationTier } from '../utils/hive-path-builder';
@@ -122,6 +128,26 @@ const SCAN_CONCURRENCY = 8;
 // CompactionService instance without needing a registry.
 const compactionJobs = new Map<string, CompactionProgress>();
 const cancelledJobIds: Set<string> = new Set();
+// Jobs running in a forked compaction-worker, by job id (see compact()).
+const workerChildren = new Map<string, ChildProcess>();
+
+/** How a service instance runs its jobs (see compact()). */
+export interface CompactionServiceOptions {
+  /**
+   * Run the merge in this process. The default forks compaction-worker.js
+   * so the DuckDB memory the merge takes leaves with the child (measured
+   * 2026-09-17: ~1 GB held per run otherwise). The worker itself, and
+   * tests that want the loop inline, set this.
+   */
+  inProcess?: boolean;
+  /** The worker script to fork; dist/compaction-worker.js by default. */
+  workerPath?: string;
+  /** Extra node arguments for the fork (a TypeScript loader in tests). */
+  workerExecArgv?: string[];
+}
+
+/** A short pause used by the worker-supervision loops. */
+const WORKER_TIMEOUT_MS = 6 * 60 * 60 * 1000;
 
 /**
  * True if any compaction job is currently scanning or running. Used to
@@ -155,13 +181,15 @@ function isCompactionOutput(parquetPath: string): boolean {
 }
 
 function scheduleJobCleanup(jobId: string) {
+  // unref: a finished job's hour-long TTL must not keep the process (or a
+  // test runner) alive on its own.
   setTimeout(() => {
     const job = compactionJobs.get(jobId);
     if (job && job.status !== 'running' && job.status !== 'scanning') {
       compactionJobs.delete(jobId);
       cancelledJobIds.delete(jobId);
     }
-  }, COMPACTION_JOB_TTL_MS);
+  }, COMPACTION_JOB_TTL_MS).unref();
 }
 
 /**
@@ -176,6 +204,7 @@ export function signalShutdownAllCompactionJobs(): number {
   for (const [jobId, job] of compactionJobs) {
     if (job.status === 'running' || job.status === 'scanning') {
       cancelledJobIds.add(jobId);
+      workerChildren.get(jobId)?.send({ type: 'shutdown' });
       signalled++;
     }
   }
@@ -217,6 +246,20 @@ export async function quiesceAllCompactionJobs(
   }
 
   const remaining = countActiveCompactionJobs();
+  // A worker still merging at the deadline is killed rather than left to
+  // outlive the plugin; its temp file is swept at the next start.
+  for (const [jobId, job] of compactionJobs) {
+    if (job.status === 'running' || job.status === 'scanning') {
+      const child = workerChildren.get(jobId);
+      if (child) {
+        try {
+          child.kill('SIGKILL');
+        } catch {
+          // already gone
+        }
+      }
+    }
+  }
   return { signalled, quiesced: signalled - remaining, remaining };
 }
 
@@ -326,9 +369,15 @@ export async function recoverStrandedCompactionTrash(
       continue;
     }
 
-    // Pre-publish trash: restore by mirroring back to yearDir.
+    // Pre-publish trash: restore by mirroring back to yearDir. The trash
+    // mirrors the year directory one level deep (`day=DDD/<file>.parquet`),
+    // so a listing of the trash and of each directory in it is the whole of
+    // it.
     try {
-      const trashedFiles = await globIn(trashDir, '**/*.parquet');
+      const trashedFiles = [...(await listParquetFiles(trashDir))];
+      for (const sub of await listEntries(trashDir, e => e.isDirectory())) {
+        trashedFiles.push(...(await listParquetFiles(sub)));
+      }
       for (const trashed of trashedFiles) {
         const relative = path.relative(trashDir, trashed);
         const original = path.join(yearDir, relative);
@@ -359,10 +408,12 @@ export async function recoverStrandedCompactionTrash(
 export class CompactionService {
   private readonly app: ServerAPI;
   private readonly hivePathBuilder: HivePathBuilder;
+  private readonly options: CompactionServiceOptions;
 
-  constructor(app: ServerAPI) {
+  constructor(app: ServerAPI, options: CompactionServiceOptions = {}) {
     this.app = app;
     this.hivePathBuilder = new HivePathBuilder();
+    this.options = options;
   }
 
   /**
@@ -416,6 +467,11 @@ export class CompactionService {
         (config.pathFilter ? `, pathFilter='${config.pathFilter}'` : '')
     );
 
+    if (!this.options.inProcess) {
+      this.runInWorker(jobId, config, progress);
+      return jobId;
+    }
+
     this.run(jobId, config)
       .catch(error => {
         const job = compactionJobs.get(jobId);
@@ -445,6 +501,109 @@ export class CompactionService {
       });
 
     return jobId;
+  }
+
+  /**
+   * Fork compaction-worker.js for this job and mirror its progress into
+   * this process's job table, so getProgress()/cancel() and the API's
+   * progress endpoint see the same shape as an in-process run. The child's
+   * own job id differs; the parent's is the one callers hold.
+   */
+  private runInWorker(
+    jobId: string,
+    config: CompactionConfig,
+    progress: CompactionProgress
+  ): void {
+    const workerPath =
+      this.options.workerPath ??
+      path.join(__dirname, '..', 'compaction-worker.js');
+    let child: ChildProcess;
+    try {
+      child = fork(workerPath, [], {
+        execArgv: this.options.workerExecArgv ?? [],
+      });
+    } catch (err) {
+      progress.status = 'error';
+      progress.error = `could not start compaction worker: ${(err as Error).message}`;
+      progress.completedAt = new Date();
+      scheduleJobCleanup(jobId);
+      return;
+    }
+    workerChildren.set(jobId, child);
+    let settled = false;
+    const mirror = (snapshot: CompactionProgress): void => {
+      const { jobId: _theirs, startTime: _start, ...rest } = snapshot;
+      Object.assign(progress, rest);
+      if (rest.completedAt) progress.completedAt = new Date(rest.completedAt);
+    };
+    const finish = (status: 'error', message: string): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      progress.status = status;
+      progress.error = message;
+      progress.completedAt = new Date();
+      this.app.error(`Compaction job ${jobId}: ${message}`);
+      workerChildren.delete(jobId);
+      cancelledJobIds.delete(jobId);
+      scheduleJobCleanup(jobId);
+    };
+    const timer = setTimeout(() => {
+      finish('error', 'compaction worker timed out');
+      try {
+        child.kill('SIGKILL');
+      } catch {
+        // already gone
+      }
+    }, WORKER_TIMEOUT_MS);
+    timer.unref();
+    // The worker exits only once its terminal message is acknowledged, so
+    // the 'exit' handler below never sees an unsettled job.
+    const ack = (): void => {
+      try {
+        child.send({ type: 'ack' });
+      } catch {
+        // worker already gone
+      }
+    };
+
+    child.on('message', (msg: Record<string, unknown>) => {
+      if (!msg || typeof msg !== 'object') return;
+      if (msg.type === 'log') {
+        if (msg.level === 'error') this.app.error(String(msg.msg ?? ''));
+        else this.app.debug(String(msg.msg ?? ''));
+      } else if (msg.type === 'progress') {
+        if (!settled) mirror(msg.progress as CompactionProgress);
+      } else if (msg.type === 'result') {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        mirror(msg.progress as CompactionProgress);
+        workerChildren.delete(jobId);
+        cancelledJobIds.delete(jobId);
+        this.app.debug(
+          `Compaction job ${jobId} ${progress.status} in worker: ` +
+            `groupsCompacted=${progress.groupsCompacted}, ` +
+            `groupsSkipped=${progress.groupsSkipped}, ` +
+            `filesRemoved=${progress.filesRemoved}, ` +
+            `bytesBefore=${progress.bytesBefore}, ` +
+            `bytesAfter=${progress.bytesAfter}, ` +
+            `errors=${progress.errors.length}`
+        );
+        scheduleJobCleanup(jobId);
+        ack();
+      } else if (msg.type === 'error') {
+        finish('error', `worker errored: ${String(msg.message ?? '')}`);
+        ack();
+      }
+    });
+    child.on('exit', code => {
+      if (!settled) finish('error', `worker exited early (code ${code})`);
+    });
+    child.on('error', err => {
+      finish('error', `worker spawn error: ${err.message}`);
+    });
+    child.send({ config, dataDir: config.baseDirectory });
   }
 
   private async run(jobId: string, config: CompactionConfig): Promise<void> {
@@ -529,70 +688,63 @@ export class CompactionService {
   private async findCompactableGroups(
     config: CompactionConfig
   ): Promise<CompactionPlanGroup[]> {
-    const tierRoot = path.join(config.baseDirectory, `tier=${config.tier}`);
-    if (!(await fs.pathExists(tierRoot))) {
-      return [];
+    // One walk of the tier: every year directory (for the existing-output
+    // check) and every day directory under it. The walker never enters
+    // repaired/, quarantine/ or a .compaction-trash-* directory.
+    const dirs = await listHiveDirs(config.baseDirectory, {
+      level: 'day',
+      includeYearDirs: true,
+      tiers: [config.tier],
+    });
+    const dayDirsByYear = new Map<string, string[]>();
+    for (const d of dirs) {
+      if (d.year >= config.beforeYear) continue;
+      const list = dayDirsByYear.get(d.yearDir) ?? [];
+      if (d.dayDir) list.push(d.dayDir);
+      dayDirsByYear.set(d.yearDir, list);
     }
 
-    const yearDirs = await globIn(tierRoot, 'context=*/path=*/year=*');
-
-    // Stat each year directory; filter to actual directories matching
-    // the cutoff and the optional path substring filter. Capped at
-    // SCAN_CONCURRENCY to avoid EMFILE on large trees.
+    // Per year directory: skip one that already holds a compaction output
+    // (re-merging would duplicate the rows already in it); list the day
+    // files; a group of one file is already compact. File sizes are
+    // stat'ed with Promise.all inside the limited task, never through the
+    // same limiter: a limiter whose tasks wait on the same limiter
+    // deadlocks once every slot is held by a waiting outer task (found on
+    // a 190-context store, 2026-09-17, with SCAN_CONCURRENCY = 8).
     const limiter = new ConcurrencyLimiter(SCAN_CONCURRENCY);
-    const candidates = await limiter.map(yearDirs, async yearDir => {
-      const stat = await fs.stat(yearDir).catch(() => null);
-      if (!stat || !stat.isDirectory()) return null;
-      const parsed = this.parseYearDir(yearDir);
-      if (!parsed) return null;
-      if (parsed.year >= config.beforeYear) return null;
-      if (config.pathFilter && !parsed.path.includes(config.pathFilter)) {
-        return null;
-      }
-      return { yearDir, parsed };
-    });
-
-    // For each surviving candidate, list its day-partition parquet
-    // files and sum bytes. The glob is intentionally narrow:
-    // `day=*/*.parquet` only picks up live day partitions, so siblings
-    // like `year_compact_*.parquet`, `repaired/`, `quarantine/` etc.
-    // never enter the source list. Year-dirs that already contain a
-    // compaction-output file (top-level sibling) are skipped entirely
-    // — re-merging them would duplicate rows that already live in the
-    // compacted output (the previous run wrote one and then either
-    // succeeded entirely or left residual sources behind; either way,
-    // no rewrite is safe without manual cleanup).
     const groupResults = await limiter.map(
-      candidates.filter(
-        (
-          c
-        ): c is {
-          yearDir: string;
-          parsed: NonNullable<ReturnType<CompactionService['parseYearDir']>>;
-        } => c !== null
-      ),
-      async ({ yearDir, parsed }) => {
-        const existing = await globIn(
-          yearDir,
-          `${COMPACTION_OUTPUT_PREFIX}_*.parquet`
+      [...dayDirsByYear.entries()],
+      async ([yearDir, dayDirs]) => {
+        const parsed = this.parseYearDir(yearDir);
+        if (!parsed) return null;
+        if (config.pathFilter && !parsed.path.includes(config.pathFilter)) {
+          return null;
+        }
+        const existing = (await listParquetFiles(yearDir)).filter(f =>
+          path.basename(f).startsWith(`${COMPACTION_OUTPUT_PREFIX}_`)
         );
         if (existing.length > 0) return null;
-        const parquetFiles = await globIn(yearDir, 'day=*/*.parquet');
+        const parquetFiles: string[] = [];
+        for (const dayDir of dayDirs) {
+          parquetFiles.push(...(await listParquetFiles(dayDir)));
+        }
         if (parquetFiles.length <= 1) return null;
-        const sizes = await limiter.map(parquetFiles, f =>
-          fs
-            .stat(f)
-            .then(s => s.size)
-            .catch(() => 0)
+        const sizes = await Promise.all(
+          parquetFiles.map(f =>
+            fs
+              .stat(f)
+              .then(st => st.size)
+              .catch(() => 0)
+          )
         );
-        const sourceBytes = sizes.reduce((s, n) => s + n, 0);
+        const sourceBytes = sizes.reduce((sum, n) => sum + n, 0);
         const group: CompactionPlanGroup = {
           tier: config.tier,
           context: parsed.context,
           path: parsed.path,
           year: parsed.year,
           yearDir,
-          sourcePaths: parquetFiles,
+          sourcePaths: parquetFiles.sort(),
           sourceFiles: parquetFiles.length,
           sourceBytes,
         };
@@ -731,9 +883,6 @@ export class CompactionService {
     // doesn't fail compaction outright.
     const toSqlLiteralBody = (p: string): string =>
       p.split(path.sep).join('/').replace(/'/g, "''");
-    const fileListSql = sourceFiles
-      .map(f => `'${toSqlLiteralBody(f)}'`)
-      .join(', ');
     const tempFileSql = toSqlLiteralBody(tempFile);
 
     // union_by_name=true: a column added partway through the year (e.g.
@@ -741,10 +890,17 @@ export class CompactionService {
     // result has the union of columns; older rows have NULL where the
     // newer column is absent. Snappy compression matches the files the
     // plugin writes elsewhere.
+    // readParquetSql passes the explicit source list with
+    // hive_partitioning=false, so the merged file carries the data
+    // columns only, never the tier/context/path/year/day partition values
+    // DuckDB would otherwise derive from the source paths. The row order
+    // follows the tier's own time column: raw rows carry signalk_timestamp,
+    // aggregated rows bucket_time (an aggregated-tier compaction failed on
+    // every group before this, 2026-09-17: "signalk_timestamp not found").
     const query = `
       COPY (
-        SELECT * FROM read_parquet([${fileListSql}], union_by_name=true)
-        ORDER BY signalk_timestamp
+        SELECT * FROM ${readParquetSql(sourceFiles)}
+        ORDER BY ${group.tier === 'raw' ? 'signalk_timestamp' : 'bucket_time'}
       ) TO '${tempFileSql}'
         (FORMAT PARQUET, COMPRESSION SNAPPY);
     `;
@@ -908,6 +1064,7 @@ export class CompactionService {
     const job = compactionJobs.get(jobId);
     if (job && (job.status === 'running' || job.status === 'scanning')) {
       cancelledJobIds.add(jobId);
+      workerChildren.get(jobId)?.send({ type: 'shutdown' });
       return true;
     }
     return false;

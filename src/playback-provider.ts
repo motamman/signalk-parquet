@@ -35,6 +35,8 @@ import { ServerAPI } from '@signalk/server-api';
 import { DuckDBPool } from './utils/duckdb-pool';
 import { HivePathBuilder } from './utils/hive-path-builder';
 import { escapeSqlString } from './utils/sql-escape';
+import { filesFor, readParquetSql } from './utils/parquet-files';
+import { readFooters } from './utils/parquet-footer';
 import { getAvailableContextsForTimeRange } from './utils/context-discovery';
 import { IDENTITY_PATH, IdentityComponents } from './utils/vessel-identity';
 import {
@@ -61,10 +63,6 @@ const LIVE_POLL_MS = 1_000;
 /** Slowest and fastest playback honoured. */
 const MIN_RATE = 0.1;
 const MAX_RATE = 1_000;
-
-const FILENAME_EXCLUSIONS =
-  "filename NOT LIKE '%/processed/%' AND filename NOT LIKE '%/quarantine/%' " +
-  "AND filename NOT LIKE '%/failed/%' AND filename NOT LIKE '%/repaired/%'";
 
 /** What the server passes to the provider. */
 export interface PlaybackOptions {
@@ -199,10 +197,6 @@ async function readDirNames(dir: string): Promise<string[]> {
   }
 }
 
-function isNoFilesError(err: unknown): boolean {
-  return err instanceof Error && /No files found/i.test(err.message);
-}
-
 function toZoned(date: Date): ZonedDateTime {
   return ZonedDateTime.ofInstant(
     Instant.ofEpochMilli(date.getTime()),
@@ -322,117 +316,55 @@ export class PlaybackProvider {
 
   /**
    * Index the raw-tier files of one UTC day for the vessels in scope, from
-   * parquet metadata only (no row is read): each file's time span and how
+   * the files' footers only (no row is read): each file's time span and how
    * its value column is typed.
    */
   async indexDay(day: Date, contexts: string[] | null): Promise<IndexedFile[]> {
-    const year = day.getUTCFullYear();
-    const dayOfYear = this.hive.getDayOfYear(day);
-    const globs =
-      contexts === null
-        ? [
-            this.hive.getGlobPattern(
-              this.dataDir,
-              'raw',
-              undefined,
-              undefined,
-              year,
-              dayOfYear
-            ),
-          ]
-        : contexts.map(c =>
-            this.hive.getGlobPattern(
-              this.dataDir,
-              'raw',
-              c,
-              undefined,
-              year,
-              dayOfYear
-            )
-          );
-    if (!(await fs.pathExists(path.join(this.dataDir, 'tier=raw')))) return [];
+    const dayStart = new Date(
+      Date.UTC(day.getUTCFullYear(), day.getUTCMonth(), day.getUTCDate())
+    );
+    const filenames = await filesFor({
+      dataDir: this.dataDir,
+      contexts: contexts ?? 'all',
+      paths: 'all',
+      fromIso: dayStart.toISOString(),
+      toIso: startOfNextDay(dayStart).toISOString(),
+    });
+    if (filenames.length === 0) return [];
 
-    const files = new Map<string, IndexedFile>();
-    let connection: Connection;
-    try {
-      connection = await DuckDBPool.getConnection();
-    } catch (err) {
-      this.debug(`[Playback] DuckDB unavailable, parquet skipped: ${err}`);
-      return [];
+    const files: IndexedFile[] = [];
+    for (const footer of await readFooters(filenames)) {
+      const parsed = this.hive.detectPathStyle(footer.file);
+      if (!parsed.isHive || !parsed.context || !parsed.signalkPath) continue;
+      const value = footer.columns.get('value');
+      const spans = footer.timestampSpans;
+      files.push({
+        filename: footer.file,
+        // The footer's exact context beats the lossy directory name.
+        context: footer.context ?? parsed.context,
+        path: parsed.signalkPath,
+        t0: spans ? spans.map(([lo]) => lo).sort()[0] : null,
+        t1: spans
+          ? spans
+              .map(([, hi]) => hi)
+              .sort()
+              .reverse()[0]
+          : null,
+        kind: !value
+          ? 'object'
+          : value.physicalType === 'BYTE_ARRAY' ||
+              /UTF8|STRING/i.test(value.logicalType ?? '')
+            ? 'string'
+            : scalarKindFromColumnType(value.physicalType ?? ''),
+        hasContext: footer.columns.has('context'),
+        hasSource: footer.columns.has('source_label'),
+        components: [...footer.columns.keys()]
+          .filter(c => c.startsWith('value_') && c !== 'value_json')
+          .map(c => c.slice('value_'.length)),
+        hasValueJson: footer.columns.has('value_json'),
+      });
     }
-    try {
-      for (const glob of globs) {
-        const g = escapeSqlString(glob);
-        let schemaRows: Array<Record<string, unknown>>;
-        try {
-          const schema = await connection.runAndReadAll(
-            `SELECT file_name, name, type, converted_type FROM parquet_schema('${g}')`
-          );
-          schemaRows = schema.getRowObjects() as Array<Record<string, unknown>>;
-        } catch (err) {
-          if (isNoFilesError(err)) continue;
-          throw err;
-        }
-        for (const row of schemaRows) {
-          const filename = String(row.file_name);
-          if (!/\.parquet$/i.test(filename)) continue;
-          let file = files.get(filename);
-          if (!file) {
-            const parsed = this.hive.detectPathStyle(filename);
-            if (!parsed.isHive || !parsed.context || !parsed.signalkPath)
-              continue;
-            file = {
-              filename,
-              context: parsed.context,
-              path: parsed.signalkPath,
-              t0: null,
-              t1: null,
-              kind: 'object',
-              hasContext: false,
-              hasSource: false,
-              components: [],
-              hasValueJson: false,
-            };
-            files.set(filename, file);
-          }
-          const name = String(row.name);
-          if (name === 'value') {
-            const physical = String(row.type ?? '');
-            const converted = String(row.converted_type ?? '');
-            file.kind =
-              physical === 'BYTE_ARRAY' || /UTF8|STRING/i.test(converted)
-                ? 'string'
-                : scalarKindFromColumnType(physical);
-          } else if (name === 'context') {
-            file.hasContext = true;
-          } else if (name === 'source_label') {
-            file.hasSource = true;
-          } else if (name === 'value_json') {
-            file.hasValueJson = true;
-          } else if (name.startsWith('value_')) {
-            file.components.push(name.slice('value_'.length));
-          }
-        }
-        // Time spans from row-group statistics.
-        const stats = await connection.runAndReadAll(
-          `SELECT file_name, MIN(stats_min) AS t0, MAX(stats_max) AS t1
-           FROM parquet_metadata('${g}')
-           WHERE path_in_schema = 'signalk_timestamp'
-           GROUP BY file_name`
-        );
-        for (const row of stats.getRowObjects() as Array<
-          Record<string, unknown>
-        >) {
-          const file = files.get(String(row.file_name));
-          if (!file) continue;
-          file.t0 = row.t0 == null ? null : String(row.t0);
-          file.t1 = row.t1 == null ? null : String(row.t1);
-        }
-      }
-    } finally {
-      connection.disconnectSync();
-    }
-    return [...files.values()];
+    return files;
   }
 
   /**
@@ -513,9 +445,6 @@ export class PlaybackProvider {
     const connection = await DuckDBPool.getConnection();
     try {
       for (const [kind, group] of groups) {
-        const list = group
-          .map(f => `'${escapeSqlString(f.filename)}'`)
-          .join(', ');
         // Exported object paths carry their flattened `value_*` components;
         // `value_json` is kept only where a file has it.
         const components =
@@ -538,21 +467,17 @@ export class PlaybackProvider {
           ? 'source_label'
           : 'NULL AS source_label';
         const sql = `SELECT filename, ${contextExpr}, signalk_timestamp, ${sourceExpr}, ${valueExpr}
-          FROM read_parquet([${list}], hive_partitioning=false, union_by_name=true, filename=true)
-          WHERE ${FILENAME_EXCLUSIONS}
-            AND signalk_timestamp >= '${escapeSqlString(fromIso)}'
+          FROM ${readParquetSql(
+            group.map(f => f.filename),
+            { filename: true }
+          )}
+          WHERE signalk_timestamp >= '${escapeSqlString(fromIso)}'
             AND signalk_timestamp < '${escapeSqlString(toIso)}'
           ORDER BY signalk_timestamp
           LIMIT ${limit + 1}`;
-        let result: Array<Record<string, unknown>>;
-        try {
-          result = (
-            await connection.runAndReadAll(sql)
-          ).getRowObjects() as Array<Record<string, unknown>>;
-        } catch (err) {
-          if (isNoFilesError(err)) continue;
-          throw err;
-        }
+        let result = (
+          await connection.runAndReadAll(sql)
+        ).getRowObjects() as Array<Record<string, unknown>>;
         if (result.length > limit) {
           capped = true;
           result = result.slice(0, limit);
@@ -598,19 +523,31 @@ export class PlaybackProvider {
       if (parsed && typeof parsed === 'object')
         return parsed as IdentityComponents;
     }
-    const dir = path.join(
-      this.dataDir,
-      'tier=raw',
-      `context=${this.hive.sanitizeContext(context)}`,
-      `path=${this.hive.sanitizePath(IDENTITY_PATH)}`
-    );
-    if (!(await fs.pathExists(dir))) return undefined;
-    const glob = this.hive.getGlobPattern(
-      this.dataDir,
-      'raw',
-      context,
-      IDENTITY_PATH
-    );
+    // The identity files of this vessel up to `atIso`: identity is written
+    // only when it changes, so this is a handful of files, and the footers
+    // drop the ones that start after the instant asked about.
+    let candidates: string[];
+    try {
+      const files = await filesFor({
+        dataDir: this.dataDir,
+        contexts: [context],
+        paths: [IDENTITY_PATH],
+        fromIso: '1970-01-01T00:00:00.000Z',
+        toIso: new Date(Date.parse(atIso) + 1).toISOString(),
+      });
+      if (files.length === 0) return undefined;
+      candidates = (await readFooters(files))
+        .filter(
+          f =>
+            f.timestampSpans === null ||
+            f.timestampSpans.some(([lo]) => lo <= atIso)
+        )
+        .map(f => f.file);
+    } catch (err) {
+      this.debug(`[Playback] identity files unreadable for ${context}: ${err}`);
+      return undefined;
+    }
+    if (candidates.length === 0) return undefined;
     let connection: Connection;
     try {
       connection = await DuckDBPool.getConnection();
@@ -619,8 +556,8 @@ export class PlaybackProvider {
     }
     try {
       const result = await connection.runAndReadAll(
-        `SELECT value_json FROM read_parquet('${escapeSqlString(glob)}', hive_partitioning=false, union_by_name=true, filename=true)
-         WHERE ${FILENAME_EXCLUSIONS} AND context = '${escapeSqlString(context)}'
+        `SELECT value_json FROM ${readParquetSql(candidates)}
+         WHERE context = '${escapeSqlString(context)}'
            AND signalk_timestamp <= '${escapeSqlString(atIso)}'
          ORDER BY signalk_timestamp DESC LIMIT 1`
       );
@@ -632,9 +569,7 @@ export class PlaybackProvider {
         ? (parsed as IdentityComponents)
         : undefined;
     } catch (err) {
-      if (!isNoFilesError(err)) {
-        this.debug(`[Playback] identity lookup failed for ${context}: ${err}`);
-      }
+      this.debug(`[Playback] identity lookup failed for ${context}: ${err}`);
       return undefined;
     } finally {
       connection.disconnectSync();

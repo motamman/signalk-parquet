@@ -12,7 +12,6 @@ import * as path from 'path';
 import { SQLiteBuffer } from '../../src/utils/sqlite-buffer';
 import { DuckDBPool } from '../../src/utils/duckdb-pool';
 import { HistoryProvider } from '../../src/history-provider';
-import { clearSchemaCache } from '../../src/utils/schema-cache';
 import { createFakeSignalK, FakeSignalK } from './helpers/fake-signalk';
 import type { DataRecord } from '../../src/types';
 import type { ValuesRequest } from '@signalk/server-api/dist/history';
@@ -87,7 +86,6 @@ describe('History API v2 provider: buffer-only paths (no raw parquet yet)', func
     host = createFakeSignalK({ selfId: SELF_ID });
     buffer = new SQLiteBuffer({ dbPath: path.join(host.dataDir, 'buffer.db') });
     await DuckDBPool.initialize();
-    clearSchemaCache();
 
     // Nothing is exported: the data directory has no tier=raw at all.
     buffer.insert(sogRecord('2024-06-01T10:00:10.000Z', 5, 'gps.main'));
@@ -102,7 +100,6 @@ describe('History API v2 provider: buffer-only paths (no raw parquet yet)', func
   });
 
   afterEach(async () => {
-    clearSchemaCache();
     await DuckDBPool.shutdown();
     if (buffer?.isOpen()) buffer.close();
     await host?.cleanup();

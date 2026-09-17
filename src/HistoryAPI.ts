@@ -10,7 +10,6 @@ import { Context, Path, Timestamp } from '@signalk/server-api';
 import { ParamsDictionary } from 'express-serve-static-core';
 import { ParsedQs } from 'qs';
 import { DuckDBPool } from './utils/duckdb-pool';
-import { escapeSqlString } from './utils/sql-escape';
 import {
   validateContext,
   validateSignalKPath,
@@ -30,7 +29,18 @@ import {
   getAvailableContextsForTimeRange,
   getContextsInSpatialFilter,
 } from './utils/context-discovery';
-import { getPathComponentSchema, ComponentInfo } from './utils/schema-cache';
+import { ComponentInfo } from './utils/schema-cache';
+import {
+  filesFor,
+  readParquetSql,
+  readS3ParquetSql,
+} from './utils/parquet-files';
+import {
+  componentColumns,
+  hasColumn,
+  readFooters,
+  ParquetFooter,
+} from './utils/parquet-footer';
 import { ConcurrencyLimiter } from './utils/concurrency-limiter';
 import { CONCURRENCY } from './config/cache-defaults';
 import { SQLiteBufferInterface } from './types';
@@ -57,12 +67,14 @@ import {
   InvalidResolutionError,
 } from './utils/duration-parser';
 import { isAngularPath } from './utils/angular-paths';
-import { middleIndexSql } from './utils/aggregate-sql';
+import { firstSql, lastSql, middleIndexSql } from './utils/aggregate-sql';
+import { isoBound } from './utils/iso-time';
 import { PathRetentionRule, RetentionRuleSet } from './utils/retention-rules';
 import {
+  PathFilter,
   parsePathFilters,
   buildParquetFilterClause,
-  availableFilterColumns,
+  filterColumns,
   filterEcho,
   FILTER_DELIMITERS,
 } from './utils/path-filters';
@@ -877,6 +889,51 @@ export class HistoryAPI {
   }
 
   /**
+   * The parquet files of one path for the window in one tier, with their
+   * footers: the two things every query below needs. Never the path's whole
+   * history (see parquet-files.ts).
+   */
+  private async localSource(
+    dataDir: string,
+    tier: string,
+    context: Context,
+    signalkPath: string,
+    fromIso: string,
+    toIso: string
+  ): Promise<{ files: string[]; footers: ParquetFooter[] }> {
+    const files = await filesFor({
+      dataDir,
+      tier,
+      contexts: [context],
+      paths: [signalkPath],
+      fromIso,
+      toIso,
+    });
+    const footers = files.length > 0 ? await readFooters(files) : [];
+    return { files, footers };
+  }
+
+  /**
+   * The filter columns the parquet side can be filtered on, so an absent
+   * column becomes `AND 1=0` rather than a binder error. Local files answer
+   * from their footers. The S3 side cannot be asked without DuckDB opening
+   * the objects, which is the cost these reads no longer pay: when local
+   * files exist they speak for S3 too, and when there are none the S3 files
+   * are taken to carry the columns, being uploads of files this plugin wrote.
+   */
+  private filterColumnsAvailable(
+    filters: PathFilter[],
+    footers: ParquetFooter[],
+    hasS3: boolean
+  ): Set<string> {
+    return new Set(
+      filterColumns(filters).filter(
+        column => hasColumn(footers, column) || (hasS3 && footers.length === 0)
+      )
+    );
+  }
+
+  /**
    * Get timestamps where vessel position was within the spatial filter
    * Used to correlate non-position paths with spatial filtering
    */
@@ -900,22 +957,21 @@ export class HistoryAPI {
   ): Promise<Set<string> | null> {
     const timestamps = new Set<string>();
 
-    // Build file path for raw position data
-    const sanitizedContext = this.hivePathBuilder.sanitizeContext(context);
-    const sanitizedPath = this.hivePathBuilder.sanitizePath(positionPath);
-    const localFilePath = path.join(
-      dataDir,
-      'tier=raw',
-      `context=${sanitizedContext}`,
-      `path=${sanitizedPath}`,
-      '**',
-      '*.parquet'
-    );
-
-    const fromIso = from.toInstant().toString();
-    const toIso = to.toInstant().toString();
+    const fromIso = isoBound(from);
+    const toIso = isoBound(to);
 
     try {
+      // The window's raw position files; never the path's whole history. An
+      // unreadable file rejects here and, like any other failure below,
+      // means "nothing is known", not "no positions in the area".
+      const { files } = await this.localSource(
+        dataDir,
+        'raw',
+        context,
+        positionPath,
+        fromIso,
+        toIso
+      );
       const connection = await DuckDBPool.getConnection();
       try {
         // Bucket-lookup approach: instead of scanning all raw position data,
@@ -926,15 +982,12 @@ export class HistoryAPI {
           timeResolutionMillis
         );
 
-        // Build FROM: parquet UNION ALL buffer
-        const parquetFrom = `SELECT signalk_timestamp, value_latitude, value_longitude FROM (
-          SELECT * FROM read_parquet('${escapeSqlString(localFilePath)}', union_by_name=true, filename=true)
-          WHERE filename NOT LIKE '%/processed/%'
-          AND filename NOT LIKE '%/quarantine/%'
-          AND filename NOT LIKE '%/failed/%'
-          AND filename NOT LIKE '%/repaired/%')`;
-
-        let fromSource = `(${parquetFrom})`;
+        // Build FROM: parquet UNION ALL buffer, whichever sides exist.
+        const parquetFrom =
+          files.length > 0
+            ? `SELECT signalk_timestamp, value_latitude, value_longitude FROM ${readParquetSql(files)}`
+            : null;
+        let bufferFrom: string | null = null;
         if (hasBuffer && sqliteBuffer) {
           const bufferTableCols = sqliteBuffer.getTableColumns(positionPath);
           const stagedTable = await stageBufferTable(
@@ -974,15 +1027,27 @@ export class HistoryAPI {
               )
             : null;
           if (bufferSubquery) {
-            fromSource = `(${parquetFrom} UNION ALL SELECT signalk_timestamp, TRY_CAST(value_latitude AS DOUBLE) as value_latitude, TRY_CAST(value_longitude AS DOUBLE) as value_longitude FROM ${bufferSubquery})`;
+            bufferFrom = `SELECT signalk_timestamp, TRY_CAST(value_latitude AS DOUBLE) as value_latitude, TRY_CAST(value_longitude AS DOUBLE) as value_longitude FROM ${bufferSubquery}`;
           }
         }
+        const sides = [parquetFrom, bufferFrom].filter(
+          (s): s is string => s !== null
+        );
+        if (sides.length === 0) {
+          // Nothing to correlate against. Skip correlation (the caller
+          // leaves non-position paths unfiltered), as a query error does.
+          debug(
+            `[Spatial Correlation] No position data for ${positionPath} in range`
+          );
+          return null;
+        }
+        const fromSource = `(${sides.join(' UNION ALL ')})`;
 
         const query = `
           SELECT
             ${bucketExpr} as timestamp,
-            FIRST(TRY_CAST(value_latitude AS DOUBLE)) as lat,
-            FIRST(TRY_CAST(value_longitude AS DOUBLE)) as lon
+            ${firstSql('TRY_CAST(value_latitude AS DOUBLE)', 'signalk_timestamp')} as lat,
+            ${firstSql('TRY_CAST(value_longitude AS DOUBLE)', 'signalk_timestamp')} as lon
           FROM ${fromSource}
           WHERE
             signalk_timestamp >= '${fromIso}'
@@ -1265,8 +1330,8 @@ export class HistoryAPI {
     const objectPaths = new Set<string>(); // Track which paths are object paths
 
     // Convert ZonedDateTime to Date for S3 pattern building
-    const fromDate = new Date(from.toInstant().toString());
-    const toDate = new Date(to.toInstant().toString());
+    const fromDate = new Date(isoBound(from));
+    const toDate = new Date(isoBound(to));
 
     // If spatial filter is set, get valid timestamps from position data
     // This allows filtering non-position paths by "when vessel was in this area"
@@ -1309,22 +1374,21 @@ export class HistoryAPI {
           `[Spatial] Fast bucket query for ${posPathSpec.path} (FIRST lat/lon per bucket + JS filter)`
         );
 
-        const sanitizedCtx = this.hivePathBuilder.sanitizeContext(context);
-        const sanitizedPos = this.hivePathBuilder.sanitizePath(
-          posPathSpec.path
-        );
-        const posFilePath = path.join(
-          dataDir,
-          'tier=raw',
-          `context=${sanitizedCtx}`,
-          `path=${sanitizedPos}`,
-          '**',
-          '*.parquet'
-        );
-        const fromIso = from.toInstant().toString();
-        const toIso = to.toInstant().toString();
+        const fromIso = isoBound(from);
+        const toIso = isoBound(to);
 
         try {
+          // The window's raw position files; never the path's whole
+          // history. An unreadable file rejects here and is handled below
+          // like any other failure of this query.
+          const pos = await this.localSource(
+            dataDir,
+            'raw',
+            context,
+            posPathSpec.path,
+            fromIso,
+            toIso
+          );
           const connection = await DuckDBPool.getConnection();
           try {
             const bucketExpr = bucketExprSql(
@@ -1334,26 +1398,24 @@ export class HistoryAPI {
 
             // Optional filters for the position path (e.g. one of several GPS
             // receivers). This fast path is local-only (raw parquet + buffer),
-            // so probe just the local glob for the filter columns.
-            const posAvailable = await availableFilterColumns(
-              connection,
-              [posFilePath],
-              posPathSpec.filters
+            // so the local footers decide the filter columns.
+            const posAvailable = this.filterColumnsAvailable(
+              posPathSpec.filters,
+              pos.footers,
+              false
             );
             const posSourceFilter = buildParquetFilterClause(
               posPathSpec.filters,
               posAvailable
             );
 
-            // Build FROM: parquet UNION ALL buffer (for today's unexported data)
-            const parquetFrom = `SELECT signalk_timestamp, value_latitude, value_longitude FROM (
-              SELECT * FROM read_parquet('${escapeSqlString(posFilePath)}', union_by_name=true, filename=true)
-              WHERE filename NOT LIKE '%/processed/%'
-              AND filename NOT LIKE '%/quarantine/%'
-              AND filename NOT LIKE '%/failed/%'
-              AND filename NOT LIKE '%/repaired/%'${posSourceFilter})`;
-
-            let fromSource = `(${parquetFrom})`;
+            // Build FROM: parquet UNION ALL buffer (for today's unexported
+            // data), whichever sides exist.
+            const parquetFrom =
+              pos.files.length > 0
+                ? `SELECT signalk_timestamp, value_latitude, value_longitude FROM ${readParquetSql(pos.files)} WHERE 1=1${posSourceFilter}`
+                : null;
+            let bufferFrom: string | null = null;
             if (hasBuffer && sqliteBuffer) {
               const bufferTableCols = sqliteBuffer.getTableColumns(
                 posPathSpec.path
@@ -1396,15 +1458,26 @@ export class HistoryAPI {
                   )
                 : null;
               if (bufferSubquery) {
-                fromSource = `(${parquetFrom} UNION ALL SELECT signalk_timestamp, TRY_CAST(value_latitude AS DOUBLE) as value_latitude, TRY_CAST(value_longitude AS DOUBLE) as value_longitude FROM ${bufferSubquery})`;
+                bufferFrom = `SELECT signalk_timestamp, TRY_CAST(value_latitude AS DOUBLE) as value_latitude, TRY_CAST(value_longitude AS DOUBLE) as value_longitude FROM ${bufferSubquery}`;
               }
             }
+            const sides = [parquetFrom, bufferFrom].filter(
+              (s): s is string => s !== null
+            );
+            if (sides.length === 0) {
+              // No position source at all: same outcome as a query error
+              // below, an empty position column and no correlation.
+              throw new Error(
+                `no position data for ${posPathSpec.path} in range`
+              );
+            }
+            const fromSource = `(${sides.join(' UNION ALL ')})`;
 
             const query = `
               SELECT
                 ${bucketExpr} as timestamp,
-                FIRST(TRY_CAST(value_latitude AS DOUBLE)) as lat,
-                FIRST(TRY_CAST(value_longitude AS DOUBLE)) as lon
+                ${firstSql('TRY_CAST(value_latitude AS DOUBLE)', 'signalk_timestamp')} as lat,
+                ${firstSql('TRY_CAST(value_longitude AS DOUBLE)', 'signalk_timestamp')} as lon
               FROM ${fromSource}
               WHERE
                 signalk_timestamp >= '${fromIso}'
@@ -1506,8 +1579,7 @@ export class HistoryAPI {
           return;
         }
 
-        // Build file patterns based on query source
-        let localFilePath: string | null = null;
+        // Build file sources based on query source
         let s3FilePath: string | null = null;
         let effectiveTier = tier || 'raw';
 
@@ -1536,20 +1608,27 @@ export class HistoryAPI {
           effectiveTier = 'raw';
         }
 
-        // Always query local first
+        // Convert ZonedDateTime to ISO string format matching parquet schema
+        const fromIso = isoBound(from);
+        const toIso = isoBound(to);
+
+        // Always query local first: the window's files of this tier, never
+        // the path's whole history.
         const sanitizedContext = this.hivePathBuilder.sanitizeContext(context);
         const sanitizedSkPath = this.hivePathBuilder.sanitizePath(
           pathSpec.path
         );
-        localFilePath = path.join(
+        const local = await this.localSource(
           dataDir,
-          `tier=${effectiveTier}`,
-          `context=${sanitizedContext}`,
-          `path=${sanitizedSkPath}`,
-          '**',
-          '*.parquet'
+          effectiveTier,
+          context,
+          pathSpec.path,
+          fromIso,
+          toIso
         );
-        debug(`Querying local Hive tier=${effectiveTier} at: ${localFilePath}`);
+        debug(
+          `Querying ${local.files.length} local file(s) in tier=${effectiveTier} for ${pathSpec.path}`
+        );
 
         // S3 supplements local for dates before the earliest local data
         if (s3Config?.enabled) {
@@ -1593,10 +1672,6 @@ export class HistoryAPI {
           }
         }
 
-        // Convert ZonedDateTime to ISO string format matching parquet schema
-        const fromIso = from.toInstant().toString();
-        const toIso = to.toInstant().toString();
-
         // Get connection from pool (spatial extension already loaded), then
         // stage this path's buffer rows into a temp table for federation
         const connection = await DuckDBPool.getConnection();
@@ -1614,42 +1689,34 @@ export class HistoryAPI {
                   debug
                 )
               : null;
-          // Build FROM clause based on available sources
-          // For hybrid queries, we UNION local and S3 sources
-          // Local files need filename filter to exclude processed/quarantine/etc directories
-          const buildFromClause = (filePath: string): string => {
-            // Escape the path before splicing it into the SQL string literal.
-            const fp = escapeSqlString(filePath);
-            const isS3 = filePath.startsWith('s3://');
-            if (isS3) {
-              return `read_parquet('${fp}', union_by_name=true, filename=true)`;
-            }
-            // Local files: exclude processed, quarantine, failed, repaired directories
-            return `(SELECT * FROM read_parquet('${fp}', union_by_name=true, filename=true) WHERE filename NOT LIKE '%/processed/%' AND filename NOT LIKE '%/quarantine/%' AND filename NOT LIKE '%/failed/%' AND filename NOT LIKE '%/repaired/%')`;
-          };
-
-          // Build FROM clause: local-only by default, hybrid only if S3 has data
+          // Build FROM clause: local-only by default, hybrid only if S3 has
+          // data. The walker never enters processed/quarantine/failed/
+          // repaired, so no filename filter is needed.
           let fromClause: string;
-          let localFromClause = localFilePath
-            ? buildFromClause(localFilePath)
-            : null;
+          let localFromClause =
+            local.files.length > 0 ? readParquetSql(local.files) : null;
+          // The footers the parquet side's column questions are answered from.
+          let localFooters = local.footers;
 
           if (s3FilePath && localFromClause) {
             // Try hybrid: UNION local + S3, fall back to local if S3 glob has no files
             fromClause = `(
               SELECT * FROM ${localFromClause}
               UNION ALL
-              SELECT * FROM ${buildFromClause(s3FilePath)}
+              SELECT * FROM ${readS3ParquetSql(s3FilePath)}
             )`;
             debug(`Hybrid query: combining local and S3 sources`);
           } else if (s3FilePath) {
-            fromClause = buildFromClause(s3FilePath);
+            fromClause = readS3ParquetSql(s3FilePath);
           } else if (localFromClause) {
             fromClause = localFromClause;
           } else {
-            debug(`No data source available for path ${pathSpec.path}`);
-            allData[pathSpecKey(pathSpec)] = [];
-            return;
+            // No parquet side. The catch below answers from the buffer
+            // alone, as it did when DuckDB threw "No files found" for a
+            // glob with nothing behind it.
+            throw new Error(
+              `no parquet files for ${pathSpec.path} in tier=${effectiveTier} for the range, and no S3 source`
+            );
           }
 
           // Run query with S3 fallback — if hybrid/S3 query fails, retry local-only
@@ -1671,12 +1738,37 @@ export class HistoryAPI {
             }
           };
 
-          // Check if this path has object components (value_latitude, value_longitude, etc.)
-          // Use local path for schema check (S3 schema should match)
-          const schemaCheckPath = localFilePath || s3FilePath;
-          const componentSchema = schemaCheckPath
-            ? await getPathComponentSchema(dataDir, context, pathSpec.path)
-            : null;
+          // Object components (value_latitude, value_longitude, …) are a
+          // property of the raw tier, where object paths live. Answered from
+          // the window's raw footers; when the window holds no raw file at
+          // all, from the newest raw file of the path, which is the question
+          // the whole-history schema lookup used to answer.
+          const raw =
+            effectiveTier === 'raw'
+              ? local
+              : await this.localSource(
+                  dataDir,
+                  'raw',
+                  context,
+                  pathSpec.path,
+                  fromIso,
+                  toIso
+                );
+          let components = componentColumns(raw.footers);
+          if (raw.files.length === 0) {
+            const history = await filesFor({
+              dataDir,
+              tier: 'raw',
+              contexts: [context],
+              paths: [pathSpec.path],
+            });
+            if (history.length > 0) {
+              components = componentColumns(
+                await readFooters([history[history.length - 1]])
+              );
+            }
+          }
+          const componentSchema = components.size > 0 ? { components } : null;
 
           if (componentSchema && componentSchema.components.size > 0) {
             // Object path with multiple components - aggregate each component separately
@@ -1685,14 +1777,6 @@ export class HistoryAPI {
             if (effectiveTier !== 'raw') {
               debug(
                 `Path ${pathSpec.path}: Object path — overriding tier=${effectiveTier} to raw`
-              );
-              localFilePath = path.join(
-                dataDir,
-                'tier=raw',
-                `context=${sanitizedContext}`,
-                `path=${sanitizedSkPath}`,
-                '**',
-                '*.parquet'
               );
               // Rebuild S3 path with raw tier too
               let rawS3FilePath: string | null = null;
@@ -1731,19 +1815,26 @@ export class HistoryAPI {
                 }
               }
               // Rebuild fromClause with raw tier local + S3
-              const rawLocalFrom = buildFromClause(localFilePath);
-              localFromClause = rawLocalFrom; // Update fallback for S3 failure
-              if (rawS3FilePath) {
+              localFromClause =
+                raw.files.length > 0 ? readParquetSql(raw.files) : null; // Update fallback for S3 failure
+              localFooters = raw.footers;
+              if (rawS3FilePath && localFromClause) {
                 fromClause = `(
-                  SELECT * FROM ${rawLocalFrom}
+                  SELECT * FROM ${localFromClause}
                   UNION ALL
-                  SELECT * FROM ${buildFromClause(rawS3FilePath)}
+                  SELECT * FROM ${readS3ParquetSql(rawS3FilePath)}
                 )`;
                 debug(
                   `Hybrid query (raw tier): combining local and S3 sources`
                 );
+              } else if (rawS3FilePath) {
+                fromClause = readS3ParquetSql(rawS3FilePath);
+              } else if (localFromClause) {
+                fromClause = localFromClause;
               } else {
-                fromClause = rawLocalFrom;
+                throw new Error(
+                  `no raw parquet files for object path ${pathSpec.path} in the range, and no S3 source`
+                );
               }
             }
             debug(
@@ -1800,14 +1891,13 @@ export class HistoryAPI {
             const objBucketExpr = (col: string) =>
               bucketExprSql(col, timeResolutionMillis);
 
-            // When filtering, probe the (raw) parquet schema for the filter
-            // columns so we either filter on them or exclude the parquet side
-            // when absent (legacy/imported files). Probe both local and S3
-            // since either may hold the data being queried.
-            const objAvailable = await availableFilterColumns(
-              connection,
-              [localFilePath, s3FilePath],
-              pathSpec.filters
+            // When filtering, the (raw) footers say which filter columns
+            // exist, so we either filter on them or exclude the parquet side
+            // when absent (legacy/imported files).
+            const objAvailable = this.filterColumnsAvailable(
+              pathSpec.filters,
+              localFooters,
+              s3FilePath !== null
             );
             const objSourceFilter = buildParquetFilterClause(
               pathSpec.filters,
@@ -1889,31 +1979,20 @@ export class HistoryAPI {
             allData[pathSpecKey(pathSpec)] = pathData;
           } else {
             // Scalar path
-            // First, check if value_json column exists in the parquet files
-            let hasValueJson = false;
-            if (localFilePath) {
-              try {
-                const schemaQuery = `SELECT * FROM parquet_schema('${escapeSqlString(localFilePath)}') WHERE name = 'value_json'`;
-                const schemaResult =
-                  await connection.runAndReadAll(schemaQuery);
-                hasValueJson = schemaResult.getRowObjects().length > 0;
-              } catch {
-                hasValueJson = false;
-              }
-            }
+            // First, whether the tier's files carry a value_json column
+            const hasValueJson = hasColumn(localFooters, 'value_json');
 
             debug(
               `Path ${pathSpec.path}: value_json column ${hasValueJson ? 'exists' : 'does not exist'}`
             );
 
-            // Filter the parquet tier when requested. Probe both local and S3
-            // (data may live in either) for the filter columns; columns absent
-            // everywhere become `AND 1=0` so the parquet side contributes
+            // Filter the parquet tier when requested. Columns absent from
+            // the files become `AND 1=0` so the parquet side contributes
             // nothing and the always-tagged buffer answers the query.
-            const scalarAvailable = await availableFilterColumns(
-              connection,
-              [localFilePath, s3FilePath],
-              pathSpec.filters
+            const scalarAvailable = this.filterColumnsAvailable(
+              pathSpec.filters,
+              localFooters,
+              s3FilePath !== null
             );
             const scalarSourceFilter = buildParquetFilterClause(
               pathSpec.filters,
@@ -1929,15 +2008,14 @@ export class HistoryAPI {
               : effectiveTier;
             if (isStringPath(pathSpec.path) && effectiveTier !== 'raw') {
               // Rebuild fromClause pointing to raw tier for string paths
-              localFilePath = path.join(
-                dataDir,
-                'tier=raw',
-                `context=${sanitizedContext}`,
-                `path=${sanitizedSkPath}`,
-                '**',
-                '*.parquet'
-              );
-              localFromClause = buildFromClause(localFilePath);
+              localFromClause =
+                raw.files.length > 0 ? readParquetSql(raw.files) : null;
+              localFooters = raw.footers;
+              if (!localFromClause) {
+                throw new Error(
+                  `no raw parquet files for string path ${pathSpec.path} in the range`
+                );
+              }
               fromClause = localFromClause;
             }
             const tsCol = getTierTimestampColumn(scalarEffectiveTier);
@@ -2035,8 +2113,8 @@ export class HistoryAPI {
         // Fallback: if parquet failed but buffer is available, query buffer only
         if (hasBuffer) {
           try {
-            const fallbackFromIso = from.toInstant().toString();
-            const fallbackToIso = to.toInstant().toString();
+            const fallbackFromIso = isoBound(from);
+            const fallbackToIso = isoBound(to);
             const bufferConn = await DuckDBPool.getConnection();
             try {
               const stagedFallbackTable = sqliteBuffer
@@ -2670,18 +2748,40 @@ function getAggregateFunction(method: AggregateMethod): string {
       return 'MIN';
     case 'max':
       return 'MAX';
-    case 'first':
-      return 'FIRST';
-    case 'last':
-      return 'LAST';
     case 'mid':
       return 'MEDIAN';
+    case 'first':
+    case 'last':
     case 'middle_index':
-      // Needs the bucket's row count as well as its values, so it has no
-      // single-function form.
-      throw new Error('middle_index must be built with middleIndexSql()');
+      // These pick one sample by its position in time, so they need the
+      // timestamp column and are built by aggregate-sql.ts.
+      throw new Error(
+        `${method} must be built with orderedAggregateSql()/middleIndexSql()`
+      );
     default:
       return 'AVG';
+  }
+}
+
+/**
+ * The aggregate expression for a method over raw samples, ordered where the
+ * method picks a sample by time. `mid` (MEDIAN) and the numeric functions
+ * need no order.
+ */
+function orderedAggregateSql(
+  method: AggregateMethod,
+  valueExpr: string,
+  timestampColumn: string
+): string {
+  switch (method) {
+    case 'first':
+      return firstSql(valueExpr, timestampColumn);
+    case 'last':
+      return lastSql(valueExpr, timestampColumn);
+    case 'middle_index':
+      return middleIndexSql(valueExpr, timestampColumn);
+    default:
+      return `${getAggregateFunction(method)}(${valueExpr})`;
   }
 }
 
@@ -2752,12 +2852,14 @@ function getTierAggregateExpression(
     case undefined:
       // Weighted average using sample_count
       return 'SUM(value_avg * sample_count) / SUM(sample_count)';
-    case 'middle_index':
-      // The chronologically middle pre-aggregated bucket
-      return middleIndexSql('value_avg', getTierTimestampColumn(tier));
     default:
-      // For other methods (first, last, median), fall back to value_avg
-      return `${getAggregateFunction(method)}(value_avg)`;
+      // For other methods (first, last, middle_index, median), fall back
+      // to value_avg, ordered by bucket time where the method picks one.
+      return orderedAggregateSql(
+        method,
+        'value_avg',
+        getTierTimestampColumn(tier)
+      );
   }
 }
 
@@ -2801,26 +2903,27 @@ function getAggregateExpression(
   app?: any,
   context?: string
 ): string {
-  // String paths: can't AVG/MIN/MAX — use FIRST, LAST, or FIRST for average/default
+  const tsCol = getTierTimestampColumn('raw');
+  // String paths: can't AVG/MIN/MAX — use first, last, or first for average/default
   if (isStringPath(pathName)) {
     const valueExpr = getValueExpression(pathName, hasValueJson, true);
     switch (method) {
       case 'last':
-        return `LAST(${valueExpr})`;
+        return lastSql(valueExpr, tsCol);
       case 'middle_index':
-        return middleIndexSql(valueExpr, getTierTimestampColumn('raw'));
+        return middleIndexSql(valueExpr, tsCol);
       case 'first':
       case 'average':
       case undefined:
       default:
-        return `FIRST(${valueExpr})`;
+        return firstSql(valueExpr, tsCol);
     }
   }
 
   const valueExpr = getValueExpression(pathName, hasValueJson);
 
-  if (method === 'middle_index') {
-    return middleIndexSql(valueExpr, getTierTimestampColumn('raw'));
+  if (method === 'middle_index' || method === 'first' || method === 'last') {
+    return orderedAggregateSql(method, valueExpr, tsCol);
   }
 
   // Use vector averaging for angular paths (heading, COG, wind direction, etc.)
@@ -2847,11 +2950,12 @@ function getComponentAggregateExpression(
   dataType: ComponentInfo['dataType'],
   colExpr: string
 ): string {
+  const tsCol = getTierTimestampColumn('raw');
   if (requestedMethod === 'middle_index') {
-    return middleIndexSql(colExpr, getTierTimestampColumn('raw'));
+    return middleIndexSql(colExpr, tsCol);
   }
   if (dataType === 'numeric') {
-    return `${getAggregateFunction(requestedMethod)}(${colExpr})`;
+    return orderedAggregateSql(requestedMethod, colExpr, tsCol);
   }
-  return `FIRST(${colExpr})`;
+  return firstSql(colExpr, tsCol);
 }

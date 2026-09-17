@@ -8,6 +8,7 @@
 import * as fs from 'fs-extra';
 import * as path from 'path';
 import { globIn } from '../utils/glob-in';
+import { readParquetSql } from '../utils/parquet-files';
 import { ServerAPI } from '@signalk/server-api';
 import { HivePathBuilder, AggregationTier } from '../utils/hive-path-builder';
 import { DuckDBPool } from '../utils/duckdb-pool';
@@ -387,7 +388,7 @@ export class MigrationService {
       try {
         const query = `
           SELECT MIN(received_timestamp) as min_ts
-          FROM read_parquet('${filePath}')
+          FROM ${readParquetSql([filePath])}
         `;
         const result = await connection.runAndReadAll(query);
         const rows = result.getRowObjects();

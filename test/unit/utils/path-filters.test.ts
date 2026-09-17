@@ -1,22 +1,19 @@
 /**
  * Unit tests for inline per-path query filters (`path:aggregate|sourceRef`):
  * expression parsing, SQL fragment generation for the parquet and buffer
- * sides, response echoes, and the parquet schema probing helpers.
+ * sides, and response echoes.
  */
 import { expect } from 'chai';
 import {
   FILTER_DELIMITERS,
   PATH_FILTER_DEFS,
   PathFilter,
-  SchemaProbeConnection,
-  availableFilterColumns,
   buildBufferFilterClause,
   buildParquetFilterClause,
   filterColumns,
   filterEcho,
   filtersFromFields,
   parsePathFilters,
-  parquetHasColumn,
 } from '../../../src/utils/path-filters';
 
 const sourceFilter = (value: string): PathFilter => ({
@@ -174,101 +171,6 @@ describe('filterEcho', () => {
 
   it('is empty for no filters', () => {
     expect(filterEcho([])).to.deep.equal({});
-  });
-});
-
-/** Stub probe connection returning a fixed row count per call. */
-function stubConnection(plan: Array<number | Error>): {
-  connection: SchemaProbeConnection;
-  queries: string[];
-} {
-  const queries: string[] = [];
-  let call = 0;
-  return {
-    queries,
-    connection: {
-      runAndReadAll: async (sql: string) => {
-        queries.push(sql);
-        const step = plan[Math.min(call++, plan.length - 1)];
-        if (step instanceof Error) throw step;
-        return { getRowObjects: () => new Array(step).fill({}) };
-      },
-    },
-  };
-}
-
-describe('parquetHasColumn', () => {
-  it('returns true when a glob exposes the column', async () => {
-    const { connection, queries } = stubConnection([1]);
-    const result = await parquetHasColumn(
-      connection,
-      ['/data/*.parquet'],
-      'source_label'
-    );
-    expect(result).to.equal(true);
-    expect(queries[0]).to.include("parquet_schema('/data/*.parquet')");
-    expect(queries[0]).to.include("name = 'source_label'");
-  });
-
-  it('returns false when no glob exposes the column', async () => {
-    const { connection } = stubConnection([0]);
-    expect(
-      await parquetHasColumn(connection, ['/data/*.parquet'], 'col')
-    ).to.equal(false);
-  });
-
-  it('skips null and undefined paths without querying', async () => {
-    const { connection, queries } = stubConnection([1]);
-    const result = await parquetHasColumn(
-      connection,
-      [null, undefined, '/data/*.parquet'],
-      'col'
-    );
-    expect(result).to.equal(true);
-    expect(queries).to.have.lengthOf(1);
-  });
-
-  it('treats probe errors as absent and tries the next path', async () => {
-    const { connection, queries } = stubConnection([
-      new Error('no files found'),
-      1,
-    ]);
-    const result = await parquetHasColumn(
-      connection,
-      ['/missing/*.parquet', '/data/*.parquet'],
-      'col'
-    );
-    expect(result).to.equal(true);
-    expect(queries).to.have.lengthOf(2);
-  });
-
-  it('returns false when every probe errors', async () => {
-    const { connection } = stubConnection([new Error('boom')]);
-    expect(
-      await parquetHasColumn(connection, ['/a/*.parquet', '/b/*.parquet'], 'c')
-    ).to.equal(false);
-  });
-});
-
-describe('availableFilterColumns', () => {
-  it('collects only columns present in the parquet schema', async () => {
-    const { connection } = stubConnection([1]);
-    const available = await availableFilterColumns(
-      connection,
-      ['/data/*.parquet'],
-      [sourceFilter('gps-1')]
-    );
-    expect([...available]).to.deep.equal(['source_label']);
-  });
-
-  it('returns an empty set when the column is absent', async () => {
-    const { connection } = stubConnection([0]);
-    const available = await availableFilterColumns(
-      connection,
-      ['/data/*.parquet'],
-      [sourceFilter('gps-1')]
-    );
-    expect(available.size).to.equal(0);
   });
 });
 

@@ -14,7 +14,6 @@ import { DuckDBPool } from '../../src/utils/duckdb-pool';
 import { LRUCache } from '../../src/utils/lru-cache';
 import { HistoryProvider } from '../../src/history-provider';
 import { AutoDiscoveryService } from '../../src/services/auto-discovery';
-import { clearSchemaCache } from '../../src/utils/schema-cache';
 import {
   createFakeSignalK,
   makeTestConfig,
@@ -86,7 +85,6 @@ describe('History API v2 provider: auto-discovery of empty paths', function () {
     });
     buffer = new SQLiteBuffer({ dbPath: path.join(host.dataDir, 'buffer.db') });
     await DuckDBPool.initialize();
-    clearSchemaCache();
     buffer.insert(sogRecord('2024-06-01T10:00:10.000Z', 5));
     buffer.insert(sogRecord('2024-06-01T10:01:10.000Z', 6));
 
@@ -129,7 +127,6 @@ describe('History API v2 provider: auto-discovery of empty paths', function () {
   });
 
   afterEach(async () => {
-    clearSchemaCache();
     await DuckDBPool.shutdown();
     if (buffer?.isOpen()) buffer.close();
     await host?.cleanup();

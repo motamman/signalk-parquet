@@ -38,6 +38,13 @@ export interface ListHiveDirsOptions {
   level: 'year' | 'day';
   /** Tier names to include (without the `tier=` prefix); all when omitted. */
   tiers?: Iterable<string>;
+  /**
+   * Sanitized context directory values to include (without the `context=`
+   * prefix, as HivePathBuilder.sanitizeContext spells them); all when omitted.
+   */
+  contexts?: Iterable<string>;
+  /** Sanitized path directory values to include; all when omitted. */
+  paths?: Iterable<string>;
   /** Years to include; all when omitted. */
   years?: Iterable<number>;
   /**
@@ -45,6 +52,14 @@ export interface ListHiveDirsOptions {
    * omitted. Only consulted at level 'day'.
    */
   days?: Iterable<string>;
+  /**
+   * At level 'day', also emit one entry per year directory (with no dayDir)
+   * so a caller can list the files that live directly in it: compaction
+   * writes its yearly output there (`year=2024/year_compact_2024_<TS>.parquet`)
+   * and removes the day directories it merged, so a year that has been
+   * compacted has no day entries at all.
+   */
+  includeYearDirs?: boolean;
   /** Readdirs between yields to the event loop. */
   yieldEvery?: number;
 }
@@ -98,6 +113,8 @@ export async function listHiveDirs(
   options: ListHiveDirsOptions
 ): Promise<HiveDir[]> {
   const tiers = options.tiers ? new Set(options.tiers) : null;
+  const contexts = options.contexts ? new Set(options.contexts) : null;
+  const paths = options.paths ? new Set(options.paths) : null;
   const years = options.years ? new Set(options.years) : null;
   const days = options.days ? new Set(options.days) : null;
   const yieldEvery = Math.max(1, options.yieldEvery ?? 100);
@@ -108,17 +125,49 @@ export async function listHiveDirs(
     return readDir(dir);
   };
 
+  /**
+   * The `prefix=value` directories of `dir`. When the caller names the values
+   * it wants, each is stat'ed directly rather than found by listing the
+   * parent: on a store with thousands of vessels the listing of `tier=raw`
+   * is the whole cost of finding one context (measured on a shore station,
+   * 2026-09-17: a seven-day contexts call went from 1.6 s to 2.5 s when the
+   * listing was done once per matching context).
+   */
+  const partitions = async (
+    dir: string,
+    prefix: string,
+    wanted: Set<string> | null
+  ): Promise<string[]> => {
+    if (wanted === null) {
+      return (await read(dir))
+        .filter(entry => partitionValue(entry, prefix) !== null)
+        .map(entry => entry.name);
+    }
+    const names: string[] = [];
+    for (const value of wanted) {
+      reads += 1;
+      if (reads % yieldEvery === 0) await yieldToEventLoop();
+      const name = `${prefix}=${value}`;
+      try {
+        if ((await fs.stat(path.join(dir, name))).isDirectory()) {
+          names.push(name);
+        }
+      } catch {
+        // Absent: nothing recorded for it.
+      }
+    }
+    return names;
+  };
+
   const out: HiveDir[] = [];
   for (const tierEntry of await read(dataDir)) {
     const tier = partitionValue(tierEntry, 'tier');
     if (tier === null || (tiers && !tiers.has(tier))) continue;
     const tierDir = path.join(dataDir, tierEntry.name);
-    for (const contextEntry of await read(tierDir)) {
-      if (partitionValue(contextEntry, 'context') === null) continue;
-      const contextDir = path.join(tierDir, contextEntry.name);
-      for (const pathEntry of await read(contextDir)) {
-        if (partitionValue(pathEntry, 'path') === null) continue;
-        const pathDir = path.join(contextDir, pathEntry.name);
+    for (const contextName of await partitions(tierDir, 'context', contexts)) {
+      const contextDir = path.join(tierDir, contextName);
+      for (const pathName of await partitions(contextDir, 'path', paths)) {
+        const pathDir = path.join(contextDir, pathName);
         for (const yearEntry of await read(pathDir)) {
           const yearText = partitionValue(yearEntry, 'year');
           if (yearText === null || !YEAR_VALUE.test(yearText)) continue;
@@ -130,6 +179,7 @@ export async function listHiveDirs(
             out.push(base);
             continue;
           }
+          if (options.includeYearDirs) out.push(base);
           for (const dayEntry of await read(yearDir)) {
             const dayText = partitionValue(dayEntry, 'day');
             if (dayText === null || !DAY_VALUE.test(dayText)) continue;

@@ -14,6 +14,22 @@ import * as os from 'os';
 import * as path from 'path';
 import { HivePathBuilder } from '../../../src/utils/hive-path-builder';
 
+describe('detectPathStyle on a compacted year file', () => {
+  it('parses tier, context, path and year with no day', () => {
+    const builder = new HivePathBuilder();
+    const parsed = builder.detectPathStyle(
+      '/data/tier=raw/context=vessels__urn-mrn-imo-mmsi-1/path=navigation__position/year=2024/year_compact_2024_20250101T0000_ab12.parquet',
+      '/'
+    );
+    expect(parsed.isHive).to.equal(true);
+    expect(parsed.tier).to.equal('raw');
+    expect(parsed.context).to.equal('vessels.urn:mrn:imo:mmsi:1');
+    expect(parsed.signalkPath).to.equal('navigation.position');
+    expect(parsed.year).to.equal(2024);
+    expect(parsed.dayOfYear).to.equal(undefined);
+  });
+});
+
 describe('HivePathBuilder', () => {
   const builder = new HivePathBuilder();
 
@@ -183,61 +199,6 @@ describe('HivePathBuilder', () => {
     });
   });
 
-  describe('getGlobPattern', () => {
-    it('uses wildcards for every omitted argument', () => {
-      expect(builder.getGlobPattern('base', 'raw')).to.equal(
-        path.join(
-          'base',
-          'tier=raw',
-          'context=*',
-          'path=*',
-          'year=*',
-          'day=*',
-          '*.parquet'
-        )
-      );
-    });
-
-    it('sanitizes explicit context and path and pads the day', () => {
-      expect(
-        builder.getGlobPattern(
-          'base',
-          '60s',
-          'vessels.urn:mrn:signalk:uuid:xxx',
-          'navigation.speedOverGround',
-          2023,
-          7
-        )
-      ).to.equal(
-        path.join(
-          'base',
-          'tier=60s',
-          'context=vessels__urn-mrn-signalk-uuid-xxx',
-          'path=navigation__speedOverGround',
-          'year=2023',
-          'day=007',
-          '*.parquet'
-        )
-      );
-    });
-
-    it('mixes explicit and wildcard segments', () => {
-      expect(
-        builder.getGlobPattern('base', 'raw', undefined, undefined, 2024, 167)
-      ).to.equal(
-        path.join(
-          'base',
-          'tier=raw',
-          'context=*',
-          'path=*',
-          'year=2024',
-          'day=167',
-          '*.parquet'
-        )
-      );
-    });
-  });
-
   describe('getDaysInRange', () => {
     it('returns a single entry for a single-day range', () => {
       const day = new Date(Date.UTC(2024, 5, 15, 10, 0, 0));
@@ -293,96 +254,6 @@ describe('HivePathBuilder', () => {
       builder.getDaysInRange(from, to);
       expect(from.getTime()).to.equal(fromTime);
       expect(to.getTime()).to.equal(toTime);
-    });
-  });
-
-  describe('buildDuckDBGlob', () => {
-    const wildcard = path.join(
-      'base',
-      'tier=raw',
-      'context=*',
-      'path=*',
-      'year=*',
-      'day=*',
-      '*.parquet'
-    );
-
-    it('lists explicit day patterns for short ranges', () => {
-      const result = builder.buildDuckDBGlob(
-        'base',
-        'raw',
-        'vessels.self',
-        'navigation.position',
-        new Date(Date.UTC(2024, 5, 15)),
-        new Date(Date.UTC(2024, 5, 17))
-      );
-      const parts = result.split(',');
-      expect(parts).to.have.length(3);
-      expect(parts[0]).to.equal(
-        path.join(
-          'base',
-          'tier=raw',
-          'context=vessels__self',
-          'path=navigation__position',
-          'year=2024',
-          'day=167',
-          '*.parquet'
-        )
-      );
-      expect(parts[2]).to.equal(
-        path.join(
-          'base',
-          'tier=raw',
-          'context=vessels__self',
-          'path=navigation__position',
-          'year=2024',
-          'day=169',
-          '*.parquet'
-        )
-      );
-    });
-
-    it('still lists explicit days for a range of exactly 7 days', () => {
-      const result = builder.buildDuckDBGlob(
-        'base',
-        'raw',
-        undefined,
-        undefined,
-        new Date(Date.UTC(2024, 5, 15)),
-        new Date(Date.UTC(2024, 5, 21))
-      );
-      const parts = result.split(',');
-      expect(parts).to.have.length(7);
-      expect(parts[6]).to.contain(path.join('year=2024', 'day=173'));
-    });
-
-    it('falls back to wildcards for ranges longer than 7 days', () => {
-      const result = builder.buildDuckDBGlob(
-        'base',
-        'raw',
-        undefined,
-        undefined,
-        new Date(Date.UTC(2024, 5, 15)),
-        new Date(Date.UTC(2024, 5, 22))
-      );
-      expect(result).to.equal(wildcard);
-    });
-
-    it('uses wildcards when no date range is given', () => {
-      expect(builder.buildDuckDBGlob('base', 'raw')).to.equal(wildcard);
-    });
-
-    it('uses wildcards when only one bound is given', () => {
-      expect(
-        builder.buildDuckDBGlob(
-          'base',
-          'raw',
-          undefined,
-          undefined,
-          new Date(Date.UTC(2024, 5, 15)),
-          undefined
-        )
-      ).to.equal(wildcard);
     });
   });
 
@@ -794,74 +665,4 @@ describe('HivePathBuilder', () => {
     });
   });
 
-  describe('buildS3GlobsForRange', () => {
-    const context = 'vessels.self';
-    const signalkPath = 'navigation.position';
-
-    it('routes the whole range to S3 when it ends before the cutoff', () => {
-      const from = new Date(Date.UTC(2024, 5, 10));
-      const to = new Date(Date.UTC(2024, 5, 12));
-      const result = builder.buildS3GlobsForRange(
-        'bkt',
-        '',
-        'raw',
-        context,
-        signalkPath,
-        from,
-        to,
-        new Date(Date.UTC(2024, 5, 15))
-      );
-      expect(result.s3Pattern).to.equal(
-        builder.buildS3Glob('bkt', '', 'raw', context, signalkPath, from, to)
-      );
-      expect(result.localPattern).to.equal(null);
-    });
-
-    it('returns no patterns when the range starts at or after the cutoff', () => {
-      const cutoff = new Date(Date.UTC(2024, 5, 15));
-      const result = builder.buildS3GlobsForRange(
-        'bkt',
-        '',
-        'raw',
-        context,
-        signalkPath,
-        cutoff,
-        new Date(Date.UTC(2024, 5, 20)),
-        cutoff
-      );
-      expect(result).to.deep.equal({ s3Pattern: null, localPattern: null });
-    });
-
-    it('ends the S3 part one day before the cutoff for hybrid ranges', () => {
-      const from = new Date(Date.UTC(2024, 5, 10));
-      const cutoff = new Date(Date.UTC(2024, 5, 15));
-      const result = builder.buildS3GlobsForRange(
-        'bkt',
-        '',
-        'raw',
-        context,
-        signalkPath,
-        from,
-        new Date(Date.UTC(2024, 5, 20)),
-        cutoff
-      );
-      expect(result.s3Pattern).to.equal(
-        builder.buildS3Glob(
-          'bkt',
-          '',
-          'raw',
-          context,
-          signalkPath,
-          from,
-          new Date(Date.UTC(2024, 5, 14))
-        )
-      );
-      // The local half is documented as "handled by existing logic" and is
-      // never populated here.
-      expect(result.localPattern).to.equal(null);
-      // The cutoff date passed in must not be mutated by the internal
-      // one-day subtraction.
-      expect(cutoff.getTime()).to.equal(Date.UTC(2024, 5, 15));
-    });
-  });
 });

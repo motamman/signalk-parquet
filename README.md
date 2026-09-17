@@ -637,6 +637,11 @@ This provides better compression, faster queries, and proper type safety for dat
 | `/api/migrate/progress/:jobId` | GET | Get migration job progress |
 | `/api/migrate/cancel/:jobId` | POST | Cancel running migration job |
 | `/api/migrate/jobs` | GET | List all migration jobs |
+| `/api/compact/scan` | POST | Plan a per-year compaction of one tier (`tier`, `beforeYear`, optional `pathFilter`): the (context, path, year) groups with more than one day file, without changing anything |
+| `/api/compact` | POST | Start a compaction job: each group's day files are merged into one `year_compact_<year>_<stamp>.parquet` in the year directory and the day files removed. Runs in a short-lived forked worker (v0.7.44-beta.8+) so the memory DuckDB takes for the merge leaves with it; earlier versions merged in-process and kept roughly the merged volume's worth of memory until restart |
+| `/api/compact/progress/:jobId` | GET | Compaction job progress |
+| `/api/compact/cancel/:jobId` | POST | Cancel a running compaction at the next group boundary |
+| `/api/compact/jobs` | GET | List compaction jobs |
 | `/api/import/gpx/options` | GET | Importable SignalK paths with default-checked flag, source GPX element and unit (the UI builds its checkboxes from this) |
 | `/api/import/gpx/upload` | POST | Multipart upload of `.gpx` files (field `files`); starts an import job |
 | `/api/import/gpx/scan` | POST | Scan a server directory for `.gpx` files |
@@ -821,6 +826,8 @@ The plugin provides full SignalK History API compliance, allowing you to query h
 
 > ⚠️ **Extension**: The `/contexts` and `/paths` endpoints accept time range parameters as **optional**. The official spec requires time parameters; without them, these endpoints return all available data (more permissive behavior).
 
+> **Bounded reads (v0.7.44-beta.8+):** every history read opens only the parquet files of the days the window touches (plus a compacted year's file) and takes file metadata from parquet footers in JavaScript rather than from DuckDB. Earlier versions opened a path's whole history per request and the memory DuckDB used for that stayed in the server; on a station with thousands of AIS vessels a seven-day contexts or paths call added hundreds of megabytes each time.
+
 > **Exact context ids (v0.7.44-beta.3+):** the contexts endpoints return vessel context strings exactly as recorded — resolved from the stored data rather than reconstructed from partition directory names, whose encoding is lossy. Earlier versions mangled UUID-identified vessels (`urn:mrn:signalk:uuid:…`, the default when no MMSI is configured) by turning the UUID's dashes into colons.
 
 ### History Playback (v1 websocket)
@@ -901,6 +908,10 @@ The History API supports 5 standard SignalK time query patterns:
 | `ema` | Exponential Moving Average, alpha default 0.2 (returns only smoothed value) | `path:ema:0.2` |
 
 > **`middle_index` (v0.7.44-beta.5+):** earlier versions documented this method but did not implement it — the raw tier and v2 provider returned `first`, and the aggregated tiers returned nothing. It now returns the chronologically middle sample on every query path, with all components of an object path (e.g. position) taken from the same sample.
+
+> **`first` / `last` (v0.7.44-beta.8+):** the earliest and latest sample of the bucket by timestamp. Earlier versions returned an arbitrary sample of the bucket, and two identical requests could disagree.
+
+> **Window edges (v0.7.44-beta.8+):** a window is `[from, to)` to the millisecond. Earlier versions shifted a window whose bound had zero milliseconds by up to a second at each edge.
 
 **SMA/EMA as aggregation methods (official SignalK syntax):**
 ```bash

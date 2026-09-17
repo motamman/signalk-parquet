@@ -107,13 +107,17 @@ export class HivePathBuilder {
    *
    * Example (sep '\'): 'C:\data\tier=raw\context=vessels__self\path=navigation__position\year=2024\day=153\a.parquet'
    *   -> isHive, tier 'raw', year 2024, dayOfYear 153
+   *
+   * A compaction output lives directly in the year directory
+   * (`year=2024/year_compact_2024_<TS>.parquet`), so the day segment is
+   * optional: such a file is hive, with dayOfYear undefined.
    */
   detectPathStyle(filePath: string, sep: string = path.sep): PathParseResult {
     const normalized = sep === '/' ? filePath : filePath.split(sep).join('/');
 
     // Check for Hive-style partition markers
     const hivePattern =
-      /tier=([^/]+)\/context=([^/]+)\/path=([^/]+)\/year=(\d+)\/day=(\d+)/;
+      /tier=([^/]+)\/context=([^/]+)\/path=([^/]+)\/year=(\d+)(?:\/day=(\d+))?/;
     const hiveMatch = normalized.match(hivePattern);
 
     if (hiveMatch) {
@@ -124,7 +128,8 @@ export class HivePathBuilder {
         context: this.unsanitizeContext(hiveMatch[2]),
         signalkPath: this.unsanitizePath(hiveMatch[3]),
         year: parseInt(hiveMatch[4], 10),
-        dayOfYear: parseInt(hiveMatch[5], 10),
+        dayOfYear:
+          hiveMatch[5] !== undefined ? parseInt(hiveMatch[5], 10) : undefined,
       };
     }
 
@@ -237,48 +242,6 @@ export class HivePathBuilder {
   }
 
   /**
-   * Get the glob pattern for finding files in a time range
-   */
-  getGlobPattern(
-    basePath: string,
-    tier: AggregationTier,
-    context?: string,
-    signalkPath?: string,
-    year?: number,
-    dayOfYear?: number
-  ): string {
-    const parts = [basePath, `tier=${tier}`];
-
-    if (context) {
-      parts.push(`context=${this.sanitizeContext(context)}`);
-    } else {
-      parts.push('context=*');
-    }
-
-    if (signalkPath) {
-      parts.push(`path=${this.sanitizePath(signalkPath)}`);
-    } else {
-      parts.push('path=*');
-    }
-
-    if (year !== undefined) {
-      parts.push(`year=${year}`);
-    } else {
-      parts.push('year=*');
-    }
-
-    if (dayOfYear !== undefined) {
-      parts.push(`day=${String(dayOfYear).padStart(3, '0')}`);
-    } else {
-      parts.push('day=*');
-    }
-
-    parts.push('*.parquet');
-
-    return path.join(...parts);
-  }
-
-  /**
    * Get all day directories in a time range.
    * The cursor is normalized to UTC midnight so the comparison covers every
    * CALENDAR day the range touches — a cursor keeping from's time of day
@@ -307,42 +270,6 @@ export class HivePathBuilder {
     }
 
     return days;
-  }
-
-  /**
-   * Build DuckDB-compatible glob pattern for Hive partitions
-   */
-  buildDuckDBGlob(
-    basePath: string,
-    tier: AggregationTier,
-    context?: string,
-    signalkPath?: string,
-    fromDate?: Date,
-    toDate?: Date
-  ): string {
-    // For DuckDB, we need to handle date ranges specially
-    if (fromDate && toDate) {
-      // If same year and day range is small, use explicit days
-      const days = this.getDaysInRange(fromDate, toDate);
-      if (days.length <= 7) {
-        // Build explicit patterns for each day
-        return days
-          .map(d =>
-            this.getGlobPattern(
-              basePath,
-              tier,
-              context,
-              signalkPath,
-              d.year,
-              d.dayOfYear
-            )
-          )
-          .join(',');
-      }
-    }
-
-    // Otherwise, use wildcards
-    return this.getGlobPattern(basePath, tier, context, signalkPath);
   }
 
   /**
@@ -420,70 +347,13 @@ export class HivePathBuilder {
     }
 
     // Wildcard only when days REMAIN past the cap: exactly 7 days stays an
-    // explicit list, matching the docstring and buildDuckDBGlob (the old
+    // explicit list, matching the docstring (the old
     // `dayCount >= max` check wildcarded the 7-day case, an off-by-one).
     if (current <= to) {
       return 'year=*/day=*';
     }
 
     return days.join(',');
-  }
-
-  /**
-   * Build multiple S3 glob patterns for hybrid queries (local + S3)
-   * Returns patterns for both before and after a cutoff date
-   */
-  buildS3GlobsForRange(
-    bucket: string,
-    keyPrefix: string,
-    tier: AggregationTier,
-    context: string,
-    signalkPath: string,
-    fromDate: Date,
-    toDate: Date,
-    cutoffDate: Date
-  ): { s3Pattern: string | null; localPattern: string | null } {
-    const result: { s3Pattern: string | null; localPattern: string | null } = {
-      s3Pattern: null,
-      localPattern: null,
-    };
-
-    // If entire range is before cutoff, all data is in S3
-    if (toDate < cutoffDate) {
-      result.s3Pattern = this.buildS3Glob(
-        bucket,
-        keyPrefix,
-        tier,
-        context,
-        signalkPath,
-        fromDate,
-        toDate
-      );
-      return result;
-    }
-
-    // If entire range is after cutoff, all data is local
-    if (fromDate >= cutoffDate) {
-      return result;
-    }
-
-    // Hybrid: split at cutoff
-    // S3 gets data from 'from' to 'cutoff - 1 day'
-    const s3EndDate = new Date(cutoffDate);
-    s3EndDate.setUTCDate(s3EndDate.getUTCDate() - 1);
-
-    result.s3Pattern = this.buildS3Glob(
-      bucket,
-      keyPrefix,
-      tier,
-      context,
-      signalkPath,
-      fromDate,
-      s3EndDate
-    );
-
-    // Local pattern would be handled by existing logic
-    return result;
   }
 
   /**

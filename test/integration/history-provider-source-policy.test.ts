@@ -15,7 +15,6 @@ import { ParquetWriter } from '../../src/parquet-writer';
 import { ParquetExportService } from '../../src/services/parquet-export-service';
 import { DuckDBPool } from '../../src/utils/duckdb-pool';
 import { HistoryProvider } from '../../src/history-provider';
-import { clearSchemaCache } from '../../src/utils/schema-cache';
 import { createFakeSignalK, FakeSignalK } from './helpers/fake-signalk';
 import type { DataRecord } from '../../src/types';
 import type { ValuesRequest } from '@signalk/server-api/dist/history';
@@ -96,7 +95,6 @@ describe('History API v2 provider: per-source history', function () {
     host = createFakeSignalK({ selfId: SELF_ID });
     buffer = new SQLiteBuffer({ dbPath: path.join(host.dataDir, 'buffer.db') });
     await DuckDBPool.initialize();
-    clearSchemaCache();
 
     const writer = new ParquetWriter({ format: 'parquet', app: host.app });
     const exportService = new ParquetExportService(
@@ -135,7 +133,6 @@ describe('History API v2 provider: per-source history', function () {
   });
 
   afterEach(async () => {
-    clearSchemaCache();
     await DuckDBPool.shutdown();
     if (buffer?.isOpen()) buffer.close();
     await host?.cleanup();

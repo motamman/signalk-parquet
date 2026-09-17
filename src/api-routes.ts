@@ -1,11 +1,13 @@
 import * as fs from 'fs-extra';
 import * as path from 'path';
 import { globIn } from './utils/glob-in';
+import { filesFor, readParquetSql } from './utils/parquet-files';
+import { readFooter } from './utils/parquet-footer';
+import { listHiveDirs, listParquetFiles } from './utils/hive-walk';
 import express, { Router } from 'express';
 import multer from 'multer';
 import { getAvailablePaths } from './utils/path-discovery';
 import { DuckDBPool } from './utils/duckdb-pool';
-import { escapeSqlString } from './utils/sql-escape';
 import { findUnsafeSqlReason } from './utils/sql-guard';
 import {
   validateSignalKPath,
@@ -424,7 +426,7 @@ export function registerApiRoutes(
         }
 
         const sampleFile = result.files[0];
-        const query = `SELECT * FROM read_parquet('${escapeSqlString(sampleFile.path)}', union_by_name=true) LIMIT ${limit}`;
+        const query = `SELECT * FROM ${readParquetSql([sampleFile.path])} LIMIT ${limit}`;
 
         // Get connection from pool (spatial extension already loaded)
         const connection = await DuckDBPool.getConnection();
@@ -701,13 +703,6 @@ export function registerApiRoutes(
   // Start cloud compare job
   // Side directories under the data directory holding already-handled or
   // rejected files; cloud compare and sync skip them.
-  const EXCLUDED_LOCAL_DIRS = [
-    '**/processed/**',
-    '**/repaired/**',
-    '**/failed/**',
-    '**/quarantine/**',
-  ];
-
   router.post('/api/cloud/compare', async (_req, res) => {
     try {
       const cloud = state.currentConfig?.cloudUpload;
@@ -749,9 +744,14 @@ export function registerApiRoutes(
           const dataDir = state.getDataDirPath();
 
           job.phase = 'Discovering local files...';
-          // Only scan hive-partitioned files (tier=X/context=Y/path=Z/year=YYYY/day=DDD/)
-          const localFiles = await globIn(dataDir, 'tier=*/**/*.parquet', {
-            ignore: EXCLUDED_LOCAL_DIRS,
+          // Every hive-partitioned data file in the store (all tiers, day
+          // files and compacted year files alike); the walker never enters
+          // processed/quarantine/failed/repaired.
+          const localFiles = await filesFor({
+            dataDir,
+            tier: 'all',
+            contexts: 'all',
+            paths: 'all',
           });
           job.localFilesTotal = localFiles.length;
 
@@ -970,9 +970,12 @@ export function registerApiRoutes(
             }
           } else {
             job.phase = 'Scanning local files...';
-            // Only sync hive-partitioned files (tier=X/context=Y/path=Z/year=YYYY/day=DDD/)
-            const localFiles = await globIn(dataDir, 'tier=*/**/*.parquet', {
-              ignore: EXCLUDED_LOCAL_DIRS,
+            // Every hive-partitioned data file in the store, as above.
+            const localFiles = await filesFor({
+              dataDir,
+              tier: 'all',
+              contexts: 'all',
+              paths: 'all',
             });
 
             job.phase = `Listing ${label} objects...`;
@@ -4924,38 +4927,31 @@ export function registerApiRoutes(
           const angularPathsFound = new Set<string>();
           const datesToProcess = new Set<string>();
 
-          for (const tier of aggregatedTiers) {
-            const tierDir = path.join(dataDir, `tier=${tier}`);
-            if (!(await fs.pathExists(tierDir))) continue;
-
-            const contextDirs = await globIn(tierDir, 'context=*');
-            for (const contextDir of contextDirs) {
+          // One walk of the aggregated tiers' day directories; the angular
+          // test is per path, the date set per day directory.
+          const angularByPathDir = new Map<string, boolean>();
+          for (const d of await listHiveDirs(dataDir, {
+            level: 'day',
+            tiers: aggregatedTiers,
+          })) {
+            let angular = angularByPathDir.get(d.pathDir);
+            if (angular === undefined) {
               const context = path
-                .basename(contextDir)
+                .basename(d.contextDir)
                 .replace('context=', '')
                 .replace(/__/g, '.');
-              const pathDirs = await globIn(contextDir, 'path=*');
-              for (const pathDir of pathDirs) {
-                const signalkPath = path
-                  .basename(pathDir)
-                  .replace('path=', '')
-                  .replace(/__/g, '.');
-                if (isAngularPath(signalkPath, app, context)) {
-                  angularPathsFound.add(signalkPath);
-                  // Find dates with data for this path
-                  const yearDirs = await globIn(pathDir, 'year=*');
-                  for (const yearDir of yearDirs) {
-                    const dayDirs = await globIn(yearDir, 'day=*');
-                    for (const dayDir of dayDirs) {
-                      const yearStr = path
-                        .basename(yearDir)
-                        .replace('year=', '');
-                      const dayStr = path.basename(dayDir).replace('day=', '');
-                      datesToProcess.add(`${yearStr}-${dayStr}`);
-                    }
-                  }
-                }
-              }
+              const signalkPath = path
+                .basename(d.pathDir)
+                .replace('path=', '')
+                .replace(/__/g, '.');
+              angular = isAngularPath(signalkPath, app, context);
+              angularByPathDir.set(d.pathDir, angular);
+              if (angular) angularPathsFound.add(signalkPath);
+            }
+            if (angular) {
+              datesToProcess.add(
+                `${d.year}-${String(d.dayOfYear).padStart(3, '0')}`
+              );
             }
           }
 
@@ -5110,85 +5106,59 @@ export function registerApiRoutes(
           const positionPathsFound = new Set<string>();
           const datesToProcess = new Set<string>();
 
-          const rawTierDir = path.join(dataDir, 'tier=raw');
-          if (await fs.pathExists(rawTierDir)) {
-            const contextDirs = await globIn(rawTierDir, 'context=*');
-            for (const contextDir of contextDirs) {
-              const pathDirs = await globIn(contextDir, 'path=*');
-              for (const pathDir of pathDirs) {
-                const signalkPath = path
-                  .basename(pathDir)
-                  .replace('path=', '')
-                  .replace(/__/g, '.');
+          // One walk of the raw tier's day directories, grouped by path;
+          // one file per day is sampled, and the first sample's footer says
+          // whether the path carries value_latitude/value_longitude.
+          const dayDirsByPath = new Map<
+            string,
+            Array<{ dir: string; year: string; day: string }>
+          >();
+          for (const d of await listHiveDirs(dataDir, {
+            level: 'day',
+            tiers: ['raw'],
+          })) {
+            const list = dayDirsByPath.get(d.pathDir) ?? [];
+            list.push({
+              dir: d.dayDir as string,
+              year: String(d.year),
+              day: String(d.dayOfYear).padStart(3, '0'),
+            });
+            dayDirsByPath.set(d.pathDir, list);
+          }
+          for (const [pathDir, dayDirs] of dayDirsByPath) {
+            const signalkPath = path
+              .basename(pathDir)
+              .replace('path=', '')
+              .replace(/__/g, '.');
 
-                // Walk year/day directories and sample one parquet per day
-                // to avoid loading every parquet path into memory.
-                const dayDirs = await globIn(pathDir, 'year=*/day=*');
-                if (dayDirs.length === 0) continue;
+            const dayCandidates: Array<{
+              file: string;
+              year: string;
+              day: string;
+            }> = [];
+            for (const { dir, year, day } of dayDirs) {
+              const [file] = await listParquetFiles(dir);
+              if (file) dayCandidates.push({ file, year, day });
+            }
+            if (dayCandidates.length === 0) continue;
 
-                const dayCandidates: Array<{
-                  file: string;
-                  year: string;
-                  day: string;
-                }> = [];
-                for (const dayDir of dayDirs) {
-                  const yearMatch = dayDir.match(/year=(\d{4})/);
-                  const dayMatch = dayDir.match(/day=(\d{3})/);
-                  if (!yearMatch || !dayMatch) continue;
+            const schemaSample = dayCandidates[0].file;
+            let isPositionPath = false;
+            try {
+              const { columns } = await readFooter(schemaSample);
+              isPositionPath =
+                columns.has('value_latitude') && columns.has('value_longitude');
+            } catch (err) {
+              app.debug(
+                `Position migration: failed to read schema for ${schemaSample}: ${(err as Error).message}`
+              );
+            }
 
-                  const entries = await fs.readdir(dayDir, {
-                    withFileTypes: true,
-                  });
-                  const file = entries
-                    .filter(e => e.isFile() && e.name.endsWith('.parquet'))
-                    .map(e => path.join(dayDir, e.name))
-                    .find(
-                      f =>
-                        !f.includes('/processed/') &&
-                        !f.includes('/quarantine/') &&
-                        !f.includes('/failed/') &&
-                        !f.includes('/repaired/')
-                    );
-                  if (file) {
-                    dayCandidates.push({
-                      file,
-                      year: yearMatch[1],
-                      day: dayMatch[1],
-                    });
-                  }
-                }
-                if (dayCandidates.length === 0) continue;
+            if (!isPositionPath) continue;
 
-                const schemaSample = dayCandidates[0].file;
-                let isPositionPath = false;
-                const conn = await DuckDBPool.getConnection();
-                try {
-                  const schemaResult = await conn.runAndReadAll(
-                    `SELECT column_name FROM (DESCRIBE SELECT * FROM read_parquet('${schemaSample}'))`
-                  );
-                  const cols = schemaResult
-                    .getRowObjects()
-                    .map(
-                      (r: Record<string, unknown>) => r.column_name as string
-                    );
-                  isPositionPath =
-                    cols.includes('value_latitude') &&
-                    cols.includes('value_longitude');
-                } catch (err) {
-                  app.debug(
-                    `Position migration: failed to read schema for ${schemaSample}: ${(err as Error).message}`
-                  );
-                } finally {
-                  conn.disconnectSync();
-                }
-
-                if (!isPositionPath) continue;
-
-                positionPathsFound.add(signalkPath);
-                for (const { year, day } of dayCandidates) {
-                  datesToProcess.add(`${year}-${day}`);
-                }
-              }
+            positionPathsFound.add(signalkPath);
+            for (const { year, day } of dayCandidates) {
+              datesToProcess.add(`${year}-${day}`);
             }
           }
 
