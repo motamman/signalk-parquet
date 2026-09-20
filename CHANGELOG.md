@@ -1,6 +1,14 @@
 # Changelog
 
-## [0.7.44-beta.8] - 2026-09-17
+## [1.0.0] - 2026-09-20
+
+First release published since 0.7.43: everything in the 0.7.44 betas below (beta.5 through beta.8, deployed to test servers but never to npm) ships here.
+
+### What 1.0 means
+
+From this release the following are stable and change only with a major version bump: the on-disk layout (`tier=/context=/path=/year=/day=` partitions, the raw and aggregated parquet schemas, compacted year files, and the SQLite buffer's per-path tables with the three-state `exported` flag), the plugin configuration and the webapp path configuration (`webapp-config.json`) as documented in the README, and the History API as served here: the V1 routes with their documented extensions and the V2 provider. Data written by 1.0 will be readable by every later 1.x, and a 1.x upgrade never needs a migration.
+
+Not covered by that promise: the Track API provider, which serves a server API that has not yet merged (signalk-server #2995); the `context` extension on v1 playback, documented as provisional and to be retired if the server grows its own way to scope playback; the raw SQL endpoint; and the plugin's internal TypeScript modules, which are not a public API.
 
 One way to read parquet. Every History API, Track API and playback read now opens only the files of the days it asks about and takes its metadata from parquet footers in JavaScript, instead of DuckDB globs over a path's whole history; the memory those globs left behind in the server is what made a shore station grow by hundreds of megabytes per dashboard poll. Compaction moves into a forked worker, and the byte-for-byte comparisons made while measuring turned up five older bugs, fixed here.
 
