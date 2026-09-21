@@ -22,7 +22,7 @@
 
 import * as fs from 'fs-extra';
 import * as path from 'path';
-import { ServerAPI } from '@signalk/server-api';
+import { NormalizedDelta, Path, ServerAPI } from '@signalk/server-api';
 import { DataRecord, PluginState } from '../types';
 import {
   IDENTITY_PATH,
@@ -50,24 +50,9 @@ interface TrackedVessel {
   dirty: boolean;
 }
 
-/** Minimal shape of a whole delta message as emitted on `app.signalk`. */
-interface DeltaMessage {
-  context?: string;
-  updates?: Array<{
-    timestamp?: string;
-    $source?: string;
-    values?: Array<{ path?: string; value?: unknown }>;
-    meta?: unknown[];
-  }>;
-}
-
-/** The delta emitter the server keeps on the plugin app object. */
-interface DeltaEmitter {
-  on(event: 'delta', handler: (delta: DeltaMessage) => void): unknown;
-  removeListener(
-    event: 'delta',
-    handler: (delta: DeltaMessage) => void
-  ): unknown;
+/** A stream subscription handle as `streambundle` buses return them. */
+interface StreamSubscription {
+  unsubscribe?: () => void;
 }
 
 export class VesselIdentityService {
@@ -76,7 +61,7 @@ export class VesselIdentityService {
   private lastWritten = new Map<string, string>();
   /** Buffer row id of the last identity row per context, while known. */
   private readonly lastRowIds = new Map<string, number>();
-  private readonly onDeltaBound = (delta: DeltaMessage) => this.onDelta(delta);
+  private subscriptions: StreamSubscription[] = [];
   private persistTimer?: NodeJS.Timeout;
   private stateDirty = false;
   private running = false;
@@ -98,9 +83,25 @@ export class VesselIdentityService {
     this.loadState();
     this.readBackFromBuffer();
 
-    // Whole delta messages, before the server splits them per path, so one
-    // AIS static report folds into one row.
-    this.emitter.on('delta', this.onDeltaBound);
+    // The identity paths, through the plugin API's per-path buses, as the
+    // data handler subscribes. The server splits every delta into one bus
+    // event per value (streambundle pushDelta), each carrying the update's
+    // timestamp and $source, so an AIS static report arrives as several
+    // events that share a stamp; `write` extends the row the first of them
+    // inserted while the rest only complete it. Root keys (name, mmsi)
+    // arrive on the root bus as one object. No debounce: it would drop the
+    // later pieces of a report.
+    this.subscribe('' as Path, (d: NormalizedDelta) => {
+      const v = d.value as Record<string, unknown> | null;
+      return (
+        v !== null &&
+        typeof v === 'object' &&
+        IDENTITY_ROOT_KEYS.some(key => v[key] !== undefined)
+      );
+    });
+    for (const p of IDENTITY_PATHS) {
+      this.subscribe(p as Path, () => true);
+    }
 
     // The server emits its defaults (self name, mmsi, design.*) once at
     // start, before plugins load, and AIS targets heard before a plugin
@@ -122,11 +123,14 @@ export class VesselIdentityService {
   stop(): void {
     if (!this.running) return;
     this.running = false;
-    try {
-      this.emitter.removeListener('delta', this.onDeltaBound);
-    } catch {
-      // Best-effort.
+    for (const s of this.subscriptions) {
+      try {
+        s.unsubscribe?.();
+      } catch {
+        // Best-effort.
+      }
     }
+    this.subscriptions = [];
     if (this.persistTimer) {
       clearInterval(this.persistTimer);
       this.persistTimer = undefined;
@@ -135,31 +139,28 @@ export class VesselIdentityService {
     this.tracked.clear();
   }
 
-  private get emitter(): DeltaEmitter {
-    return (this.app as unknown as { signalk: DeltaEmitter }).signalk;
-  }
-
-  private onDelta(delta: DeltaMessage): void {
-    if (!this.running || !delta || !Array.isArray(delta.updates)) return;
-    const context = delta.context;
-    if (!context || !context.startsWith('vessels.')) return;
-    for (const update of delta.updates) {
-      if (!update || !Array.isArray(update.values)) continue;
-      for (const pv of update.values) {
-        if (!pv) continue;
+  /** One bus subscription; vessel contexts and real values only. */
+  private subscribe(
+    busPath: Path,
+    accept: (d: NormalizedDelta) => boolean
+  ): void {
+    const stream = this.app.streambundle
+      .getBus(busPath)
+      .filter((d: NormalizedDelta) => {
+        if (!this.running || d.isMeta) return false;
+        const context = String(d.context ?? '');
+        return context.startsWith('vessels.') && accept(d);
+      })
+      .onValue((d: NormalizedDelta) => {
         this.absorb(
-          context,
-          pv.path ?? '',
-          pv.value,
-          update.timestamp,
-          update.$source,
-          false
+          String(d.context),
+          busPath,
+          d.value,
+          d.timestamp,
+          d.$source
         );
-      }
-      // One row per update, however many identity values it carried.
-      const vessel = this.tracked.get(context);
-      if (vessel?.dirty) this.write(context, vessel);
-    }
+      });
+    this.subscriptions.push(stream as unknown as StreamSubscription);
   }
 
   /**

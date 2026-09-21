@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.0.1-beta.1] - 2026-09-21
+
+One fix: the plugin failed the Signal K plugin registry's activation check on 1.0.0.
+
+### Fixed
+
+- **Plugin start threw on a host without `app.signalk`** — the vessel identity service (new in 0.7.44-beta.7) subscribed to whole delta messages through `app.signalk`, which is on the object the server hands plugins but is not part of the plugin API; the Signal K plugin registry's activation check starts the plugin against an app that follows the API, and 1.0.0 failed it with `this.emitter.on is not a function`. The service now subscribes to the identity paths through `app.streambundle` like the rest of the plugin. Nothing is lost by it: the server delivers every delta to the buses one value at a time, each carrying the update's timestamp and `$source` (streambundle `pushDelta`; the same shape a client sees on the websocket), and the service already extends a vessel's last row in place when a later value only completes it, so an AIS static report still lands as one row. All thirteen identity tests pass on the per-path delivery, one of them starting the service on an app with no `signalk` at all. Verified on a shore station over 30 minutes of live AIS: 56 vessels carried identity, the one new to the plugin got exactly one row, the 55 already known got none.
+
 ## [1.0.0] - 2026-09-20
 
 First release published since 0.7.43: everything in the 0.7.44 betas below (beta.5 through beta.8, deployed to test servers but never to npm) ships here.

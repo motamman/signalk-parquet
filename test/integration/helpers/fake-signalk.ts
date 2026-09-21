@@ -52,6 +52,8 @@ export interface FakeSignalK {
   emitCommand(delta: Record<string, unknown>): void;
   /** Emit a whole delta message on app.signalk, as the server does. */
   emitDelta(delta: Record<string, unknown>): void;
+  /** Drop every bus handler, as a killed server would. */
+  dropBusHandlers(): void;
   /** Remove the temp data directory. */
   cleanup(): Promise<void>;
 }
@@ -224,6 +226,9 @@ export function createFakeSignalK(
     },
     emitDelta(delta) {
       signalk.emit('delta', delta);
+    },
+    dropBusHandlers() {
+      busHandlers.clear();
     },
     async cleanup() {
       await fs.remove(dataDir);
