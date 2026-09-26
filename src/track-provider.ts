@@ -44,6 +44,7 @@ import {
 } from './utils/signalk-validation';
 import { stageBufferTable, BufferStagingSource } from './utils/buffer-staging';
 import { federationCursor } from './utils/sqlite-buffer';
+import { BufferWorkerClient } from './utils/buffer-worker-client';
 import { FederationCursor } from './types';
 import {
   buildBufferObjectSubquery,
@@ -425,6 +426,11 @@ function bucketExpression(resolutionMs: number): string {
 export class TrackProvider implements TrackApi {
   private readonly hive = new HivePathBuilder();
   private sqliteBuffer?: TrackBufferSource;
+  /**
+   * How to reach the buffer worker, read once per request. An accessor rather
+   * than a copy because the worker reports ready after this instance is built.
+   */
+  private getBufferWorker?: () => BufferWorkerClient | undefined;
 
   constructor(
     private readonly selfId: string,
@@ -434,6 +440,13 @@ export class TrackProvider implements TrackApi {
     sqliteBuffer?: TrackBufferSource
   ) {
     this.sqliteBuffer = sqliteBuffer;
+  }
+
+  /** Where to find the buffer worker for staging reads, or nothing for none. */
+  setBufferWorkerSource(
+    get: (() => BufferWorkerClient | undefined) | undefined
+  ): void {
+    this.getBufferWorker = get;
   }
 
   setSqliteBuffer(buffer: TrackBufferSource | undefined): void {
@@ -453,6 +466,8 @@ export class TrackProvider implements TrackApi {
     // one directory with another's buffer.
     const dataDir = this.dataDir;
     const buffer = this.sqliteBuffer;
+    // Snapshotted with the buffer, for the same reason.
+    const worker = this.getBufferWorker?.();
 
     const window = resolveWindow(query);
     const contexts = await this.resolveContexts(query, window, dataDir, buffer);
@@ -472,7 +487,8 @@ export class TrackProvider implements TrackApi {
         propertyPaths,
         wantGeometry,
         dataDir,
-        buffer
+        buffer,
+        worker
       );
       if (feature) {
         features.push(feature);
@@ -701,7 +717,8 @@ export class TrackProvider implements TrackApi {
     propertyPaths: Path[],
     wantGeometry: boolean,
     dataDir: string,
-    buffer: TrackBufferSource | undefined
+    buffer: TrackBufferSource | undefined,
+    worker: BufferWorkerClient | undefined
   ): Promise<TrackFeature | null> {
     const window = this.boundWindowToData(context, requestWindow, dataDir);
     if (window.toMs <= window.fromMs) {
@@ -733,7 +750,8 @@ export class TrackProvider implements TrackApi {
         window.toMs - window.fromMs,
         toSpatialFilter(query.bbox),
         dataDir,
-        buffer
+        buffer,
+        worker
       );
       if (probe.length === 0) {
         return null;
@@ -746,7 +764,8 @@ export class TrackProvider implements TrackApi {
       resolutionMs,
       undefined,
       dataDir,
-      buffer
+      buffer,
+      worker
     );
     if (points.length === 0) {
       return null;
@@ -802,7 +821,8 @@ export class TrackProvider implements TrackApi {
           window,
           resolutionMs,
           dataDir,
-          buffer
+          buffer,
+          worker
         );
         if (!series) {
           continue;
@@ -887,7 +907,8 @@ export class TrackProvider implements TrackApi {
     resolutionMs: number,
     filter: SpatialFilter | undefined,
     dataDir: string,
-    buffer: TrackBufferSource | undefined
+    buffer: TrackBufferSource | undefined,
+    worker: BufferWorkerClient | undefined
   ): Promise<TrackPoint[]> {
     const files = await this.rawFiles(dataDir, context, POSITION_PATH, window);
     const hasBufferTable = buffer?.hasTable(POSITION_PATH) ?? false;
@@ -912,7 +933,8 @@ export class TrackProvider implements TrackApi {
           POSITION_PATH,
           window.fromIso,
           window.toIso,
-          this.debug
+          this.debug,
+          worker
         );
         if (staged) {
           const subquery = buildBufferObjectSubquery(
@@ -975,7 +997,8 @@ export class TrackProvider implements TrackApi {
     window: TimeWindow,
     resolutionMs: number,
     dataDir: string,
-    buffer: TrackBufferSource | undefined
+    buffer: TrackBufferSource | undefined,
+    worker: BufferWorkerClient | undefined
   ): Promise<PropertySeries | null> {
     const files = await this.rawFiles(dataDir, context, signalkPath, window);
     const hasBufferTable = buffer?.hasTable(signalkPath) ?? false;
@@ -1014,7 +1037,8 @@ export class TrackProvider implements TrackApi {
           signalkPath,
           window.fromIso,
           window.toIso,
-          this.debug
+          this.debug,
+          worker
         );
         if (staged) {
           const subquery = buildBufferScalarSubquery(

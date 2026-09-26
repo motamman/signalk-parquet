@@ -10,6 +10,42 @@ import { getAvailablePaths } from './utils/path-discovery';
 import { DuckDBPool } from './utils/duckdb-pool';
 import { findUnsafeSqlReason } from './utils/sql-guard';
 import {
+  eventLoopDelay,
+  eventLoopMonitorRunning,
+  resetEventLoopDelay,
+} from './utils/event-loop-monitor';
+
+/**
+ * A router with the per-route permission declaration signalk-server adds
+ * (`asPluginRouter`). Absent on servers that predate it.
+ */
+type AccessRouter = Router & {
+  access?: (level: 'readonly' | 'readwrite' | 'admin') => {
+    get: (
+      path: string,
+      ...handlers: express.RequestHandler[]
+    ) => { get: unknown };
+  };
+};
+
+/**
+ * Register a GET that an authenticated non-admin user may call. Falls back to a
+ * plain registration where the server has no `access`, which leaves the route
+ * admin-gated exactly as before rather than accidentally opening it.
+ */
+function readonlyGet(
+  router: Router,
+  path: string,
+  handler: express.RequestHandler
+): void {
+  const access = (router as AccessRouter).access;
+  if (typeof access === 'function') {
+    access.call(router, 'readonly').get(path, handler);
+    return;
+  }
+  router.get(path, handler);
+}
+import {
   validateSignalKPath,
   assertWithinDataDir,
 } from './utils/signalk-validation';
@@ -607,6 +643,40 @@ export function registerApiRoutes(
       success: true,
       enabled: rawSqlEnabled,
     });
+  });
+
+  /**
+   * How long the host server's event loop has been blocked.
+   *
+   * This plugin reads SQLite and drives DuckDB, and a slow answer and a frozen
+   * server look identical from outside. This is the direct measurement, taken
+   * by libuv rather than inferred from request timings, and it covers the whole
+   * process because "the server stalled" is about the process.
+   *
+   * `?reset=true` forgets what came before, so a caller can bracket one
+   * operation: reset, do the thing, read.
+   *
+   * Declared read-only. A plugin's routes are admin-only unless the plugin says
+   * otherwise — the server offers `router.access(level)` for that — and these
+   * are timing numbers about the server's own health, with nothing in them to
+   * protect. Requiring admin would mean anyone measuring whether this plugin
+   * blocks their server needs full control of it, which is how this endpoint
+   * came to be unusable in the first place. Servers without `access` keep
+   * today's behaviour and gate it at admin.
+   */
+  readonlyGet(router, '/api/event-loop', async (req, res) => {
+    if (!eventLoopMonitorRunning()) {
+      return res.json({
+        success: false,
+        error: 'event loop monitor is not running',
+      });
+    }
+    if (req.query.reset === 'true') {
+      // Awaited: a reset is only valid once a sampling interval has passed.
+      await resetEventLoopDelay();
+      return res.json({ success: true, reset: true, delay: eventLoopDelay() });
+    }
+    return res.json({ success: true, delay: eventLoopDelay() });
   });
 
   // Test cloud connection (S3 or R2)

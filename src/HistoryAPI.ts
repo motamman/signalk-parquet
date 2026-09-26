@@ -61,6 +61,7 @@ import {
   buildBufferObjectSubquery,
 } from './utils/buffer-sql-builder';
 import { stageBufferTable } from './utils/buffer-staging';
+import { BufferWorkerClient } from './utils/buffer-worker-client';
 import {
   parseDurationToMillis,
   parseResolutionToMillis,
@@ -772,6 +773,11 @@ interface HistoryValueEntry {
 
 export class HistoryAPI {
   private sqliteBuffer?: SQLiteBufferInterface;
+  /**
+   * How to reach the buffer worker, read once per request. An accessor rather
+   * than a copy because the worker reports ready after this instance is built.
+   */
+  private getBufferWorker?: () => BufferWorkerClient | undefined;
   private hivePathBuilder: HivePathBuilder;
   private autoDiscoveryService?: AutoDiscoveryService;
   private s3Config?: S3QueryConfig;
@@ -816,6 +822,13 @@ export class HistoryAPI {
    */
   setSqliteBuffer(buffer: SQLiteBufferInterface | undefined): void {
     this.sqliteBuffer = buffer;
+  }
+
+  /** Where to find the buffer worker for staging reads, or nothing for none. */
+  setBufferWorkerSource(
+    get: (() => BufferWorkerClient | undefined) | undefined
+  ): void {
+    this.getBufferWorker = get;
   }
 
   /**
@@ -943,6 +956,8 @@ export class HistoryAPI {
     // The caller's request-scoped buffer snapshot, so a reconfigure can't
     // pair a new buffer with this request's directory.
     sqliteBuffer: SQLiteBufferInterface | undefined,
+    // The request's buffer worker snapshot, for the same reason.
+    bufferWorker: BufferWorkerClient | undefined,
     // Request-start snapshot of DuckDBPool.isSQLiteBufferInitialized(),
     // captured alongside sqliteBuffer for the same reason.
     hasBuffer: boolean,
@@ -997,7 +1012,8 @@ export class HistoryAPI {
             positionPath,
             fromIso,
             toIso,
-            debug
+            debug,
+            bufferWorker
           );
           const bufferSubquery = stagedTable
             ? buildBufferObjectSubquery(
@@ -1318,6 +1334,8 @@ export class HistoryAPI {
     // swaps the buffer or S3 config mid-request must not be mixed with the
     // snapshotted directory's parquet data.
     const sqliteBuffer = this.sqliteBuffer;
+    // Snapshotted with the buffer, for the same reason.
+    const bufferWorker = this.getBufferWorker?.();
     const s3Config = this.s3Config;
     // The DuckDB-side buffer attachment is process-global mutable state that
     // a reconfigure flips mid-request; capture it once, paired with the
@@ -1351,6 +1369,7 @@ export class HistoryAPI {
           context,
           dataDir,
           sqliteBuffer,
+          bufferWorker,
           hasBuffer,
           from,
           to,
@@ -1427,7 +1446,8 @@ export class HistoryAPI {
                 posPathSpec.path,
                 fromIso,
                 toIso,
-                debug
+                debug,
+                bufferWorker
               );
               const bufferSubquery = stagedTable
                 ? buildBufferObjectSubquery(
@@ -1686,7 +1706,8 @@ export class HistoryAPI {
                   pathSpec.path,
                   fromIso,
                   toIso,
-                  debug
+                  debug,
+                  bufferWorker
                 )
               : null;
           // Build FROM clause: local-only by default, hybrid only if S3 has
@@ -2125,7 +2146,8 @@ export class HistoryAPI {
                     pathSpec.path,
                     fallbackFromIso,
                     fallbackToIso,
-                    debug
+                    debug,
+                    bufferWorker
                   )
                 : null;
               // Object buffer tables have value_json/value_* columns and no

@@ -53,6 +53,7 @@ import {
   buildBufferObjectSubquery,
 } from './utils/buffer-sql-builder';
 import { stageBufferTable, BufferStagingSource } from './utils/buffer-staging';
+import { BufferWorkerClient } from './utils/buffer-worker-client';
 import {
   smoothLinear,
   smoothCircularRad,
@@ -264,6 +265,11 @@ function mergeComponentSchemas(
  */
 export class HistoryProvider implements HistoryApi {
   private sqliteBuffer?: ProviderBufferSource;
+  /**
+   * How to reach the buffer worker, read once per query. An accessor rather
+   * than a copy because the worker reports ready after this instance is built.
+   */
+  private getBufferWorker?: () => BufferWorkerClient | undefined;
   private autoDiscoveryService?: AutoDiscoveryService;
 
   constructor(
@@ -275,6 +281,13 @@ export class HistoryProvider implements HistoryApi {
 
   setSqliteBuffer(buffer: ProviderBufferSource): void {
     this.sqliteBuffer = buffer;
+  }
+
+  /** Where to find the buffer worker for staging reads, or nothing for none. */
+  setBufferWorkerSource(
+    get: (() => BufferWorkerClient | undefined) | undefined
+  ): void {
+    this.getBufferWorker = get;
   }
 
   /**
@@ -562,7 +575,8 @@ export class HistoryProvider implements HistoryApi {
           String(spec.path),
           fromIso,
           toIso,
-          (msg: string) => this.debug(msg)
+          (msg: string) => this.debug(msg),
+          this.getBufferWorker?.()
         );
         if (staged) {
           const result = await connection.runAndReadAll(
@@ -663,7 +677,8 @@ export class HistoryProvider implements HistoryApi {
               String(pathSpec.path),
               fromIso,
               toIso,
-              (msg: string) => this.debug(msg)
+              (msg: string) => this.debug(msg),
+              this.getBufferWorker?.()
             )
           : null;
       if (!hasParquet && !stagedBufferTable) {
@@ -1112,12 +1127,14 @@ export function registerHistoryApiProvider(
   dataDir: string,
   debug: (msg: string) => void,
   sqliteBuffer?: ProviderBufferSource,
-  autoDiscoveryService?: AutoDiscoveryService
+  autoDiscoveryService?: AutoDiscoveryService,
+  getBufferWorker?: () => BufferWorkerClient | undefined
 ): void {
   const provider = new HistoryProvider(selfId, dataDir, app, debug);
   if (sqliteBuffer) {
     provider.setSqliteBuffer(sqliteBuffer);
   }
+  provider.setBufferWorkerSource(getBufferWorker);
   provider.setAutoDiscoveryService(autoDiscoveryService);
 
   // Debug: Check if registerHistoryApiProvider exists on app

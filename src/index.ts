@@ -41,6 +41,11 @@ import {
   unregisterTrackApiProvider,
 } from './track-provider';
 import { SQLiteBuffer } from './utils/sqlite-buffer';
+import { BufferWorkerClient } from './utils/buffer-worker-client';
+import {
+  startEventLoopMonitor,
+  stopEventLoopMonitor,
+} from './utils/event-loop-monitor';
 import { VesselIdentityService } from './services/vessel-identity-service';
 import {
   PlaybackProvider,
@@ -217,6 +222,12 @@ export default function (app: ServerAPI): SignalKPlugin {
   ): Promise<void> {
     // Reconfigure runs stop() then start(); re-arm scheduled work.
     state.isStopping = false;
+
+    // Record how long the server's event loop is blocked, from here on. Started
+    // first so it covers this plugin's own startup, which reads the buffer and
+    // opens DuckDB. stop() disables it, so a reconfigure starts a fresh
+    // histogram rather than carrying the previous run's numbers forward.
+    startEventLoopMonitor();
     state.activeAggregationWorkers ??= new Set<ChildProcess>();
 
     // Get vessel MMSI from SignalK
@@ -412,6 +423,34 @@ export default function (app: ServerAPI): SignalKPlugin {
         }
 
         app.debug(`[SQLite] Buffer initialized successfully at ${dbPath}`);
+
+        // A second connection to the same database, owned by a worker thread,
+        // serves the reads that stage buffer rows into a query. Both are
+        // node:sqlite, so they share one SQLite library and their POSIX locks
+        // are coherent — unlike DuckDB's bundled copy, which is why
+        // buffer-staging.ts exists. Writes stay on the connection above until
+        // they move too.
+        //
+        // Started without waiting: `state.bufferWorker` is only set once the
+        // worker reports its database open, so a query before that (or a
+        // worker that never starts) stages in-process exactly as before.
+        const bufferWorker = new BufferWorkerClient({
+          dbPath,
+          retentionHours: state.currentConfig.bufferRetentionHours,
+        });
+        bufferWorker
+          .start()
+          .then(() => {
+            state.bufferWorker = bufferWorker;
+            app.debug('[SQLite] Buffer worker ready; history reads use it');
+          })
+          .catch(error => {
+            const msg = error instanceof Error ? error.message : String(error);
+            app.error(
+              `[SQLite] Buffer worker failed to start (${msg}); history reads ` +
+                `will read the buffer on the main thread`
+            );
+          });
       } catch (error) {
         const msg = error instanceof Error ? error.message : String(error);
         app.error(`[SQLite] Failed to initialize SQLite buffer: ${msg}`);
@@ -898,6 +937,7 @@ export default function (app: ServerAPI): SignalKPlugin {
           s3QueryConfig, // S3 config for federated queries
           state.currentConfig.pathRetentionOverrides // skipAggregation read-path fallback
         );
+        state.historyApi.setBufferWorkerSource(() => state.bufferWorker);
       } else {
         // Reconfigure (stop→start without a full process restart): the V1 express
         // routes registered on the first start are still live and bound to this
@@ -908,6 +948,7 @@ export default function (app: ServerAPI): SignalKPlugin {
         // return nothing with NO error, silently dropping all live (unexported)
         // data from history reads until a full restart — this keeps it live.
         state.historyApi.setSqliteBuffer(state.sqliteBuffer);
+        state.historyApi.setBufferWorkerSource(() => state.bufferWorker);
         state.historyApi.setS3Config(s3QueryConfig);
         state.historyApi.setAutoDiscoveryService(state.autoDiscoveryService);
         state.historyApi.setDataDir(state.currentConfig.outputDirectory);
@@ -938,7 +979,8 @@ export default function (app: ServerAPI): SignalKPlugin {
         state.currentConfig.outputDirectory,
         app.debug,
         state.sqliteBuffer,
-        state.autoDiscoveryService // v2 gets the same auto-discovery as v1
+        state.autoDiscoveryService, // v2 gets the same auto-discovery as v1
+        () => state.bufferWorker
       );
     } catch (error) {
       app.error(`Failed to register as History API provider: ${error}`);
@@ -970,6 +1012,7 @@ export default function (app: ServerAPI): SignalKPlugin {
         app.debug,
         state.sqliteBuffer
       );
+      trackProvider.setBufferWorkerSource(() => state.bufferWorker);
       registerTrackApiProvider(app, trackProvider, app.debug);
     } catch (error) {
       app.error(`Failed to register as Track API provider: ${error}`);
@@ -998,6 +1041,7 @@ export default function (app: ServerAPI): SignalKPlugin {
     // Flag first so any timer/interval callback that fires during this
     // async teardown becomes a no-op instead of starting a new export.
     state.isStopping = true;
+    stopEventLoopMonitor();
 
     // Signal any running compaction jobs to cancel and wait for them
     // to land at a group boundary. A single in-flight DuckDB COPY is
@@ -1160,6 +1204,16 @@ export default function (app: ServerAPI): SignalKPlugin {
       } catch (error) {
         app.error(`Error stopping export service: ${error}`);
       }
+    }
+
+    // Stop the buffer worker before the in-process buffer, so no read is in
+    // flight against a database that is about to close.
+    if (state.bufferWorker) {
+      const worker = state.bufferWorker;
+      state.bufferWorker = undefined;
+      worker.close().catch(error => {
+        app.error(`Error closing buffer worker: ${error}`);
+      });
     }
 
     // Close SQLite buffer (safe now that subscriptions are torn down)

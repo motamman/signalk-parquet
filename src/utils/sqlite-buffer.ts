@@ -56,6 +56,19 @@ export interface SQLiteBufferConfig {
   dbPath: string;
   maxBatchSize?: number;
   retentionHours?: number;
+  /**
+   * Open for reading only: no schema creation, no legacy migration, no index
+   * building, and every write method refuses.
+   *
+   * This is what the buffer worker opens while it only serves reads. Two
+   * node:sqlite connections to one database are safe — they share a library, so
+   * their POSIX locks are coherent — but a second *writer* is not free: the
+   * connection that owns ingestion sets no `busy_timeout`, because waiting for
+   * a lock on the server's event loop is the very thing the worker exists to
+   * avoid, so it would see SQLITE_BUSY and drop a record rather than wait.
+   * A reader takes no write lock and creates no such window.
+   */
+  readOnly?: boolean;
 }
 
 /**
@@ -144,6 +157,8 @@ export class SQLiteBuffer {
   private _open: boolean;
   private readonly dbPath: string;
   private readonly retentionHours: number;
+  /** Reading only: writes refuse and no DDL was run at open. */
+  private readonly readOnly: boolean;
   private tableMap: Map<string, TableInfo>; // keyed by SignalK path
 
   constructor(config: SQLiteBufferConfig) {
@@ -155,26 +170,35 @@ export class SQLiteBuffer {
 
     this.dbPath = config.dbPath;
     this.retentionHours = config.retentionHours || 24;
+    this.readOnly = config.readOnly === true;
 
     // Ensure directory exists
     fs.ensureDirSync(path.dirname(this.dbPath));
 
     // Open database with WAL mode for crash safety and better concurrency
-    this.db = new DatabaseSync(this.dbPath);
+    this.db = this.readOnly
+      ? new DatabaseSync(this.dbPath, { readOnly: true })
+      : new DatabaseSync(this.dbPath);
     this._open = true;
 
-    // Configure for performance and crash safety
-    this.db.exec('PRAGMA journal_mode = WAL');
-    this.db.exec('PRAGMA synchronous = NORMAL');
+    // Configure for performance and crash safety. journal_mode and synchronous
+    // are properties of the database, not of a connection, and cannot be set
+    // from a read-only one; the rest are per-connection and apply either way.
+    if (!this.readOnly) {
+      this.db.exec('PRAGMA journal_mode = WAL');
+      this.db.exec('PRAGMA synchronous = NORMAL');
+    }
     this.db.exec('PRAGMA cache_size = -64000'); // 64MB cache
     this.db.exec('PRAGMA temp_store = MEMORY');
     this.db.exec('PRAGMA mmap_size = 268435456'); // 256MB memory-mapped I/O
 
-    // Create metadata table
-    this.createMetadataSchema();
+    if (!this.readOnly) {
+      // Create metadata table
+      this.createMetadataSchema();
 
-    // Migrate from old single-table layout if needed
-    this.migrateFromLegacy();
+      // Migrate from old single-table layout if needed
+      this.migrateFromLegacy();
+    }
 
     // Rebuild tableMap from buffer_tables metadata
     this.tableMap = new Map();
@@ -379,8 +403,12 @@ export class SQLiteBuffer {
         row.is_object === 1
       );
 
-      // Tables created before an index was introduced get it here.
-      this.ensureIndexes(row.table_name);
+      // Tables created before an index was introduced get it here. A read-only
+      // connection cannot, and does not need to: the writing connection has
+      // already done it, or will when it opens.
+      if (!this.readOnly) {
+        this.ensureIndexes(row.table_name);
+      }
 
       this.tableMap.set(row.path, {
         tableName: row.table_name,

@@ -733,6 +733,17 @@ export interface PluginState {
   // SQLite buffer and export service (new)
   sqliteBuffer?: SQLiteBufferInterface;
   sqliteBufferError?: string;
+  /**
+   * The buffer worker, once it has reported ready. Queries that stage buffer
+   * rows read through it, so the synchronous node:sqlite call for a history
+   * read is not on the server's event loop. Undefined until it is ready and
+   * again if it fails, in which case staging reads in-process as before.
+   *
+   * Read through an accessor rather than copied, because it appears after the
+   * providers are constructed; each request snapshots it once, the way it
+   * snapshots the buffer.
+   */
+  bufferWorker?: import('./utils/buffer-worker-client').BufferWorkerClient;
   exportService?: ParquetExportServiceInterface;
   // Auto-discovery service
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
