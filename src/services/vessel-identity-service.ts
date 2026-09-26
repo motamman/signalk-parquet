@@ -10,7 +10,9 @@
  *   - a write that only completes the last row (more fields, nothing
  *     different) extends that row in place while it is still in the buffer,
  *     so a vessel whose identity arrives one path per message, as an
- *     upstream Signal K server replays its cache, still ends up as one row;
+ *     upstream Signal K server replays its cache, still ends up as one row.
+ *     The buffer decides that, in one operation, from what is stored;
+ *     this service holds no row ids;
  *   - what was last written per vessel is read back from the buffer at
  *     start, so a restart does not rewrite known vessels however the
  *     previous run ended. A small JSON file in the data directory keeps the
@@ -59,8 +61,6 @@ export class VesselIdentityService {
   private readonly tracked = new Map<string, TrackedVessel>();
   /** Canonical JSON of the components last written per context (persisted). */
   private lastWritten = new Map<string, string>();
-  /** Buffer row id of the last identity row per context, while known. */
-  private readonly lastRowIds = new Map<string, number>();
   private subscriptions: StreamSubscription[] = [];
   private persistTimer?: NodeJS.Timeout;
   private stateDirty = false;
@@ -284,18 +284,13 @@ export class VesselIdentityService {
     for (const [key, v] of Object.entries(value)) {
       if (v !== undefined) record[`value_${key}`] = v;
     }
-    let rowId: number;
     try {
-      const previous = this.lastRowIds.get(context);
-      if (
-        previous !== undefined &&
-        completes(this.lastWrittenIdentity(context), vessel.known) &&
-        buffer.updateUnexportedRow(IDENTITY_PATH, previous, record)
-      ) {
-        rowId = previous;
-      } else {
-        rowId = buffer.insert(record);
-      }
+      // One buffer operation decides between extending the vessel's latest
+      // unexported row and inserting a new one, because that decision depends
+      // on what is stored. The service does not track row ids: it cannot know
+      // whether the row it last wrote is still there to extend, and asking
+      // then writing would be two calls with a gap in between.
+      buffer.insertOrExtendLatest(record);
     } catch (error) {
       this.app.error(
         `[Identity] Failed to record identity for ${context}: ${(error as Error).message}`
@@ -304,7 +299,6 @@ export class VesselIdentityService {
     }
     vessel.dirty = false;
     this.lastWritten.set(context, canonical(vessel.known));
-    this.lastRowIds.set(context, rowId);
     this.stateDirty = true;
   }
 
@@ -331,7 +325,6 @@ export class VesselIdentityService {
       return;
     }
     for (const row of rows) {
-      this.lastRowIds.set(row.context, row.id);
       const known = parseIdentity(row.value_json ?? undefined);
       if (!known) continue;
       const written = canonical(known);
@@ -436,19 +429,6 @@ function parseIdentity(json: string | undefined): IdentityComponents | null {
     (out as Record<string, unknown>)[field] = value;
   }
   return out;
-}
-
-/**
- * True when `next` carries everything `previous` did, unchanged: the new
- * identity only completes the old one, so the old row can be extended.
- */
-function completes(
-  previous: IdentityComponents,
-  next: IdentityComponents
-): boolean {
-  const keys = Object.keys(previous) as Array<keyof IdentityComponents>;
-  if (keys.length === 0) return false;
-  return keys.every(key => previous[key] === next[key]);
 }
 
 /** Walk a dotted path through nested plain objects. */

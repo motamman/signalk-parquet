@@ -53,7 +53,7 @@ function rows(buffer: SQLiteBuffer, context: string) {
     context,
     '2024-01-01T00:00:00.000Z',
     '2030-01-01T00:00:00.000Z',
-    0,
+    null,
     100
   );
 }

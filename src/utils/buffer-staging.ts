@@ -11,10 +11,13 @@
  */
 
 import { DuckDBConnection } from '@duckdb/node-api';
-import { pathToTableName } from './sqlite-buffer';
+import { federationCursor, pathToTableName } from './sqlite-buffer';
+import { yieldToEventLoop } from './hive-walk';
+import { FederationCursor } from '../types';
 
 /** The minimal slice of SQLiteBuffer that staging needs. */
 export interface BufferStagingSource {
+  isOpen(): boolean;
   getTableSchema(
     signalkPath: string
   ): Array<{ name: string; type: string }> | undefined;
@@ -23,13 +26,20 @@ export interface BufferStagingSource {
     context: string,
     fromIso: string,
     toIso: string,
-    afterId: number,
+    after: FederationCursor | null,
     limit: number
   ): Array<Record<string, unknown>>;
 }
 
-/** Rows copied per read/append cycle — bounds JS heap regardless of window size. */
-const STAGING_BATCH_SIZE = 5000;
+/**
+ * Rows copied per read/append cycle. Bounds JS heap regardless of window size
+ * and, because the loop yields between pages, how long any one query holds the
+ * server's main thread. A row costs about 15 µs on a Raspberry Pi 5 (8 µs to
+ * read, 7 µs to append), so a page is roughly a 15 ms block; measured on brain
+ * 2026-09-26, 5,000-row pages held the loop for up to 100 ms. The keyset
+ * pagination below is what lets the page shrink without the read costing more.
+ */
+const STAGING_BATCH_SIZE = 1000;
 
 /** Hard cap on staged rows per query, far above any real buffer window. */
 const MAX_STAGED_ROWS = 1_000_000;
@@ -82,7 +92,7 @@ export async function stageBufferTable(
 
   const appender = await connection.createAppender(tableName, 'main', 'temp');
   let totalRows = 0;
-  let afterId = 0;
+  let after: FederationCursor | null = null;
   try {
     for (;;) {
       const rows = buffer.getRowsForFederation(
@@ -90,7 +100,7 @@ export async function stageBufferTable(
         context,
         fromIso,
         toIso,
-        afterId,
+        after,
         STAGING_BATCH_SIZE
       );
       if (rows.length === 0) break;
@@ -125,7 +135,7 @@ export async function stageBufferTable(
       }
 
       totalRows += rows.length;
-      afterId = Number(rows[rows.length - 1].id);
+      after = federationCursor(rows[rows.length - 1]);
 
       if (totalRows >= MAX_STAGED_ROWS) {
         // Only fail on genuine overflow — landing exactly on the cap is fine
@@ -134,13 +144,14 @@ export async function stageBufferTable(
           context,
           fromIso,
           toIso,
-          afterId,
+          after,
           1
         );
         if (overflow.length === 0) break;
         warn?.(
           `[buffer-staging] ${signalkPath}: staged row cap reached (${MAX_STAGED_ROWS}); ` +
-            `buffer data after id ${afterId} would be omitted from this query`
+            `buffer data after ${after.signalkTimestamp} (id ${after.id}) ` +
+            `would be omitted from this query`
         );
         throw new Error(
           `[buffer-staging] ${signalkPath}: buffer rows exceed the staged row cap ` +
@@ -148,6 +159,24 @@ export async function stageBufferTable(
         );
       }
       if (rows.length < STAGING_BATCH_SIZE) break;
+
+      // Give the event loop a turn between pages. The read above and the
+      // append below are both synchronous, so without this one query holds
+      // the server's main thread for its whole scan: measured on a Raspberry
+      // Pi 5 (2026-09-26), 30,577 rows blocked it for 440 ms. The page size
+      // sets how long a block is; this is what keeps it to one page.
+      await yieldToEventLoop();
+
+      // A close between pages (plugin stop, reconfigure) makes
+      // getRowsForFederation return an empty array, which the loop cannot
+      // tell from "no more rows": the query would answer with a silently
+      // truncated buffer side. Refuse, as the row cap above does.
+      if (!buffer.isOpen()) {
+        throw new Error(
+          `[buffer-staging] ${signalkPath}: buffer closed mid-scan after ` +
+            `${totalRows} row(s); refusing to answer with incomplete data`
+        );
+      }
     }
     appender.flushSync();
   } finally {

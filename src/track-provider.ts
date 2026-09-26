@@ -43,6 +43,8 @@ import {
   validateSignalKPath,
 } from './utils/signalk-validation';
 import { stageBufferTable, BufferStagingSource } from './utils/buffer-staging';
+import { federationCursor } from './utils/sqlite-buffer';
+import { FederationCursor } from './types';
 import {
   buildBufferObjectSubquery,
   buildBufferScalarSubquery,
@@ -616,7 +618,7 @@ export class TrackProvider implements TrackApi {
   ): boolean {
     const PAGE = 5000;
     const MAX_ROWS = 200_000;
-    let afterId = 0;
+    let after: FederationCursor | null = null;
     let scanned = 0;
     for (;;) {
       const rows = buffer.getRowsForFederation(
@@ -624,7 +626,7 @@ export class TrackProvider implements TrackApi {
         context,
         window.fromIso,
         window.toIso,
-        afterId,
+        after,
         PAGE
       );
       if (rows.length === 0) return false;
@@ -641,7 +643,7 @@ export class TrackProvider implements TrackApi {
         }
       }
       scanned += rows.length;
-      afterId = Number(rows[rows.length - 1].id);
+      after = federationCursor(rows[rows.length - 1]);
       if (rows.length < PAGE || scanned >= MAX_ROWS) return false;
     }
   }

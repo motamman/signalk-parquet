@@ -49,16 +49,28 @@ function record(
 
 /** Read the stamp on every row of a path, in insert order. */
 function stamps(buffer: SQLiteBuffer, signalkPath: string): number[] {
-  const db = (buffer as unknown as { db: { prepare(sql: string): { all(): unknown[] } } }).db;
+  const db = (
+    buffer as unknown as { db: { prepare(sql: string): { all(): unknown[] } } }
+  ).db;
   const table = `buffer_${signalkPath.replace(/\./g, '_')}`;
-  return (db.prepare(`SELECT exported FROM ${table} ORDER BY id`).all() as Array<{
-    exported: number;
-  }>).map(r => r.exported);
+  return (
+    db.prepare(`SELECT exported FROM ${table} ORDER BY id`).all() as Array<{
+      exported: number;
+    }>
+  ).map(r => r.exported);
 }
 
 /** Force every row of a path to look older than the retention window. */
-function ageRows(buffer: SQLiteBuffer, signalkPath: string, hours: number): void {
-  const db = (buffer as unknown as { db: { prepare(sql: string): { run(...a: unknown[]): unknown } } }).db;
+function ageRows(
+  buffer: SQLiteBuffer,
+  signalkPath: string,
+  hours: number
+): void {
+  const db = (
+    buffer as unknown as {
+      db: { prepare(sql: string): { run(...a: unknown[]): unknown } };
+    }
+  ).db;
   const table = `buffer_${signalkPath.replace(/\./g, '_')}`;
   db.prepare(
     `UPDATE ${table} SET created_at = datetime('now', '-' || ? || ' hours')`
@@ -86,25 +98,31 @@ describe('buffer retention modes', function () {
 
   it('stamps a row from the mode in force at insert', () => {
     buffer.insert(record(TRACKED, '2024-06-01T10:00:00.000Z', 5));
-    buffer.insert(record(SHORT, '2024-06-01T10:00:00.000Z', 1, EXPORTED_BUFFER_ONLY));
+    buffer.insert(
+      record(SHORT, '2024-06-01T10:00:00.000Z', 1, EXPORTED_BUFFER_ONLY)
+    );
     expect(stamps(buffer, TRACKED)).to.deep.equal([EXPORTED_PENDING]);
     expect(stamps(buffer, SHORT)).to.deep.equal([EXPORTED_BUFFER_ONLY]);
   });
 
   it('shows buffer-only rows to queries, because they exist nowhere else', () => {
-    buffer.insert(record(SHORT, '2024-06-01T10:00:00.000Z', 1, EXPORTED_BUFFER_ONLY));
+    buffer.insert(
+      record(SHORT, '2024-06-01T10:00:00.000Z', 1, EXPORTED_BUFFER_ONLY)
+    );
     const rows = buffer.getRowsForFederation(
       SHORT,
       SELF,
       '2024-06-01T00:00:00.000Z',
       '2024-06-02T00:00:00.000Z',
-      0,
+      null,
       100
     );
     expect(rows).to.have.lengthOf(1);
 
     // The playback reads see them too.
-    expect(buffer.hasRowsSince('2024-06-01T00:00:00.000Z', null)).to.equal(true);
+    expect(buffer.hasRowsSince('2024-06-01T00:00:00.000Z', null)).to.equal(
+      true
+    );
     expect(buffer.getNextRowTime('2024-06-01T00:00:00.000Z', null)).to.equal(
       '2024-06-01T10:00:00.000Z'
     );
@@ -120,7 +138,9 @@ describe('buffer retention modes', function () {
 
   it('never offers a buffer-only row for export', () => {
     buffer.insert(record(TRACKED, '2024-06-01T10:00:00.000Z', 5));
-    buffer.insert(record(SHORT, '2024-06-01T10:00:00.000Z', 1, EXPORTED_BUFFER_ONLY));
+    buffer.insert(
+      record(SHORT, '2024-06-01T10:00:00.000Z', 1, EXPORTED_BUFFER_ONLY)
+    );
     const forExport = buffer
       .getPathsForDate(new Date('2024-06-01T00:00:00.000Z'))
       .map(p => p.path);
@@ -131,8 +151,12 @@ describe('buffer retention modes', function () {
 
   it('counts the three states apart in the stats', () => {
     buffer.insert(record(TRACKED, '2024-06-01T10:00:00.000Z', 5));
-    buffer.insert(record(SHORT, '2024-06-01T10:00:00.000Z', 1, EXPORTED_BUFFER_ONLY));
-    buffer.insert(record(SHORT, '2024-06-01T10:00:01.000Z', 2, EXPORTED_BUFFER_ONLY));
+    buffer.insert(
+      record(SHORT, '2024-06-01T10:00:00.000Z', 1, EXPORTED_BUFFER_ONLY)
+    );
+    buffer.insert(
+      record(SHORT, '2024-06-01T10:00:01.000Z', 2, EXPORTED_BUFFER_ONLY)
+    );
     const s = buffer.getStats();
     expect(s.totalRecords).to.equal(3);
     expect(s.pendingRecords).to.equal(1);
@@ -142,7 +166,9 @@ describe('buffer retention modes', function () {
 
   describe('retention', () => {
     it('ages out buffer-only rows without them ever being exported', () => {
-      buffer.insert(record(SHORT, '2024-06-01T10:00:00.000Z', 1, EXPORTED_BUFFER_ONLY));
+      buffer.insert(
+        record(SHORT, '2024-06-01T10:00:00.000Z', 1, EXPORTED_BUFFER_ONLY)
+      );
       ageRows(buffer, SHORT, 72);
       expect(buffer.cleanup()).to.equal(1);
       expect(stamps(buffer, SHORT)).to.have.lengthOf(0);
@@ -170,7 +196,9 @@ describe('buffer retention modes', function () {
     });
 
     it('leaves a settled row alone until it is past the window', () => {
-      buffer.insert(record(SHORT, '2024-06-01T10:00:00.000Z', 1, EXPORTED_BUFFER_ONLY));
+      buffer.insert(
+        record(SHORT, '2024-06-01T10:00:00.000Z', 1, EXPORTED_BUFFER_ONLY)
+      );
       ageRows(buffer, SHORT, 24);
       expect(buffer.cleanup()).to.equal(0);
     });
@@ -179,7 +207,9 @@ describe('buffer retention modes', function () {
   it('runs retention even on a day with nothing to export', async () => {
     // A config made mostly of short-term paths produces exactly this: nothing
     // to export, and the export is the only caller of cleanup.
-    buffer.insert(record(SHORT, '2024-06-01T10:00:00.000Z', 1, EXPORTED_BUFFER_ONLY));
+    buffer.insert(
+      record(SHORT, '2024-06-01T10:00:00.000Z', 1, EXPORTED_BUFFER_ONLY)
+    );
     ageRows(buffer, SHORT, 72);
 
     const exportService = new ParquetExportService(
@@ -205,7 +235,9 @@ describe('buffer retention modes', function () {
     // Morning as a tracked path, afternoon as short-term: each row keeps the
     // stamp it was written with, and nothing reaches back.
     buffer.insert(record(TRACKED, '2024-06-01T10:00:00.000Z', 5));
-    buffer.insert(record(TRACKED, '2024-06-01T14:00:00.000Z', 6, EXPORTED_BUFFER_ONLY));
+    buffer.insert(
+      record(TRACKED, '2024-06-01T14:00:00.000Z', 6, EXPORTED_BUFFER_ONLY)
+    );
     expect(stamps(buffer, TRACKED)).to.deep.equal([
       EXPORTED_PENDING,
       EXPORTED_BUFFER_ONLY,
@@ -218,9 +250,17 @@ describe('buffer retention modes', function () {
 
   it('indexes retention and the playback probe rather than scanning', () => {
     buffer.insert(record(TRACKED, '2024-06-01T10:00:00.000Z', 5));
-    const db = (buffer as unknown as { db: { prepare(sql: string): { all(): unknown[] } } }).db;
+    const db = (
+      buffer as unknown as {
+        db: { prepare(sql: string): { all(): unknown[] } };
+      }
+    ).db;
     const plan = (sql: string) =>
-      (db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all() as Array<{ detail: string }>)
+      (
+        db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all() as Array<{
+          detail: string;
+        }>
+      )
         .map(r => r.detail)
         .join(' ');
 

@@ -8,7 +8,7 @@
 
 import * as path from 'path';
 import * as fs from 'fs-extra';
-import { DataRecord } from '../types';
+import { DataRecord, FederationCursor } from '../types';
 
 // Lazy-loaded: node:sqlite requires Node 22.5+
 let DatabaseSync: typeof import('node:sqlite').DatabaseSync;
@@ -96,6 +96,47 @@ interface TableInfo {
  */
 export function pathToTableName(signalkPath: string): string {
   return `buffer_${signalkPath.replace(/\./g, '_').replace(/[^a-zA-Z0-9_]/g, '_')}`;
+}
+
+/**
+ * True when `next` carries every key `stored` had, unchanged — so the stored
+ * row is completed rather than changed and can be extended in place.
+ *
+ * `stored` is the row's `value_json` text, `next` the new record's object.
+ * Unparseable or empty stored JSON returns false: a row whose content cannot
+ * be read is never overwritten, it is superseded by a new row.
+ */
+function completes(stored: string | null, next: unknown): boolean {
+  if (!stored) return false;
+  if (!next || typeof next !== 'object' || Array.isArray(next)) return false;
+  let previous: unknown;
+  try {
+    previous = JSON.parse(stored);
+  } catch {
+    return false;
+  }
+  if (!previous || typeof previous !== 'object' || Array.isArray(previous)) {
+    return false;
+  }
+  const keys = Object.keys(previous as Record<string, unknown>);
+  if (keys.length === 0) return false;
+  const after = next as Record<string, unknown>;
+  return keys.every(
+    key => after[key] === (previous as Record<string, unknown>)[key]
+  );
+}
+
+/**
+ * The keyset cursor for the last row of a federation page — what the next call
+ * to getRowsForFederation resumes after.
+ */
+export function federationCursor(
+  row: Record<string, unknown>
+): FederationCursor {
+  return {
+    signalkTimestamp: String(row.signalk_timestamp),
+    id: Number(row.id),
+  };
 }
 
 export class SQLiteBuffer {
@@ -410,10 +451,19 @@ export class SQLiteBuffer {
    * scan the table: the `(context, exported)` index cannot answer a predicate
    * on `exported` alone. `(exported, signalk_timestamp)` serves the playback
    * probes, which ask for the earliest unexported row per table.
+   * `(context, signalk_timestamp)` serves the federation read, which asks for
+   * one context's rows in a time window in timestamp order: it is the only
+   * index that answers the equality, the range and the ORDER BY together, so
+   * the read is a seek rather than a search of the window plus a temp B-tree
+   * sort. Measured locally (2026-09-26) on 32,000 rows in 32 pages, the plan
+   * loses `USE TEMP B-TREE FOR ORDER BY` and the read goes 73 ms to 62 ms.
    */
   private ensureIndexes(tableName: string): void {
     this.db.exec(
       `CREATE INDEX IF NOT EXISTS idx_${tableName}_ctx_exp ON ${tableName} (context, exported)`
+    );
+    this.db.exec(
+      `CREATE INDEX IF NOT EXISTS idx_${tableName}_ctx_sk ON ${tableName} (context, signalk_timestamp)`
     );
     this.db.exec(
       `CREATE INDEX IF NOT EXISTS idx_${tableName}_received ON ${tableName} (received_timestamp)`
@@ -548,42 +598,88 @@ export class SQLiteBuffer {
   }
 
   /**
-   * Overwrite a row that has not been exported yet with `record`. Returns
-   * false when the row is gone or already exported (an exported row is on
-   * disk in Parquet and immutable), in which case the caller inserts.
+   * Write an object row for one context, extending the context's latest
+   * unexported row in place when the new value only *completes* it — every
+   * key the stored row carries is present in the new value with the same
+   * value — and inserting a new row otherwise.
+   *
+   * This exists as one operation rather than as a read, a decision and a
+   * write because the decision depends on what is stored: split across calls,
+   * the caller has to carry a row id between them, and the row can be
+   * exported or deleted in the gap. Both happen inside one transaction here,
+   * so no caller ever holds a row id and the write cannot land against a row
+   * that has since changed state. It is also the shape that survives the
+   * buffer moving to a worker, where a caller-held row id would need a
+   * promise chain per context to stay correct.
+   *
+   * "Completes" is a property of object rows, not of any one path's meaning:
+   * a stored value of `{a:1}` is completed by `{a:1,b:2}` but not by `{a:9}`
+   * (changed) and not by `{b:2}` (dropped a). A stored row with no value at
+   * all is never extended, so the first real value starts a new row.
+   *
+   * Returns whether the latest row was extended. Scalar paths always insert.
    */
-  updateUnexportedRow(
-    signalkPath: string,
-    id: number,
-    record: DataRecord
-  ): boolean {
+  insertOrExtendLatest(record: DataRecord): { extended: boolean } {
     if (!this._open) {
       throw new Error('SQLite buffer is closed');
     }
-    const tableInfo = this.tableMap.get(signalkPath);
-    if (!tableInfo) return false;
+    const tableInfo = this.ensureTable(record.path, record);
+    if (!tableInfo.isObject) {
+      this.insert(record);
+      return { extended: false };
+    }
+
     const params = this.prepareRecord(record, tableInfo);
-    // A row's retention stamp is decided when it is written and never
-    // re-stamped, so the overwrite leaves `exported` as it was: re-stamping a
-    // BUFFER_ONLY row PENDING would export data recorded as buffer-only, and
-    // the reverse would drop an export the row already owes.
-    delete params.exported;
-    const sets = Object.keys(params).map(col => `${col} = @${col}`);
-    const result = this.db
-      .prepare(
-        `UPDATE ${tableInfo.tableName} SET ${sets.join(', ')} WHERE id = @id AND exported IN (${EXPORTED_PENDING}, ${EXPORTED_BUFFER_ONLY})`
-      )
-      .run({ ...params, id } as Record<string, SQLInputValue>);
-    return Number(result.changes) > 0;
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const latest = this.db
+        .prepare(
+          `SELECT id, value_json FROM ${tableInfo.tableName}
+             WHERE context = ?
+               AND exported IN (${EXPORTED_PENDING}, ${EXPORTED_BUFFER_ONLY})
+             ORDER BY id DESC LIMIT 1`
+        )
+        .get(record.context) as
+        { id: number; value_json: string | null } | undefined;
+
+      let extended = false;
+      if (latest && completes(latest.value_json, record.value_json)) {
+        // A row's retention stamp is decided when it is written and never
+        // re-stamped, so the overwrite leaves `exported` as it was:
+        // re-stamping a BUFFER_ONLY row PENDING would export data recorded as
+        // buffer-only, and the reverse would drop an export the row owes.
+        const update = { ...params };
+        delete update.exported;
+        const sets = Object.keys(update).map(col => `${col} = @${col}`);
+        const updated = this.db
+          .prepare(
+            `UPDATE ${tableInfo.tableName} SET ${sets.join(', ')} WHERE id = @id`
+          )
+          .run({ ...update, id: latest.id } as Record<string, SQLInputValue>);
+        extended = Number(updated.changes) > 0;
+      }
+      if (!extended) {
+        tableInfo.insertStmt.run(params as Record<string, SQLInputValue>);
+      }
+      this.db.exec('COMMIT');
+      return { extended };
+    } catch (e) {
+      try {
+        this.db.exec('ROLLBACK');
+      } catch {
+        // The transaction is already gone; the original error is what matters.
+      }
+      throw e;
+    }
   }
 
   /**
-   * The newest row per context for a path, exported or not: its id, its
-   * exported flag and its value_json. This is the record of what was
-   * actually written, whatever happened to the process that wrote it.
+   * The newest row per context for a path, exported or not: its exported flag
+   * and its value_json. This is the record of what was actually written,
+   * whatever happened to the process that wrote it. No row id is returned:
+   * nothing outside the buffer may hold one.
    */
   getLatestRowPerContext(signalkPath: string): Array<{
-    id: number;
     context: string;
     value_json: string | null;
     exported: number;
@@ -594,11 +690,10 @@ export class SQLiteBuffer {
     const valueJson = tableInfo.isObject ? 'value_json' : 'NULL AS value_json';
     return this.db
       .prepare(
-        `SELECT id, context, ${valueJson}, exported FROM ${tableInfo.tableName}
+        `SELECT context, ${valueJson}, exported FROM ${tableInfo.tableName}
          WHERE id IN (SELECT MAX(id) FROM ${tableInfo.tableName} GROUP BY context)`
       )
       .all() as Array<{
-      id: number;
       context: string;
       value_json: string | null;
       exported: number;
@@ -1221,22 +1316,49 @@ export class SQLiteBuffer {
   }
 
   /**
-   * Read a batch of unexported rows for federated history queries, keyset-paginated
-   * by id so callers can stream large windows without materializing them all.
-   * Rows are raw table rows (all columns), matching the table schema.
+   * Read a batch of unexported rows for federated history queries,
+   * keyset-paginated by `(signalk_timestamp, id)` so callers can stream large
+   * windows without materializing them all. Rows are raw table rows (all
+   * columns), matching the table schema, in timestamp order.
+   *
+   * Pass `null` for the first page and the last row of each page thereafter;
+   * see FederationCursor for why the timestamp and not the id carries the
+   * cursor. Callers that need a particular row order sort what they get: the
+   * order here exists to make the pages resumable.
    */
   getRowsForFederation(
     signalkPath: string,
     context: string,
     fromIso: string,
     toIso: string,
-    afterId: number,
+    after: FederationCursor | null,
     limit: number
   ): Array<Record<string, unknown>> {
     if (!this._open) return [];
 
     const tableInfo = this.tableMap.get(signalkPath);
     if (!tableInfo) return [];
+
+    // Resuming raises the window's lower bound to the cursor's timestamp,
+    // and a separate predicate drops the rows already read at exactly that
+    // timestamp. The obvious spelling — `ts > ? OR (ts = ? AND id > ?)` — is
+    // a disjunction across two columns, which SQLite cannot turn into an
+    // index range: the scan restarts at the window's beginning on every page
+    // and walks forward to the cursor, so the read costs grow with the square
+    // of the page count while the query plan looks identical either way.
+    // Measured locally (2026-09-26) on 31,778 rows: the disjunction read
+    // 83 ms in 32 pages and 160-201 ms in 128, this form 40 ms and 38 ms.
+    // Both return every row exactly once (distinct ids equalled row count).
+    const resume = after ? 'AND NOT (signalk_timestamp = ? AND id <= ?)' : '';
+    const params: SQLInputValue[] = [
+      context,
+      after ? after.signalkTimestamp : fromIso,
+      toIso,
+    ];
+    if (after) {
+      params.push(after.signalkTimestamp, after.id);
+    }
+    params.push(limit);
 
     return this.db
       .prepare(
@@ -1245,14 +1367,12 @@ export class SQLiteBuffer {
       WHERE context = ?
         AND signalk_timestamp >= ? AND signalk_timestamp < ?
         AND exported IN (${EXPORTED_PENDING}, ${EXPORTED_BUFFER_ONLY})
-        AND id > ?
-      ORDER BY id ASC
+        ${resume}
+      ORDER BY signalk_timestamp ASC, id ASC
       LIMIT ?
     `
       )
-      .all(context, fromIso, toIso, afterId, limit) as Array<
-      Record<string, unknown>
-    >;
+      .all(...params) as Array<Record<string, unknown>>;
   }
 
   /**
