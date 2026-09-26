@@ -117,6 +117,72 @@ describe('buffer insertOrExtendLatest', () => {
     expect(buffer.getStats().totalRecords).to.equal(2);
   });
 
+  it('inserts, rather than extending an older pending row, when the newest row is exported', () => {
+    const day1 = '2026-01-01T00:00:00.000Z';
+    const day2 = '2026-01-02T00:00:00.000Z';
+    buffer.insertOrExtendLatest(objectRecord(CONTEXT, { name: 'Ariel' }, day1));
+    buffer.insertOrExtendLatest(
+      objectRecord(CONTEXT, { name: 'Renamed' }, day2)
+    );
+    // Day 2 exported, day 1 still pending: the newest row is settled, the
+    // older one is not.
+    buffer.markDateExported(CONTEXT, OBJ, new Date(day2), 'batch-2');
+
+    // Completes the OLD pending row's value, not the newest row's. Extending
+    // the old row would rewrite an identity the exported row has superseded.
+    expect(
+      buffer.insertOrExtendLatest(
+        objectRecord(CONTEXT, { name: 'Ariel', mmsi: '244813000' }, day2)
+      )
+    ).to.deep.equal({ extended: false });
+
+    expect(buffer.getStats().totalRecords).to.equal(3);
+    const pending = stored();
+    expect(pending).to.have.lengthOf(2);
+    expect(pending[0].value_name).to.equal('Ariel');
+    expect(pending[0].value_mmsi).to.equal(null);
+    expect(pending[1].value_mmsi).to.equal('244813000');
+  });
+
+  it('extends when the new value arrives as a JSON string or only under `value`', () => {
+    buffer.insertOrExtendLatest(objectRecord(CONTEXT, { name: 'Ariel' }));
+
+    const asString = objectRecord(CONTEXT, { name: 'Ariel', mmsi: '1' });
+    asString.value_json = JSON.stringify({ name: 'Ariel', mmsi: '1' });
+    expect(buffer.insertOrExtendLatest(asString)).to.deep.equal({
+      extended: true,
+    });
+
+    const underValue = objectRecord(CONTEXT, {
+      name: 'Ariel',
+      mmsi: '1',
+      beam: 4,
+    });
+    underValue.value = { name: 'Ariel', mmsi: '1', beam: 4 };
+    delete underValue.value_json;
+    expect(buffer.insertOrExtendLatest(underValue)).to.deep.equal({
+      extended: true,
+    });
+
+    const rows = stored();
+    expect(rows).to.have.lengthOf(1);
+    expect(JSON.parse(String(rows[0].value_json))).to.deep.equal({
+      name: 'Ariel',
+      mmsi: '1',
+      beam: 4,
+    });
+  });
+
+  it('inserts when the new value is not readable as an object', () => {
+    buffer.insertOrExtendLatest(objectRecord(CONTEXT, { name: 'Ariel' }));
+    const bad = objectRecord(CONTEXT, { name: 'Ariel', mmsi: '1' });
+    bad.value_json = '{not json';
+    expect(buffer.insertOrExtendLatest(bad)).to.deep.equal({
+      extended: false,
+    });
+    expect(stored()).to.have.lengthOf(2);
+  });
+
   it('extends only within one context', () => {
     buffer.insertOrExtendLatest(objectRecord(CONTEXT, { name: 'Ariel' }));
     expect(

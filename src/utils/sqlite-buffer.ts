@@ -112,31 +112,41 @@ export function pathToTableName(signalkPath: string): string {
 }
 
 /**
+ * The plain object a `value_json` column text holds, or null when the text is
+ * missing, not JSON, or not an object. Both sides of `completes` go through
+ * this, so a value that cannot be read is never taken for one that can.
+ */
+function parseObjectJson(json: unknown): Record<string, unknown> | null {
+  if (typeof json !== 'string' || json.length === 0) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(json);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return null;
+  }
+  return parsed as Record<string, unknown>;
+}
+
+/**
  * True when `next` carries every key `stored` had, unchanged — so the stored
  * row is completed rather than changed and can be extended in place.
  *
- * `stored` is the row's `value_json` text, `next` the new record's object.
- * Unparseable or empty stored JSON returns false: a row whose content cannot
- * be read is never overwritten, it is superseded by a new row.
+ * Both are `value_json` texts: `stored` the row's, `next` the new record's as
+ * `prepareRecord` normalised it. Unparseable or empty JSON on either side
+ * returns false: a row whose content cannot be read is never overwritten, it
+ * is superseded by a new row, and a value that cannot be read completes
+ * nothing.
  */
 function completes(stored: string | null, next: unknown): boolean {
-  if (!stored) return false;
-  if (!next || typeof next !== 'object' || Array.isArray(next)) return false;
-  let previous: unknown;
-  try {
-    previous = JSON.parse(stored);
-  } catch {
-    return false;
-  }
-  if (!previous || typeof previous !== 'object' || Array.isArray(previous)) {
-    return false;
-  }
-  const keys = Object.keys(previous as Record<string, unknown>);
+  const previous = parseObjectJson(stored);
+  const after = parseObjectJson(next);
+  if (!previous || !after) return false;
+  const keys = Object.keys(previous);
   if (keys.length === 0) return false;
-  const after = next as Record<string, unknown>;
-  return keys.every(
-    key => after[key] === (previous as Record<string, unknown>)[key]
-  );
+  return keys.every(key => after[key] === previous[key]);
 }
 
 /**
@@ -381,7 +391,9 @@ export class SQLiteBuffer {
   }
 
   /**
-   * Load existing per-path tables from buffer_tables metadata and prepare INSERT statements.
+   * Load per-path tables from buffer_tables metadata and prepare INSERT
+   * statements. Paths already in the table map are left as they are, so this
+   * can run again later to pick up tables that appeared since.
    */
   private loadExistingTables(): void {
     const rows = this.db
@@ -389,6 +401,7 @@ export class SQLiteBuffer {
       .all() as Array<{ path: string; table_name: string; is_object: number }>;
 
     for (const row of rows) {
+      if (this.tableMap.has(row.path)) continue;
       const columns = new Set<string>();
       const tableInfo = this.db
         .prepare(`PRAGMA table_info(${row.table_name})`)
@@ -611,6 +624,22 @@ export class SQLiteBuffer {
   }
 
   /**
+   * Pick up a table the writing connection created after this one opened.
+   *
+   * The table map is read from `buffer_tables` once, at open. A writer adds
+   * to it as it creates tables, so its map is always complete; a read-only
+   * connection creates nothing and would otherwise never learn of a path
+   * first recorded after it opened, and answer "no table" for rows that are
+   * there. Reloads the metadata when `signalkPath` is unknown; a no-op for a
+   * known path, and for a writer, whose map cannot be behind.
+   */
+  loadTableIfMissing(signalkPath: string): void {
+    if (!this._open || !this.readOnly) return;
+    if (this.tableMap.has(signalkPath)) return;
+    this.loadExistingTables();
+  }
+
+  /**
    * Insert a single record into the buffer. Returns the new row's id.
    */
   insert(record: DataRecord): number {
@@ -626,10 +655,15 @@ export class SQLiteBuffer {
   }
 
   /**
-   * Write an object row for one context, extending the context's latest
-   * unexported row in place when the new value only *completes* it — every
-   * key the stored row carries is present in the new value with the same
-   * value — and inserting a new row otherwise.
+   * Write an object row for one context, extending the context's newest row
+   * in place when that row is still unexported and the new value only
+   * *completes* it — every key the stored row carries is present in the new
+   * value with the same value — and inserting a new row otherwise.
+   *
+   * It is the newest row that is examined, whatever its state: an older row
+   * that is still pending behind a newer exported one is never extended,
+   * because extending it would rewrite history that the exported row has
+   * already superseded.
    *
    * This exists as one operation rather than as a read, a decision and a
    * write because the decision depends on what is stored: split across calls,
@@ -662,16 +696,22 @@ export class SQLiteBuffer {
     try {
       const latest = this.db
         .prepare(
-          `SELECT id, value_json FROM ${tableInfo.tableName}
+          `SELECT id, value_json, exported FROM ${tableInfo.tableName}
              WHERE context = ?
-               AND exported IN (${EXPORTED_PENDING}, ${EXPORTED_BUFFER_ONLY})
              ORDER BY id DESC LIMIT 1`
         )
         .get(record.context) as
-        { id: number; value_json: string | null } | undefined;
+        { id: number; value_json: string | null; exported: number } | undefined;
 
+      const eligible =
+        latest !== undefined &&
+        (latest.exported === EXPORTED_PENDING ||
+          latest.exported === EXPORTED_BUFFER_ONLY);
       let extended = false;
-      if (latest && completes(latest.value_json, record.value_json)) {
+      // Compared on the normalised text, not on `record.value_json`: the
+      // record may carry its value as an object under `value`, or as a JSON
+      // string, and either lands in the column as this text.
+      if (eligible && completes(latest.value_json, params.value_json)) {
         // A row's retention stamp is decided when it is written and never
         // re-stamped, so the overwrite leaves `exported` as it was:
         // re-stamping a BUFFER_ONLY row PENDING would export data recorded as

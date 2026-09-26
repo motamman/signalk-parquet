@@ -173,6 +173,30 @@ describe('staging through the buffer worker', function () {
     }
   });
 
+  it('stages a path first recorded after the worker opened', async () => {
+    buffer.insert(makeScalarRecord(CONTEXT, SOG, 1, FROM));
+    const worker = await startClient();
+    // The worker's read-only connection loaded its table map with SOG only.
+    expect(await worker.getTableSchema(POSITION)).to.equal(null);
+
+    // The writer creates a new path's table while the worker is up.
+    for (let i = 0; i < 20; i++) {
+      buffer.insert(
+        makePositionRecord(
+          CONTEXT,
+          41.5 + i / 1000,
+          -71.3,
+          new Date(BASE + i * 1000).toISOString()
+        )
+      );
+    }
+
+    const inProcess = await stage(POSITION);
+    const viaWorker = await stage(POSITION, worker);
+    expect(viaWorker).to.have.lengthOf(20);
+    expect(viaWorker).to.deep.equal(inProcess);
+  });
+
   it('fails the staging rather than answering short when the worker dies', async () => {
     buffer.insertBatch(
       Array.from({ length: 5000 }, (_, i) =>

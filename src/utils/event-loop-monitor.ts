@@ -15,7 +15,8 @@
  * that is the right scope, because "the server stalled" is the complaint.
  *
  * Read it around an operation to attribute blocking to that operation: reset,
- * do the thing, snapshot.
+ * do the thing, snapshot. Both ends wait for the sampling timer, so the
+ * sequence holds even when the thing is synchronous.
  */
 
 import { monitorEventLoopDelay, IntervalHistogram } from 'perf_hooks';
@@ -76,21 +77,35 @@ export function eventLoopMonitorRunning(): boolean {
 /**
  * The delay seen since the last reset, or null when not recording.
  *
+ * Resolves only after the histogram has taken one more sample, because a block
+ * is recorded when the sampling timer next fires, not when the block ends: a
+ * caller that resets, does synchronous work and reads in the same loop turn
+ * would otherwise get a snapshot the work is not in yet. Waiting for the
+ * sample is what makes the reset-work-read sequence mean what it says.
+ *
  * libuv reports nanoseconds; these are milliseconds, which is the unit every
  * other latency in this plugin is quoted in.
  */
-export function eventLoopDelay(): EventLoopDelay | null {
-  if (!histogram) return null;
+export async function eventLoopDelay(): Promise<EventLoopDelay | null> {
+  const h = histogram;
+  if (!h) return null;
+  // The timer fires every RESOLUTION_MS while the histogram is enabled, so
+  // this ends on the next sample; it also ends if the monitor is stopped.
+  const before = h.count;
+  while (histogram === h && h.count === before) {
+    await new Promise(resolve => setTimeout(resolve, RESOLUTION_MS));
+  }
+  if (histogram !== h) return null;
   const ms = (ns: number) => (Number.isFinite(ns) ? ns / 1e6 : 0);
   return {
     resolutionMs: RESOLUTION_MS,
     sinceResetSec: (Date.now() - resetAt) / 1000,
-    min: ms(histogram.min),
-    mean: ms(histogram.mean),
-    p50: ms(histogram.percentile(50)),
-    p90: ms(histogram.percentile(90)),
-    p99: ms(histogram.percentile(99)),
-    max: ms(histogram.max),
+    min: ms(h.min),
+    mean: ms(h.mean),
+    p50: ms(h.percentile(50)),
+    p90: ms(h.percentile(90)),
+    p99: ms(h.percentile(99)),
+    max: ms(h.max),
   };
 }
 

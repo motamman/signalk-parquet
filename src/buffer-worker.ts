@@ -132,6 +132,9 @@ function handle(msg: BufferWorkerRequest): void {
 
     case 'schema':
       try {
+        // This connection is read-only, so a path recorded for the first
+        // time since it opened is not in its table map until asked for.
+        buffer.loadTableIfMissing(msg.signalkPath);
         send({
           type: 'reply',
           id: msg.id,
@@ -147,6 +150,7 @@ function handle(msg: BufferWorkerRequest): void {
       return;
 
     case 'openScan': {
+      buffer.loadTableIfMissing(msg.signalkPath);
       const schema = buffer.getTableSchema(msg.signalkPath);
       if (!schema || schema.length === 0) {
         // No table for this path: an empty scan, not an error. The consumer

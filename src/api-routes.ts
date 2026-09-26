@@ -653,16 +653,21 @@ export function registerApiRoutes(
    * by libuv rather than inferred from request timings, and it covers the whole
    * process because "the server stalled" is about the process.
    *
-   * `?reset=true` forgets what came before, so a caller can bracket one
-   * operation: reset, do the thing, read.
+   * `POST /api/event-loop/reset` forgets what came before, so a caller can
+   * bracket one operation: reset, do the thing, read.
    *
-   * Declared read-only. A plugin's routes are admin-only unless the plugin says
-   * otherwise — the server offers `router.access(level)` for that — and these
-   * are timing numbers about the server's own health, with nothing in them to
-   * protect. Requiring admin would mean anyone measuring whether this plugin
-   * blocks their server needs full control of it, which is how this endpoint
-   * came to be unusable in the first place. Servers without `access` keep
-   * today's behaviour and gate it at admin.
+   * The snapshot is declared read-only. A plugin's routes are admin-only unless
+   * the plugin says otherwise — the server offers `router.access(level)` for
+   * that — and these are timing numbers about the server's own health, with
+   * nothing in them to protect. Requiring admin would mean anyone measuring
+   * whether this plugin blocks their server needs full control of it, which is
+   * how this endpoint came to be unusable in the first place. Servers without
+   * `access` keep today's behaviour and gate it at admin.
+   *
+   * The reset is not: the histogram is one shared thing for the whole process,
+   * and clearing it discards what every other reader was measuring, so it
+   * stays on the default admin gate on every server. The read-only route
+   * refuses `?reset=true` rather than quietly answering without resetting.
    */
   readonlyGet(router, '/api/event-loop', async (req, res) => {
     if (!eventLoopMonitorRunning()) {
@@ -671,12 +676,30 @@ export function registerApiRoutes(
         error: 'event loop monitor is not running',
       });
     }
-    if (req.query.reset === 'true') {
-      // Awaited: a reset is only valid once a sampling interval has passed.
-      await resetEventLoopDelay();
-      return res.json({ success: true, reset: true, delay: eventLoopDelay() });
+    if (req.query.reset !== undefined) {
+      return res.status(400).json({
+        success: false,
+        error:
+          'reset is not available on this route; POST /api/event-loop/reset (admin)',
+      });
     }
-    return res.json({ success: true, delay: eventLoopDelay() });
+    return res.json({ success: true, delay: await eventLoopDelay() });
+  });
+
+  router.post('/api/event-loop/reset', async (_req, res) => {
+    if (!eventLoopMonitorRunning()) {
+      return res.json({
+        success: false,
+        error: 'event loop monitor is not running',
+      });
+    }
+    // Awaited: a reset is only valid once a sampling interval has passed.
+    await resetEventLoopDelay();
+    return res.json({
+      success: true,
+      reset: true,
+      delay: await eventLoopDelay(),
+    });
   });
 
   // Test cloud connection (S3 or R2)

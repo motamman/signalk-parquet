@@ -182,6 +182,16 @@ export class BufferWorkerClient {
     }
   }
 
+  /**
+   * Whether the worker is up and can take a request: started, and not gone.
+   * A caller choosing between this and an in-process read asks this first,
+   * so a worker that has died sends reads back in-process rather than
+   * failing every one of them.
+   */
+  isAlive(): boolean {
+    return this.worker !== undefined && this.gone === undefined;
+  }
+
   /** Close the database in the worker and stop the thread. */
   async close(): Promise<void> {
     if (!this.worker || this.gone) return;

@@ -30,9 +30,9 @@ describe('event loop monitor', () => {
     stopEventLoopMonitor();
   });
 
-  it('reports nothing until started', () => {
+  it('reports nothing until started', async () => {
     expect(eventLoopMonitorRunning()).to.equal(false);
-    expect(eventLoopDelay()).to.equal(null);
+    expect(await eventLoopDelay()).to.equal(null);
   });
 
   it('sees a synchronous block of a known length', async () => {
@@ -44,7 +44,7 @@ describe('event loop monitor', () => {
     block(150);
     await breathe();
 
-    const delay = eventLoopDelay();
+    const delay = await eventLoopDelay();
     expect(delay).to.not.equal(null);
     // The histogram's timer cannot fire during the block, so the delay it
     // records is at least the block minus one sampling interval.
@@ -53,16 +53,28 @@ describe('event loop monitor', () => {
     expect(delay!.sinceResetSec).to.be.greaterThan(0);
   });
 
+  it('includes a block done in the same loop turn as the read', async () => {
+    startEventLoopMonitor();
+    await breathe();
+    await resetEventLoopDelay();
+
+    // No breathe between the block and the read: the block is recorded when
+    // the sampling timer next fires, and the read must wait for that.
+    block(150);
+    const delay = await eventLoopDelay();
+    expect(delay!.max, `max was ${delay!.max}ms`).to.be.greaterThan(100);
+  });
+
   it('forgets a block after a reset', async () => {
     startEventLoopMonitor();
     await breathe();
     block(150);
     await breathe();
-    expect(eventLoopDelay()!.max).to.be.greaterThan(100);
+    expect((await eventLoopDelay())!.max).to.be.greaterThan(100);
 
     await resetEventLoopDelay();
     await breathe();
-    const after = eventLoopDelay();
+    const after = await eventLoopDelay();
     expect(after!.max, `max after reset was ${after!.max}ms`).to.be.lessThan(
       100
     );
@@ -76,7 +88,7 @@ describe('event loop monitor', () => {
     await breathe();
 
     startEventLoopMonitor(); // second call: must not discard what was recorded
-    expect(eventLoopDelay()!.max).to.be.greaterThan(100);
+    expect((await eventLoopDelay())!.max).to.be.greaterThan(100);
   });
 
   it('reports nothing again after stopping', async () => {
@@ -84,6 +96,13 @@ describe('event loop monitor', () => {
     await breathe();
     stopEventLoopMonitor();
     expect(eventLoopMonitorRunning()).to.equal(false);
-    expect(eventLoopDelay()).to.equal(null);
+    expect(await eventLoopDelay()).to.equal(null);
+  });
+
+  it('answers null rather than hanging when stopped mid-read', async () => {
+    startEventLoopMonitor();
+    const reading = eventLoopDelay();
+    stopEventLoopMonitor();
+    expect(await reading).to.equal(null);
   });
 });
