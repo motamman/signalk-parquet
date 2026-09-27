@@ -402,6 +402,16 @@ export class ParquetExportService {
               batchId
             );
 
+            // Drop the History API's cached path listing now, not after the
+            // loop. That listing is cached on the premise that the parquet
+            // tree only changes here, and this path has just stopped being
+            // listed from the buffer (its rows are exported) while a listing
+            // cached a moment ago predates its new file. Waiting until the
+            // loop ends would leave the path missing from both sources for
+            // the rest of the export, which for a full day across many paths
+            // is not a brief window.
+            clearPathCache();
+
             this.app.debug(
               `[DailyExport] Exported ${count} records for ${context}:${signalkPath}`
             );
@@ -411,16 +421,6 @@ export class ParquetExportService {
           this.app.error(errorMsg);
           errors.push(errorMsg);
         }
-      }
-
-      // The History API caches its file-derived path listing on the premise
-      // that the parquet tree only changes here. Each path exported above now
-      // has a file its cached listing predates, and its buffer rows are
-      // marked exported, so the per-request buffer probe no longer lists it
-      // either: until the entry expired, the path would vanish from the
-      // listing. Drop the cache so the next request rebuilds from the files.
-      if (filesCreated.length > 0) {
-        clearPathCache();
       }
 
       this.runCleanup();

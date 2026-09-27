@@ -227,6 +227,72 @@ describe('History API v1 paths for a time range', function () {
     expect(await pathsFor(...window)).to.deep.equal([WIND]);
   });
 
+  it('does not drop an exported path while the rest of the export runs', async () => {
+    // The export loops over paths: each writes its file, then has its buffer
+    // rows marked exported. From that moment the buffer probe stops listing
+    // the path, so a listing cached before its file existed shows it from
+    // neither source — and that lasts until the whole export finishes, which
+    // across many paths is not brief. Observed from inside the export by
+    // hooking markDateExported and making the request there.
+    const window = ['2026-05-01T00:00:00Z', '2026-05-02T00:00:00Z'] as const;
+    const A = 'environment.outside.pressure';
+    const B = 'environment.outside.humidity';
+    buffer.insert(
+      makeScalarRecord(STORED_CONTEXT, A, 101300, '2026-05-01T10:00:00.000Z')
+    );
+    buffer.insert(
+      makeScalarRecord(STORED_CONTEXT, B, 0.6, '2026-05-01T10:30:00.000Z')
+    );
+    // Cache the listing while both paths are buffer-only.
+    expect(await pathsFor(...window)).to.deep.equal([B, A]);
+
+    // Proxy the buffer so each markDateExported can be observed mid-export.
+    const seenDuringExport: string[][] = [];
+    let pending: Promise<void> = Promise.resolve();
+    const hooked = new Proxy(buffer, {
+      get(target, prop, receiver) {
+        if (prop !== 'markDateExported') {
+          return Reflect.get(target, prop, receiver);
+        }
+        return (...args: Parameters<SQLiteBuffer['markDateExported']>) => {
+          const out = target.markDateExported(...args);
+          // The export is synchronous here on out; queue the observation.
+          pending = pending.then(async () => {
+            seenDuringExport.push(await pathsFor(...window));
+          });
+          return out;
+        };
+      },
+    }) as SQLiteBuffer;
+
+    const writer = new ParquetWriter({ format: 'parquet', app: host.app });
+    const exportService = new ParquetExportService(
+      hooked,
+      writer,
+      {
+        outputDirectory: host.dataDir,
+        filenamePrefix: 'signalk_data',
+        useHivePartitioning: true,
+        dailyExportHour: 4,
+      },
+      host.app
+    );
+    const result = await exportService.exportDayToParquet(
+      new Date('2026-05-01T00:00:00.000Z')
+    );
+    expect(result.filesCreated).to.have.lengthOf(2);
+    await pending;
+
+    // Every observation taken during the export must still list both paths:
+    // the one already exported (now only in files) and the one still pending
+    // (still only in the buffer).
+    expect(seenDuringExport).to.have.lengthOf(2);
+    for (const listed of seenDuringExport) {
+      expect(listed, 'a path vanished mid-export').to.include.members([A, B]);
+    }
+    expect(await pathsFor(...window)).to.deep.equal([B, A]);
+  });
+
   it('lists a buffer-only path for as long as its rows are in the buffer', async () => {
     const record = makeScalarRecord(
       STORED_CONTEXT,
