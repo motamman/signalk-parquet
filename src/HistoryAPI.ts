@@ -18,7 +18,8 @@ import path from 'path';
 import {
   getAvailablePathsArray,
   getAvailablePathsForTimeRange,
-  withBufferPathsInWindow,
+  bufferPathsInWindow,
+  mergePathSources,
 } from './utils/path-discovery';
 import {
   currentPathCacheEpoch,
@@ -196,6 +197,16 @@ export function registerHistoryApiRoute(
         // a day at export, so caching it costs nothing; the buffer gains a path
         // the moment one is recorded, so folding it in before the cache would
         // hide a new path for the life of the entry.
+        // Read the buffer BEFORE the files. The export writes a path's file and
+        // then marks its rows exported, so a files-then-buffer reader can miss
+        // a path in both; this order cannot. See bufferPathsInWindow.
+        const fromBuffer = bufferPathsInWindow(
+          historyApi.getSqliteBuffer(),
+          context,
+          from,
+          to
+        );
+
         // Captured before the listing is computed: if an export invalidates the
         // cache while we are computing, the store below is dropped rather than
         // putting a pre-export listing back into the cache it just cleared.
@@ -212,13 +223,7 @@ export function registerHistoryApiRoute(
           setCachedPaths(dataDir, context, from, to, fromFiles, epoch);
         }
 
-        const paths = withBufferPathsInWindow(
-          fromFiles,
-          historyApi.getSqliteBuffer(),
-          context,
-          from,
-          to
-        );
+        const paths = mergePathSources(fromFiles, fromBuffer);
 
         res.json(paths);
       } else {
@@ -353,6 +358,16 @@ export function registerHistoryApiRoute(
         // a day at export, so caching it costs nothing; the buffer gains a path
         // the moment one is recorded, so folding it in before the cache would
         // hide a new path for the life of the entry.
+        // Read the buffer BEFORE the files. The export writes a path's file and
+        // then marks its rows exported, so a files-then-buffer reader can miss
+        // a path in both; this order cannot. See bufferPathsInWindow.
+        const fromBuffer = bufferPathsInWindow(
+          historyApi.getSqliteBuffer(),
+          context,
+          from,
+          to
+        );
+
         // Captured before the listing is computed: if an export invalidates the
         // cache while we are computing, the store below is dropped rather than
         // putting a pre-export listing back into the cache it just cleared.
@@ -369,13 +384,7 @@ export function registerHistoryApiRoute(
           setCachedPaths(dataDir, context, from, to, fromFiles, epoch);
         }
 
-        const paths = withBufferPathsInWindow(
-          fromFiles,
-          historyApi.getSqliteBuffer(),
-          context,
-          from,
-          to
-        );
+        const paths = mergePathSources(fromFiles, fromBuffer);
 
         res.json(paths);
       } else {

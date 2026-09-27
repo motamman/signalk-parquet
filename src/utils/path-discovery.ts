@@ -195,29 +195,49 @@ export interface BufferPathSource {
 }
 
 /**
- * `listed`, plus the buffer's paths with an unexported row for the context in
- * the window, sorted.
+ * The buffer's paths with an unexported row for the context in the window.
  *
- * Exported separately from `getAvailablePathsForTimeRange` because the callers
- * cache the file-derived listing: the parquet tree changes once a day, at
- * export, so caching it is free, while the buffer gains a path the moment one
- * is recorded. Folding the buffer in before the cache would hide a new path for
- * the life of the entry. Each probe is one index seek, so doing it per request
- * is cheap enough not to need caching.
+ * Read this **before** the file listing, and union afterwards. The daily export
+ * moves a path from the buffer to the files: it writes the file, then marks the
+ * path's rows exported. A reader that consults the files first and the buffer
+ * second can therefore miss it in both — the file did not exist when the files
+ * were read, and the rows were exported by the time the buffer was read — and
+ * the path vanishes from the answer. Reading the buffer first inverts that: a
+ * path caught mid-move is in the earlier buffer read, or its file exists by the
+ * later file read, or both. The result is a set union, so being in both costs
+ * nothing.
+ *
+ * This is also why the union is not folded into
+ * `getAvailablePathsForTimeRange`: its callers cache the file-derived listing,
+ * which is free because the parquet tree only changes at export, while the
+ * buffer gains a path the moment one is recorded. Each probe here is one index
+ * seek, so there is nothing to cache.
  */
-export function withBufferPathsInWindow(
-  listed: Path[],
+export function bufferPathsInWindow(
   buffer: BufferPathSource | undefined,
   context: Context,
   from: ZonedDateTime,
   to: ZonedDateTime
-): Path[] {
-  if (!buffer) return listed;
+): Set<string> {
+  if (!buffer || !buffer.isOpen()) return new Set();
   const fromIso = isoBound(from);
   const toIso = isoBound(to);
-  return unionBufferPaths(listed, buffer, signalkPath =>
-    buffer.hasRowsInWindow(signalkPath, context, fromIso, toIso)
-  ) as Path[];
+  const out = new Set<string>();
+  for (const signalkPath of buffer.getKnownPaths()) {
+    if (buffer.hasRowsInWindow(signalkPath, context, fromIso, toIso)) {
+      out.add(signalkPath);
+    }
+  }
+  return out;
+}
+
+/** The file listing and a buffer-path set from `bufferPathsInWindow`, merged. */
+export function mergePathSources(
+  fromFiles: Path[],
+  fromBuffer: Set<string>
+): Path[] {
+  if (fromBuffer.size === 0) return fromFiles;
+  return [...new Set<string>([...fromFiles, ...fromBuffer])].sort() as Path[];
 }
 
 /** `listed`, plus the buffer's paths for which `hasRows` says yes, sorted. */
@@ -248,6 +268,11 @@ export function getAvailablePathsArray(
   context?: string,
   buffer?: BufferPathSource
 ): string[] {
+  // Files first and the buffer second is safe here, unlike in the windowed
+  // listing: this function has no await, so an export cannot run between the
+  // two reads and move a path from one to the other. See bufferPathsInWindow
+  // for why the order matters where there is an await.
+  //
   // Path names only — skip the per-file count so this stays cheap even on a
   // store with millions of parquet files (this is the History API hot path).
   const pathInfos = getAvailablePaths(dataDir, app, context, false);

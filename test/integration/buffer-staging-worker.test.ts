@@ -208,13 +208,29 @@ describe('staging through the buffer worker', function () {
         )
       )
     );
-    const dying = await startClient();
+    const real = await startClient();
+
+    // Kill the worker after the first page is consumed, not on a timer: a
+    // timer races the scan, and on a slower machine the scan finishes first
+    // and the test passes for the wrong reason (seen on Windows CI,
+    // 2026-09-27). Wrapping the real client keeps the real worker dying
+    // mid-scan while making *when* deterministic.
+    const killedMidScan = {
+      getTableSchema: (signalkPath: string) => real.getTableSchema(signalkPath),
+      scan: (args: Parameters<BufferWorkerClient['scan']>[0]) =>
+        (async function* () {
+          let firstPage = true;
+          for await (const page of real.scan(args)) {
+            yield page;
+            if (firstPage) {
+              firstPage = false;
+              await real.close();
+            }
+          }
+        })(),
+    } as unknown as BufferWorkerClient;
 
     const connection = await DuckDBPool.getConnection();
-    // Kill the worker while the scan is in flight: five pages are needed, so a
-    // close on the next tick lands mid-scan.
-    setTimeout(() => void dying.close(), 5);
-
     let threw: Error | undefined;
     try {
       await stageBufferTable(
@@ -225,12 +241,13 @@ describe('staging through the buffer worker', function () {
         FROM,
         TO,
         undefined,
-        dying
+        killedMidScan
       );
     } catch (error) {
       threw = error as Error;
     }
-    client = undefined;
+    // `client` stays set so afterEach closes it: on Windows an open handle on
+    // buffer.db makes the temp directory unremovable (EBUSY on unlink).
     expect(
       threw,
       'a dead worker must fail the query, not truncate it'
