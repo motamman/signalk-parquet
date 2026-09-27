@@ -247,6 +247,10 @@ describe('History API v1 paths for a time range', function () {
     expect(await pathsFor(...window)).to.deep.equal([B, A]);
 
     // Proxy the buffer so each markDateExported can be observed mid-export.
+    // markDateExported is synchronous, so the observation can only be
+    // queued here; the writer below waits on it before the next file write,
+    // so each observation runs — and is asserted — between one path's
+    // marking and the next path's file.
     const seenDuringExport: string[][] = [];
     let pending: Promise<void> = Promise.resolve();
     const hooked = new Proxy(buffer, {
@@ -256,16 +260,27 @@ describe('History API v1 paths for a time range', function () {
         }
         return (...args: Parameters<SQLiteBuffer['markDateExported']>) => {
           const out = target.markDateExported(...args);
-          // The export is synchronous here on out; queue the observation.
           pending = pending.then(async () => {
-            seenDuringExport.push(await pathsFor(...window));
+            const listed = await pathsFor(...window);
+            seenDuringExport.push(listed);
+            expect(listed, 'a path vanished mid-export').to.include.members([
+              A,
+              B,
+            ]);
           });
           return out;
         };
       },
     }) as SQLiteBuffer;
 
+    // Barrier: no file is written until the observation queued by the
+    // previous path's markDateExported has completed.
     const writer = new ParquetWriter({ format: 'parquet', app: host.app });
+    const writeBatched = writer.writeParquetBatched.bind(writer);
+    writer.writeParquetBatched = async (...args) => {
+      await pending;
+      return writeBatched(...args);
+    };
     const exportService = new ParquetExportService(
       hooked,
       writer,
@@ -283,13 +298,11 @@ describe('History API v1 paths for a time range', function () {
     expect(result.filesCreated).to.have.lengthOf(2);
     await pending;
 
-    // Every observation taken during the export must still list both paths:
+    // Every observation taken during the export must have listed both paths:
     // the one already exported (now only in files) and the one still pending
-    // (still only in the buffer).
+    // (still only in the buffer). The assertions ran inside the observations;
+    // this checks that both were taken.
     expect(seenDuringExport).to.have.lengthOf(2);
-    for (const listed of seenDuringExport) {
-      expect(listed, 'a path vanished mid-export').to.include.members([A, B]);
-    }
     expect(await pathsFor(...window)).to.deep.equal([B, A]);
   });
 

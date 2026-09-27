@@ -21,6 +21,7 @@ import {
   withBufferPathsInWindow,
 } from './utils/path-discovery';
 import {
+  currentPathCacheEpoch,
   getCachedPaths,
   setCachedPaths,
   getCachedContexts,
@@ -195,6 +196,10 @@ export function registerHistoryApiRoute(
         // a day at export, so caching it costs nothing; the buffer gains a path
         // the moment one is recorded, so folding it in before the cache would
         // hide a new path for the life of the entry.
+        // Captured before the listing is computed: if an export invalidates the
+        // cache while we are computing, the store below is dropped rather than
+        // putting a pre-export listing back into the cache it just cleared.
+        const epoch = currentPathCacheEpoch();
         let fromFiles = getCachedPaths(dataDir, context, from, to);
 
         if (!fromFiles) {
@@ -204,7 +209,7 @@ export function registerHistoryApiRoute(
             from,
             to
           );
-          setCachedPaths(dataDir, context, from, to, fromFiles);
+          setCachedPaths(dataDir, context, from, to, fromFiles, epoch);
         }
 
         const paths = withBufferPathsInWindow(
@@ -348,6 +353,10 @@ export function registerHistoryApiRoute(
         // a day at export, so caching it costs nothing; the buffer gains a path
         // the moment one is recorded, so folding it in before the cache would
         // hide a new path for the life of the entry.
+        // Captured before the listing is computed: if an export invalidates the
+        // cache while we are computing, the store below is dropped rather than
+        // putting a pre-export listing back into the cache it just cleared.
+        const epoch = currentPathCacheEpoch();
         let fromFiles = getCachedPaths(dataDir, context, from, to);
 
         if (!fromFiles) {
@@ -357,7 +366,7 @@ export function registerHistoryApiRoute(
             from,
             to
           );
-          setCachedPaths(dataDir, context, from, to, fromFiles);
+          setCachedPaths(dataDir, context, from, to, fromFiles, epoch);
         }
 
         const paths = withBufferPathsInWindow(
