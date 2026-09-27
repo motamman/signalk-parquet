@@ -139,6 +139,14 @@ function parseObjectJson(json: unknown): Record<string, unknown> | null {
  * returns false: a row whose content cannot be read is never overwritten, it
  * is superseded by a new row, and a value that cannot be read completes
  * nothing.
+ *
+ * Values are compared by their JSON form, not by `===`. Both sides come from
+ * `JSON.parse`, so two structurally identical objects or arrays are never the
+ * same reference: comparing with `===` would report "changed" for a nested
+ * value that is in fact unchanged, and the row would be superseded by a new one
+ * every time. Today's only caller records primitives, so it could not have been
+ * seen there — but the operation is documented as being about object rows in
+ * general, and this makes that true.
  */
 function completes(stored: string | null, next: unknown): boolean {
   const previous = parseObjectJson(stored);
@@ -146,7 +154,22 @@ function completes(stored: string | null, next: unknown): boolean {
   if (!previous || !after) return false;
   const keys = Object.keys(previous);
   if (keys.length === 0) return false;
-  return keys.every(key => after[key] === previous[key]);
+  return keys.every(key => sameJsonValue(after[key], previous[key]));
+}
+
+/**
+ * Equality for two parsed-JSON values. Primitives compare directly; anything
+ * structural compares by its serialised form, which is stable here because both
+ * sides were produced by `JSON.parse` of an object whose keys therefore appear
+ * in the same insertion order only when the JSON agreed — so this is a
+ * conservative test: it can report "changed" for two objects that differ only
+ * in key order, which supersedes the row rather than corrupting it.
+ */
+function sameJsonValue(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (a === null || b === null) return false;
+  if (typeof a !== 'object' || typeof b !== 'object') return false;
+  return JSON.stringify(a) === JSON.stringify(b);
 }
 
 /**

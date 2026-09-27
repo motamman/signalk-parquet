@@ -398,6 +398,35 @@ describe('vessel identity capture', function () {
     });
   });
 
+  it('detaches every bus listener on stop, and does not accumulate them', () => {
+    // The bus hands back an unsubscribe function, not an object carrying one,
+    // so a stop() that calls `handle.unsubscribe?.()` detaches nothing and
+    // silently leaves a set of live listeners behind on every restart. They
+    // write no rows, because a restarted service is a new instance whose
+    // predecessor's `running` flag stays false — so nothing downstream shows
+    // it, and only the handler count does.
+    const attached = host.activeBusHandlers();
+    expect(attached, 'the service should have subscribed').to.be.greaterThan(0);
+
+    service.stop();
+    expect(
+      host.activeBusHandlers(),
+      'stop() must leave no listener attached'
+    ).to.equal(0);
+
+    // A restart attaches the same number again, not another set on top.
+    service = new VesselIdentityService(
+      host.app,
+      state,
+      host.dataDir,
+      () => {}
+    );
+    service.start();
+    expect(host.activeBusHandlers()).to.equal(attached);
+    service.stop();
+    expect(host.activeBusHandlers()).to.equal(0);
+  });
+
   it('starts on a host whose app has no signalk emitter at all', () => {
     // The Signal K plugin registry's activation check starts the plugin
     // against a stand-in app that has streambundle but no `signalk`

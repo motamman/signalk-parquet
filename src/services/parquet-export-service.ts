@@ -11,6 +11,7 @@ import { SQLiteBuffer } from '../utils/sqlite-buffer';
 import { DataRecord, ParquetWriter } from '../types';
 import { ServerAPI } from '@signalk/server-api';
 import { HivePathBuilder } from '../utils/hive-path-builder';
+import { clearPathCache } from '../utils/path-cache';
 
 export interface ExportServiceConfig {
   outputDirectory: string;
@@ -410,6 +411,16 @@ export class ParquetExportService {
           this.app.error(errorMsg);
           errors.push(errorMsg);
         }
+      }
+
+      // The History API caches its file-derived path listing on the premise
+      // that the parquet tree only changes here. Each path exported above now
+      // has a file its cached listing predates, and its buffer rows are
+      // marked exported, so the per-request buffer probe no longer lists it
+      // either: until the entry expired, the path would vanish from the
+      // listing. Drop the cache so the next request rebuilds from the files.
+      if (filesCreated.length > 0) {
+        clearPathCache();
       }
 
       this.runCleanup();

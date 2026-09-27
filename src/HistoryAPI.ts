@@ -18,6 +18,7 @@ import path from 'path';
 import {
   getAvailablePathsArray,
   getAvailablePathsForTimeRange,
+  withBufferPathsInWindow,
 } from './utils/path-discovery';
 import {
   getCachedPaths,
@@ -190,21 +191,29 @@ export function registerHistoryApiRoute(
         // stored result all use the same directory even if setDataDir()
         // runs while the query is in flight.
         const dataDir = historyApi.getDataDir();
-        // Check cache first
-        let paths = getCachedPaths(dataDir, context, from, to);
+        // The cache holds the file-derived listing only. Parquet changes once
+        // a day at export, so caching it costs nothing; the buffer gains a path
+        // the moment one is recorded, so folding it in before the cache would
+        // hide a new path for the life of the entry.
+        let fromFiles = getCachedPaths(dataDir, context, from, to);
 
-        if (!paths) {
-          // Cache miss - query the parquet files
-          paths = await getAvailablePathsForTimeRange(
+        if (!fromFiles) {
+          fromFiles = await getAvailablePathsForTimeRange(
             dataDir,
             context,
             from,
-            to,
-            historyApi.getSqliteBuffer()
+            to
           );
-          // Cache the result
-          setCachedPaths(dataDir, context, from, to, paths);
+          setCachedPaths(dataDir, context, from, to, fromFiles);
         }
+
+        const paths = withBufferPathsInWindow(
+          fromFiles,
+          historyApi.getSqliteBuffer(),
+          context,
+          from,
+          to
+        );
 
         res.json(paths);
       } else {
@@ -335,21 +344,29 @@ export function registerHistoryApiRoute(
         // stored result all use the same directory even if setDataDir()
         // runs while the query is in flight.
         const dataDir = historyApi.getDataDir();
-        // Check cache first
-        let paths = getCachedPaths(dataDir, context, from, to);
+        // The cache holds the file-derived listing only. Parquet changes once
+        // a day at export, so caching it costs nothing; the buffer gains a path
+        // the moment one is recorded, so folding it in before the cache would
+        // hide a new path for the life of the entry.
+        let fromFiles = getCachedPaths(dataDir, context, from, to);
 
-        if (!paths) {
-          // Cache miss - query the parquet files
-          paths = await getAvailablePathsForTimeRange(
+        if (!fromFiles) {
+          fromFiles = await getAvailablePathsForTimeRange(
             dataDir,
             context,
             from,
-            to,
-            historyApi.getSqliteBuffer()
+            to
           );
-          // Cache the result
-          setCachedPaths(dataDir, context, from, to, paths);
+          setCachedPaths(dataDir, context, from, to, fromFiles);
         }
+
+        const paths = withBufferPathsInWindow(
+          fromFiles,
+          historyApi.getSqliteBuffer(),
+          context,
+          from,
+          to
+        );
 
         res.json(paths);
       } else {

@@ -230,6 +230,42 @@ describe('buffer insertOrExtendLatest', () => {
     expect(rows[0].source_label).to.equal('ais.2');
   });
 
+  it('treats an unchanged nested value as unchanged, not as a change', () => {
+    // Both sides of the comparison come from JSON.parse, so two structurally
+    // identical objects are never the same reference. Comparing by reference
+    // would report the nested value as changed and supersede the row on every
+    // write. Identity records only primitives, so this could not show up
+    // through its tests, but the operation is documented for object rows.
+    const nested = (extra?: Record<string, unknown>) => {
+      const value: Record<string, unknown> = {
+        name: 'Ariel',
+        dimensions: { length: 12, beam: 4 },
+        ...extra,
+      };
+      return objectRecord(CONTEXT, value);
+    };
+
+    expect(buffer.insertOrExtendLatest(nested())).to.deep.equal({
+      extended: false,
+    });
+    // Same nested value, one key added: completes the row.
+    expect(
+      buffer.insertOrExtendLatest(nested({ mmsi: '244813000' }))
+    ).to.deep.equal({ extended: true });
+    expect(stored()).to.have.lengthOf(1);
+
+    // A nested value that genuinely differs supersedes the row instead.
+    const changed = objectRecord(CONTEXT, {
+      name: 'Ariel',
+      dimensions: { length: 12, beam: 5 },
+      mmsi: '244813000',
+    });
+    expect(buffer.insertOrExtendLatest(changed)).to.deep.equal({
+      extended: false,
+    });
+    expect(stored()).to.have.lengthOf(2);
+  });
+
   it('always inserts for a scalar path, which has no value to complete', () => {
     const scalar = (value: number): DataRecord => ({
       received_timestamp: T0,

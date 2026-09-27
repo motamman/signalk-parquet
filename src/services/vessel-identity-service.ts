@@ -27,6 +27,10 @@ import * as path from 'path';
 import { NormalizedDelta, Path, ServerAPI } from '@signalk/server-api';
 import { DataRecord, PluginState } from '../types';
 import {
+  disposeStreamSubscription,
+  StreamSubscription,
+} from '../utils/stream-subscription';
+import {
   IDENTITY_PATH,
   IDENTITY_PATHS,
   IDENTITY_ROOT_KEYS,
@@ -50,11 +54,6 @@ interface TrackedVessel {
   source?: string;
   /** True when `known` differs from what was last written. */
   dirty: boolean;
-}
-
-/** A stream subscription handle as `streambundle` buses return them. */
-interface StreamSubscription {
-  unsubscribe?: () => void;
 }
 
 export class VesselIdentityService {
@@ -124,11 +123,7 @@ export class VesselIdentityService {
     if (!this.running) return;
     this.running = false;
     for (const s of this.subscriptions) {
-      try {
-        s.unsubscribe?.();
-      } catch {
-        // Best-effort.
-      }
+      disposeStreamSubscription(s);
     }
     this.subscriptions = [];
     if (this.persistTimer) {
@@ -160,7 +155,7 @@ export class VesselIdentityService {
           d.$source
         );
       });
-    this.subscriptions.push(stream as unknown as StreamSubscription);
+    this.subscriptions.push(stream as StreamSubscription);
   }
 
   /**

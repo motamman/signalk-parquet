@@ -194,6 +194,32 @@ export interface BufferPathSource {
   hasRowsForContext(signalkPath: string, context: string): boolean;
 }
 
+/**
+ * `listed`, plus the buffer's paths with an unexported row for the context in
+ * the window, sorted.
+ *
+ * Exported separately from `getAvailablePathsForTimeRange` because the callers
+ * cache the file-derived listing: the parquet tree changes once a day, at
+ * export, so caching it is free, while the buffer gains a path the moment one
+ * is recorded. Folding the buffer in before the cache would hide a new path for
+ * the life of the entry. Each probe is one index seek, so doing it per request
+ * is cheap enough not to need caching.
+ */
+export function withBufferPathsInWindow(
+  listed: Path[],
+  buffer: BufferPathSource | undefined,
+  context: Context,
+  from: ZonedDateTime,
+  to: ZonedDateTime
+): Path[] {
+  if (!buffer) return listed;
+  const fromIso = isoBound(from);
+  const toIso = isoBound(to);
+  return unionBufferPaths(listed, buffer, signalkPath =>
+    buffer.hasRowsInWindow(signalkPath, context, fromIso, toIso)
+  ) as Path[];
+}
+
 /** `listed`, plus the buffer's paths for which `hasRows` says yes, sorted. */
 function unionBufferPaths(
   listed: string[],
