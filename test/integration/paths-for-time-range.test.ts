@@ -11,7 +11,7 @@ import type { Server } from 'http';
 import type { AddressInfo } from 'net';
 import * as fs from 'fs-extra';
 import * as path from 'path';
-import { SQLiteBuffer } from '../../src/utils/sqlite-buffer';
+import { SQLiteBuffer, EXPORTED_BUFFER_ONLY } from '../../src/utils/sqlite-buffer';
 import { ParquetWriter } from '../../src/parquet-writer';
 import { ParquetExportService } from '../../src/services/parquet-export-service';
 import { DuckDBPool } from '../../src/utils/duckdb-pool';
@@ -26,6 +26,7 @@ const STORED_CONTEXT = `vessels.${SELF_ID}`;
 const SPEED = 'navigation.speedOverGround';
 const HEADING = 'navigation.headingTrue';
 const DEPTH = 'environment.depth.belowTransducer';
+const WIND = 'environment.wind.speedApparent';
 
 describe('History API v1 paths for a time range', function () {
   this.timeout(30000);
@@ -67,7 +68,7 @@ describe('History API v1 paths for a time range', function () {
 
     const app = express();
     const router = express.Router();
-    registerHistoryApiRoute(router, SELF_ID, host.dataDir, () => {}, queryApp, undefined, undefined);
+    registerHistoryApiRoute(router, SELF_ID, host.dataDir, () => {}, queryApp, buffer, undefined);
     app.use(router);
     await new Promise<void>(resolve => {
       server = app.listen(0, '127.0.0.1', () => resolve());
@@ -104,6 +105,35 @@ describe('History API v1 paths for a time range', function () {
 
   it('is empty for a window with no files', async () => {
     expect(await pathsFor('2024-06-05T00:00:00Z', '2024-06-06T00:00:00Z')).to.deep.equal([]);
+  });
+
+  it('lists a path recorded since the last export, from the buffer, in its window only', async () => {
+    // Wind on June 3 has no file yet: it is only in the buffer, as every path
+    // is between its first row and its first daily export.
+    buffer.insert(makeScalarRecord(STORED_CONTEXT, WIND, 7, '2024-06-03T10:00:00.000Z'));
+    expect(await pathsFor('2024-06-03T00:00:00Z', '2024-06-04T00:00:00Z')).to.deep.equal([WIND]);
+    expect(await pathsFor('2024-06-01T00:00:00Z', '2024-06-02T00:00:00Z')).to.deep.equal([DEPTH, SPEED]);
+    // A path in files and in the buffer is listed once.
+    buffer.insert(makeScalarRecord(STORED_CONTEXT, SPEED, 6, '2024-06-03T11:00:00.000Z'));
+    clearAllCaches();
+    expect(await pathsFor('2024-06-01T00:00:00Z', '2024-06-04T00:00:00Z')).to.deep.equal([DEPTH, WIND, HEADING, SPEED]);
+  });
+
+  it('lists a buffer-only path for as long as its rows are in the buffer', async () => {
+    const record = makeScalarRecord(STORED_CONTEXT, WIND, 7, '2024-06-03T10:00:00.000Z');
+    record.exported = EXPORTED_BUFFER_ONLY;
+    buffer.insert(record);
+    expect(await pathsFor('2024-06-03T00:00:00Z', '2024-06-04T00:00:00Z')).to.deep.equal([WIND]);
+  });
+
+  it('lists a path only in the buffer without a window too, for the context it was recorded for', async () => {
+    buffer.insert(makeScalarRecord(STORED_CONTEXT, WIND, 7, '2024-06-03T10:00:00.000Z'));
+    buffer.insert(makeScalarRecord('vessels.urn:mrn:signalk:uuid:other', DEPTH, 3, '2024-06-03T10:00:00.000Z'));
+    const res = await fetch(`${baseUrl}/signalk/v1/history/paths?context=vessels.self`);
+    expect(res.status).to.equal(200);
+    expect((await res.json()) as string[]).to.deep.equal([DEPTH, WIND, HEADING, SPEED]);
+    const other = await fetch(`${baseUrl}/signalk/v1/history/paths?context=vessels.urn:mrn:signalk:uuid:other`);
+    expect((await other.json()) as string[]).to.deep.equal([DEPTH]);
   });
 
   it('still lists a path whose year has been compacted into one file', async () => {

@@ -118,6 +118,15 @@ describe('History API v2 provider: buffer-only paths (no raw parquet yet)', func
     ]);
   });
 
+  it('lists the buffer-only paths, so a client can discover them before any export', async () => {
+    const paths = await provider.getPaths({
+      from: '2024-06-01T00:00:00Z',
+      to: '2024-06-01T23:59:59Z',
+      context: 'vessels.self',
+    } as unknown as Parameters<HistoryProvider['getPaths']>[0]);
+    expect([...paths].sort()).to.deep.equal([POSITION, SOG]);
+  });
+
   it('returns navigation.position from the buffer alone, as [lon, lat]', async () => {
     const res = await provider.getValues(
       request([{ path: POSITION, aggregate: 'first', parameter: [] }])

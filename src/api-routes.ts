@@ -656,6 +656,14 @@ export function registerApiRoutes(
    * `POST /api/event-loop/reset` forgets what came before, so a caller can
    * bracket one operation: reset, do the thing, read.
    *
+   * Both the read and the reset are awaited, and the read takes about one
+   * sampling interval to answer. That is deliberate, not an oversight to
+   * optimise away: a block is recorded when the histogram's timer next fires,
+   * not when the block ends, so a synchronous read taken in the same loop
+   * turn as the work reports a histogram the work is not in yet. Waiting for
+   * the next sample is what makes the number include everything before it,
+   * so a caller cannot under-read by reading too soon. See `eventLoopDelay`.
+   *
    * The snapshot is declared read-only. A plugin's routes are admin-only unless
    * the plugin says otherwise — the server offers `router.access(level)` for
    * that — and these are timing numbers about the server's own health, with

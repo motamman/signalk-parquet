@@ -172,18 +172,64 @@ function hasParquetFilesRecursiveSync(dir: string): boolean {
 }
 
 /**
+ * The slice of the SQLite buffer a path listing needs: which paths it holds,
+ * and whether one of them has a row for a context, in a window or at all.
+ *
+ * A path recorded since the last daily export has rows here and no files, so
+ * a listing answered from files alone does not know it exists: a new path is
+ * invisible until its first export, a buffer-only path is invisible for good,
+ * and a window that lies inside today lists nothing at all. Each probe is one
+ * index seek, and the predicate is the one the values federation reads with,
+ * so a path listed from here is one a values query would answer for.
+ */
+export interface BufferPathSource {
+  isOpen(): boolean;
+  getKnownPaths(): Set<string>;
+  hasRowsInWindow(
+    signalkPath: string,
+    context: string,
+    fromIso: string,
+    toIso: string
+  ): boolean;
+  hasRowsForContext(signalkPath: string, context: string): boolean;
+}
+
+/** `listed`, plus the buffer's paths for which `hasRows` says yes, sorted. */
+function unionBufferPaths(
+  listed: string[],
+  buffer: BufferPathSource | undefined,
+  hasRows: (signalkPath: string) => boolean
+): string[] {
+  if (!buffer || !buffer.isOpen()) return listed;
+  const out = new Set(listed);
+  for (const signalkPath of buffer.getKnownPaths()) {
+    if (out.has(signalkPath)) continue;
+    if (hasRows(signalkPath)) out.add(signalkPath);
+  }
+  return [...out].sort();
+}
+
+/**
  * Get available SignalK paths as simple string array
  * Useful for SignalK history API compliance
+ *
+ * Files first, then the buffer's paths with a row for the context, so a path
+ * shows from its first recorded row rather than from its first export.
  */
 export function getAvailablePathsArray(
   dataDir: string,
   app: ServerAPI,
-  context?: string
+  context?: string,
+  buffer?: BufferPathSource
 ): string[] {
   // Path names only — skip the per-file count so this stays cheap even on a
   // store with millions of parquet files (this is the History API hot path).
   const pathInfos = getAvailablePaths(dataDir, app, context, false);
-  return pathInfos.map(pathInfo => pathInfo.path);
+  const fromFiles = pathInfos.map(pathInfo => pathInfo.path);
+  const target = context || app.selfContext;
+  return unionBufferPaths(fromFiles, buffer, signalkPath =>
+    buffer!.hasRowsForContext(signalkPath, target)
+  );
 }
 
 /**
@@ -200,12 +246,17 @@ export function getAvailablePathsArray(
  * over the path's WHOLE history (`year=*\/day=*`), all in parallel: on a
  * vessel with ~2,000 paths a client's seven-day discovery call took 36 s and
  * permanently added 1.7 GB to the server (measured 2026-09-17).
+ *
+ * Then the buffer: any of its paths with an unexported row for the context
+ * in the window is listed too, so the answer covers what a values query over
+ * the same window would return, files and buffer alike.
  */
 export async function getAvailablePathsForTimeRange(
   dataDir: string,
   context: Context,
   from: ZonedDateTime,
-  to: ZonedDateTime
+  to: ZonedDateTime,
+  buffer?: BufferPathSource
 ): Promise<Path[]> {
   const fromIso = isoBound(from);
   const toIso = isoBound(to);
@@ -219,13 +270,15 @@ export async function getAvailablePathsForTimeRange(
   });
   const byPath = groupFilesByPath(files);
 
-  const pathsWithData: Path[] = [];
+  const pathsWithData: string[] = [];
   for (const [signalkPath, pathFiles] of byPath) {
     if (await pathHasRowsInWindow(pathFiles, fromIso, toIso)) {
-      pathsWithData.push(signalkPath as Path);
+      pathsWithData.push(signalkPath);
     }
   }
-  return pathsWithData.sort();
+  return unionBufferPaths(pathsWithData, buffer, signalkPath =>
+    buffer!.hasRowsInWindow(signalkPath, context, fromIso, toIso)
+  ) as Path[];
 }
 
 /** The window's files of a context, keyed by SignalK path, in listing order. */

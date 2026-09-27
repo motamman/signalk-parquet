@@ -606,6 +606,15 @@ export interface SQLiteBufferInterface {
     limit: number
   ): Array<Record<string, unknown>>;
   hasTable(signalkPath: string): boolean;
+  /** Whether a path has an unexported row for a context in [fromIso, toIso). */
+  hasRowsInWindow(
+    signalkPath: string,
+    context: string,
+    fromIso: string,
+    toIso: string
+  ): boolean;
+  /** Whether a path has an unexported row for a context at any time. */
+  hasRowsForContext(signalkPath: string, context: string): boolean;
   getRowsForPlayback(
     fromIso: string,
     toIso: string,

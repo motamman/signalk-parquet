@@ -199,7 +199,8 @@ export function registerHistoryApiRoute(
             dataDir,
             context,
             from,
-            to
+            to,
+            historyApi.getSqliteBuffer()
           );
           // Cache the result
           setCachedPaths(dataDir, context, from, to, paths);
@@ -214,7 +215,8 @@ export function registerHistoryApiRoute(
         const paths = getAvailablePathsArray(
           historyApi.getDataDir(),
           app,
-          context
+          context,
+          historyApi.getSqliteBuffer()
         );
         res.json(paths);
       }
@@ -342,7 +344,8 @@ export function registerHistoryApiRoute(
             dataDir,
             context,
             from,
-            to
+            to,
+            historyApi.getSqliteBuffer()
           );
           // Cache the result
           setCachedPaths(dataDir, context, from, to, paths);
@@ -357,7 +360,8 @@ export function registerHistoryApiRoute(
         const paths = getAvailablePathsArray(
           historyApi.getDataDir(),
           app,
-          context
+          context,
+          historyApi.getSqliteBuffer()
         );
         res.json(paths);
       }
@@ -822,6 +826,15 @@ export class HistoryAPI {
    */
   setSqliteBuffer(buffer: SQLiteBufferInterface | undefined): void {
     this.sqliteBuffer = buffer;
+  }
+
+  /**
+   * The current buffer, for the express routes registered in
+   * registerHistoryApiRoute: they are bound once, so they read it back per
+   * request rather than holding the buffer a reconfigure has since closed.
+   */
+  getSqliteBuffer(): SQLiteBufferInterface | undefined {
+    return this.sqliteBuffer;
   }
 
   /** Where to find the buffer worker for staging reads, or nothing for none. */

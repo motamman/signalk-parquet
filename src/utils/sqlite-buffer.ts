@@ -1530,6 +1530,54 @@ export class SQLiteBuffer {
     return out;
   }
 
+  /**
+   * True when one path has an unexported row for a context in
+   * [fromIso, toIso). The predicate the values federation reads with, so a
+   * path this says yes to is one a values query would answer for. One seek
+   * on the `(context, signalk_timestamp)` index; it exists so the path
+   * listings can include what is recorded but not yet exported.
+   */
+  hasRowsInWindow(
+    signalkPath: string,
+    context: string,
+    fromIso: string,
+    toIso: string
+  ): boolean {
+    if (!this._open) return false;
+    const info = this.tableMap.get(signalkPath);
+    if (!info) return false;
+    const row = this.db
+      .prepare(
+        `SELECT 1 AS hit FROM ${info.tableName}
+         WHERE context = ?
+           AND signalk_timestamp >= ? AND signalk_timestamp < ?
+           AND exported IN (${EXPORTED_PENDING}, ${EXPORTED_BUFFER_ONLY})
+         LIMIT 1`
+      )
+      .get(context, fromIso, toIso);
+    return row !== undefined;
+  }
+
+  /**
+   * True when one path has an unexported row for a context at any time. One
+   * seek on the `(context, exported)` index, for the listings that take no
+   * window.
+   */
+  hasRowsForContext(signalkPath: string, context: string): boolean {
+    if (!this._open) return false;
+    const info = this.tableMap.get(signalkPath);
+    if (!info) return false;
+    const row = this.db
+      .prepare(
+        `SELECT 1 AS hit FROM ${info.tableName}
+         WHERE context = ?
+           AND exported IN (${EXPORTED_PENDING}, ${EXPORTED_BUFFER_ONLY})
+         LIMIT 1`
+      )
+      .get(context);
+    return row !== undefined;
+  }
+
   /** True when any path has an unexported row at or after `fromIso`. */
   hasRowsSince(fromIso: string, contexts: string[] | null): boolean {
     if (!this._open) return false;
