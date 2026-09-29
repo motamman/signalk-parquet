@@ -201,6 +201,20 @@ export type TrackBufferSource = BufferStagingSource & {
   hasTable(signalkPath: string): boolean;
 };
 
+/**
+ * Whether a property path holds angles, so its bucket takes the circular
+ * mean. The server's metadata answers it (`isAngularPath`); a provider with
+ * no server to ask — the one in track-worker.ts — is handed the answer.
+ */
+export type AngularPathTest = (
+  signalkPath: string,
+  context: Context
+) => boolean;
+
+export interface TrackProviderOptions {
+  isAngular?: AngularPathTest;
+}
+
 interface TimeWindow {
   fromMs: number;
   toMs: number;
@@ -422,18 +436,57 @@ function bucketExpression(resolutionMs: number): string {
 // Provider
 // ---------------------------------------------------------------------------
 
+/**
+ * The vessel's name as the server currently has it, for
+ * `properties.contextName`. Undefined when the server has none or cannot be
+ * asked.
+ */
+export function contextNameFor(
+  app: ServerAPI,
+  selfContext: Context,
+  context: Context
+): string | undefined {
+  try {
+    const host = app as unknown as {
+      getSelfPath?: (p: string) => unknown;
+      getPath?: (p: string) => unknown;
+    };
+    const raw =
+      context === selfContext
+        ? host.getSelfPath?.('name')
+        : host.getPath?.(`${context}.name`);
+    if (typeof raw === 'string') {
+      return raw;
+    }
+    if (raw && typeof raw === 'object') {
+      const value = (raw as { value?: unknown }).value;
+      if (typeof value === 'string') {
+        return value;
+      }
+    }
+  } catch {
+    // Name is a nicety; a host without the lookup still gets a track.
+  }
+  return undefined;
+}
+
 export class TrackProvider implements TrackApi {
   private readonly hive = new HivePathBuilder();
   private sqliteBuffer?: TrackBufferSource;
+  private readonly isAngular: AngularPathTest;
 
   constructor(
     private readonly selfId: string,
     private dataDir: string,
     private readonly app: ServerAPI,
     private readonly debug: (msg: string) => void,
-    sqliteBuffer?: TrackBufferSource
+    sqliteBuffer?: TrackBufferSource,
+    options: TrackProviderOptions = {}
   ) {
     this.sqliteBuffer = sqliteBuffer;
+    this.isAngular =
+      options.isAngular ??
+      ((signalkPath, context) => isAngularPath(signalkPath, app, context));
   }
 
   setSqliteBuffer(buffer: TrackBufferSource | undefined): void {
@@ -771,7 +824,7 @@ export class TrackProvider implements TrackApi {
     const properties: TrackProperties = {
       context,
       isSelf: context === this.selfContext,
-      contextName: this.lookupContextName(context),
+      contextName: contextNameFor(this.app, this.selfContext, context),
       from: isoOf(flat[0].tMs),
       to: isoOf(flat[flat.length - 1].tMs),
       bbox: boundingBoxOf(flat),
@@ -831,31 +884,6 @@ export class TrackProvider implements TrackApi {
       },
       properties,
     };
-  }
-
-  private lookupContextName(context: Context): string | undefined {
-    try {
-      const host = this.app as unknown as {
-        getSelfPath?: (p: string) => unknown;
-        getPath?: (p: string) => unknown;
-      };
-      const raw =
-        context === this.selfContext
-          ? host.getSelfPath?.('name')
-          : host.getPath?.(`${context}.name`);
-      if (typeof raw === 'string') {
-        return raw;
-      }
-      if (raw && typeof raw === 'object') {
-        const value = (raw as { value?: unknown }).value;
-        if (typeof value === 'string') {
-          return value;
-        }
-      }
-    } catch {
-      // Name is a nicety; a host without the lookup still gets a track.
-    }
-    return undefined;
   }
 
   // -- queries --------------------------------------------------------------
@@ -984,8 +1012,7 @@ export class TrackProvider implements TrackApi {
     }
 
     const stringValued = isStringPath(signalkPath);
-    const angular =
-      !stringValued && isAngularPath(signalkPath, this.app, context);
+    const angular = !stringValued && this.isAngular(signalkPath, context);
     const parquetValue = stringValued
       ? 'CAST(value AS VARCHAR)'
       : 'TRY_CAST(value AS DOUBLE)';

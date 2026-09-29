@@ -40,6 +40,7 @@ import {
   registerTrackApiProvider,
   unregisterTrackApiProvider,
 } from './track-provider';
+import { TrackWorkerClient, WorkerTrackApi } from './utils/track-worker-client';
 import { SQLiteBuffer } from './utils/sqlite-buffer';
 import {
   startEventLoopMonitor,
@@ -972,6 +973,12 @@ export default function (app: ServerAPI): SignalKPlugin {
     // Register as a Track API provider (SignalK/signalk-server#2995). Only a
     // server carrying that PR exposes the registry; elsewhere this logs and
     // returns, and the plugin behaves exactly as before.
+    //
+    // Calls go to a forked worker (track-worker.ts) that answers each one
+    // whole, so no part of a track query runs on the server's event loop.
+    // Until the worker reports ready, and if it fails or dies, they are
+    // answered in-process as before. It starts after the DuckDB pool above
+    // so the extensions that pool cached are there for the worker's own.
     try {
       const trackProvider = new TrackProvider(
         app.selfId,
@@ -980,7 +987,27 @@ export default function (app: ServerAPI): SignalKPlugin {
         app.debug,
         state.sqliteBuffer
       );
-      registerTrackApiProvider(app, trackProvider, app.debug);
+      const trackWorker = new TrackWorkerClient({
+        dataDir: state.currentConfig.outputDirectory,
+        dbPath: state.sqliteBuffer?.getDbPath(),
+        selfId: app.selfId,
+        log: (level, msg) =>
+          level === 'error' ? app.error(msg) : app.debug(msg),
+      });
+      state.trackWorker = trackWorker;
+      trackWorker.start().then(
+        () =>
+          app.debug('[TrackWorker] Ready; Track API calls run in the worker'),
+        err =>
+          app.error(
+            `[TrackWorker] Not available, Track API calls run in-process: ${(err as Error).message}`
+          )
+      );
+      registerTrackApiProvider(
+        app,
+        new WorkerTrackApi(trackProvider, () => trackWorker, app, app.selfId),
+        app.debug
+      );
     } catch (error) {
       app.error(`Failed to register as Track API provider: ${error}`);
     }
@@ -1033,6 +1060,17 @@ export default function (app: ServerAPI): SignalKPlugin {
     // Unregister as History API and Track API provider
     unregisterHistoryApiProvider(app);
     unregisterTrackApiProvider(app);
+
+    // The Track API worker holds its own connection to buffer.db and its own
+    // DuckDB instance; it goes before the buffer below is closed.
+    if (state.trackWorker) {
+      try {
+        await state.trackWorker.close();
+      } catch (error) {
+        app.error(`Error stopping the Track API worker: ${error}`);
+      }
+      state.trackWorker = undefined;
+    }
 
     // Stop threshold monitoring system
     stopThresholdMonitoring();

@@ -752,6 +752,9 @@ export interface PluginState {
   // the express routes are never left bound to a closed SQLite buffer.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   historyApi?: any; // HistoryAPI - avoiding circular import
+  // The forked process that answers Track API calls; stop() closes it. Set as
+  // soon as it is forked, so a stop during its startup still reaches it.
+  trackWorker?: import('./utils/track-worker-client').TrackWorkerClient;
 }
 
 // Parquet Writer Class Interface
