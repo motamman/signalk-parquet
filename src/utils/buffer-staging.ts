@@ -9,26 +9,16 @@
  * node:sqlite connection and copied into a per-connection DuckDB temp table, which
  * the federated SQL unions with parquet exactly as before.
  *
- * Rows reach that copy from one of two places, and the staging algorithm is the
- * same either way:
- *
- *   - **in-process**: the read is a synchronous `.all()` on the main thread, and
- *     the loop yields between pages so one query cannot hold the event loop for
- *     its whole scan;
- *   - **the buffer worker**: the read happens on another thread and the page
- *     arrives columnar with its buffers transferred, so the main thread pays
- *     only the append.
- *
- * Which one a query uses is decided by its caller from a request-scoped
- * snapshot, the same way the buffer itself is snapshotted, so a reconfigure
- * cannot pair a new source with an in-flight request.
+ * The read is a synchronous `.all()` on the main thread, and the loop yields
+ * between pages so one query cannot hold the event loop for its whole scan.
+ * (A worker-thread read path existed briefly; see
+ * devdocs/BUFFER_WORKER_REMOVED.md.)
  */
 
 import { DuckDBConnection, DuckDBAppender } from '@duckdb/node-api';
 import { federationCursor, pathToTableName } from './sqlite-buffer';
 import { yieldToEventLoop } from './hive-walk';
 import { FederationCursor } from '../types';
-import { BufferWorkerClient } from './buffer-worker-client';
 
 /** The minimal slice of SQLiteBuffer that in-process staging needs. */
 export interface BufferStagingSource {
@@ -60,17 +50,13 @@ const PAGE_BUDGET_MS = 10;
 /**
  * What a row costs the main thread, per path, measured on a Raspberry Pi 5
  * (2026-09-26): reading out of SQLite is about 8 µs and appending into the
- * DuckDB temp table about 7 µs. In-process the main thread pays both. Through
- * the worker it pays only the append, because the read happens on the worker's
- * thread and the page arrives with its buffers transferred.
+ * DuckDB temp table about 7 µs, and the main thread pays both.
  */
 const IN_PROCESS_US_PER_ROW = 15;
-const WORKER_US_PER_ROW = 7;
 
 /**
- * Rows per page, from the budget and the per-row cost. Two numbers because the
- * two paths put different work on the main thread, not because one was tuned:
- * the page is whatever keeps one block inside PAGE_BUDGET_MS.
+ * Rows per page, from the budget and the per-row cost: the page is whatever
+ * keeps one block inside PAGE_BUDGET_MS.
  *
  * This also bounds JS heap regardless of window size, and the keyset pagination
  * in `getRowsForFederation` is what lets a page be small without the read
@@ -78,9 +64,6 @@ const WORKER_US_PER_ROW = 7;
  */
 const IN_PROCESS_BATCH_SIZE = Math.round(
   (PAGE_BUDGET_MS * 1000) / IN_PROCESS_US_PER_ROW
-);
-const WORKER_BATCH_SIZE = Math.round(
-  (PAGE_BUDGET_MS * 1000) / WORKER_US_PER_ROW
 );
 
 /** Hard cap on staged rows per query, far above any real buffer window. */
@@ -109,8 +92,8 @@ interface StagedPage {
 }
 
 /**
- * Where a staged scan's pages come from. The two implementations below are the
- * in-process buffer and the buffer worker; nothing else about staging differs.
+ * Where a staged scan's pages come from. The in-process buffer is the only
+ * implementation; the interface is where another source would plug in.
  */
 interface StagingSource {
   /** Declared column schema, or null when the path has no buffer table. */
@@ -176,31 +159,6 @@ function inProcessSource(buffer: BufferStagingSource): StagingSource {
   };
 }
 
-/** Rows read on the worker's thread, arriving columnar with buffers transferred. */
-function workerSource(client: BufferWorkerClient): StagingSource {
-  return {
-    async schema(signalkPath) {
-      return client.getTableSchema(signalkPath);
-    },
-    async *pages({ signalkPath, context, fromIso, toIso }) {
-      // A scan that cannot finish throws into this loop rather than ending, so
-      // the refusal to answer short is the worker's behaviour too.
-      for await (const page of client.scan({
-        signalkPath,
-        context,
-        fromIso,
-        toIso,
-        pageRows: WORKER_BATCH_SIZE,
-      })) {
-        yield {
-          rowCount: page.rowCount,
-          valueAt: (row, column) => page.columns[column].at(row),
-        };
-      }
-    },
-  };
-}
-
 /** Append one page's rows to the appender, converting per the column's type. */
 function appendPage(
   appender: DuckDBAppender,
@@ -241,9 +199,6 @@ function appendPage(
  * Copy the buffer rows a query needs (one path, one context, time-windowed,
  * unexported only) into a TEMP table on the given DuckDB connection.
  *
- * Reads through `worker` when one is given and in-process otherwise. The two
- * produce the same temp table; only where the SQLite call runs differs.
- *
  * Returns the qualified temp table name to use in FROM clauses, or null when
  * the path has no buffer table or no rows match (callers skip the UNION ALL,
  * as they did when ATTACH-era subqueries returned null).
@@ -258,10 +213,9 @@ export async function stageBufferTable(
   signalkPath: string,
   fromIso: string,
   toIso: string,
-  warn?: (msg: string) => void,
-  worker?: BufferWorkerClient
+  warn?: (msg: string) => void
 ): Promise<string | null> {
-  const source = worker ? workerSource(worker) : inProcessSource(buffer);
+  const source = inProcessSource(buffer);
   const schema = await source.schema(signalkPath);
   if (!schema || schema.length === 0) {
     return null;

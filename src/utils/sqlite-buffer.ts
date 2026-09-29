@@ -60,8 +60,9 @@ export interface SQLiteBufferConfig {
    * Open for reading only: no schema creation, no legacy migration, no index
    * building, and every write method refuses.
    *
-   * This is what the buffer worker opens while it only serves reads. Two
-   * node:sqlite connections to one database are safe — they share a library, so
+   * Nothing opens one today; the buffer worker did while it served reads, and
+   * would again (see devdocs/BUFFER_WORKER_REMOVED.md). Two node:sqlite
+   * connections to one database are safe — they share a library, so
    * their POSIX locks are coherent — but a second *writer* is not free: the
    * connection that owns ingestion sets no `busy_timeout`, because waiting for
    * a lock on the server's event loop is the very thing the worker exists to
