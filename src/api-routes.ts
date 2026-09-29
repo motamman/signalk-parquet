@@ -6,7 +6,7 @@ import { readFooter } from './utils/parquet-footer';
 import { listHiveDirs, listParquetFiles } from './utils/hive-walk';
 import express, { Router } from 'express';
 import multer from 'multer';
-import { getAvailablePaths } from './utils/path-discovery';
+import { getAvailablePathsWithFileCounts } from './utils/path-discovery';
 import { DuckDBPool } from './utils/duckdb-pool';
 import { findUnsafeSqlReason } from './utils/sql-guard';
 import {
@@ -391,10 +391,10 @@ export function registerApiRoutes(
   // Get available SignalK paths
   router.get(
     '/api/paths',
-    (_: TypedRequest, res: TypedResponse<PathsApiResponse>) => {
+    async (_: TypedRequest, res: TypedResponse<PathsApiResponse>) => {
       try {
         const dataDir = state.getDataDirPath();
-        const paths = getAvailablePaths(dataDir, app);
+        const paths = await getAvailablePathsWithFileCounts(dataDir, app);
 
         return res.json({
           success: true,
