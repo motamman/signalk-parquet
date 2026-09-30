@@ -8,7 +8,7 @@ import {
   DataQualityMetrics,
 } from './types';
 import { VesselContextManager } from './vessel-context';
-import { getAvailablePaths } from './utils/path-discovery';
+import { getAvailablePathsWithFileCounts } from './utils/path-discovery';
 import * as fs from 'fs-extra';
 import * as path from 'path';
 import { DuckDBPool } from './utils/duckdb-pool';
@@ -3281,7 +3281,7 @@ Begin your analysis by querying relevant data within the specified time range.`;
         // Get your vessel's paths
         this.app?.debug('📊 Scanning available paths...');
         this.app?.debug(`📍 App.selfContext: "${this.app?.selfContext}"`);
-        const paths = getAvailablePaths(dataDir, this.app);
+        const paths = await getAvailablePathsWithFileCounts(dataDir, this.app);
         this.app?.debug(`📈 Found ${paths.length} available paths`);
         if (paths.length === 0) {
           this.app?.debug(

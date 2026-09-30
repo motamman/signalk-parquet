@@ -557,8 +557,7 @@ export class CompactionService {
       }
     }, WORKER_TIMEOUT_MS);
     timer.unref();
-    // The worker exits only once its terminal message is acknowledged, so
-    // the 'exit' handler below never sees an unsettled job.
+    // The worker exits once its terminal message is acknowledged.
     const ack = (): void => {
       try {
         child.send({ type: 'ack' });
@@ -567,18 +566,40 @@ export class CompactionService {
       }
     };
 
+    // The terminal message is held until the worker has exited, and only then
+    // does the job read as finished: a job reported done while its process is
+    // still alive has not released that process's DuckDB memory or its open
+    // files, and on Windows a file a live process has loaded (the DuckDB
+    // spatial extension) cannot be deleted — a caller that acted on
+    // "completed" at once got EPERM (Windows CI, the compaction worker test).
+    let result: CompactionProgress | undefined;
+    let workerError: string | undefined;
+
     child.on('message', (msg: Record<string, unknown>) => {
       if (!msg || typeof msg !== 'object') return;
       if (msg.type === 'log') {
         if (msg.level === 'error') this.app.error(String(msg.msg ?? ''));
         else this.app.debug(String(msg.msg ?? ''));
       } else if (msg.type === 'progress') {
-        if (!settled) mirror(msg.progress as CompactionProgress);
+        if (!settled && result === undefined) {
+          mirror(msg.progress as CompactionProgress);
+        }
       } else if (msg.type === 'result') {
-        if (settled) return;
+        if (settled || result !== undefined) return;
+        result = msg.progress as CompactionProgress;
+        ack();
+      } else if (msg.type === 'error') {
+        if (settled || workerError !== undefined) return;
+        workerError = String(msg.message ?? '');
+        ack();
+      }
+    });
+    child.on('exit', code => {
+      if (settled) return;
+      if (result !== undefined) {
         settled = true;
         clearTimeout(timer);
-        mirror(msg.progress as CompactionProgress);
+        mirror(result);
         workerChildren.delete(jobId);
         cancelledJobIds.delete(jobId);
         this.app.debug(
@@ -591,14 +612,11 @@ export class CompactionService {
             `errors=${progress.errors.length}`
         );
         scheduleJobCleanup(jobId);
-        ack();
-      } else if (msg.type === 'error') {
-        finish('error', `worker errored: ${String(msg.message ?? '')}`);
-        ack();
+      } else if (workerError !== undefined) {
+        finish('error', `worker errored: ${workerError}`);
+      } else {
+        finish('error', `worker exited early (code ${code})`);
       }
-    });
-    child.on('exit', code => {
-      if (!settled) finish('error', `worker exited early (code ${code})`);
     });
     child.on('error', err => {
       finish('error', `worker spawn error: ${err.message}`);

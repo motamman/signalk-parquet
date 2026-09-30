@@ -40,7 +40,16 @@ import {
   registerTrackApiProvider,
   unregisterTrackApiProvider,
 } from './track-provider';
+import {
+  TrackWorkerClient,
+  TrackWorkerClosedError,
+  WorkerTrackApi,
+} from './utils/track-worker-client';
 import { SQLiteBuffer } from './utils/sqlite-buffer';
+import {
+  startEventLoopMonitor,
+  stopEventLoopMonitor,
+} from './utils/event-loop-monitor';
 import { VesselIdentityService } from './services/vessel-identity-service';
 import {
   PlaybackProvider,
@@ -217,6 +226,12 @@ export default function (app: ServerAPI): SignalKPlugin {
   ): Promise<void> {
     // Reconfigure runs stop() then start(); re-arm scheduled work.
     state.isStopping = false;
+
+    // Record how long the server's event loop is blocked, from here on. Started
+    // first so it covers this plugin's own startup, which reads the buffer and
+    // opens DuckDB. stop() disables it, so a reconfigure starts a fresh
+    // histogram rather than carrying the previous run's numbers forward.
+    startEventLoopMonitor();
     state.activeAggregationWorkers ??= new Set<ChildProcess>();
 
     // Get vessel MMSI from SignalK
@@ -962,6 +977,14 @@ export default function (app: ServerAPI): SignalKPlugin {
     // Register as a Track API provider (SignalK/signalk-server#2995). Only a
     // server carrying that PR exposes the registry; elsewhere this logs and
     // returns, and the plugin behaves exactly as before.
+    //
+    // Calls go to a forked worker (track-worker.ts) that answers each one
+    // whole, so no part of a track query runs on the server's event loop.
+    // Until the worker reports ready, and if it fails or dies, they are
+    // answered in-process as before. It starts after the DuckDB pool above
+    // so the extensions that pool cached are there for the worker's own, and
+    // only once the registry has taken the provider: on a server without the
+    // Track API it would be a process and a DuckDB instance answering nothing.
     try {
       const trackProvider = new TrackProvider(
         app.selfId,
@@ -970,7 +993,32 @@ export default function (app: ServerAPI): SignalKPlugin {
         app.debug,
         state.sqliteBuffer
       );
-      registerTrackApiProvider(app, trackProvider, app.debug);
+      const trackWorker = new TrackWorkerClient({
+        dataDir: state.currentConfig.outputDirectory,
+        dbPath: state.sqliteBuffer?.getDbPath(),
+        selfId: app.selfId,
+        log: (level, msg) =>
+          level === 'error' ? app.error(msg) : app.debug(msg),
+      });
+      const registered = registerTrackApiProvider(
+        app,
+        new WorkerTrackApi(trackProvider, () => trackWorker, app, app.selfId),
+        app.debug
+      );
+      if (registered) {
+        state.trackWorker = trackWorker;
+        trackWorker.start().then(
+          () =>
+            app.debug('[TrackWorker] Ready; Track API calls run in the worker'),
+          err => {
+            // Stopped before it was ready: nothing failed.
+            if (err instanceof TrackWorkerClosedError) return;
+            app.error(
+              `[TrackWorker] Not available, Track API calls run in-process: ${(err as Error).message}`
+            );
+          }
+        );
+      }
     } catch (error) {
       app.error(`Failed to register as Track API provider: ${error}`);
     }
@@ -998,6 +1046,7 @@ export default function (app: ServerAPI): SignalKPlugin {
     // Flag first so any timer/interval callback that fires during this
     // async teardown becomes a no-op instead of starting a new export.
     state.isStopping = true;
+    stopEventLoopMonitor();
 
     // Signal any running compaction jobs to cancel and wait for them
     // to land at a group boundary. A single in-flight DuckDB COPY is
@@ -1022,6 +1071,17 @@ export default function (app: ServerAPI): SignalKPlugin {
     // Unregister as History API and Track API provider
     unregisterHistoryApiProvider(app);
     unregisterTrackApiProvider(app);
+
+    // The Track API worker holds its own connection to buffer.db and its own
+    // DuckDB instance; it goes before the buffer below is closed.
+    if (state.trackWorker) {
+      try {
+        await state.trackWorker.close();
+      } catch (error) {
+        app.error(`Error stopping the Track API worker: ${error}`);
+      }
+      state.trackWorker = undefined;
+    }
 
     // Stop threshold monitoring system
     stopThresholdMonitoring();

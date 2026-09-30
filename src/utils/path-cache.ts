@@ -15,6 +15,22 @@ interface ContextCacheEntry {
 }
 
 const pathCache = new Map<string, PathCacheEntry>();
+
+/**
+ * Bumped by every `clearPathCache()`, so a writer can tell whether the cache was
+ * invalidated while it was computing.
+ *
+ * A read-through cache is filled by: miss, compute, store — and the compute is
+ * an await. If the parquet tree changes during it (the daily export writes a
+ * file and marks that path's buffer rows exported), the invalidation lands
+ * *before* the store, and the store then puts the pre-export listing back into
+ * the cache it was meant to drop. The path is by then absent from the buffer
+ * probe too, so it disappears from the listing for the life of the entry. Seen
+ * on macOS CI, 2026-09-27, where a mid-export observation listed one of two
+ * exported paths; the same code passes six runs for six on a faster machine,
+ * which is what a race looks like.
+ */
+let pathCacheEpoch = 0;
 const contextCache = new Map<string, ContextCacheEntry>();
 
 /**
@@ -73,8 +89,14 @@ export function setCachedPaths(
   context: Context,
   from: ZonedDateTime,
   to: ZonedDateTime,
-  paths: Path[]
+  paths: Path[],
+  epoch: number
 ): void {
+  // Drop a result computed before an invalidation rather than storing it over
+  // the cleared cache. Required, not optional, so a caller cannot omit it and
+  // silently reintroduce the race.
+  if (epoch !== pathCacheEpoch) return;
+
   // Use rounded timestamps for cache key to improve hit rate
   const key = `${dataDir}:${context}:${roundToMinute(from)}:${roundToMinute(to)}`;
 
@@ -94,10 +116,19 @@ export function setCachedPaths(
 }
 
 /**
- * Clear all cached paths
+ * The current epoch, to be captured before computing a listing and handed to
+ * `setCachedPaths`.
+ */
+export function currentPathCacheEpoch(): number {
+  return pathCacheEpoch;
+}
+
+/**
+ * Clear all cached paths, and invalidate any listing already being computed.
  */
 export function clearPathCache(): void {
   pathCache.clear();
+  pathCacheEpoch += 1;
 }
 
 /**

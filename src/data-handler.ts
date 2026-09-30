@@ -13,6 +13,7 @@ import {
 } from './types';
 import { extractCommandName } from './commands';
 import { resolveCustomS3Endpoint } from './utils/cloud-endpoint';
+import { disposeStreamSubscription } from './utils/stream-subscription';
 import {
   Context,
   Delta,
@@ -239,29 +240,6 @@ export function subscribeToCommandPaths(
           state as PluginState & { streamSubscriptions?: unknown }
         ).streamSubscriptions;
 
-        const disposeStreamSubscription = (subscription: unknown): void => {
-          if (typeof subscription === 'function') {
-            subscription();
-            return;
-          }
-
-          if (subscription && typeof subscription === 'object') {
-            const candidate = subscription as {
-              unsubscribe?: () => void;
-              dispose?: () => void;
-              off?: () => void;
-            };
-
-            if (typeof candidate.unsubscribe === 'function') {
-              candidate.unsubscribe();
-            } else if (typeof candidate.dispose === 'function') {
-              candidate.dispose();
-            } else if (typeof candidate.off === 'function') {
-              candidate.off();
-            }
-          }
-        };
-
         if (Array.isArray(streamSubscriptions)) {
           streamSubscriptions.forEach(disposeStreamSubscription);
           streamSubscriptions.length = 0;
@@ -397,28 +375,6 @@ function _shouldExcludeVessel(
   } catch (error) {}
 
   return false; // Don't exclude if we can't determine MMSI
-}
-
-// Dispose a single stream subscription returned by streambundle .onValue()
-function disposeStreamSubscription(subscription: unknown): void {
-  if (typeof subscription === 'function') {
-    subscription();
-    return;
-  }
-  if (subscription && typeof subscription === 'object') {
-    const candidate = subscription as {
-      unsubscribe?: () => void;
-      dispose?: () => void;
-      end?: () => void;
-    };
-    if (typeof candidate.unsubscribe === 'function') {
-      candidate.unsubscribe();
-    } else if (typeof candidate.dispose === 'function') {
-      candidate.dispose();
-    } else if (typeof candidate.end === 'function') {
-      candidate.end();
-    }
-  }
 }
 
 // Update data path subscriptions based on active regimens

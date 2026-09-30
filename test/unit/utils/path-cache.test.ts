@@ -12,6 +12,7 @@ import { Context, Path } from '@signalk/server-api';
 import { CACHE_TTL, CACHE_SIZE } from '../../../src/config/cache-defaults';
 import {
   getCachedPaths,
+  currentPathCacheEpoch,
   setCachedPaths,
   clearPathCache,
   getPathCacheStats,
@@ -61,18 +62,18 @@ describe('path cache', () => {
   });
 
   it('round-trips a stored value within the TTL', () => {
-    setCachedPaths(DATA_DIR, CTX, FROM, TO, PATHS);
+    setCachedPaths(DATA_DIR, CTX, FROM, TO, PATHS, currentPathCacheEpoch());
     expect(getCachedPaths(DATA_DIR, CTX, FROM, TO)).to.deep.equal(PATHS);
   });
 
   it('keeps the entry just before the TTL boundary', () => {
-    setCachedPaths(DATA_DIR, CTX, FROM, TO, PATHS);
+    setCachedPaths(DATA_DIR, CTX, FROM, TO, PATHS, currentPathCacheEpoch());
     clock += CACHE_TTL.PATH_CONTEXT - 1;
     expect(getCachedPaths(DATA_DIR, CTX, FROM, TO)).to.deep.equal(PATHS);
   });
 
   it('expires the entry at exactly the TTL and removes it', () => {
-    setCachedPaths(DATA_DIR, CTX, FROM, TO, PATHS);
+    setCachedPaths(DATA_DIR, CTX, FROM, TO, PATHS, currentPathCacheEpoch());
     clock += CACHE_TTL.PATH_CONTEXT;
     expect(getCachedPaths(DATA_DIR, CTX, FROM, TO)).to.equal(null);
     // The expired entry is deleted on read, not merely skipped.
@@ -82,7 +83,7 @@ describe('path cache', () => {
   it('shares an entry for queries in the same minute', () => {
     // 10:15:30 and 10:15:45 both round down to 10:15:00; likewise the upper
     // bound. The second query is a cache hit despite different seconds.
-    setCachedPaths(DATA_DIR, CTX, FROM, TO, PATHS);
+    setCachedPaths(DATA_DIR, CTX, FROM, TO, PATHS, currentPathCacheEpoch());
     const hit = getCachedPaths(
       DATA_DIR,
       CTX,
@@ -93,27 +94,22 @@ describe('path cache', () => {
   });
 
   it('does not share an entry across minute boundaries', () => {
-    setCachedPaths(DATA_DIR, CTX, FROM, TO, PATHS);
-    const miss = getCachedPaths(
-      DATA_DIR,
-      CTX,
-      zdt('2025-11-02T10:16:30Z'),
-      TO
-    );
+    setCachedPaths(DATA_DIR, CTX, FROM, TO, PATHS, currentPathCacheEpoch());
+    const miss = getCachedPaths(DATA_DIR, CTX, zdt('2025-11-02T10:16:30Z'), TO);
     expect(miss).to.equal(null);
   });
 
   it('keys on the context', () => {
-    setCachedPaths(DATA_DIR, CTX, FROM, TO, PATHS);
-    expect(getCachedPaths(DATA_DIR, 'vessels.other' as Context, FROM, TO)).to.equal(
-      null
-    );
+    setCachedPaths(DATA_DIR, CTX, FROM, TO, PATHS, currentPathCacheEpoch());
+    expect(
+      getCachedPaths(DATA_DIR, 'vessels.other' as Context, FROM, TO)
+    ).to.equal(null);
   });
 
   it('keys on the data directory', () => {
     // Regression: entries cached under one directory must never be served
     // for another (e.g. after setDataDir() on reconfigure).
-    setCachedPaths(DATA_DIR, CTX, FROM, TO, PATHS);
+    setCachedPaths(DATA_DIR, CTX, FROM, TO, PATHS, currentPathCacheEpoch());
     expect(getCachedPaths(OTHER_DIR, CTX, FROM, TO)).to.equal(null);
   });
 
@@ -121,9 +117,16 @@ describe('path cache', () => {
     // A request before the change caches under the old directory; requests
     // after the change miss, re-query, and cache under the new directory.
     // Both entries stay retrievable independently.
-    setCachedPaths(DATA_DIR, CTX, FROM, TO, PATHS);
+    setCachedPaths(DATA_DIR, CTX, FROM, TO, PATHS, currentPathCacheEpoch());
     expect(getCachedPaths(OTHER_DIR, CTX, FROM, TO)).to.equal(null);
-    setCachedPaths(OTHER_DIR, CTX, FROM, TO, ['other.path'] as Path[]);
+    setCachedPaths(
+      OTHER_DIR,
+      CTX,
+      FROM,
+      TO,
+      ['other.path'] as Path[],
+      currentPathCacheEpoch()
+    );
     expect(getCachedPaths(DATA_DIR, CTX, FROM, TO)).to.deep.equal(PATHS);
     expect(getCachedPaths(OTHER_DIR, CTX, FROM, TO)).to.deep.equal([
       'other.path',
@@ -135,29 +138,55 @@ describe('path cache', () => {
     // the oldest is unambiguous, then add one more to trigger eviction.
     for (let i = 0; i < CACHE_SIZE.PATH_CONTEXT_MAX; i++) {
       clock += 1;
-      setCachedPaths(DATA_DIR, `vessels.v${i}` as Context, FROM, TO, [
-        `p${i}`,
-      ] as Path[]);
+      setCachedPaths(
+        DATA_DIR,
+        `vessels.v${i}` as Context,
+        FROM,
+        TO,
+        [`p${i}`] as Path[],
+        currentPathCacheEpoch()
+      );
     }
     expect(getPathCacheStats().size).to.equal(CACHE_SIZE.PATH_CONTEXT_MAX);
 
     clock += 1;
-    setCachedPaths(DATA_DIR, 'vessels.vNew' as Context, FROM, TO, [
-      'pNew',
-    ] as Path[]);
+    setCachedPaths(
+      DATA_DIR,
+      'vessels.vNew' as Context,
+      FROM,
+      TO,
+      ['pNew'] as Path[],
+      currentPathCacheEpoch()
+    );
 
     expect(getPathCacheStats().size).to.equal(CACHE_SIZE.PATH_CONTEXT_MAX);
     // The first-inserted (oldest) context was evicted; the newest is present.
-    expect(getCachedPaths(DATA_DIR, 'vessels.v0' as Context, FROM, TO)).to.equal(
-      null
-    );
+    expect(
+      getCachedPaths(DATA_DIR, 'vessels.v0' as Context, FROM, TO)
+    ).to.equal(null);
     expect(
       getCachedPaths(DATA_DIR, 'vessels.vNew' as Context, FROM, TO)
     ).to.deep.equal(['pNew']);
   });
 
+  it('drops a listing computed before the cache was cleared', () => {
+    // A read-through fill is miss, compute, store, and the compute is an
+    // await. An export clearing the cache in between must not be undone by the
+    // store: the stored listing predates the export, and the path it is
+    // missing is by then absent from the buffer probe too, so it would vanish
+    // from the answer for the life of the entry.
+    const epoch = currentPathCacheEpoch();
+    clearPathCache();
+    setCachedPaths(DATA_DIR, CTX, FROM, TO, PATHS, epoch);
+    expect(getCachedPaths(DATA_DIR, CTX, FROM, TO)).to.equal(null);
+
+    // A listing computed after the clear stores normally.
+    setCachedPaths(DATA_DIR, CTX, FROM, TO, PATHS, currentPathCacheEpoch());
+    expect(getCachedPaths(DATA_DIR, CTX, FROM, TO)).to.deep.equal(PATHS);
+  });
+
   it('clears only the path cache', () => {
-    setCachedPaths(DATA_DIR, CTX, FROM, TO, PATHS);
+    setCachedPaths(DATA_DIR, CTX, FROM, TO, PATHS, currentPathCacheEpoch());
     setCachedContexts(DATA_DIR, FROM, TO, [CTX]);
     clearPathCache();
     expect(getCachedPaths(DATA_DIR, CTX, FROM, TO)).to.equal(null);
@@ -165,7 +194,7 @@ describe('path cache', () => {
   });
 
   it('reports stats', () => {
-    setCachedPaths(DATA_DIR, CTX, FROM, TO, PATHS);
+    setCachedPaths(DATA_DIR, CTX, FROM, TO, PATHS, currentPathCacheEpoch());
     expect(getPathCacheStats()).to.deep.equal({
       size: 1,
       maxSize: CACHE_SIZE.PATH_CONTEXT_MAX,
@@ -224,7 +253,7 @@ describe('context cache', () => {
   });
 
   it('clears only the context cache', () => {
-    setCachedPaths(DATA_DIR, CTX, FROM, TO, PATHS);
+    setCachedPaths(DATA_DIR, CTX, FROM, TO, PATHS, currentPathCacheEpoch());
     setCachedContexts(DATA_DIR, FROM, TO, CONTEXTS);
     clearContextCache();
     expect(getCachedContexts(DATA_DIR, FROM, TO)).to.equal(null);
@@ -236,7 +265,7 @@ describe('clearAllCaches', () => {
   useFrozenClock();
 
   it('empties both caches', () => {
-    setCachedPaths(DATA_DIR, CTX, FROM, TO, PATHS);
+    setCachedPaths(DATA_DIR, CTX, FROM, TO, PATHS, currentPathCacheEpoch());
     setCachedContexts(DATA_DIR, FROM, TO, [CTX]);
     clearAllCaches();
     const stats = getAllCacheStats();

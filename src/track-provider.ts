@@ -42,7 +42,14 @@ import {
   validateContext,
   validateSignalKPath,
 } from './utils/signalk-validation';
-import { stageBufferTable, BufferStagingSource } from './utils/buffer-staging';
+import {
+  IN_PROCESS_BATCH_SIZE,
+  stageBufferTable,
+  BufferStagingSource,
+} from './utils/buffer-staging';
+import { yieldToEventLoop } from './utils/hive-walk';
+import { federationCursor } from './utils/sqlite-buffer';
+import { FederationCursor } from './types';
 import {
   buildBufferObjectSubquery,
   buildBufferScalarSubquery,
@@ -198,6 +205,20 @@ export type TrackBufferSource = BufferStagingSource & {
   getTableColumns(signalkPath: string): Set<string> | undefined;
   hasTable(signalkPath: string): boolean;
 };
+
+/**
+ * Whether a property path holds angles, so its bucket takes the circular
+ * mean. The server's metadata answers it (`isAngularPath`); a provider with
+ * no server to ask — the one in track-worker.ts — is handed the answer.
+ */
+export type AngularPathTest = (
+  signalkPath: string,
+  context: Context
+) => boolean;
+
+export interface TrackProviderOptions {
+  isAngular?: AngularPathTest;
+}
 
 interface TimeWindow {
   fromMs: number;
@@ -420,18 +441,57 @@ function bucketExpression(resolutionMs: number): string {
 // Provider
 // ---------------------------------------------------------------------------
 
+/**
+ * The vessel's name as the server currently has it, for
+ * `properties.contextName`. Undefined when the server has none or cannot be
+ * asked.
+ */
+export function contextNameFor(
+  app: ServerAPI,
+  selfContext: Context,
+  context: Context
+): string | undefined {
+  try {
+    const host = app as unknown as {
+      getSelfPath?: (p: string) => unknown;
+      getPath?: (p: string) => unknown;
+    };
+    const raw =
+      context === selfContext
+        ? host.getSelfPath?.('name')
+        : host.getPath?.(`${context}.name`);
+    if (typeof raw === 'string') {
+      return raw;
+    }
+    if (raw && typeof raw === 'object') {
+      const value = (raw as { value?: unknown }).value;
+      if (typeof value === 'string') {
+        return value;
+      }
+    }
+  } catch {
+    // Name is a nicety; a host without the lookup still gets a track.
+  }
+  return undefined;
+}
+
 export class TrackProvider implements TrackApi {
   private readonly hive = new HivePathBuilder();
   private sqliteBuffer?: TrackBufferSource;
+  private readonly isAngular: AngularPathTest;
 
   constructor(
     private readonly selfId: string,
     private dataDir: string,
     private readonly app: ServerAPI,
     private readonly debug: (msg: string) => void,
-    sqliteBuffer?: TrackBufferSource
+    sqliteBuffer?: TrackBufferSource,
+    options: TrackProviderOptions = {}
   ) {
     this.sqliteBuffer = sqliteBuffer;
+    this.isAngular =
+      options.isAngular ??
+      ((signalkPath, context) => isAngularPath(signalkPath, app, context));
   }
 
   setSqliteBuffer(buffer: TrackBufferSource | undefined): void {
@@ -600,7 +660,9 @@ export class TrackProvider implements TrackApi {
     // contexts' buffered fixes still reach getTracks through staging; they
     // are just not listed until the day's export lands them in parquet.
     if (buffer?.hasTable(POSITION_PATH)) {
-      if (this.bufferHasPositionIn(buffer, this.selfContext, window, filter)) {
+      if (
+        await this.bufferHasPositionIn(buffer, this.selfContext, window, filter)
+      ) {
         found.add(this.selfContext);
       }
     }
@@ -608,15 +670,25 @@ export class TrackProvider implements TrackApi {
     return [...found].sort() as Context[];
   }
 
-  private bufferHasPositionIn(
+  /**
+   * Whether the buffer holds a fix for the context in the window, inside the
+   * box when there is one. Without a box the first row answers; with one, a
+   * vessel whose buffered fixes all lie outside it is read to the end of the
+   * window.
+   *
+   * Each page is a synchronous SQLite read on the server's thread, so the
+   * pages are the staging read's size (the 10 ms budget in buffer-staging.ts)
+   * and the loop yields between them: read whole, the 200,000-row cap was
+   * about 1.6 s of frozen server at the ~8 µs a row measured there.
+   */
+  private async bufferHasPositionIn(
     buffer: TrackBufferSource,
     context: Context,
     window: TimeWindow,
     filter?: SpatialFilter
-  ): boolean {
-    const PAGE = 5000;
+  ): Promise<boolean> {
     const MAX_ROWS = 200_000;
-    let afterId = 0;
+    let after: FederationCursor | null = null;
     let scanned = 0;
     for (;;) {
       const rows = buffer.getRowsForFederation(
@@ -624,10 +696,19 @@ export class TrackProvider implements TrackApi {
         context,
         window.fromIso,
         window.toIso,
-        afterId,
-        PAGE
+        after,
+        IN_PROCESS_BATCH_SIZE
       );
-      if (rows.length === 0) return false;
+      if (rows.length === 0) {
+        // A buffer closed since the last page (plugin stop, reconfigure)
+        // returns no rows, which must not be read as "no fix".
+        if (after !== null && !buffer.isOpen()) {
+          throw new Error(
+            `[TrackProvider] buffer closed mid-scan; refusing to answer with incomplete data`
+          );
+        }
+        return false;
+      }
       for (const row of rows) {
         if (!filter) return true;
         const lat = Number(row.value_latitude);
@@ -641,8 +722,11 @@ export class TrackProvider implements TrackApi {
         }
       }
       scanned += rows.length;
-      afterId = Number(rows[rows.length - 1].id);
-      if (rows.length < PAGE || scanned >= MAX_ROWS) return false;
+      after = federationCursor(rows[rows.length - 1]);
+      if (rows.length < IN_PROCESS_BATCH_SIZE || scanned >= MAX_ROWS) {
+        return false;
+      }
+      await yieldToEventLoop();
     }
   }
 
@@ -769,7 +853,7 @@ export class TrackProvider implements TrackApi {
     const properties: TrackProperties = {
       context,
       isSelf: context === this.selfContext,
-      contextName: this.lookupContextName(context),
+      contextName: contextNameFor(this.app, this.selfContext, context),
       from: isoOf(flat[0].tMs),
       to: isoOf(flat[flat.length - 1].tMs),
       bbox: boundingBoxOf(flat),
@@ -829,31 +913,6 @@ export class TrackProvider implements TrackApi {
       },
       properties,
     };
-  }
-
-  private lookupContextName(context: Context): string | undefined {
-    try {
-      const host = this.app as unknown as {
-        getSelfPath?: (p: string) => unknown;
-        getPath?: (p: string) => unknown;
-      };
-      const raw =
-        context === this.selfContext
-          ? host.getSelfPath?.('name')
-          : host.getPath?.(`${context}.name`);
-      if (typeof raw === 'string') {
-        return raw;
-      }
-      if (raw && typeof raw === 'object') {
-        const value = (raw as { value?: unknown }).value;
-        if (typeof value === 'string') {
-          return value;
-        }
-      }
-    } catch {
-      // Name is a nicety; a host without the lookup still gets a track.
-    }
-    return undefined;
   }
 
   // -- queries --------------------------------------------------------------
@@ -982,8 +1041,7 @@ export class TrackProvider implements TrackApi {
     }
 
     const stringValued = isStringPath(signalkPath);
-    const angular =
-      !stringValued && isAngularPath(signalkPath, this.app, context);
+    const angular = !stringValued && this.isAngular(signalkPath, context);
     const parquetValue = stringValued
       ? 'CAST(value AS VARCHAR)'
       : 'TRY_CAST(value AS DOUBLE)';

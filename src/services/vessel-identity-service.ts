@@ -10,7 +10,9 @@
  *   - a write that only completes the last row (more fields, nothing
  *     different) extends that row in place while it is still in the buffer,
  *     so a vessel whose identity arrives one path per message, as an
- *     upstream Signal K server replays its cache, still ends up as one row;
+ *     upstream Signal K server replays its cache, still ends up as one row.
+ *     The buffer decides that, in one operation, from what is stored;
+ *     this service holds no row ids;
  *   - what was last written per vessel is read back from the buffer at
  *     start, so a restart does not rewrite known vessels however the
  *     previous run ended. A small JSON file in the data directory keeps the
@@ -22,8 +24,12 @@
 
 import * as fs from 'fs-extra';
 import * as path from 'path';
-import { ServerAPI } from '@signalk/server-api';
+import { NormalizedDelta, Path, ServerAPI } from '@signalk/server-api';
 import { DataRecord, PluginState } from '../types';
+import {
+  disposeStreamSubscription,
+  StreamSubscription,
+} from '../utils/stream-subscription';
 import {
   IDENTITY_PATH,
   IDENTITY_PATHS,
@@ -50,36 +56,17 @@ interface TrackedVessel {
   dirty: boolean;
 }
 
-/** Minimal shape of a whole delta message as emitted on `app.signalk`. */
-interface DeltaMessage {
-  context?: string;
-  updates?: Array<{
-    timestamp?: string;
-    $source?: string;
-    values?: Array<{ path?: string; value?: unknown }>;
-    meta?: unknown[];
-  }>;
-}
-
-/** The delta emitter the server keeps on the plugin app object. */
-interface DeltaEmitter {
-  on(event: 'delta', handler: (delta: DeltaMessage) => void): unknown;
-  removeListener(
-    event: 'delta',
-    handler: (delta: DeltaMessage) => void
-  ): unknown;
-}
-
 export class VesselIdentityService {
   private readonly tracked = new Map<string, TrackedVessel>();
   /** Canonical JSON of the components last written per context (persisted). */
   private lastWritten = new Map<string, string>();
-  /** Buffer row id of the last identity row per context, while known. */
-  private readonly lastRowIds = new Map<string, number>();
-  private readonly onDeltaBound = (delta: DeltaMessage) => this.onDelta(delta);
+  private subscriptions: StreamSubscription[] = [];
   private persistTimer?: NodeJS.Timeout;
   private stateDirty = false;
   private running = false;
+  /** Contexts whose report is still arriving; written once it has (flushPending). */
+  private readonly pending = new Set<string>();
+  private flushScheduled = false;
 
   constructor(
     private readonly app: ServerAPI,
@@ -98,9 +85,26 @@ export class VesselIdentityService {
     this.loadState();
     this.readBackFromBuffer();
 
-    // Whole delta messages, before the server splits them per path, so one
-    // AIS static report folds into one row.
-    this.emitter.on('delta', this.onDeltaBound);
+    // The identity paths, through the plugin API's per-path buses, as the
+    // data handler subscribes. The server splits every delta into one bus
+    // event per value (streambundle pushDelta), each carrying the update's
+    // timestamp and $source, and pushes them all synchronously, so an AIS
+    // static report arrives as several events that share a stamp within one
+    // pass; `absorb` folds them in and the write waits for the end of that
+    // pass (flushPending), so a report is one row. Root keys (name, mmsi)
+    // arrive on the root bus as one object. No debounce: it would drop the
+    // later pieces of a report.
+    this.subscribe('' as Path, (d: NormalizedDelta) => {
+      const v = d.value as Record<string, unknown> | null;
+      return (
+        v !== null &&
+        typeof v === 'object' &&
+        IDENTITY_ROOT_KEYS.some(key => v[key] !== undefined)
+      );
+    });
+    for (const p of IDENTITY_PATHS) {
+      this.subscribe(p as Path, () => true);
+    }
 
     // The server emits its defaults (self name, mmsi, design.*) once at
     // start, before plugins load, and AIS targets heard before a plugin
@@ -121,12 +125,14 @@ export class VesselIdentityService {
 
   stop(): void {
     if (!this.running) return;
+    // A report that arrived in this same pass is written, not dropped: the
+    // plugin stops this service before it closes the buffer.
+    this.flushPending();
     this.running = false;
-    try {
-      this.emitter.removeListener('delta', this.onDeltaBound);
-    } catch {
-      // Best-effort.
+    for (const s of this.subscriptions) {
+      disposeStreamSubscription(s);
     }
+    this.subscriptions = [];
     if (this.persistTimer) {
       clearInterval(this.persistTimer);
       this.persistTimer = undefined;
@@ -135,37 +141,36 @@ export class VesselIdentityService {
     this.tracked.clear();
   }
 
-  private get emitter(): DeltaEmitter {
-    return (this.app as unknown as { signalk: DeltaEmitter }).signalk;
-  }
-
-  private onDelta(delta: DeltaMessage): void {
-    if (!this.running || !delta || !Array.isArray(delta.updates)) return;
-    const context = delta.context;
-    if (!context || !context.startsWith('vessels.')) return;
-    for (const update of delta.updates) {
-      if (!update || !Array.isArray(update.values)) continue;
-      for (const pv of update.values) {
-        if (!pv) continue;
+  /** One bus subscription; vessel contexts and real values only. */
+  private subscribe(
+    busPath: Path,
+    accept: (d: NormalizedDelta) => boolean
+  ): void {
+    const stream = this.app.streambundle
+      .getBus(busPath)
+      .filter((d: NormalizedDelta) => {
+        if (!this.running || d.isMeta) return false;
+        const context = String(d.context ?? '');
+        return context.startsWith('vessels.') && accept(d);
+      })
+      .onValue((d: NormalizedDelta) => {
         this.absorb(
-          context,
-          pv.path ?? '',
-          pv.value,
-          update.timestamp,
-          update.$source,
-          false
+          String(d.context),
+          busPath,
+          d.value,
+          d.timestamp,
+          d.$source
         );
-      }
-      // One row per update, however many identity values it carried.
-      const vessel = this.tracked.get(context);
-      if (vessel?.dirty) this.write(context, vessel);
-    }
+      });
+    this.subscriptions.push(stream as StreamSubscription);
   }
 
   /**
    * Fold one value for `busPath` (a Signal K path, '' for the root) into the
-   * vessel's known identity. Callers that fold several values pass
-   * `writeNow = false` and write once afterwards.
+   * vessel's known identity. From the buses, a change is written once the
+   * report it belongs to has fully arrived (see flushPending). Callers that
+   * fold several values themselves pass `writeNow = false` and write once
+   * afterwards.
    */
   private absorb(
     context: string,
@@ -177,6 +182,17 @@ export class VesselIdentityService {
   ): void {
     const incoming = identityFromDelta(busPath, value);
     if (Object.keys(incoming).length === 0) return;
+
+    // A value stamped differently is a different report. The one still
+    // pending is written first, so two reports are two rows even when they
+    // arrive in one pass.
+    if (this.pending.has(context)) {
+      const waiting = this.tracked.get(context);
+      if (waiting && waiting.timestamp !== timestamp) {
+        this.pending.delete(context);
+        if (waiting.dirty) this.write(context, waiting);
+      }
+    }
 
     let vessel = this.tracked.get(context);
     if (!vessel) {
@@ -193,7 +209,32 @@ export class VesselIdentityService {
       vessel.timestamp = timestamp;
       vessel.source = source;
       vessel.dirty = canonical(vessel.known) !== this.lastWritten.get(context);
-      if (vessel.dirty && writeNow) this.write(context, vessel);
+      if (vessel.dirty && writeNow) this.schedule(context);
+    }
+  }
+
+  /**
+   * Write the context's identity once the current pass is over. The server
+   * pushes every value of a delta onto its bus synchronously, so by the time a
+   * microtask runs the whole report has been folded in. Writing after each
+   * value instead wrote a partial identity first whenever a report changed
+   * two fields already known: it could not extend the stored row (a field
+   * had changed), so it inserted, and the next value inserted again.
+   */
+  private schedule(context: string): void {
+    this.pending.add(context);
+    if (this.flushScheduled) return;
+    this.flushScheduled = true;
+    queueMicrotask(() => this.flushPending());
+  }
+
+  private flushPending(): void {
+    this.flushScheduled = false;
+    const contexts = [...this.pending];
+    this.pending.clear();
+    for (const context of contexts) {
+      const vessel = this.tracked.get(context);
+      if (vessel?.dirty) this.write(context, vessel);
     }
   }
 
@@ -283,18 +324,13 @@ export class VesselIdentityService {
     for (const [key, v] of Object.entries(value)) {
       if (v !== undefined) record[`value_${key}`] = v;
     }
-    let rowId: number;
     try {
-      const previous = this.lastRowIds.get(context);
-      if (
-        previous !== undefined &&
-        completes(this.lastWrittenIdentity(context), vessel.known) &&
-        buffer.updateUnexportedRow(IDENTITY_PATH, previous, record)
-      ) {
-        rowId = previous;
-      } else {
-        rowId = buffer.insert(record);
-      }
+      // One buffer operation decides between extending the vessel's latest
+      // unexported row and inserting a new one, because that decision depends
+      // on what is stored. The service does not track row ids: it cannot know
+      // whether the row it last wrote is still there to extend, and asking
+      // then writing would be two calls with a gap in between.
+      buffer.insertOrExtendLatest(record);
     } catch (error) {
       this.app.error(
         `[Identity] Failed to record identity for ${context}: ${(error as Error).message}`
@@ -303,7 +339,6 @@ export class VesselIdentityService {
     }
     vessel.dirty = false;
     this.lastWritten.set(context, canonical(vessel.known));
-    this.lastRowIds.set(context, rowId);
     this.stateDirty = true;
   }
 
@@ -330,7 +365,6 @@ export class VesselIdentityService {
       return;
     }
     for (const row of rows) {
-      this.lastRowIds.set(row.context, row.id);
       const known = parseIdentity(row.value_json ?? undefined);
       if (!known) continue;
       const written = canonical(known);
@@ -435,19 +469,6 @@ function parseIdentity(json: string | undefined): IdentityComponents | null {
     (out as Record<string, unknown>)[field] = value;
   }
   return out;
-}
-
-/**
- * True when `next` carries everything `previous` did, unchanged: the new
- * identity only completes the old one, so the old row can be extended.
- */
-function completes(
-  previous: IdentityComponents,
-  next: IdentityComponents
-): boolean {
-  const keys = Object.keys(previous) as Array<keyof IdentityComponents>;
-  if (keys.length === 0) return false;
-  return keys.every(key => previous[key] === next[key]);
 }
 
 /** Walk a dotted path through nested plain objects. */

@@ -19,6 +19,7 @@ import { ParquetExportService } from '../../src/services/parquet-export-service'
 import { DuckDBPool } from '../../src/utils/duckdb-pool';
 import { filesFor, readParquetSql } from '../../src/utils/parquet-files';
 import { stageBufferTable } from '../../src/utils/buffer-staging';
+import { FederationCursor } from '../../src/types';
 import {
   buildBufferScalarSubquery,
   buildBufferObjectSubquery,
@@ -267,6 +268,149 @@ describe('storage pipeline (SQLite buffer -> Parquet -> DuckDB)', function () {
       expect(Number(row.avg_value)).to.equal(10);
     } finally {
       conn.disconnectSync();
+    }
+  });
+
+  it('yields between staged pages without losing or duplicating rows', async () => {
+    // Staging pages 5,000 rows at a time and gives the event loop a turn
+    // between pages, so the server keeps answering during a large history
+    // query. That means rows can be inserted mid-scan: paging is by
+    // ascending id, so a later page must pick them up exactly once and an
+    // earlier page must never repeat.
+    const SOG = 'navigation.speedOverGround';
+    const fromIso = '2024-06-01T00:00:00.000Z';
+    const toIso = '2024-06-02T00:00:00.000Z';
+    const base = DAY.getTime();
+    const existing = 12_000; // three pages
+    buffer.insertBatch(
+      Array.from({ length: existing }, (_, i) =>
+        scalarRecord(SOG, i, new Date(base + i * 1000).toISOString())
+      )
+    );
+
+    const conn = await DuckDBPool.getConnection();
+    try {
+      // Insert on every event-loop turn while the scan is yielded; if it
+      // never yielded, none of these would land before it finished.
+      let added = 0;
+      let inserting = true;
+      const insertDuringScan = (): void => {
+        if (!inserting) return;
+        buffer.insert(
+          scalarRecord(
+            SOG,
+            1000 + added,
+            new Date(base + (existing + added) * 1000).toISOString()
+          )
+        );
+        added += 1;
+        setImmediate(insertDuringScan);
+      };
+      setImmediate(insertDuringScan);
+
+      const staged = await stageBufferTable(
+        conn,
+        buffer,
+        CONTEXT,
+        SOG,
+        fromIso,
+        toIso
+      );
+      inserting = false;
+      expect(staged).to.be.a('string');
+      expect(
+        added,
+        'rows were inserted while the scan was yielded'
+      ).to.be.greaterThan(0);
+
+      const res = await conn.runAndReadAll(
+        `SELECT COUNT(*) AS n, COUNT(DISTINCT id) AS distinct_ids, MIN(id) AS lo, MAX(id) AS hi FROM ${staged as string}`
+      );
+      const row = res.getRowObjects()[0] as {
+        n: bigint;
+        distinct_ids: bigint;
+        lo: bigint;
+        hi: bigint;
+      };
+      // Everything present before the scan started must be staged, no row
+      // twice, and anything picked up mid-scan is a row that really exists.
+      expect(Number(row.n)).to.be.at.least(existing);
+      expect(Number(row.n)).to.be.at.most(existing + added);
+      expect(Number(row.distinct_ids)).to.equal(Number(row.n));
+      expect(Number(row.lo)).to.equal(1);
+      expect(Number(row.hi)).to.equal(Number(row.n));
+    } finally {
+      conn.disconnectSync();
+    }
+  });
+
+  it('refuses to answer when the buffer closes mid-scan', async () => {
+    // A closed buffer returns an empty array, which the page loop cannot
+    // tell from "no more rows"; answering would silently drop the rest of
+    // the live data. Uses its own buffer so the suite's teardown is unaffected.
+    const SOG = 'navigation.speedOverGround';
+    const own = new SQLiteBuffer({
+      dbPath: path.join(host.dataDir, 'closing.db'),
+    });
+    const base = DAY.getTime();
+    own.insertBatch(
+      Array.from({ length: 12_000 }, (_, i) =>
+        makeScalarRecord(
+          CONTEXT,
+          SOG,
+          i,
+          new Date(base + i * 1000).toISOString()
+        )
+      )
+    );
+
+    // Close once a page has been read, so the failure is a close *between*
+    // pages rather than a race with the first read.
+    let pagesRead = 0;
+    const closesAfterFirstPage = {
+      isOpen: () => own.isOpen(),
+      getTableSchema: (p: string) => own.getTableSchema(p),
+      getRowsForFederation: (
+        p: string,
+        context: string,
+        fromIso: string,
+        toIso: string,
+        after: FederationCursor | null,
+        limit: number
+      ) => {
+        const rows = own.getRowsForFederation(
+          p,
+          context,
+          fromIso,
+          toIso,
+          after,
+          limit
+        );
+        if (++pagesRead === 1) own.close();
+        return rows;
+      },
+    };
+
+    const conn = await DuckDBPool.getConnection();
+    try {
+      let threw: Error | undefined;
+      try {
+        await stageBufferTable(
+          conn,
+          closesAfterFirstPage,
+          CONTEXT,
+          SOG,
+          '2024-06-01T00:00:00.000Z',
+          '2024-06-02T00:00:00.000Z'
+        );
+      } catch (err) {
+        threw = err as Error;
+      }
+      expect(threw, 'a mid-scan close must fail the query').to.be.an('Error');
+      expect(threw?.message).to.include('closed mid-scan');
+    } finally {
+      conn.disconnectSync();
+      if (own.isOpen()) own.close();
     }
   });
 

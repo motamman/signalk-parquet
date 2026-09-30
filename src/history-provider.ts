@@ -25,7 +25,10 @@ import {
   buildParquetFilterClause,
   filterColumns,
 } from './utils/path-filters';
-import { getAvailablePathsArray } from './utils/path-discovery';
+import {
+  BufferPathSource,
+  getAvailablePathsArray,
+} from './utils/path-discovery';
 import { getAvailableContextsForTimeRange } from './utils/context-discovery';
 import { DuckDBPool } from './utils/duckdb-pool';
 import { escapeSqlString } from './utils/sql-escape';
@@ -61,11 +64,14 @@ import {
 } from './utils/smoothing';
 import { AutoDiscoveryService } from './services/auto-discovery';
 
-/** The slice of SQLiteBuffer the provider needs: staging plus schema lookups. */
-type ProviderBufferSource = BufferStagingSource & {
-  getKnownPaths(): Set<string>;
-  getTableColumns(path: string): Set<string> | undefined;
-};
+/**
+ * The slice of SQLiteBuffer the provider needs: staging, schema lookups and
+ * the path listing's probes.
+ */
+type ProviderBufferSource = BufferStagingSource &
+  BufferPathSource & {
+    getTableColumns(path: string): Set<string> | undefined;
+  };
 
 /**
  * Convert Temporal.Instant or ISO string to ZonedDateTime (UTC)
@@ -621,7 +627,14 @@ export class HistoryProvider implements HistoryApi {
         ? `vessels.${this.selfId}`
         : validateContext(queryContext.replace(/ /gi, ''))
       : undefined;
-    const paths = getAvailablePathsArray(this.dataDir, this.app, context);
+    // Files and the buffer both, so a path recorded since the last export
+    // (or one that is buffer-only) is listed like any other.
+    const paths = getAvailablePathsArray(
+      this.dataDir,
+      this.app,
+      context,
+      this.sqliteBuffer
+    );
     return paths as PathsResponse;
   }
 

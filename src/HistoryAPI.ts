@@ -18,8 +18,11 @@ import path from 'path';
 import {
   getAvailablePathsArray,
   getAvailablePathsForTimeRange,
+  bufferPathsInWindow,
+  mergePathSources,
 } from './utils/path-discovery';
 import {
+  currentPathCacheEpoch,
   getCachedPaths,
   setCachedPaths,
   getCachedContexts,
@@ -189,20 +192,37 @@ export function registerHistoryApiRoute(
         // stored result all use the same directory even if setDataDir()
         // runs while the query is in flight.
         const dataDir = historyApi.getDataDir();
-        // Check cache first
-        let paths = getCachedPaths(dataDir, context, from, to);
+        // The cache holds the file-derived listing only. Parquet changes once
+        // a day at export, so caching it costs nothing; the buffer gains a path
+        // the moment one is recorded, so folding it in before the cache would
+        // hide a new path for the life of the entry.
+        // Read the buffer BEFORE the files. The export writes a path's file and
+        // then marks its rows exported, so a files-then-buffer reader can miss
+        // a path in both; this order cannot. See bufferPathsInWindow.
+        const fromBuffer = bufferPathsInWindow(
+          historyApi.getSqliteBuffer(),
+          context,
+          from,
+          to
+        );
 
-        if (!paths) {
-          // Cache miss - query the parquet files
-          paths = await getAvailablePathsForTimeRange(
+        // Captured before the listing is computed: if an export invalidates the
+        // cache while we are computing, the store below is dropped rather than
+        // putting a pre-export listing back into the cache it just cleared.
+        const epoch = currentPathCacheEpoch();
+        let fromFiles = getCachedPaths(dataDir, context, from, to);
+
+        if (!fromFiles) {
+          fromFiles = await getAvailablePathsForTimeRange(
             dataDir,
             context,
             from,
             to
           );
-          // Cache the result
-          setCachedPaths(dataDir, context, from, to, paths);
+          setCachedPaths(dataDir, context, from, to, fromFiles, epoch);
         }
+
+        const paths = mergePathSources(fromFiles, fromBuffer);
 
         res.json(paths);
       } else {
@@ -213,7 +233,8 @@ export function registerHistoryApiRoute(
         const paths = getAvailablePathsArray(
           historyApi.getDataDir(),
           app,
-          context
+          context,
+          historyApi.getSqliteBuffer()
         );
         res.json(paths);
       }
@@ -332,20 +353,37 @@ export function registerHistoryApiRoute(
         // stored result all use the same directory even if setDataDir()
         // runs while the query is in flight.
         const dataDir = historyApi.getDataDir();
-        // Check cache first
-        let paths = getCachedPaths(dataDir, context, from, to);
+        // The cache holds the file-derived listing only. Parquet changes once
+        // a day at export, so caching it costs nothing; the buffer gains a path
+        // the moment one is recorded, so folding it in before the cache would
+        // hide a new path for the life of the entry.
+        // Read the buffer BEFORE the files. The export writes a path's file and
+        // then marks its rows exported, so a files-then-buffer reader can miss
+        // a path in both; this order cannot. See bufferPathsInWindow.
+        const fromBuffer = bufferPathsInWindow(
+          historyApi.getSqliteBuffer(),
+          context,
+          from,
+          to
+        );
 
-        if (!paths) {
-          // Cache miss - query the parquet files
-          paths = await getAvailablePathsForTimeRange(
+        // Captured before the listing is computed: if an export invalidates the
+        // cache while we are computing, the store below is dropped rather than
+        // putting a pre-export listing back into the cache it just cleared.
+        const epoch = currentPathCacheEpoch();
+        let fromFiles = getCachedPaths(dataDir, context, from, to);
+
+        if (!fromFiles) {
+          fromFiles = await getAvailablePathsForTimeRange(
             dataDir,
             context,
             from,
             to
           );
-          // Cache the result
-          setCachedPaths(dataDir, context, from, to, paths);
+          setCachedPaths(dataDir, context, from, to, fromFiles, epoch);
         }
+
+        const paths = mergePathSources(fromFiles, fromBuffer);
 
         res.json(paths);
       } else {
@@ -356,7 +394,8 @@ export function registerHistoryApiRoute(
         const paths = getAvailablePathsArray(
           historyApi.getDataDir(),
           app,
-          context
+          context,
+          historyApi.getSqliteBuffer()
         );
         res.json(paths);
       }
@@ -816,6 +855,15 @@ export class HistoryAPI {
    */
   setSqliteBuffer(buffer: SQLiteBufferInterface | undefined): void {
     this.sqliteBuffer = buffer;
+  }
+
+  /**
+   * The current buffer, for the express routes registered in
+   * registerHistoryApiRoute: they are bound once, so they read it back per
+   * request rather than holding the buffer a reconfigure has since closed.
+   */
+  getSqliteBuffer(): SQLiteBufferInterface | undefined {
+    return this.sqliteBuffer;
   }
 
   /**

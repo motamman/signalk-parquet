@@ -52,6 +52,15 @@ export interface FakeSignalK {
   emitCommand(delta: Record<string, unknown>): void;
   /** Emit a whole delta message on app.signalk, as the server does. */
   emitDelta(delta: Record<string, unknown>): void;
+  /** Drop every bus handler, as a killed server would. */
+  dropBusHandlers(): void;
+  /**
+   * Bus handlers still attached. A service that has been stopped must leave
+   * none: the real bus hands back an unsubscribe function, so code that stores
+   * the handle as an object and calls `.unsubscribe?.()` detaches nothing and
+   * accumulates a set of live listeners per restart.
+   */
+  activeBusHandlers(): number;
   /** Remove the temp data directory. */
   cleanup(): Promise<void>;
 }
@@ -109,11 +118,12 @@ export function createFakeSignalK(
         const list = busHandlers.get(busPath) ?? [];
         list.push(handler);
         busHandlers.set(busPath, list);
-        // Subscription handle: data-handler disposes via .unsubscribe().
-        return {
-          unsubscribe() {
-            handler.active = false;
-          },
+        // The real bus is Bacon.js: onValue returns the unsubscribe FUNCTION,
+        // not an object carrying one. Returning an object here once made code
+        // that called `handle.unsubscribe?.()` look correct while detaching
+        // nothing on a real server, so this matches the server's shape.
+        return () => {
+          handler.active = false;
         };
       },
     };
@@ -224,6 +234,16 @@ export function createFakeSignalK(
     },
     emitDelta(delta) {
       signalk.emit('delta', delta);
+    },
+    activeBusHandlers() {
+      let n = 0;
+      for (const list of busHandlers.values()) {
+        n += list.filter(handler => handler.active).length;
+      }
+      return n;
+    },
+    dropBusHandlers() {
+      busHandlers.clear();
     },
     async cleanup() {
       await fs.remove(dataDir);

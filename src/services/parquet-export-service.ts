@@ -11,6 +11,7 @@ import { SQLiteBuffer } from '../utils/sqlite-buffer';
 import { DataRecord, ParquetWriter } from '../types';
 import { ServerAPI } from '@signalk/server-api';
 import { HivePathBuilder } from '../utils/hive-path-builder';
+import { clearPathCache } from '../utils/path-cache';
 
 export interface ExportServiceConfig {
   outputDirectory: string;
@@ -400,6 +401,16 @@ export class ParquetExportService {
               targetDate,
               batchId
             );
+
+            // Drop the History API's cached path listing now, not after the
+            // loop. That listing is cached on the premise that the parquet
+            // tree only changes here, and this path has just stopped being
+            // listed from the buffer (its rows are exported) while a listing
+            // cached a moment ago predates its new file. Waiting until the
+            // loop ends would leave the path missing from both sources for
+            // the rest of the export, which for a full day across many paths
+            // is not a brief window.
+            clearPathCache();
 
             this.app.debug(
               `[DailyExport] Exported ${count} records for ${context}:${signalkPath}`

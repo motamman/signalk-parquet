@@ -8,6 +8,7 @@ import { DuckDBPool } from './duckdb-pool';
 import { escapeSqlString } from './sql-escape';
 import { isoBound } from './iso-time';
 import { filesFor, readParquetSql } from './parquet-files';
+import { listHiveDirs, listParquetFiles, yieldToEventLoop } from './hive-walk';
 import {
   footerReaderAvailable,
   overlapsWindow,
@@ -17,18 +18,17 @@ import {
 /**
  * Get available SignalK paths from Hive directory structure
  * Scans tier=raw/context={ctx}/path={path}/ and returns paths that contain data files
+ *
+ * Synchronous, and only as costly as finding one parquet file per path, which
+ * is why `fileCount` is 1: this answers "which paths", not "how many files".
+ * It stays synchronous on purpose — getAvailablePathsArray relies on having no
+ * await between its file and buffer reads. A caller that displays the count
+ * uses getAvailablePathsWithFileCounts.
  */
 export function getAvailablePaths(
   dataDir: string,
   app: ServerAPI,
-  context?: string,
-  // When false, a path is included as soon as one parquet file is found rather
-  // than counting every file. countParquetFilesRecursive descends every
-  // year=/day= partition and stats every file — on a large store that is
-  // millions of synchronous calls that block the event loop. Callers that
-  // display the count (UI, analyzer) keep the default; the History API path
-  // list, which discards the count, passes false. Both return the same paths.
-  countFiles: boolean = true
+  context?: string
 ): PathInfo[] {
   const paths: PathInfo[] = [];
   const hiveBuilder = new HivePathBuilder();
@@ -75,20 +75,11 @@ export function getAvailablePaths(
         const sanitizedPath = pathDir.replace('path=', '');
         const unsanitizedPath = hiveBuilder.unsanitizePath(sanitizedPath);
 
-        // Count parquet files across all year=/day=/ subdirs, or just confirm
-        // at least one exists when the count is not needed (far cheaper, same
-        // inclusion result).
-        const fileCount = countFiles
-          ? countParquetFilesRecursive(pathPath)
-          : hasParquetFilesRecursiveSync(pathPath)
-            ? 1
-            : 0;
-
-        if (fileCount > 0) {
+        if (hasParquetFilesRecursiveSync(pathPath)) {
           paths.push({
             path: unsanitizedPath,
             directory: pathPath,
-            fileCount: fileCount,
+            fileCount: 1,
           });
         }
       }
@@ -101,38 +92,59 @@ export function getAvailablePaths(
 }
 
 /**
- * Count parquet files recursively in a directory
+ * Every recorded SignalK path of a context with its parquet file count, for
+ * the callers that display the count: the webapp's path list and the
+ * analyzer's schema prompt.
+ *
+ * The count is of the files a query reads — those in valid `year=`/`day=`
+ * directories, and compacted year files — found by the hive walker, which
+ * never enters quarantine/, failed/, processed/ or repaired/. The walk is
+ * asynchronous and yields to the event loop. What it replaces was a
+ * synchronous recursive count that stat'ed every file under every path on the
+ * server's main thread, so a store with years of daily files froze the server
+ * for as long as the census took.
  */
-function countParquetFilesRecursive(dir: string): number {
-  let count = 0;
+export async function getAvailablePathsWithFileCounts(
+  dataDir: string,
+  app: ServerAPI,
+  context?: string
+): Promise<PathInfo[]> {
+  const hiveBuilder = new HivePathBuilder();
+  const targetContext = context || app.selfContext;
+  const dirs = await listHiveDirs(dataDir, {
+    level: 'day',
+    includeYearDirs: true,
+    tiers: ['raw'],
+    contexts: [hiveBuilder.sanitizeContext(targetContext)],
+  });
 
-  try {
-    const items = fs.readdirSync(dir);
-
-    for (const item of items) {
-      const fullPath = path.join(dir, item);
-      const stat = fs.statSync(fullPath);
-
-      if (stat.isDirectory()) {
-        count += countParquetFilesRecursive(fullPath);
-      } else if (item.endsWith('.parquet')) {
-        count++;
-      }
-    }
-  } catch (error) {
-    // Error reading directory - skip
+  // Keyed by the path's directory; a path's directories are listed together,
+  // so insertion order is the walker's order of path directories.
+  const counts = new Map<string, number>();
+  let reads = 0;
+  for (const dir of dirs) {
+    reads += 1;
+    if (reads % 100 === 0) await yieldToEventLoop();
+    const files = await listParquetFiles(dir.dayDir ?? dir.yearDir);
+    if (files.length === 0) continue;
+    counts.set(dir.pathDir, (counts.get(dir.pathDir) ?? 0) + files.length);
   }
 
-  return count;
+  return [...counts].map(([directory, fileCount]) => ({
+    path: hiveBuilder.unsanitizePath(
+      path.basename(directory).slice('path='.length)
+    ),
+    directory,
+    fileCount,
+  }));
 }
 
 /**
  * Return true as soon as a single parquet file is found anywhere under `dir`.
- * Mirrors countParquetFilesRecursive's traversal exactly (recurses every
- * subdirectory, no special-dir skipping) so it includes the same paths, but
+ * Recurses every subdirectory, with no special-dir skipping, but
  * short-circuits on the first hit and uses Dirent types (falling back to stat
- * only for symlinks/unknown entries) instead of a statSync per entry — turning
- * a full census into a handful of readdirs.
+ * only for symlinks/unknown entries) instead of a statSync per entry, so it
+ * costs a handful of readdirs per path.
  */
 function hasParquetFilesRecursiveSync(dir: string): boolean {
   try {
@@ -145,9 +157,9 @@ function hasParquetFilesRecursiveSync(dir: string): boolean {
 
       // Dirent types are unreliable for symlinks (reported as the link, not its
       // target) and on filesystems that return unknown types. For those rare
-      // entries fall back to stat (which follows the link) so traversal matches
-      // countParquetFilesRecursive. The data tree has no symlinks in practice,
-      // so the fast Dirent path covers essentially everything.
+      // entries fall back to stat, which follows the link. The data tree has
+      // no symlinks in practice, so the fast Dirent path covers essentially
+      // everything.
       if (!isDir && !isParquet && !entry.isFile()) {
         try {
           isDir = fs.statSync(path.join(dir, entry.name)).isDirectory();
@@ -172,18 +184,116 @@ function hasParquetFilesRecursiveSync(dir: string): boolean {
 }
 
 /**
+ * The slice of the SQLite buffer a path listing needs: which paths it holds,
+ * and whether one of them has a row for a context, in a window or at all.
+ *
+ * A path recorded since the last daily export has rows here and no files, so
+ * a listing answered from files alone does not know it exists: a new path is
+ * invisible until its first export, a buffer-only path is invisible for good,
+ * and a window that lies inside today lists nothing at all. Each probe is one
+ * index seek, and the predicate is the one the values federation reads with,
+ * so a path listed from here is one a values query would answer for.
+ */
+export interface BufferPathSource {
+  isOpen(): boolean;
+  getKnownPaths(): Set<string>;
+  hasRowsInWindow(
+    signalkPath: string,
+    context: string,
+    fromIso: string,
+    toIso: string
+  ): boolean;
+  hasRowsForContext(signalkPath: string, context: string): boolean;
+}
+
+/**
+ * The buffer's paths with an unexported row for the context in the window.
+ *
+ * Read this **before** the file listing, and union afterwards. The daily export
+ * moves a path from the buffer to the files: it writes the file, then marks the
+ * path's rows exported. A reader that consults the files first and the buffer
+ * second can therefore miss it in both — the file did not exist when the files
+ * were read, and the rows were exported by the time the buffer was read — and
+ * the path vanishes from the answer. Reading the buffer first inverts that: a
+ * path caught mid-move is in the earlier buffer read, or its file exists by the
+ * later file read, or both. The result is a set union, so being in both costs
+ * nothing.
+ *
+ * This is also why the union is not folded into
+ * `getAvailablePathsForTimeRange`: its callers cache the file-derived listing,
+ * which is free because the parquet tree only changes at export, while the
+ * buffer gains a path the moment one is recorded. Each probe here is one index
+ * seek, so there is nothing to cache.
+ */
+export function bufferPathsInWindow(
+  buffer: BufferPathSource | undefined,
+  context: Context,
+  from: ZonedDateTime,
+  to: ZonedDateTime
+): Set<string> {
+  if (!buffer || !buffer.isOpen()) return new Set();
+  const fromIso = isoBound(from);
+  const toIso = isoBound(to);
+  const out = new Set<string>();
+  for (const signalkPath of buffer.getKnownPaths()) {
+    if (buffer.hasRowsInWindow(signalkPath, context, fromIso, toIso)) {
+      out.add(signalkPath);
+    }
+  }
+  return out;
+}
+
+/**
+ * The file listing and a buffer-path set from `bufferPathsInWindow`, merged
+ * and sorted, whether or not the buffer contributed anything.
+ */
+export function mergePathSources(
+  fromFiles: Path[],
+  fromBuffer: Set<string>
+): Path[] {
+  return [...new Set<string>([...fromFiles, ...fromBuffer])].sort() as Path[];
+}
+
+/** `listed`, plus the buffer's paths for which `hasRows` says yes, sorted. */
+function unionBufferPaths(
+  listed: string[],
+  buffer: BufferPathSource | undefined,
+  hasRows: (signalkPath: string) => boolean
+): string[] {
+  // Sorted on this return too: the order must not depend on whether the
+  // buffer happens to be open.
+  if (!buffer || !buffer.isOpen()) return [...listed].sort();
+  const out = new Set(listed);
+  for (const signalkPath of buffer.getKnownPaths()) {
+    if (out.has(signalkPath)) continue;
+    if (hasRows(signalkPath)) out.add(signalkPath);
+  }
+  return [...out].sort();
+}
+
+/**
  * Get available SignalK paths as simple string array
  * Useful for SignalK history API compliance
+ *
+ * Files first, then the buffer's paths with a row for the context, so a path
+ * shows from its first recorded row rather than from its first export.
  */
 export function getAvailablePathsArray(
   dataDir: string,
   app: ServerAPI,
-  context?: string
+  context?: string,
+  buffer?: BufferPathSource
 ): string[] {
-  // Path names only — skip the per-file count so this stays cheap even on a
-  // store with millions of parquet files (this is the History API hot path).
-  const pathInfos = getAvailablePaths(dataDir, app, context, false);
-  return pathInfos.map(pathInfo => pathInfo.path);
+  // Files first and the buffer second is safe here, unlike in the windowed
+  // listing: this function has no await, so an export cannot run between the
+  // two reads and move a path from one to the other. See bufferPathsInWindow
+  // for why the order matters where there is an await.
+  const pathInfos = getAvailablePaths(dataDir, app, context);
+  const fromFiles = pathInfos.map(pathInfo => pathInfo.path);
+  const target = context || app.selfContext;
+  return unionBufferPaths(fromFiles, buffer, signalkPath =>
+    buffer!.hasRowsForContext(signalkPath, target)
+  );
 }
 
 /**
@@ -200,12 +310,17 @@ export function getAvailablePathsArray(
  * over the path's WHOLE history (`year=*\/day=*`), all in parallel: on a
  * vessel with ~2,000 paths a client's seven-day discovery call took 36 s and
  * permanently added 1.7 GB to the server (measured 2026-09-17).
+ *
+ * Then the buffer: any of its paths with an unexported row for the context
+ * in the window is listed too, so the answer covers what a values query over
+ * the same window would return, files and buffer alike.
  */
 export async function getAvailablePathsForTimeRange(
   dataDir: string,
   context: Context,
   from: ZonedDateTime,
-  to: ZonedDateTime
+  to: ZonedDateTime,
+  buffer?: BufferPathSource
 ): Promise<Path[]> {
   const fromIso = isoBound(from);
   const toIso = isoBound(to);
@@ -219,13 +334,15 @@ export async function getAvailablePathsForTimeRange(
   });
   const byPath = groupFilesByPath(files);
 
-  const pathsWithData: Path[] = [];
+  const pathsWithData: string[] = [];
   for (const [signalkPath, pathFiles] of byPath) {
     if (await pathHasRowsInWindow(pathFiles, fromIso, toIso)) {
-      pathsWithData.push(signalkPath as Path);
+      pathsWithData.push(signalkPath);
     }
   }
-  return pathsWithData.sort();
+  return unionBufferPaths(pathsWithData, buffer, signalkPath =>
+    buffer!.hasRowsInWindow(signalkPath, context, fromIso, toIso)
+  ) as Path[];
 }
 
 /** The window's files of a context, keyed by SignalK path, in listing order. */

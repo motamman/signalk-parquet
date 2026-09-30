@@ -546,20 +546,37 @@ export interface ProcessState {
 }
 
 // Forward declaration for SQLiteBuffer to avoid circular dependency
+/**
+ * Where a paged federation read left off: the `(signalk_timestamp, id)` of the
+ * last row the caller consumed. The pair is unique because `id` is the table's
+ * primary key, so resuming after it can neither skip nor repeat a row.
+ *
+ * Keying on the timestamp rather than on `id` alone is what lets the read
+ * resume instead of restart. `id` appears in no index that also covers the
+ * window predicate, so `... AND id > ? ORDER BY id` forces SQLite to search
+ * the whole window and sort it into a temp B-tree on every page: measured
+ * locally (2026-09-26) on 32,000 rows, 7 pages of 5,000 cost 64 ms of read
+ * but 32 pages of 1,000 cost 119 ms, growing with the page count rather than
+ * with the rows. The timestamp is indexed, so the same 32 pages cost 62 ms.
+ */
+export interface FederationCursor {
+  signalkTimestamp: string;
+  id: number;
+}
+
 export interface SQLiteBufferInterface {
   isOpen(): boolean;
   /** Returns the new row's id. */
   insert(record: DataRecord): number;
   insertBatch(records: DataRecord[]): void;
-  /** Overwrite a not-yet-exported row; false when it is gone or exported. */
-  updateUnexportedRow(
-    signalkPath: string,
-    id: number,
-    record: DataRecord
-  ): boolean;
+  /**
+   * Write an object row, extending the context's latest unexported row in
+   * place when the new value only completes it. One operation, so no caller
+   * holds a row id.
+   */
+  insertOrExtendLatest(record: DataRecord): { extended: boolean };
   /** Newest row per context for a path, exported or not. */
   getLatestRowPerContext(signalkPath: string): Array<{
-    id: number;
     context: string;
     value_json: string | null;
     exported: number;
@@ -585,10 +602,19 @@ export interface SQLiteBufferInterface {
     context: string,
     fromIso: string,
     toIso: string,
-    afterId: number,
+    after: FederationCursor | null,
     limit: number
   ): Array<Record<string, unknown>>;
   hasTable(signalkPath: string): boolean;
+  /** Whether a path has an unexported row for a context in [fromIso, toIso). */
+  hasRowsInWindow(
+    signalkPath: string,
+    context: string,
+    fromIso: string,
+    toIso: string
+  ): boolean;
+  /** Whether a path has an unexported row for a context at any time. */
+  hasRowsForContext(signalkPath: string, context: string): boolean;
   getRowsForPlayback(
     fromIso: string,
     toIso: string,
@@ -726,6 +752,9 @@ export interface PluginState {
   // the express routes are never left bound to a closed SQLite buffer.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   historyApi?: any; // HistoryAPI - avoiding circular import
+  // The forked process that answers Track API calls; stop() closes it. Set as
+  // soon as it is forked, so a stop during its startup still reaches it.
+  trackWorker?: import('./utils/track-worker-client').TrackWorkerClient;
 }
 
 // Parquet Writer Class Interface

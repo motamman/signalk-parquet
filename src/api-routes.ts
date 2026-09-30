@@ -6,9 +6,45 @@ import { readFooter } from './utils/parquet-footer';
 import { listHiveDirs, listParquetFiles } from './utils/hive-walk';
 import express, { Router } from 'express';
 import multer from 'multer';
-import { getAvailablePaths } from './utils/path-discovery';
+import { getAvailablePathsWithFileCounts } from './utils/path-discovery';
 import { DuckDBPool } from './utils/duckdb-pool';
 import { findUnsafeSqlReason } from './utils/sql-guard';
+import {
+  eventLoopDelay,
+  eventLoopMonitorRunning,
+  resetEventLoopDelay,
+} from './utils/event-loop-monitor';
+
+/**
+ * A router with the per-route permission declaration signalk-server adds
+ * (`asPluginRouter`). Absent on servers that predate it.
+ */
+type AccessRouter = Router & {
+  access?: (level: 'readonly' | 'readwrite' | 'admin') => {
+    get: (
+      path: string,
+      ...handlers: express.RequestHandler[]
+    ) => { get: unknown };
+  };
+};
+
+/**
+ * Register a GET that an authenticated non-admin user may call. Falls back to a
+ * plain registration where the server has no `access`, which leaves the route
+ * admin-gated exactly as before rather than accidentally opening it.
+ */
+function readonlyGet(
+  router: Router,
+  path: string,
+  handler: express.RequestHandler
+): void {
+  const access = (router as AccessRouter).access;
+  if (typeof access === 'function') {
+    access.call(router, 'readonly').get(path, handler);
+    return;
+  }
+  router.get(path, handler);
+}
 import {
   validateSignalKPath,
   assertWithinDataDir,
@@ -355,10 +391,10 @@ export function registerApiRoutes(
   // Get available SignalK paths
   router.get(
     '/api/paths',
-    (_: TypedRequest, res: TypedResponse<PathsApiResponse>) => {
+    async (_: TypedRequest, res: TypedResponse<PathsApiResponse>) => {
       try {
         const dataDir = state.getDataDirPath();
-        const paths = getAvailablePaths(dataDir, app);
+        const paths = await getAvailablePathsWithFileCounts(dataDir, app);
 
         return res.json({
           success: true,
@@ -606,6 +642,71 @@ export function registerApiRoutes(
     return res.json({
       success: true,
       enabled: rawSqlEnabled,
+    });
+  });
+
+  /**
+   * How long the host server's event loop has been blocked.
+   *
+   * This plugin reads SQLite and drives DuckDB, and a slow answer and a frozen
+   * server look identical from outside. This is the direct measurement, taken
+   * by libuv rather than inferred from request timings, and it covers the whole
+   * process because "the server stalled" is about the process.
+   *
+   * `POST /api/event-loop/reset` forgets what came before, so a caller can
+   * bracket one operation: reset, do the thing, read.
+   *
+   * Both the read and the reset are awaited, and the read takes about one
+   * sampling interval to answer. That is deliberate, not an oversight to
+   * optimise away: a block is recorded when the histogram's timer next fires,
+   * not when the block ends, so a synchronous read taken in the same loop
+   * turn as the work reports a histogram the work is not in yet. Waiting for
+   * the next sample is what makes the number include everything before it,
+   * so a caller cannot under-read by reading too soon. See `eventLoopDelay`.
+   *
+   * The snapshot is declared read-only. A plugin's routes are admin-only unless
+   * the plugin says otherwise — the server offers `router.access(level)` for
+   * that — and these are timing numbers about the server's own health, with
+   * nothing in them to protect. Requiring admin would mean anyone measuring
+   * whether this plugin blocks their server needs full control of it, which is
+   * how this endpoint came to be unusable in the first place. Servers without
+   * `access` keep today's behaviour and gate it at admin.
+   *
+   * The reset is not: the histogram is one shared thing for the whole process,
+   * and clearing it discards what every other reader was measuring, so it
+   * stays on the default admin gate on every server. The read-only route
+   * refuses `?reset=true` rather than quietly answering without resetting.
+   */
+  readonlyGet(router, '/api/event-loop', async (req, res) => {
+    if (!eventLoopMonitorRunning()) {
+      return res.json({
+        success: false,
+        error: 'event loop monitor is not running',
+      });
+    }
+    if (req.query.reset !== undefined) {
+      return res.status(400).json({
+        success: false,
+        error:
+          'reset is not available on this route; POST /api/event-loop/reset (admin)',
+      });
+    }
+    return res.json({ success: true, delay: await eventLoopDelay() });
+  });
+
+  router.post('/api/event-loop/reset', async (_req, res) => {
+    if (!eventLoopMonitorRunning()) {
+      return res.json({
+        success: false,
+        error: 'event loop monitor is not running',
+      });
+    }
+    // Awaited: a reset is only valid once a sampling interval has passed.
+    await resetEventLoopDelay();
+    return res.json({
+      success: true,
+      reset: true,
+      delay: await eventLoopDelay(),
     });
   });
 

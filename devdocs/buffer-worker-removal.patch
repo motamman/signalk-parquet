@@ -1,0 +1,2437 @@
+diff --git a/src/HistoryAPI.ts b/src/HistoryAPI.ts
+index 7316a49..f682c64 100644
+--- a/src/HistoryAPI.ts
++++ b/src/HistoryAPI.ts
+@@ -64,7 +64,6 @@ import {
+   buildBufferObjectSubquery,
+ } from './utils/buffer-sql-builder';
+ import { stageBufferTable } from './utils/buffer-staging';
+-import { BufferWorkerClient } from './utils/buffer-worker-client';
+ import {
+   parseDurationToMillis,
+   parseResolutionToMillis,
+@@ -812,11 +811,6 @@ interface HistoryValueEntry {
+ 
+ export class HistoryAPI {
+   private sqliteBuffer?: SQLiteBufferInterface;
+-  /**
+-   * How to reach the buffer worker, read once per request. An accessor rather
+-   * than a copy because the worker reports ready after this instance is built.
+-   */
+-  private getBufferWorker?: () => BufferWorkerClient | undefined;
+   private hivePathBuilder: HivePathBuilder;
+   private autoDiscoveryService?: AutoDiscoveryService;
+   private s3Config?: S3QueryConfig;
+@@ -872,13 +866,6 @@ export class HistoryAPI {
+     return this.sqliteBuffer;
+   }
+ 
+-  /** Where to find the buffer worker for staging reads, or nothing for none. */
+-  setBufferWorkerSource(
+-    get: (() => BufferWorkerClient | undefined) | undefined
+-  ): void {
+-    this.getBufferWorker = get;
+-  }
+-
+   /**
+    * Set the data directory queries read from. The express routes registered
+    * in registerHistoryApiRoute read it back via getDataDir(), so a
+@@ -1004,8 +991,6 @@ export class HistoryAPI {
+     // The caller's request-scoped buffer snapshot, so a reconfigure can't
+     // pair a new buffer with this request's directory.
+     sqliteBuffer: SQLiteBufferInterface | undefined,
+-    // The request's buffer worker snapshot, for the same reason.
+-    bufferWorker: BufferWorkerClient | undefined,
+     // Request-start snapshot of DuckDBPool.isSQLiteBufferInitialized(),
+     // captured alongside sqliteBuffer for the same reason.
+     hasBuffer: boolean,
+@@ -1060,8 +1045,7 @@ export class HistoryAPI {
+             positionPath,
+             fromIso,
+             toIso,
+-            debug,
+-            bufferWorker
++            debug
+           );
+           const bufferSubquery = stagedTable
+             ? buildBufferObjectSubquery(
+@@ -1382,8 +1366,6 @@ export class HistoryAPI {
+     // swaps the buffer or S3 config mid-request must not be mixed with the
+     // snapshotted directory's parquet data.
+     const sqliteBuffer = this.sqliteBuffer;
+-    // Snapshotted with the buffer, for the same reason.
+-    const bufferWorker = this.getBufferWorker?.();
+     const s3Config = this.s3Config;
+     // The DuckDB-side buffer attachment is process-global mutable state that
+     // a reconfigure flips mid-request; capture it once, paired with the
+@@ -1417,7 +1399,6 @@ export class HistoryAPI {
+           context,
+           dataDir,
+           sqliteBuffer,
+-          bufferWorker,
+           hasBuffer,
+           from,
+           to,
+@@ -1494,8 +1475,7 @@ export class HistoryAPI {
+                 posPathSpec.path,
+                 fromIso,
+                 toIso,
+-                debug,
+-                bufferWorker
++                debug
+               );
+               const bufferSubquery = stagedTable
+                 ? buildBufferObjectSubquery(
+@@ -1754,8 +1734,7 @@ export class HistoryAPI {
+                   pathSpec.path,
+                   fromIso,
+                   toIso,
+-                  debug,
+-                  bufferWorker
++                  debug
+                 )
+               : null;
+           // Build FROM clause: local-only by default, hybrid only if S3 has
+@@ -2194,8 +2173,7 @@ export class HistoryAPI {
+                     pathSpec.path,
+                     fallbackFromIso,
+                     fallbackToIso,
+-                    debug,
+-                    bufferWorker
++                    debug
+                   )
+                 : null;
+               // Object buffer tables have value_json/value_* columns and no
+diff --git a/src/buffer-worker.ts b/src/buffer-worker.ts
+deleted file mode 100644
+index 1fab672..0000000
+--- a/src/buffer-worker.ts
++++ /dev/null
+@@ -1,245 +0,0 @@
+-/**
+- * The buffer worker: one thread that owns the connection to `buffer.db`.
+- *
+- * It holds a real `SQLiteBuffer`, not a reimplementation of one — the table
+- * mapping, the schema migration, the indexes and the queries are the same code
+- * that runs in-process today, so this thread changes *where* the synchronous
+- * SQLite calls happen and nothing about what they do.
+- *
+- * This is the read half. Writes, cleanup and the rest of the interface follow;
+- * until they do, nothing in the plugin talks to this file, and the in-process
+- * buffer remains the only one the plugin uses.
+- *
+- * Messages are handled in arrival order and never concurrently: every handler
+- * here is synchronous, so a request cannot interleave with another. A scan
+- * sends at most `1 + SCAN_PAGES_IN_FLIGHT` pages before it waits for an ack,
+- * which is what stops a slow consumer from making this thread read the whole
+- * window into memory, and what lets the read of one page overlap the consumer's
+- * work on the last.
+- */
+-
+-import { parentPort, workerData } from 'node:worker_threads';
+-import { SQLiteBuffer, federationCursor } from './utils/sqlite-buffer';
+-import { FederationCursor } from './types';
+-import { encodePage } from './utils/buffer-columnar';
+-import {
+-  BufferWorkerInit,
+-  BufferWorkerRequest,
+-  BufferWorkerMessage,
+-  SCAN_PAGES_IN_FLIGHT,
+-} from './utils/buffer-worker-protocol';
+-
+-if (!parentPort) {
+-  throw new Error('buffer-worker must be started as a worker thread');
+-}
+-const port = parentPort;
+-
+-const init = workerData as BufferWorkerInit;
+-
+-interface ScanState {
+-  signalkPath: string;
+-  context: string;
+-  fromIso: string;
+-  toIso: string;
+-  pageRows: number;
+-  schema: Array<{ name: string; type: string }>;
+-  cursor: FederationCursor | null;
+-  /** Pages this scan may still send before an ack comes back. */
+-  credits: number;
+-  totalRows: number;
+-  /** True once `end` has been sent; the scan is kept only to swallow late acks. */
+-  finished: boolean;
+-}
+-
+-const scans = new Map<number, ScanState>();
+-let nextScanId = 1;
+-let buffer: SQLiteBuffer | undefined;
+-
+-const send = (msg: BufferWorkerMessage, transfer?: ArrayBuffer[]): void => {
+-  if (transfer) {
+-    port.postMessage(msg, transfer);
+-  } else {
+-    port.postMessage(msg);
+-  }
+-};
+-
+-/**
+- * Send pages while this scan has credit and rows remain. Each page is read and
+- * packed synchronously, then the loop returns to the message queue so acks and
+- * other requests are seen.
+- */
+-function pump(scanId: number): void {
+-  const scan = scans.get(scanId);
+-  if (!scan || scan.finished || !buffer) return;
+-
+-  while (scan.credits > 0) {
+-    const t0 = process.hrtime.bigint();
+-    const rows = buffer.getRowsForFederation(
+-      scan.signalkPath,
+-      scan.context,
+-      scan.fromIso,
+-      scan.toIso,
+-      scan.cursor,
+-      scan.pageRows
+-    );
+-    const readMs = Number(process.hrtime.bigint() - t0) / 1e6;
+-
+-    if (rows.length === 0) {
+-      scan.finished = true;
+-      send({ type: 'end', scanId, totalRows: scan.totalRows });
+-      scans.delete(scanId);
+-      return;
+-    }
+-
+-    const { page, transfer } = encodePage(rows, scan.schema);
+-    scan.totalRows += rows.length;
+-    scan.cursor = federationCursor(rows[rows.length - 1]);
+-    scan.credits -= 1;
+-    send({ type: 'page', scanId, page, readMs }, transfer);
+-
+-    // A short page is the end of the window. Say so now rather than spending
+-    // another query to learn it, which is what the in-process loop does too.
+-    if (rows.length < scan.pageRows) {
+-      scan.finished = true;
+-      send({ type: 'end', scanId, totalRows: scan.totalRows });
+-      scans.delete(scanId);
+-      return;
+-    }
+-  }
+-}
+-
+-function failScan(scanId: number, error: unknown): void {
+-  scans.delete(scanId);
+-  send({
+-    type: 'scanError',
+-    scanId,
+-    message: error instanceof Error ? error.message : String(error),
+-  });
+-}
+-
+-function handle(msg: BufferWorkerRequest): void {
+-  if (!buffer) {
+-    if (msg.op !== 'ackScan' && msg.op !== 'closeScan') {
+-      send({ type: 'error', id: msg.id, message: 'buffer worker is not open' });
+-    }
+-    return;
+-  }
+-
+-  switch (msg.op) {
+-    case 'ping':
+-      send({ type: 'reply', id: msg.id, value: null });
+-      return;
+-
+-    case 'schema':
+-      try {
+-        // This connection is read-only, so a path recorded for the first
+-        // time since it opened is not in its table map until asked for.
+-        buffer.loadTableIfMissing(msg.signalkPath);
+-        send({
+-          type: 'reply',
+-          id: msg.id,
+-          value: buffer.getTableSchema(msg.signalkPath) ?? null,
+-        });
+-      } catch (error) {
+-        send({
+-          type: 'error',
+-          id: msg.id,
+-          message: error instanceof Error ? error.message : String(error),
+-        });
+-      }
+-      return;
+-
+-    case 'openScan': {
+-      buffer.loadTableIfMissing(msg.signalkPath);
+-      const schema = buffer.getTableSchema(msg.signalkPath);
+-      if (!schema || schema.length === 0) {
+-        // No table for this path: an empty scan, not an error. The consumer
+-        // then skips the buffer side exactly as it does in-process.
+-        send({ type: 'reply', id: msg.id, value: null });
+-        return;
+-      }
+-      const scanId = nextScanId++;
+-      scans.set(scanId, {
+-        signalkPath: msg.signalkPath,
+-        context: msg.context,
+-        fromIso: msg.fromIso,
+-        toIso: msg.toIso,
+-        pageRows: msg.pageRows,
+-        schema,
+-        cursor: null,
+-        credits: 1 + SCAN_PAGES_IN_FLIGHT,
+-        totalRows: 0,
+-        finished: false,
+-      });
+-      send({ type: 'reply', id: msg.id, value: scanId });
+-      try {
+-        pump(scanId);
+-      } catch (error) {
+-        failScan(scanId, error);
+-      }
+-      return;
+-    }
+-
+-    case 'ackScan': {
+-      const scan = scans.get(msg.scanId);
+-      if (!scan) return; // Ack for a scan already ended or closed.
+-      scan.credits += 1;
+-      try {
+-        pump(msg.scanId);
+-      } catch (error) {
+-        failScan(msg.scanId, error);
+-      }
+-      return;
+-    }
+-
+-    case 'closeScan':
+-      scans.delete(msg.scanId);
+-      return;
+-
+-    case 'close':
+-      scans.clear();
+-      try {
+-        buffer.close();
+-      } catch {
+-        // Closing twice, or a database already gone, is not worth failing on.
+-      }
+-      buffer = undefined;
+-      send({ type: 'reply', id: msg.id, value: null });
+-      return;
+-  }
+-}
+-
+-port.on('message', (msg: BufferWorkerRequest) => {
+-  try {
+-    handle(msg);
+-  } catch (error) {
+-    // A handler that throws must not take the thread down: report it against
+-    // the request and keep serving.
+-    const id = (msg as { id?: number }).id;
+-    if (typeof id === 'number') {
+-      send({
+-        type: 'error',
+-        id,
+-        message: error instanceof Error ? error.message : String(error),
+-      });
+-    }
+-  }
+-});
+-
+-try {
+-  buffer = new SQLiteBuffer({
+-    dbPath: init.dbPath,
+-    retentionHours: init.retentionHours,
+-    // Reads only, for now. A second writing connection would make the
+-    // ingestion connection contend for the write lock, and it sets no
+-    // busy_timeout because waiting for a lock on the event loop is what this
+-    // worker exists to avoid. Writes move here as their own step.
+-    readOnly: true,
+-  });
+-  send({ type: 'ready' });
+-} catch (error) {
+-  send({
+-    type: 'fatal',
+-    message: error instanceof Error ? error.message : String(error),
+-  });
+-}
+diff --git a/src/history-provider.ts b/src/history-provider.ts
+index 28a5970..ae9510d 100644
+--- a/src/history-provider.ts
++++ b/src/history-provider.ts
+@@ -56,7 +56,6 @@ import {
+   buildBufferObjectSubquery,
+ } from './utils/buffer-sql-builder';
+ import { stageBufferTable, BufferStagingSource } from './utils/buffer-staging';
+-import { BufferWorkerClient } from './utils/buffer-worker-client';
+ import {
+   smoothLinear,
+   smoothCircularRad,
+@@ -271,11 +270,6 @@ function mergeComponentSchemas(
+  */
+ export class HistoryProvider implements HistoryApi {
+   private sqliteBuffer?: ProviderBufferSource;
+-  /**
+-   * How to reach the buffer worker, read once per query. An accessor rather
+-   * than a copy because the worker reports ready after this instance is built.
+-   */
+-  private getBufferWorker?: () => BufferWorkerClient | undefined;
+   private autoDiscoveryService?: AutoDiscoveryService;
+ 
+   constructor(
+@@ -289,13 +283,6 @@ export class HistoryProvider implements HistoryApi {
+     this.sqliteBuffer = buffer;
+   }
+ 
+-  /** Where to find the buffer worker for staging reads, or nothing for none. */
+-  setBufferWorkerSource(
+-    get: (() => BufferWorkerClient | undefined) | undefined
+-  ): void {
+-    this.getBufferWorker = get;
+-  }
+-
+   /**
+    * Auto-discovery is the v1 route's behaviour of configuring a requested
+    * path for recording when the query finds nothing for it. The v2 requests
+@@ -581,8 +568,7 @@ export class HistoryProvider implements HistoryApi {
+           String(spec.path),
+           fromIso,
+           toIso,
+-          (msg: string) => this.debug(msg),
+-          this.getBufferWorker?.()
++          (msg: string) => this.debug(msg)
+         );
+         if (staged) {
+           const result = await connection.runAndReadAll(
+@@ -690,8 +676,7 @@ export class HistoryProvider implements HistoryApi {
+               String(pathSpec.path),
+               fromIso,
+               toIso,
+-              (msg: string) => this.debug(msg),
+-              this.getBufferWorker?.()
++              (msg: string) => this.debug(msg)
+             )
+           : null;
+       if (!hasParquet && !stagedBufferTable) {
+@@ -1140,14 +1125,12 @@ export function registerHistoryApiProvider(
+   dataDir: string,
+   debug: (msg: string) => void,
+   sqliteBuffer?: ProviderBufferSource,
+-  autoDiscoveryService?: AutoDiscoveryService,
+-  getBufferWorker?: () => BufferWorkerClient | undefined
++  autoDiscoveryService?: AutoDiscoveryService
+ ): void {
+   const provider = new HistoryProvider(selfId, dataDir, app, debug);
+   if (sqliteBuffer) {
+     provider.setSqliteBuffer(sqliteBuffer);
+   }
+-  provider.setBufferWorkerSource(getBufferWorker);
+   provider.setAutoDiscoveryService(autoDiscoveryService);
+ 
+   // Debug: Check if registerHistoryApiProvider exists on app
+diff --git a/src/index.ts b/src/index.ts
+index 07b03b1..2da0c9d 100644
+--- a/src/index.ts
++++ b/src/index.ts
+@@ -41,7 +41,6 @@ import {
+   unregisterTrackApiProvider,
+ } from './track-provider';
+ import { SQLiteBuffer } from './utils/sqlite-buffer';
+-import { BufferWorkerClient } from './utils/buffer-worker-client';
+ import {
+   startEventLoopMonitor,
+   stopEventLoopMonitor,
+@@ -217,14 +216,6 @@ export default function (app: ServerAPI): SignalKPlugin {
+ 
+   let currentPaths: PathConfig[] = [];
+ 
+-  /**
+-   * The buffer worker while it is alive, or nothing. A worker that has died
+-   * stays in `state.bufferWorker` until stop() clears it; handing it out would
+-   * make every history read fail rather than fall back to the in-process read.
+-   */
+-  const liveBufferWorker = (): BufferWorkerClient | undefined =>
+-    state.bufferWorker?.isAlive() ? state.bufferWorker : undefined;
+-
+   plugin.start = async function (
+     options: Partial<PluginConfig>
+   ): Promise<void> {
+@@ -431,46 +422,6 @@ export default function (app: ServerAPI): SignalKPlugin {
+         }
+ 
+         app.debug(`[SQLite] Buffer initialized successfully at ${dbPath}`);
+-
+-        // A second connection to the same database, owned by a worker thread,
+-        // serves the reads that stage buffer rows into a query. Both are
+-        // node:sqlite, so they share one SQLite library and their POSIX locks
+-        // are coherent — unlike DuckDB's bundled copy, which is why
+-        // buffer-staging.ts exists. Writes stay on the connection above until
+-        // they move too.
+-        //
+-        // Started without waiting: `state.bufferWorker` is only set once the
+-        // worker reports its database open, so a query before that (or a
+-        // worker that never starts) stages in-process exactly as before.
+-        //
+-        // A worker that comes up after stop() has run, or after a reconfigure
+-        // has replaced the buffer it was opened against, is closed rather
+-        // than stored: stop() has already drained `state.bufferWorker`, and a
+-        // late arrival stored there would outlive its database.
+-        const ownerBuffer = state.sqliteBuffer;
+-        const bufferWorker = new BufferWorkerClient({
+-          dbPath,
+-          retentionHours: state.currentConfig.bufferRetentionHours,
+-        });
+-        bufferWorker
+-          .start()
+-          .then(() => {
+-            if (state.isStopping || state.sqliteBuffer !== ownerBuffer) {
+-              bufferWorker.close().catch(error => {
+-                app.error(`Error closing late buffer worker: ${error}`);
+-              });
+-              return;
+-            }
+-            state.bufferWorker = bufferWorker;
+-            app.debug('[SQLite] Buffer worker ready; history reads use it');
+-          })
+-          .catch(error => {
+-            const msg = error instanceof Error ? error.message : String(error);
+-            app.error(
+-              `[SQLite] Buffer worker failed to start (${msg}); history reads ` +
+-                `will read the buffer on the main thread`
+-            );
+-          });
+       } catch (error) {
+         const msg = error instanceof Error ? error.message : String(error);
+         app.error(`[SQLite] Failed to initialize SQLite buffer: ${msg}`);
+@@ -957,7 +908,6 @@ export default function (app: ServerAPI): SignalKPlugin {
+           s3QueryConfig, // S3 config for federated queries
+           state.currentConfig.pathRetentionOverrides // skipAggregation read-path fallback
+         );
+-        state.historyApi.setBufferWorkerSource(liveBufferWorker);
+       } else {
+         // Reconfigure (stop→start without a full process restart): the V1 express
+         // routes registered on the first start are still live and bound to this
+@@ -968,7 +918,6 @@ export default function (app: ServerAPI): SignalKPlugin {
+         // return nothing with NO error, silently dropping all live (unexported)
+         // data from history reads until a full restart — this keeps it live.
+         state.historyApi.setSqliteBuffer(state.sqliteBuffer);
+-        state.historyApi.setBufferWorkerSource(liveBufferWorker);
+         state.historyApi.setS3Config(s3QueryConfig);
+         state.historyApi.setAutoDiscoveryService(state.autoDiscoveryService);
+         state.historyApi.setDataDir(state.currentConfig.outputDirectory);
+@@ -999,8 +948,7 @@ export default function (app: ServerAPI): SignalKPlugin {
+         state.currentConfig.outputDirectory,
+         app.debug,
+         state.sqliteBuffer,
+-        state.autoDiscoveryService, // v2 gets the same auto-discovery as v1
+-        liveBufferWorker
++        state.autoDiscoveryService // v2 gets the same auto-discovery as v1
+       );
+     } catch (error) {
+       app.error(`Failed to register as History API provider: ${error}`);
+@@ -1032,7 +980,6 @@ export default function (app: ServerAPI): SignalKPlugin {
+         app.debug,
+         state.sqliteBuffer
+       );
+-      trackProvider.setBufferWorkerSource(liveBufferWorker);
+       registerTrackApiProvider(app, trackProvider, app.debug);
+     } catch (error) {
+       app.error(`Failed to register as Track API provider: ${error}`);
+@@ -1226,18 +1173,6 @@ export default function (app: ServerAPI): SignalKPlugin {
+       }
+     }
+ 
+-    // Stop the buffer worker before the in-process buffer, and wait for it,
+-    // so no read is in flight against a database that is about to close.
+-    if (state.bufferWorker) {
+-      const worker = state.bufferWorker;
+-      state.bufferWorker = undefined;
+-      try {
+-        await worker.close();
+-      } catch (error) {
+-        app.error(`Error closing buffer worker: ${error}`);
+-      }
+-    }
+-
+     // Close SQLite buffer (safe now that subscriptions are torn down)
+     if (state.sqliteBuffer) {
+       try {
+diff --git a/src/track-provider.ts b/src/track-provider.ts
+index 9801492..9f5aa81 100644
+--- a/src/track-provider.ts
++++ b/src/track-provider.ts
+@@ -44,7 +44,6 @@ import {
+ } from './utils/signalk-validation';
+ import { stageBufferTable, BufferStagingSource } from './utils/buffer-staging';
+ import { federationCursor } from './utils/sqlite-buffer';
+-import { BufferWorkerClient } from './utils/buffer-worker-client';
+ import { FederationCursor } from './types';
+ import {
+   buildBufferObjectSubquery,
+@@ -426,11 +425,6 @@ function bucketExpression(resolutionMs: number): string {
+ export class TrackProvider implements TrackApi {
+   private readonly hive = new HivePathBuilder();
+   private sqliteBuffer?: TrackBufferSource;
+-  /**
+-   * How to reach the buffer worker, read once per request. An accessor rather
+-   * than a copy because the worker reports ready after this instance is built.
+-   */
+-  private getBufferWorker?: () => BufferWorkerClient | undefined;
+ 
+   constructor(
+     private readonly selfId: string,
+@@ -442,13 +436,6 @@ export class TrackProvider implements TrackApi {
+     this.sqliteBuffer = sqliteBuffer;
+   }
+ 
+-  /** Where to find the buffer worker for staging reads, or nothing for none. */
+-  setBufferWorkerSource(
+-    get: (() => BufferWorkerClient | undefined) | undefined
+-  ): void {
+-    this.getBufferWorker = get;
+-  }
+-
+   setSqliteBuffer(buffer: TrackBufferSource | undefined): void {
+     this.sqliteBuffer = buffer;
+   }
+@@ -466,8 +453,6 @@ export class TrackProvider implements TrackApi {
+     // one directory with another's buffer.
+     const dataDir = this.dataDir;
+     const buffer = this.sqliteBuffer;
+-    // Snapshotted with the buffer, for the same reason.
+-    const worker = this.getBufferWorker?.();
+ 
+     const window = resolveWindow(query);
+     const contexts = await this.resolveContexts(query, window, dataDir, buffer);
+@@ -487,8 +472,7 @@ export class TrackProvider implements TrackApi {
+         propertyPaths,
+         wantGeometry,
+         dataDir,
+-        buffer,
+-        worker
++        buffer
+       );
+       if (feature) {
+         features.push(feature);
+@@ -717,8 +701,7 @@ export class TrackProvider implements TrackApi {
+     propertyPaths: Path[],
+     wantGeometry: boolean,
+     dataDir: string,
+-    buffer: TrackBufferSource | undefined,
+-    worker: BufferWorkerClient | undefined
++    buffer: TrackBufferSource | undefined
+   ): Promise<TrackFeature | null> {
+     const window = this.boundWindowToData(context, requestWindow, dataDir);
+     if (window.toMs <= window.fromMs) {
+@@ -750,8 +733,7 @@ export class TrackProvider implements TrackApi {
+         window.toMs - window.fromMs,
+         toSpatialFilter(query.bbox),
+         dataDir,
+-        buffer,
+-        worker
++        buffer
+       );
+       if (probe.length === 0) {
+         return null;
+@@ -764,8 +746,7 @@ export class TrackProvider implements TrackApi {
+       resolutionMs,
+       undefined,
+       dataDir,
+-      buffer,
+-      worker
++      buffer
+     );
+     if (points.length === 0) {
+       return null;
+@@ -821,8 +802,7 @@ export class TrackProvider implements TrackApi {
+           window,
+           resolutionMs,
+           dataDir,
+-          buffer,
+-          worker
++          buffer
+         );
+         if (!series) {
+           continue;
+@@ -907,8 +887,7 @@ export class TrackProvider implements TrackApi {
+     resolutionMs: number,
+     filter: SpatialFilter | undefined,
+     dataDir: string,
+-    buffer: TrackBufferSource | undefined,
+-    worker: BufferWorkerClient | undefined
++    buffer: TrackBufferSource | undefined
+   ): Promise<TrackPoint[]> {
+     const files = await this.rawFiles(dataDir, context, POSITION_PATH, window);
+     const hasBufferTable = buffer?.hasTable(POSITION_PATH) ?? false;
+@@ -933,8 +912,7 @@ export class TrackProvider implements TrackApi {
+           POSITION_PATH,
+           window.fromIso,
+           window.toIso,
+-          this.debug,
+-          worker
++          this.debug
+         );
+         if (staged) {
+           const subquery = buildBufferObjectSubquery(
+@@ -997,8 +975,7 @@ export class TrackProvider implements TrackApi {
+     window: TimeWindow,
+     resolutionMs: number,
+     dataDir: string,
+-    buffer: TrackBufferSource | undefined,
+-    worker: BufferWorkerClient | undefined
++    buffer: TrackBufferSource | undefined
+   ): Promise<PropertySeries | null> {
+     const files = await this.rawFiles(dataDir, context, signalkPath, window);
+     const hasBufferTable = buffer?.hasTable(signalkPath) ?? false;
+@@ -1037,8 +1014,7 @@ export class TrackProvider implements TrackApi {
+           signalkPath,
+           window.fromIso,
+           window.toIso,
+-          this.debug,
+-          worker
++          this.debug
+         );
+         if (staged) {
+           const subquery = buildBufferScalarSubquery(
+diff --git a/src/types.ts b/src/types.ts
+index 3820799..5f5d13a 100644
+--- a/src/types.ts
++++ b/src/types.ts
+@@ -742,17 +742,6 @@ export interface PluginState {
+   // SQLite buffer and export service (new)
+   sqliteBuffer?: SQLiteBufferInterface;
+   sqliteBufferError?: string;
+-  /**
+-   * The buffer worker, once it has reported ready. Queries that stage buffer
+-   * rows read through it, so the synchronous node:sqlite call for a history
+-   * read is not on the server's event loop. Undefined until it is ready and
+-   * again if it fails, in which case staging reads in-process as before.
+-   *
+-   * Read through an accessor rather than copied, because it appears after the
+-   * providers are constructed; each request snapshots it once, the way it
+-   * snapshots the buffer.
+-   */
+-  bufferWorker?: import('./utils/buffer-worker-client').BufferWorkerClient;
+   exportService?: ParquetExportServiceInterface;
+   // Auto-discovery service
+   // eslint-disable-next-line @typescript-eslint/no-explicit-any
+diff --git a/src/utils/buffer-columnar.ts b/src/utils/buffer-columnar.ts
+deleted file mode 100644
+index fa24633..0000000
+--- a/src/utils/buffer-columnar.ts
++++ /dev/null
+@@ -1,199 +0,0 @@
+-/**
+- * Columnar encoding for buffer rows crossing a thread boundary.
+- *
+- * Rows are never sent as objects. Measured on a Raspberry Pi 5 (2026-09-26),
+- * structured-cloning row objects costs the *receiving* thread about 4.3 µs a
+- * row — 21.7 ms for a 5,000-row page, p99 30 ms — which is the same order as
+- * reading them there directly, and would make a worker pointless. Packing each
+- * column into one typed array and transferring the buffers costs the receiver
+- * 0.2 ms flat at any page size, and moves the packing cost to the sender.
+- *
+- * One column becomes one typed array plus an explicit null mask, so a null is
+- * a null rather than a NaN or an empty string: the buffer's columns are
+- * nullable and the DuckDB appender needs to know which is which.
+- *
+- * Integers use BigInt64Array rather than Float64Array. Row ids are far below
+- * 2^53 today, but an exact integer channel costs the same eight bytes and
+- * removes the question.
+- */
+-
+-/** How a column's values travel. Fixed by the column's declared SQLite type. */
+-export type ColumnKind = 'i64' | 'f64' | 'str';
+-
+-export interface ColumnarColumn {
+-  name: string;
+-  kind: ColumnKind;
+-  /** Uint8Array, one byte per row: 1 when the value is null. */
+-  nulls: ArrayBuffer;
+-  /** i64: BigInt64Array. f64: Float64Array. Absent for 'str'. */
+-  values?: ArrayBuffer;
+-  /** 'str' only: the rows' utf8 bytes, concatenated. */
+-  data?: ArrayBuffer;
+-  /** 'str' only: Uint32Array of rowCount + 1 byte offsets into `data`. */
+-  offsets?: ArrayBuffer;
+-}
+-
+-export interface ColumnarPage {
+-  rowCount: number;
+-  columns: ColumnarColumn[];
+-}
+-
+-/**
+- * The channel a column travels on, from its declared SQLite type — the same
+- * mapping `buffer-staging.ts` uses to pick a DuckDB column type, so a column
+- * arrives as the type the appender is going to want.
+- */
+-export function columnKindFor(sqliteType: string): ColumnKind {
+-  const t = sqliteType.toUpperCase();
+-  if (t.includes('INT')) return 'i64';
+-  if (t.includes('REAL') || t.includes('FLOA') || t.includes('DOUB')) {
+-    return 'f64';
+-  }
+-  return 'str';
+-}
+-
+-/** A value SQLite hands back for a nullable, dynamically typed column. */
+-type CellValue = unknown;
+-
+-function isNullish(v: CellValue): boolean {
+-  return v === null || v === undefined;
+-}
+-
+-/**
+- * Pack rows into a page, and list the buffers to transfer with it.
+- *
+- * SQLite columns are dynamically typed, so a value that will not convert on
+- * its declared channel is encoded as null rather than as a guess — the same
+- * choice the DuckDB appender makes today for unconvertible content.
+- */
+-export function encodePage(
+-  rows: Array<Record<string, unknown>>,
+-  schema: Array<{ name: string; type: string }>
+-): { page: ColumnarPage; transfer: ArrayBuffer[] } {
+-  const rowCount = rows.length;
+-  const columns: ColumnarColumn[] = [];
+-  const transfer: ArrayBuffer[] = [];
+-
+-  for (const col of schema) {
+-    const kind = columnKindFor(col.type);
+-    const nulls = new Uint8Array(rowCount);
+-
+-    if (kind === 'i64' || kind === 'f64') {
+-      const values =
+-        kind === 'i64'
+-          ? new BigInt64Array(rowCount)
+-          : new Float64Array(rowCount);
+-      for (let i = 0; i < rowCount; i++) {
+-        const v = rows[i][col.name];
+-        if (isNullish(v)) {
+-          nulls[i] = 1;
+-          continue;
+-        }
+-        if (kind === 'i64') {
+-          const n = typeof v === 'bigint' ? v : Number(v);
+-          if (typeof n === 'bigint') {
+-            (values as BigInt64Array)[i] = n;
+-          } else if (Number.isFinite(n)) {
+-            (values as BigInt64Array)[i] = BigInt(Math.trunc(n));
+-          } else {
+-            nulls[i] = 1;
+-          }
+-        } else {
+-          const n = Number(v);
+-          if (Number.isFinite(n)) {
+-            (values as Float64Array)[i] = n;
+-          } else {
+-            nulls[i] = 1;
+-          }
+-        }
+-      }
+-      columns.push({
+-        name: col.name,
+-        kind,
+-        nulls: nulls.buffer,
+-        values: values.buffer,
+-      });
+-      transfer.push(nulls.buffer, values.buffer);
+-      continue;
+-    }
+-
+-    // Text: one utf8 blob plus byte offsets, so the receiver decodes only the
+-    // rows it actually reads and never allocates a string per row up front.
+-    const encoder = new TextEncoder();
+-    const parts: Uint8Array[] = new Array(rowCount);
+-    const offsets = new Uint32Array(rowCount + 1);
+-    let total = 0;
+-    for (let i = 0; i < rowCount; i++) {
+-      const v = rows[i][col.name];
+-      if (isNullish(v)) {
+-        nulls[i] = 1;
+-        parts[i] = new Uint8Array(0);
+-      } else {
+-        parts[i] = encoder.encode(String(v));
+-      }
+-      offsets[i] = total;
+-      total += parts[i].length;
+-    }
+-    offsets[rowCount] = total;
+-    const data = new Uint8Array(total);
+-    for (let i = 0; i < rowCount; i++) {
+-      if (parts[i].length > 0) data.set(parts[i], offsets[i]);
+-    }
+-    columns.push({
+-      name: col.name,
+-      kind,
+-      nulls: nulls.buffer,
+-      data: data.buffer,
+-      offsets: offsets.buffer,
+-    });
+-    transfer.push(nulls.buffer, data.buffer, offsets.buffer);
+-  }
+-
+-  return { page: { rowCount, columns }, transfer };
+-}
+-
+-/** Reads one column of a received page by row index. */
+-export interface ColumnReader {
+-  name: string;
+-  kind: ColumnKind;
+-  /** null, a bigint for 'i64', a number for 'f64', a string for 'str'. */
+-  at(row: number): bigint | number | string | null;
+-}
+-
+-/**
+- * Readers for a received page, in the page's column order. Nothing is copied:
+- * the typed arrays are views on the transferred buffers, and a text value is
+- * decoded on the call that asks for it.
+- */
+-export function readPage(page: ColumnarPage): ColumnReader[] {
+-  const decoder = new TextDecoder();
+-  return page.columns.map(col => {
+-    const nulls = new Uint8Array(col.nulls);
+-    if (col.kind === 'i64') {
+-      const values = new BigInt64Array(col.values as ArrayBuffer);
+-      return {
+-        name: col.name,
+-        kind: col.kind,
+-        at: (row: number) => (nulls[row] ? null : values[row]),
+-      };
+-    }
+-    if (col.kind === 'f64') {
+-      const values = new Float64Array(col.values as ArrayBuffer);
+-      return {
+-        name: col.name,
+-        kind: col.kind,
+-        at: (row: number) => (nulls[row] ? null : values[row]),
+-      };
+-    }
+-    const data = new Uint8Array(col.data as ArrayBuffer);
+-    const offsets = new Uint32Array(col.offsets as ArrayBuffer);
+-    return {
+-      name: col.name,
+-      kind: col.kind,
+-      at: (row: number) =>
+-        nulls[row]
+-          ? null
+-          : decoder.decode(data.subarray(offsets[row], offsets[row + 1])),
+-    };
+-  });
+-}
+diff --git a/src/utils/buffer-staging.ts b/src/utils/buffer-staging.ts
+index 020b6f3..f1fed50 100644
+--- a/src/utils/buffer-staging.ts
++++ b/src/utils/buffer-staging.ts
+@@ -9,26 +9,16 @@
+  * node:sqlite connection and copied into a per-connection DuckDB temp table, which
+  * the federated SQL unions with parquet exactly as before.
+  *
+- * Rows reach that copy from one of two places, and the staging algorithm is the
+- * same either way:
+- *
+- *   - **in-process**: the read is a synchronous `.all()` on the main thread, and
+- *     the loop yields between pages so one query cannot hold the event loop for
+- *     its whole scan;
+- *   - **the buffer worker**: the read happens on another thread and the page
+- *     arrives columnar with its buffers transferred, so the main thread pays
+- *     only the append.
+- *
+- * Which one a query uses is decided by its caller from a request-scoped
+- * snapshot, the same way the buffer itself is snapshotted, so a reconfigure
+- * cannot pair a new source with an in-flight request.
++ * The read is a synchronous `.all()` on the main thread, and the loop yields
++ * between pages so one query cannot hold the event loop for its whole scan.
++ * (A worker-thread read path existed briefly; see
++ * devdocs/BUFFER_WORKER_REMOVED.md.)
+  */
+ 
+ import { DuckDBConnection, DuckDBAppender } from '@duckdb/node-api';
+ import { federationCursor, pathToTableName } from './sqlite-buffer';
+ import { yieldToEventLoop } from './hive-walk';
+ import { FederationCursor } from '../types';
+-import { BufferWorkerClient } from './buffer-worker-client';
+ 
+ /** The minimal slice of SQLiteBuffer that in-process staging needs. */
+ export interface BufferStagingSource {
+@@ -60,17 +50,13 @@ const PAGE_BUDGET_MS = 10;
+ /**
+  * What a row costs the main thread, per path, measured on a Raspberry Pi 5
+  * (2026-09-26): reading out of SQLite is about 8 µs and appending into the
+- * DuckDB temp table about 7 µs. In-process the main thread pays both. Through
+- * the worker it pays only the append, because the read happens on the worker's
+- * thread and the page arrives with its buffers transferred.
++ * DuckDB temp table about 7 µs, and the main thread pays both.
+  */
+ const IN_PROCESS_US_PER_ROW = 15;
+-const WORKER_US_PER_ROW = 7;
+ 
+ /**
+- * Rows per page, from the budget and the per-row cost. Two numbers because the
+- * two paths put different work on the main thread, not because one was tuned:
+- * the page is whatever keeps one block inside PAGE_BUDGET_MS.
++ * Rows per page, from the budget and the per-row cost: the page is whatever
++ * keeps one block inside PAGE_BUDGET_MS.
+  *
+  * This also bounds JS heap regardless of window size, and the keyset pagination
+  * in `getRowsForFederation` is what lets a page be small without the read
+@@ -79,9 +65,6 @@ const WORKER_US_PER_ROW = 7;
+ const IN_PROCESS_BATCH_SIZE = Math.round(
+   (PAGE_BUDGET_MS * 1000) / IN_PROCESS_US_PER_ROW
+ );
+-const WORKER_BATCH_SIZE = Math.round(
+-  (PAGE_BUDGET_MS * 1000) / WORKER_US_PER_ROW
+-);
+ 
+ /** Hard cap on staged rows per query, far above any real buffer window. */
+ const MAX_STAGED_ROWS = 1_000_000;
+@@ -109,8 +92,8 @@ interface StagedPage {
+ }
+ 
+ /**
+- * Where a staged scan's pages come from. The two implementations below are the
+- * in-process buffer and the buffer worker; nothing else about staging differs.
++ * Where a staged scan's pages come from. The in-process buffer is the only
++ * implementation; the interface is where another source would plug in.
+  */
+ interface StagingSource {
+   /** Declared column schema, or null when the path has no buffer table. */
+@@ -176,31 +159,6 @@ function inProcessSource(buffer: BufferStagingSource): StagingSource {
+   };
+ }
+ 
+-/** Rows read on the worker's thread, arriving columnar with buffers transferred. */
+-function workerSource(client: BufferWorkerClient): StagingSource {
+-  return {
+-    async schema(signalkPath) {
+-      return client.getTableSchema(signalkPath);
+-    },
+-    async *pages({ signalkPath, context, fromIso, toIso }) {
+-      // A scan that cannot finish throws into this loop rather than ending, so
+-      // the refusal to answer short is the worker's behaviour too.
+-      for await (const page of client.scan({
+-        signalkPath,
+-        context,
+-        fromIso,
+-        toIso,
+-        pageRows: WORKER_BATCH_SIZE,
+-      })) {
+-        yield {
+-          rowCount: page.rowCount,
+-          valueAt: (row, column) => page.columns[column].at(row),
+-        };
+-      }
+-    },
+-  };
+-}
+-
+ /** Append one page's rows to the appender, converting per the column's type. */
+ function appendPage(
+   appender: DuckDBAppender,
+@@ -241,9 +199,6 @@ function appendPage(
+  * Copy the buffer rows a query needs (one path, one context, time-windowed,
+  * unexported only) into a TEMP table on the given DuckDB connection.
+  *
+- * Reads through `worker` when one is given and in-process otherwise. The two
+- * produce the same temp table; only where the SQLite call runs differs.
+- *
+  * Returns the qualified temp table name to use in FROM clauses, or null when
+  * the path has no buffer table or no rows match (callers skip the UNION ALL,
+  * as they did when ATTACH-era subqueries returned null).
+@@ -258,10 +213,9 @@ export async function stageBufferTable(
+   signalkPath: string,
+   fromIso: string,
+   toIso: string,
+-  warn?: (msg: string) => void,
+-  worker?: BufferWorkerClient
++  warn?: (msg: string) => void
+ ): Promise<string | null> {
+-  const source = worker ? workerSource(worker) : inProcessSource(buffer);
++  const source = inProcessSource(buffer);
+   const schema = await source.schema(signalkPath);
+   if (!schema || schema.length === 0) {
+     return null;
+diff --git a/src/utils/buffer-worker-client.ts b/src/utils/buffer-worker-client.ts
+deleted file mode 100644
+index 0ddbe15..0000000
+--- a/src/utils/buffer-worker-client.ts
++++ /dev/null
+@@ -1,320 +0,0 @@
+-/**
+- * The main thread's side of the buffer worker.
+- *
+- * Every method is a message and a promise. The only row-shaped thing that
+- * crosses the boundary is a columnar page whose buffers are transferred, so
+- * receiving one costs this thread a fraction of a millisecond regardless of how
+- * many rows it holds; see `buffer-columnar.ts` for the measurements that forced
+- * that shape.
+- *
+- * `scan()` is an async iterable of pages. Each page is acknowledged when the
+- * consumer comes back for the next one, which is what bounds how far ahead the
+- * worker may read: a consumer that stops consuming stops the worker reading.
+- *
+- * Failure rules, deliberately blunt because a buffer that quietly answers short
+- * is worse than one that fails: a scan that errors part-way throws into the
+- * consumer, and a worker that dies rejects every pending request and every open
+- * scan rather than retrying anything.
+- */
+-
+-import { Worker } from 'node:worker_threads';
+-import * as path from 'path';
+-import { ColumnReader, ColumnarPage, readPage } from './buffer-columnar';
+-import {
+-  BufferWorkerMessage,
+-  BufferWorkerRequest,
+-} from './buffer-worker-protocol';
+-
+-/** One page as the consumer sees it: readers in the table's column order. */
+-export interface ScanPage {
+-  rowCount: number;
+-  columns: ColumnReader[];
+-  /** Time the worker spent reading this page. For measurement, not for logic. */
+-  readMs: number;
+-}
+-
+-export interface BufferWorkerClientOptions {
+-  dbPath: string;
+-  retentionHours?: number;
+-  /** Overridden by the tests to point at the built worker; defaults beside this file. */
+-  workerPath?: string;
+-  /** Worker `execArgv`, so a test runner's loader flags do not leak in. */
+-  workerExecArgv?: string[];
+-}
+-
+-interface PendingRequest {
+-  resolve: (value: unknown) => void;
+-  reject: (error: Error) => void;
+-}
+-
+-interface OpenScan {
+-  /** Pages received and not yet handed to the consumer. */
+-  queued: ScanPage[];
+-  /** Waiting consumer, if any. */
+-  waiting?: {
+-    resolve: (page: ScanPage | null) => void;
+-    reject: (error: Error) => void;
+-  };
+-  ended: boolean;
+-  failure?: Error;
+-}
+-
+-/** Thrown when the worker goes away; never retried, by design. */
+-export class BufferWorkerGoneError extends Error {}
+-
+-export class BufferWorkerClient {
+-  private worker?: Worker;
+-  private readonly pending = new Map<number, PendingRequest>();
+-  private readonly scans = new Map<number, OpenScan>();
+-  private nextId = 1;
+-  private gone?: Error;
+-  private readyPromise?: Promise<void>;
+-
+-  constructor(private readonly options: BufferWorkerClientOptions) {}
+-
+-  /** Start the worker and wait for it to report the database open. */
+-  start(): Promise<void> {
+-    if (this.readyPromise) return this.readyPromise;
+-    const workerPath =
+-      this.options.workerPath ?? path.join(__dirname, '..', 'buffer-worker.js');
+-
+-    this.readyPromise = new Promise<void>((resolve, reject) => {
+-      const worker = new Worker(workerPath, {
+-        workerData: {
+-          dbPath: this.options.dbPath,
+-          retentionHours: this.options.retentionHours,
+-        },
+-        execArgv: this.options.workerExecArgv,
+-      });
+-      this.worker = worker;
+-
+-      let settled = false;
+-      worker.on('message', (msg: BufferWorkerMessage) => {
+-        if (msg.type === 'ready') {
+-          if (!settled) {
+-            settled = true;
+-            resolve();
+-          }
+-          return;
+-        }
+-        if (msg.type === 'fatal') {
+-          if (!settled) {
+-            settled = true;
+-            reject(new Error(msg.message));
+-          }
+-          this.fail(new BufferWorkerGoneError(msg.message));
+-          return;
+-        }
+-        this.receive(msg);
+-      });
+-      worker.on('error', (error: Error) => {
+-        if (!settled) {
+-          settled = true;
+-          reject(error);
+-        }
+-        this.fail(new BufferWorkerGoneError(error.message));
+-      });
+-      worker.on('exit', code => {
+-        if (!settled) {
+-          settled = true;
+-          reject(new Error(`buffer worker exited with code ${code}`));
+-        }
+-        this.fail(
+-          new BufferWorkerGoneError(`buffer worker exited with code ${code}`)
+-        );
+-      });
+-    });
+-    return this.readyPromise;
+-  }
+-
+-  /** The declared column schema of a path's table, or null when there is none. */
+-  async getTableSchema(
+-    signalkPath: string
+-  ): Promise<Array<{ name: string; type: string }> | null> {
+-    return (await this.request({ op: 'schema', id: 0, signalkPath })) as Array<{
+-      name: string;
+-      type: string;
+-    }> | null;
+-  }
+-
+-  /** A round trip that does nothing, for liveness and latency. */
+-  async ping(): Promise<void> {
+-    await this.request({ op: 'ping', id: 0 });
+-  }
+-
+-  /**
+-   * Pages of one path, context and window, in `(signalk_timestamp, id)` order.
+-   * Yields nothing at all when the path has no table.
+-   *
+-   * Abandoning the iteration early (a `break`, or a throw downstream) closes
+-   * the scan in the worker, so a consumer that gives up does not leave it
+-   * reading.
+-   */
+-  async *scan(args: {
+-    signalkPath: string;
+-    context: string;
+-    fromIso: string;
+-    toIso: string;
+-    pageRows: number;
+-  }): AsyncGenerator<ScanPage, void, void> {
+-    const scanId = (await this.request({
+-      op: 'openScan',
+-      id: 0,
+-      ...args,
+-    })) as number | null;
+-    if (scanId === null) return;
+-
+-    const state: OpenScan = { queued: [], ended: false };
+-    this.scans.set(scanId, state);
+-    try {
+-      for (;;) {
+-        const page = await this.nextPage(scanId, state);
+-        if (page === null) return;
+-        yield page;
+-        // The consumer is done with that page and has come back for another:
+-        // release the worker to read one more.
+-        this.post({ op: 'ackScan', scanId });
+-      }
+-    } finally {
+-      if (this.scans.delete(scanId) && !state.ended && !this.gone) {
+-        this.post({ op: 'closeScan', scanId });
+-      }
+-    }
+-  }
+-
+-  /**
+-   * Whether the worker is up and can take a request: started, and not gone.
+-   * A caller choosing between this and an in-process read asks this first,
+-   * so a worker that has died sends reads back in-process rather than
+-   * failing every one of them.
+-   */
+-  isAlive(): boolean {
+-    return this.worker !== undefined && this.gone === undefined;
+-  }
+-
+-  /** Close the database in the worker and stop the thread. */
+-  async close(): Promise<void> {
+-    if (!this.worker || this.gone) return;
+-    try {
+-      await this.request({ op: 'close', id: 0 });
+-    } catch {
+-      // Already gone; the terminate below is what matters.
+-    }
+-    const worker = this.worker;
+-    this.worker = undefined;
+-    await worker.terminate();
+-    this.fail(new BufferWorkerGoneError('buffer worker closed'));
+-  }
+-
+-  // -- internals ------------------------------------------------------------
+-
+-  private nextPage(scanId: number, state: OpenScan): Promise<ScanPage | null> {
+-    if (state.failure) return Promise.reject(state.failure);
+-    if (state.queued.length > 0) {
+-      return Promise.resolve(state.queued.shift() as ScanPage);
+-    }
+-    if (state.ended) return Promise.resolve(null);
+-    if (this.gone) return Promise.reject(this.gone);
+-    return new Promise<ScanPage | null>((resolve, reject) => {
+-      state.waiting = { resolve, reject };
+-    });
+-  }
+-
+-  private receive(msg: BufferWorkerMessage): void {
+-    switch (msg.type) {
+-      case 'reply': {
+-        const p = this.pending.get(msg.id);
+-        if (!p) return;
+-        this.pending.delete(msg.id);
+-        p.resolve(msg.value);
+-        return;
+-      }
+-      case 'error': {
+-        const p = this.pending.get(msg.id);
+-        if (!p) return;
+-        this.pending.delete(msg.id);
+-        p.reject(new Error(msg.message));
+-        return;
+-      }
+-      case 'page': {
+-        const state = this.scans.get(msg.scanId);
+-        if (!state) return; // Page for a scan the consumer abandoned.
+-        const page = this.toScanPage(msg.page, msg.readMs);
+-        const waiting = state.waiting;
+-        if (waiting) {
+-          state.waiting = undefined;
+-          waiting.resolve(page);
+-        } else {
+-          state.queued.push(page);
+-        }
+-        return;
+-      }
+-      case 'end': {
+-        const state = this.scans.get(msg.scanId);
+-        if (!state) return;
+-        state.ended = true;
+-        const waiting = state.waiting;
+-        if (waiting && state.queued.length === 0) {
+-          state.waiting = undefined;
+-          waiting.resolve(null);
+-        }
+-        return;
+-      }
+-      case 'scanError': {
+-        const state = this.scans.get(msg.scanId);
+-        if (!state) return;
+-        const error = new Error(msg.message);
+-        state.failure = error;
+-        const waiting = state.waiting;
+-        if (waiting) {
+-          state.waiting = undefined;
+-          waiting.reject(error);
+-        }
+-        return;
+-      }
+-      default:
+-        return;
+-    }
+-  }
+-
+-  private toScanPage(page: ColumnarPage, readMs: number): ScanPage {
+-    return { rowCount: page.rowCount, columns: readPage(page), readMs };
+-  }
+-
+-  private request(msg: BufferWorkerRequest): Promise<unknown> {
+-    if (this.gone) return Promise.reject(this.gone);
+-    if (!this.worker) {
+-      return Promise.reject(new Error('buffer worker has not been started'));
+-    }
+-    const id = this.nextId++;
+-    return new Promise<unknown>((resolve, reject) => {
+-      this.pending.set(id, { resolve, reject });
+-      (this.worker as Worker).postMessage({ ...msg, id });
+-    });
+-  }
+-
+-  /** Fire and forget: acks and scan closes carry no reply. */
+-  private post(msg: BufferWorkerRequest): void {
+-    if (this.gone || !this.worker) return;
+-    this.worker.postMessage(msg);
+-  }
+-
+-  /**
+-   * The worker is gone. Reject everything outstanding and refuse new work:
+-   * a request whose outcome is unknown is never replayed.
+-   */
+-  private fail(error: Error): void {
+-    if (this.gone) return;
+-    this.gone = error;
+-    for (const [, p] of this.pending) p.reject(error);
+-    this.pending.clear();
+-    for (const [, state] of this.scans) {
+-      state.failure = error;
+-      const waiting = state.waiting;
+-      if (waiting) {
+-        state.waiting = undefined;
+-        waiting.reject(error);
+-      }
+-    }
+-  }
+-}
+diff --git a/src/utils/buffer-worker-protocol.ts b/src/utils/buffer-worker-protocol.ts
+deleted file mode 100644
+index 1aa61d4..0000000
+--- a/src/utils/buffer-worker-protocol.ts
++++ /dev/null
+@@ -1,153 +0,0 @@
+-/**
+- * The messages between the main thread and the buffer worker.
+- *
+- * One worker owns the only `node:sqlite` connection to `buffer.db`, and every
+- * buffer operation is a message on one FIFO queue processed in arrival order.
+- * That ordering is the correctness property the synchronous code gets for free
+- * and the easiest one to lose: **a read issued after a write observes that
+- * write.** No priority lane, no second connection, no parallel read path.
+- *
+- * Reads stream rather than answering one page per request. The main thread
+- * opens a scan; the worker pushes pages and will not run more than
+- * `SCAN_PAGES_IN_FLIGHT` ahead of the acks coming back, so a slow consumer
+- * cannot make the worker hold the whole window in memory, and the worker can
+- * read the next page while the main thread is still appending the last one.
+- *
+- * This file is the only shared vocabulary between the two sides; neither
+- * imports the other.
+- */
+-
+-import { ColumnarPage } from './buffer-columnar';
+-
+-/**
+- * Pages the worker may send beyond the one being consumed. One is enough to
+- * overlap a read with an append — measured on a Raspberry Pi 5, about 40 ms of
+- * read against 35 ms of append for 5,000 rows — and more only buys memory.
+- */
+-export const SCAN_PAGES_IN_FLIGHT = 1;
+-
+-/** What the worker needs before it can answer anything. */
+-export interface BufferWorkerInit {
+-  dbPath: string;
+-  retentionHours?: number;
+-}
+-
+-/**
+- * The worker opens the database read-only while it serves reads only, so it
+- * never contends for the write lock with the connection that owns ingestion.
+- */
+-
+-// ---------------------------------------------------------------------------
+-// Main thread to worker
+-// ---------------------------------------------------------------------------
+-
+-/** Open a keyset scan of one path and context over a time window. */
+-export interface OpenScanRequest {
+-  op: 'openScan';
+-  id: number;
+-  signalkPath: string;
+-  context: string;
+-  fromIso: string;
+-  toIso: string;
+-  pageRows: number;
+-}
+-
+-/** One consumed page acknowledged, which releases the next. */
+-export interface AckScanRequest {
+-  op: 'ackScan';
+-  scanId: number;
+-}
+-
+-/** Abandon a scan before its end; the worker forgets it and sends no more. */
+-export interface CloseScanRequest {
+-  op: 'closeScan';
+-  scanId: number;
+-}
+-
+-/** The declared column schema of a path's table, or null when there is none. */
+-export interface SchemaRequest {
+-  op: 'schema';
+-  id: number;
+-  signalkPath: string;
+-}
+-
+-/** A liveness and latency probe, used by the tests and the measurements. */
+-export interface PingRequest {
+-  op: 'ping';
+-  id: number;
+-}
+-
+-/** Close the database and exit. */
+-export interface CloseRequest {
+-  op: 'close';
+-  id: number;
+-}
+-
+-export type BufferWorkerRequest =
+-  | OpenScanRequest
+-  | AckScanRequest
+-  | CloseScanRequest
+-  | SchemaRequest
+-  | PingRequest
+-  | CloseRequest;
+-
+-// ---------------------------------------------------------------------------
+-// Worker to main thread
+-// ---------------------------------------------------------------------------
+-
+-/** Sent once, when the database is open and the worker can take requests. */
+-export interface ReadyMessage {
+-  type: 'ready';
+-}
+-
+-/** The worker could not start at all; nothing else will follow. */
+-export interface FatalMessage {
+-  type: 'fatal';
+-  message: string;
+-}
+-
+-/** A reply to a request that carries a value. */
+-export interface ReplyMessage {
+-  type: 'reply';
+-  id: number;
+-  value: unknown;
+-}
+-
+-/** A request failed. The failure belongs to that request only. */
+-export interface ErrorMessage {
+-  type: 'error';
+-  id: number;
+-  message: string;
+-}
+-
+-/** One page of a scan. `page`'s buffers are transferred, not copied. */
+-export interface ScanPageMessage {
+-  type: 'page';
+-  scanId: number;
+-  page: ColumnarPage;
+-  /** Time the worker spent reading this page, for measurement. */
+-  readMs: number;
+-}
+-
+-/** The scan reached the end of its window. No further pages. */
+-export interface ScanEndMessage {
+-  type: 'end';
+-  scanId: number;
+-  totalRows: number;
+-}
+-
+-/** The scan failed part-way. The consumer must not answer with what it has. */
+-export interface ScanErrorMessage {
+-  type: 'scanError';
+-  scanId: number;
+-  message: string;
+-}
+-
+-export type BufferWorkerMessage =
+-  | ReadyMessage
+-  | FatalMessage
+-  | ReplyMessage
+-  | ErrorMessage
+-  | ScanPageMessage
+-  | ScanEndMessage
+-  | ScanErrorMessage;
+diff --git a/src/utils/sqlite-buffer.ts b/src/utils/sqlite-buffer.ts
+index f434b40..38be849 100644
+--- a/src/utils/sqlite-buffer.ts
++++ b/src/utils/sqlite-buffer.ts
+@@ -60,8 +60,9 @@ export interface SQLiteBufferConfig {
+    * Open for reading only: no schema creation, no legacy migration, no index
+    * building, and every write method refuses.
+    *
+-   * This is what the buffer worker opens while it only serves reads. Two
+-   * node:sqlite connections to one database are safe — they share a library, so
++   * Nothing opens one today; the buffer worker did while it served reads, and
++   * would again (see devdocs/BUFFER_WORKER_REMOVED.md). Two node:sqlite
++   * connections to one database are safe — they share a library, so
+    * their POSIX locks are coherent — but a second *writer* is not free: the
+    * connection that owns ingestion sets no `busy_timeout`, because waiting for
+    * a lock on the server's event loop is the very thing the worker exists to
+diff --git a/test/integration/buffer-staging-worker.test.ts b/test/integration/buffer-staging-worker.test.ts
+deleted file mode 100644
+index 5db8435..0000000
+--- a/test/integration/buffer-staging-worker.test.ts
++++ /dev/null
+@@ -1,256 +0,0 @@
+-/**
+- * Staging through the buffer worker must produce exactly the table staging
+- * in-process produces.
+- *
+- * This is the equivalence that makes the worker a change of *where* the SQLite
+- * call runs and nothing else. It is asserted against the temp table's contents
+- * rather than against the rows handed to the appender, because the table is what
+- * the federated SQL reads: a value that survives the thread boundary but lands
+- * in DuckDB as the wrong type, or as 0 where it should be NULL, would change
+- * query answers while every row count still matched.
+- */
+-import { expect } from 'chai';
+-import * as os from 'os';
+-import * as path from 'path';
+-import * as fs from 'fs-extra';
+-import { DuckDBConnection } from '@duckdb/node-api';
+-import { SQLiteBuffer } from '../../src/utils/sqlite-buffer';
+-import { DuckDBPool } from '../../src/utils/duckdb-pool';
+-import { BufferWorkerClient } from '../../src/utils/buffer-worker-client';
+-import { stageBufferTable } from '../../src/utils/buffer-staging';
+-import { makeScalarRecord, makePositionRecord } from './helpers/records';
+-
+-const CONTEXT = 'vessels.urn:mrn:signalk:uuid:stageworker';
+-const SOG = 'navigation.speedOverGround';
+-const POSITION = 'navigation.position';
+-const BASE = Date.parse('2026-01-01T00:00:00.000Z');
+-const FROM = '2026-01-01T00:00:00.000Z';
+-const TO = '2026-01-02T00:00:00.000Z';
+-
+-const WORKER = path.join(__dirname, '..', '..', 'src', 'buffer-worker.ts');
+-const EXEC_ARGV = ['-r', 'tsx/cjs'];
+-
+-describe('staging through the buffer worker', function () {
+-  this.timeout(60000);
+-
+-  let dataDir: string;
+-  let dbPath: string;
+-  let buffer: SQLiteBuffer;
+-  let client: BufferWorkerClient | undefined;
+-
+-  beforeEach(async () => {
+-    dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'sk-stageworker-'));
+-    dbPath = path.join(dataDir, 'buffer.db');
+-    buffer = new SQLiteBuffer({ dbPath });
+-    await DuckDBPool.initialize();
+-  });
+-
+-  afterEach(async () => {
+-    await client?.close();
+-    client = undefined;
+-    await DuckDBPool.shutdown();
+-    if (buffer.isOpen()) buffer.close();
+-    await fs.remove(dataDir);
+-  });
+-
+-  /** Everything in a staged temp table, ordered so two runs compare directly. */
+-  async function dump(
+-    connection: DuckDBConnection,
+-    table: string
+-  ): Promise<unknown[][]> {
+-    const result = await connection.runAndReadAll(
+-      `SELECT * FROM ${table} ORDER BY signalk_timestamp, id`
+-    );
+-    return result.getRows() as unknown[][];
+-  }
+-
+-  async function stage(
+-    signalkPath: string,
+-    worker?: BufferWorkerClient
+-  ): Promise<unknown[][]> {
+-    const connection = await DuckDBPool.getConnection();
+-    const table = await stageBufferTable(
+-      connection,
+-      buffer,
+-      CONTEXT,
+-      signalkPath,
+-      FROM,
+-      TO,
+-      undefined,
+-      worker
+-    );
+-    expect(table, 'a window with rows must stage a table').to.be.a('string');
+-    return dump(connection, table as string);
+-  }
+-
+-  async function startClient(): Promise<BufferWorkerClient> {
+-    client = new BufferWorkerClient({
+-      dbPath,
+-      workerPath: WORKER,
+-      workerExecArgv: EXEC_ARGV,
+-    });
+-    await client.start();
+-    return client;
+-  }
+-
+-  it('stages a scalar path identically in-process and through the worker', async () => {
+-    buffer.insertBatch(
+-      Array.from({ length: 2500 }, (_, i) =>
+-        makeScalarRecord(
+-          CONTEXT,
+-          SOG,
+-          i / 7,
+-          new Date(BASE + i * 400).toISOString()
+-        )
+-      )
+-    );
+-
+-    const inProcess = await stage(SOG);
+-    const viaWorker = await stage(SOG, await startClient());
+-
+-    expect(viaWorker).to.have.lengthOf(2500);
+-    expect(viaWorker).to.deep.equal(inProcess);
+-  });
+-
+-  it('stages an object path with its nulls identically', async () => {
+-    for (let i = 0; i < 1500; i++) {
+-      buffer.insert(
+-        makePositionRecord(
+-          CONTEXT,
+-          41.5 + i / 100000,
+-          -71.3 - i / 100000,
+-          new Date(BASE + i * 400).toISOString()
+-        )
+-      );
+-    }
+-
+-    const inProcess = await stage(POSITION);
+-    const viaWorker = await stage(POSITION, await startClient());
+-
+-    expect(viaWorker).to.have.lengthOf(1500);
+-    expect(viaWorker).to.deep.equal(inProcess);
+-    // The columns a position row leaves empty must be NULL on both paths, not
+-    // 0 or '': a filter like `meta IS NULL` has to mean the same thing.
+-    const nullCounts = async (worker?: BufferWorkerClient) => {
+-      const connection = await DuckDBPool.getConnection();
+-      const table = await stageBufferTable(
+-        connection,
+-        buffer,
+-        CONTEXT,
+-        POSITION,
+-        FROM,
+-        TO,
+-        undefined,
+-        worker
+-      );
+-      const r = await connection.runAndReadAll(
+-        `SELECT COUNT(*) FILTER (WHERE meta IS NULL) AS meta_nulls,
+-                COUNT(*) FILTER (WHERE export_batch_id IS NULL) AS batch_nulls
+-         FROM ${table as string}`
+-      );
+-      return r.getRows()[0];
+-    };
+-    expect(await nullCounts(client)).to.deep.equal(await nullCounts());
+-  });
+-
+-  it('returns null for a path with no buffer table, both ways', async () => {
+-    buffer.insert(makeScalarRecord(CONTEXT, SOG, 1, FROM));
+-    await startClient();
+-
+-    const connection = await DuckDBPool.getConnection();
+-    for (const worker of [undefined, client]) {
+-      const table = await stageBufferTable(
+-        connection,
+-        buffer,
+-        CONTEXT,
+-        'no.such.path',
+-        FROM,
+-        TO,
+-        undefined,
+-        worker
+-      );
+-      expect(table).to.equal(null);
+-    }
+-  });
+-
+-  it('stages a path first recorded after the worker opened', async () => {
+-    buffer.insert(makeScalarRecord(CONTEXT, SOG, 1, FROM));
+-    const worker = await startClient();
+-    // The worker's read-only connection loaded its table map with SOG only.
+-    expect(await worker.getTableSchema(POSITION)).to.equal(null);
+-
+-    // The writer creates a new path's table while the worker is up.
+-    for (let i = 0; i < 20; i++) {
+-      buffer.insert(
+-        makePositionRecord(
+-          CONTEXT,
+-          41.5 + i / 1000,
+-          -71.3,
+-          new Date(BASE + i * 1000).toISOString()
+-        )
+-      );
+-    }
+-
+-    const inProcess = await stage(POSITION);
+-    const viaWorker = await stage(POSITION, worker);
+-    expect(viaWorker).to.have.lengthOf(20);
+-    expect(viaWorker).to.deep.equal(inProcess);
+-  });
+-
+-  it('fails the staging rather than answering short when the worker dies', async () => {
+-    buffer.insertBatch(
+-      Array.from({ length: 5000 }, (_, i) =>
+-        makeScalarRecord(
+-          CONTEXT,
+-          SOG,
+-          i,
+-          new Date(BASE + i * 400).toISOString()
+-        )
+-      )
+-    );
+-    const real = await startClient();
+-
+-    // Kill the worker after the first page is consumed, not on a timer: a
+-    // timer races the scan, and on a slower machine the scan finishes first
+-    // and the test passes for the wrong reason (seen on Windows CI,
+-    // 2026-09-27). Wrapping the real client keeps the real worker dying
+-    // mid-scan while making *when* deterministic.
+-    const killedMidScan = {
+-      getTableSchema: (signalkPath: string) => real.getTableSchema(signalkPath),
+-      scan: (args: Parameters<BufferWorkerClient['scan']>[0]) =>
+-        (async function* () {
+-          let firstPage = true;
+-          for await (const page of real.scan(args)) {
+-            yield page;
+-            if (firstPage) {
+-              firstPage = false;
+-              await real.close();
+-            }
+-          }
+-        })(),
+-    } as unknown as BufferWorkerClient;
+-
+-    const connection = await DuckDBPool.getConnection();
+-    let threw: Error | undefined;
+-    try {
+-      await stageBufferTable(
+-        connection,
+-        buffer,
+-        CONTEXT,
+-        SOG,
+-        FROM,
+-        TO,
+-        undefined,
+-        killedMidScan
+-      );
+-    } catch (error) {
+-      threw = error as Error;
+-    }
+-    // `client` stays set so afterEach closes it: on Windows an open handle on
+-    // buffer.db makes the temp directory unremovable (EBUSY on unlink).
+-    expect(
+-      threw,
+-      'a dead worker must fail the query, not truncate it'
+-    ).to.be.an('error');
+-  });
+-});
+diff --git a/test/integration/buffer-worker-read.test.ts b/test/integration/buffer-worker-read.test.ts
+deleted file mode 100644
+index 4ba9c84..0000000
+--- a/test/integration/buffer-worker-read.test.ts
++++ /dev/null
+@@ -1,402 +0,0 @@
+-/**
+- * The buffer worker's read path, running as a real worker thread.
+- *
+- * The contract the staging code will depend on: the rows a scan yields are
+- * exactly the rows an in-process read of the same window yields, in the same
+- * order; the worker does not read ahead of the consumer; a consumer that stops
+- * stops the worker; and a scan that cannot finish fails loudly rather than
+- * ending early, because a query answered with part of the buffer is wrong in a
+- * way nobody notices.
+- *
+- * The worker is started from TypeScript under the tsx loader the suite already
+- * runs on, as the compaction worker test does.
+- */
+-import { expect } from 'chai';
+-import * as os from 'os';
+-import * as path from 'path';
+-import * as fs from 'fs-extra';
+-import { SQLiteBuffer } from '../../src/utils/sqlite-buffer';
+-import { Worker } from 'node:worker_threads';
+-import { BufferWorkerClient } from '../../src/utils/buffer-worker-client';
+-import { SCAN_PAGES_IN_FLIGHT } from '../../src/utils/buffer-worker-protocol';
+-import { makeScalarRecord, makePositionRecord } from './helpers/records';
+-
+-const CONTEXT = 'vessels.urn:mrn:signalk:uuid:worker';
+-const OTHER = 'vessels.urn:mrn:signalk:uuid:other';
+-const SOG = 'navigation.speedOverGround';
+-const POSITION = 'navigation.position';
+-const POSITION_SCALAR = 'environment.depth.belowKeel';
+-const BASE = Date.parse('2026-01-01T00:00:00.000Z');
+-const FROM = '2026-01-01T00:00:00.000Z';
+-const TO = '2026-01-02T00:00:00.000Z';
+-
+-const WORKER = path.join(__dirname, '..', '..', 'src', 'buffer-worker.ts');
+-const EXEC_ARGV = ['-r', 'tsx/cjs'];
+-
+-describe('buffer worker read path', function () {
+-  this.timeout(30000);
+-
+-  let dataDir: string;
+-  let dbPath: string;
+-  let client: BufferWorkerClient | undefined;
+-
+-  beforeEach(async () => {
+-    dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'sk-bufworker-'));
+-    dbPath = path.join(dataDir, 'buffer.db');
+-  });
+-
+-  afterEach(async () => {
+-    await client?.close();
+-    client = undefined;
+-    await fs.remove(dataDir);
+-  });
+-
+-  /** Fill the buffer in a separate connection and close it before the worker opens. */
+-  function seed(fill: (buffer: SQLiteBuffer) => void): void {
+-    const buffer = new SQLiteBuffer({ dbPath });
+-    try {
+-      fill(buffer);
+-    } finally {
+-      buffer.close();
+-    }
+-  }
+-
+-  /** The same window read in-process, to compare a scan against. */
+-  function readDirect(
+-    signalkPath: string,
+-    context: string
+-  ): Array<Record<string, unknown>> {
+-    const buffer = new SQLiteBuffer({ dbPath });
+-    try {
+-      const all: Array<Record<string, unknown>> = [];
+-      let after = null as
+-        Parameters<typeof buffer.getRowsForFederation>[4] | null;
+-      for (;;) {
+-        const rows = buffer.getRowsForFederation(
+-          signalkPath,
+-          context,
+-          FROM,
+-          TO,
+-          after,
+-          500
+-        );
+-        if (rows.length === 0) break;
+-        all.push(...rows);
+-        const last = rows[rows.length - 1];
+-        after = {
+-          signalkTimestamp: String(last.signalk_timestamp),
+-          id: Number(last.id),
+-        };
+-        if (rows.length < 500) break;
+-      }
+-      return all;
+-    } finally {
+-      buffer.close();
+-    }
+-  }
+-
+-  async function startClient(): Promise<BufferWorkerClient> {
+-    client = new BufferWorkerClient({
+-      dbPath,
+-      workerPath: WORKER,
+-      workerExecArgv: EXEC_ARGV,
+-    });
+-    await client.start();
+-    return client;
+-  }
+-
+-  /** Every row a scan yields, as plain objects keyed by column name. */
+-  async function scanAll(
+-    c: BufferWorkerClient,
+-    signalkPath: string,
+-    context: string,
+-    pageRows: number
+-  ): Promise<{
+-    rows: Array<Record<string, unknown>>;
+-    pages: number;
+-  }> {
+-    const rows: Array<Record<string, unknown>> = [];
+-    let pages = 0;
+-    for await (const page of c.scan({
+-      signalkPath,
+-      context,
+-      fromIso: FROM,
+-      toIso: TO,
+-      pageRows,
+-    })) {
+-      pages += 1;
+-      for (let i = 0; i < page.rowCount; i++) {
+-        const row: Record<string, unknown> = {};
+-        for (const col of page.columns) row[col.name] = col.at(i);
+-        rows.push(row);
+-      }
+-    }
+-    return { rows, pages };
+-  }
+-
+-  it('opens read-only, so it cannot contend for the write lock', async () => {
+-    seed(b => b.insert(makeScalarRecord(CONTEXT, SOG, 1, FROM)));
+-    const readOnly = new SQLiteBuffer({ dbPath, readOnly: true });
+-    try {
+-      // Reads work.
+-      expect(
+-        readOnly.getRowsForFederation(SOG, CONTEXT, FROM, TO, null, 10)
+-      ).to.have.lengthOf(1);
+-      // Writes do not, and say so.
+-      expect(() =>
+-        readOnly.insert(makeScalarRecord(CONTEXT, SOG, 2, FROM))
+-      ).to.throw(/readonly|read-only/i);
+-    } finally {
+-      readOnly.close();
+-    }
+-
+-    // And a table created after the reader opened is still visible to a reader
+-    // opened afterwards, because the writer built it and its indexes.
+-    const writer = new SQLiteBuffer({ dbPath });
+-    try {
+-      writer.insert(makeScalarRecord(CONTEXT, POSITION_SCALAR, 3, FROM));
+-    } finally {
+-      writer.close();
+-    }
+-    const second = new SQLiteBuffer({ dbPath, readOnly: true });
+-    try {
+-      expect(second.getTableSchema(POSITION_SCALAR)).to.be.an('array');
+-    } finally {
+-      second.close();
+-    }
+-  });
+-
+-  it('starts, answers a ping and reports a path schema', async () => {
+-    seed(b => b.insert(makeScalarRecord(CONTEXT, SOG, 1, FROM)));
+-    const c = await startClient();
+-    await c.ping();
+-
+-    const schema = await c.getTableSchema(SOG);
+-    expect(schema).to.be.an('array');
+-    expect((schema ?? []).map(col => col.name)).to.include.members([
+-      'id',
+-      'context',
+-      'signalk_timestamp',
+-      'value',
+-      'exported',
+-    ]);
+-    expect(await c.getTableSchema('no.such.path')).to.equal(null);
+-  });
+-
+-  it('yields the same rows as an in-process read, at every page size', async () => {
+-    seed(b =>
+-      b.insertBatch(
+-        Array.from({ length: 250 }, (_, i) =>
+-          makeScalarRecord(
+-            CONTEXT,
+-            SOG,
+-            i,
+-            new Date(BASE + i * 1000).toISOString()
+-          )
+-        )
+-      )
+-    );
+-    const expected = readDirect(SOG, CONTEXT);
+-    expect(expected).to.have.lengthOf(250);
+-
+-    const c = await startClient();
+-    for (const pageRows of [1, 7, 100, 250, 1000]) {
+-      const { rows } = await scanAll(c, SOG, CONTEXT, pageRows);
+-      expect(
+-        rows.map(r => Number(r.id)),
+-        `page size ${pageRows}`
+-      ).to.deep.equal(expected.map(r => Number(r.id)));
+-      expect(rows.map(r => r.value)).to.deep.equal(
+-        expected.map(r => String(r.value))
+-      );
+-    }
+-  });
+-
+-  it('carries an object path with its flattened columns and nulls', async () => {
+-    seed(b => {
+-      b.insert(makePositionRecord(CONTEXT, 41.5, -71.3, FROM));
+-      b.insert(
+-        makePositionRecord(
+-          CONTEXT,
+-          41.6,
+-          -71.4,
+-          new Date(BASE + 1000).toISOString()
+-        )
+-      );
+-    });
+-    const c = await startClient();
+-    const { rows } = await scanAll(c, POSITION, CONTEXT, 10);
+-    expect(rows).to.have.lengthOf(2);
+-    expect(rows[0].value_latitude).to.equal(41.5);
+-    expect(rows[1].value_longitude).to.equal(-71.4);
+-    // An object table carries value_json and the flattened value_* columns and
+-    // has no `value` column at all, so the page must not invent one.
+-    expect(Object.keys(rows[0])).to.include('value_json');
+-    expect(Object.keys(rows[0])).to.not.include('value');
+-    expect(JSON.parse(String(rows[0].value_json))).to.deep.equal({
+-      latitude: 41.5,
+-      longitude: -71.3,
+-    });
+-    // Columns a row has no value for do arrive as null, not as 0 or ''.
+-    expect(rows[0].export_batch_id).to.equal(null);
+-    expect(rows[0].meta).to.equal(null);
+-  });
+-
+-  it('yields nothing for a path with no table', async () => {
+-    seed(b => b.insert(makeScalarRecord(CONTEXT, SOG, 1, FROM)));
+-    const c = await startClient();
+-    const { rows, pages } = await scanAll(c, 'no.such.path', CONTEXT, 10);
+-    expect(rows).to.have.lengthOf(0);
+-    expect(pages).to.equal(0);
+-  });
+-
+-  it('scans one context only', async () => {
+-    seed(b => {
+-      b.insert(makeScalarRecord(CONTEXT, SOG, 1, FROM));
+-      b.insert(makeScalarRecord(OTHER, SOG, 2, FROM));
+-    });
+-    const c = await startClient();
+-    const mine = await scanAll(c, SOG, CONTEXT, 10);
+-    expect(mine.rows).to.have.lengthOf(1);
+-    expect(mine.rows[0].context).to.equal(CONTEXT);
+-  });
+-
+-  it('sends no more than its credit before an ack, then resumes', async () => {
+-    seed(b =>
+-      b.insertBatch(
+-        Array.from({ length: 100 }, (_, i) =>
+-          makeScalarRecord(
+-            CONTEXT,
+-            SOG,
+-            i,
+-            new Date(BASE + i * 1000).toISOString()
+-          )
+-        )
+-      )
+-    );
+-
+-    // Driven at the protocol level rather than through the client, because
+-    // what is being tested is that the worker stops on its own: a test that
+-    // consumes pages through the client would pass with no flow control at all.
+-    const worker = new Worker(WORKER, {
+-      workerData: { dbPath },
+-      execArgv: EXEC_ARGV,
+-    });
+-    try {
+-      const pages: number[] = [];
+-      let ended = false;
+-      await new Promise<void>(resolve => {
+-        worker.once('message', () => resolve());
+-      });
+-      worker.on('message', (msg: { type: string; scanId?: number }) => {
+-        if (msg.type === 'page') pages.push(1);
+-        if (msg.type === 'end') ended = true;
+-      });
+-
+-      worker.postMessage({
+-        op: 'openScan',
+-        id: 1,
+-        signalkPath: SOG,
+-        context: CONTEXT,
+-        fromIso: FROM,
+-        toIso: TO,
+-        pageRows: 10,
+-      });
+-
+-      // Ten pages are available and no ack is sent. The worker must stop at
+-      // its credit: the page in hand plus SCAN_PAGES_IN_FLIGHT ahead of it.
+-      await new Promise(r => setTimeout(r, 300));
+-      expect(pages.length).to.equal(1 + SCAN_PAGES_IN_FLIGHT);
+-      expect(ended, 'the scan must not have run to the end').to.equal(false);
+-
+-      // One ack releases exactly one more page.
+-      const before = pages.length;
+-      worker.postMessage({ op: 'ackScan', scanId: 1 });
+-      await new Promise(r => setTimeout(r, 300));
+-      expect(pages.length).to.equal(before + 1);
+-      expect(ended).to.equal(false);
+-
+-      // Acking freely drains the rest and ends the scan.
+-      for (let i = 0; i < 20; i++) {
+-        worker.postMessage({ op: 'ackScan', scanId: 1 });
+-      }
+-      await new Promise(r => setTimeout(r, 500));
+-      expect(pages.length).to.equal(10);
+-      expect(ended, 'the scan must end after the last page').to.equal(true);
+-    } finally {
+-      await worker.terminate();
+-    }
+-  });
+-
+-  it('stops the worker when the consumer abandons the scan', async () => {
+-    seed(b =>
+-      b.insertBatch(
+-        Array.from({ length: 100 }, (_, i) =>
+-          makeScalarRecord(
+-            CONTEXT,
+-            SOG,
+-            i,
+-            new Date(BASE + i * 1000).toISOString()
+-          )
+-        )
+-      )
+-    );
+-    const c = await startClient();
+-    let seen = 0;
+-    for await (const page of c.scan({
+-      signalkPath: SOG,
+-      context: CONTEXT,
+-      fromIso: FROM,
+-      toIso: TO,
+-      pageRows: 10,
+-    })) {
+-      seen += page.rowCount;
+-      break;
+-    }
+-    expect(seen).to.equal(10);
+-
+-    // The worker is still healthy and will serve another scan.
+-    await c.ping();
+-    const { rows } = await scanAll(c, SOG, CONTEXT, 100);
+-    expect(rows).to.have.lengthOf(100);
+-  });
+-
+-  it('rejects in-flight work when the worker goes away', async () => {
+-    seed(b =>
+-      b.insertBatch(
+-        Array.from({ length: 100 }, (_, i) =>
+-          makeScalarRecord(
+-            CONTEXT,
+-            SOG,
+-            i,
+-            new Date(BASE + i * 1000).toISOString()
+-          )
+-        )
+-      )
+-    );
+-    const c = await startClient();
+-    const iterator = c.scan({
+-      signalkPath: SOG,
+-      context: CONTEXT,
+-      fromIso: FROM,
+-      toIso: TO,
+-      pageRows: 10,
+-    });
+-    await iterator.next();
+-
+-    await c.close();
+-    client = undefined;
+-
+-    let threw: Error | undefined;
+-    try {
+-      for await (const _page of iterator) {
+-        // Draining must not quietly stop at the rows already received.
+-      }
+-    } catch (error) {
+-      threw = error as Error;
+-    }
+-    expect(threw, 'a dead worker must fail the scan, not end it').to.be.an(
+-      'error'
+-    );
+-  });
+-});
+diff --git a/test/unit/utils/buffer-columnar.test.ts b/test/unit/utils/buffer-columnar.test.ts
+deleted file mode 100644
+index 7f063fd..0000000
+--- a/test/unit/utils/buffer-columnar.test.ts
++++ /dev/null
+@@ -1,208 +0,0 @@
+-/**
+- * The columnar page codec that carries buffer rows across a thread boundary.
+- *
+- * Rows go out as typed arrays and come back as readers, so every value has to
+- * survive the trip unchanged — and a null has to stay a null rather than
+- * becoming a zero, a NaN or an empty string, because the DuckDB appender on the
+- * far side needs to tell them apart.
+- */
+-import { expect } from 'chai';
+-import {
+-  columnKindFor,
+-  encodePage,
+-  readPage,
+-} from '../../../src/utils/buffer-columnar';
+-
+-const schema = [
+-  { name: 'id', type: 'INTEGER' },
+-  { name: 'context', type: 'TEXT' },
+-  { name: 'signalk_timestamp', type: 'TEXT' },
+-  { name: 'value_latitude', type: 'REAL' },
+-  { name: 'exported', type: 'INTEGER' },
+-];
+-
+-/** Round-trip a page and read it back as rows of plain values. */
+-function roundTrip(
+-  rows: Array<Record<string, unknown>>,
+-  cols = schema
+-): Array<Record<string, bigint | number | string | null>> {
+-  const { page, transfer } = encodePage(rows, cols);
+-  expect(transfer.length).to.be.greaterThan(0);
+-  const readers = readPage(page);
+-  const out: Array<Record<string, bigint | number | string | null>> = [];
+-  for (let i = 0; i < page.rowCount; i++) {
+-    const row: Record<string, bigint | number | string | null> = {};
+-    for (const reader of readers) row[reader.name] = reader.at(i);
+-    out.push(row);
+-  }
+-  return out;
+-}
+-
+-describe('columnar page codec', () => {
+-  it('maps declared SQLite types to the channel the appender wants', () => {
+-    expect(columnKindFor('INTEGER')).to.equal('i64');
+-    expect(columnKindFor('BIGINT')).to.equal('i64');
+-    expect(columnKindFor('REAL')).to.equal('f64');
+-    expect(columnKindFor('DOUBLE')).to.equal('f64');
+-    expect(columnKindFor('FLOAT')).to.equal('f64');
+-    expect(columnKindFor('TEXT')).to.equal('str');
+-    expect(columnKindFor('')).to.equal('str');
+-  });
+-
+-  it('carries every value through unchanged', () => {
+-    const rows = [
+-      {
+-        id: 1,
+-        context: 'vessels.urn:mrn:imo:mmsi:368396230',
+-        signalk_timestamp: '2026-01-01T00:00:00.000Z',
+-        value_latitude: 41.4901234,
+-        exported: 0,
+-      },
+-      {
+-        id: 2,
+-        context: 'vessels.urn:mrn:signalk:uuid:abc',
+-        signalk_timestamp: '2026-01-01T00:00:01.500Z',
+-        value_latitude: -71.3125,
+-        exported: -1,
+-      },
+-    ];
+-    expect(roundTrip(rows)).to.deep.equal([
+-      {
+-        id: 1n,
+-        context: 'vessels.urn:mrn:imo:mmsi:368396230',
+-        signalk_timestamp: '2026-01-01T00:00:00.000Z',
+-        value_latitude: 41.4901234,
+-        exported: 0n,
+-      },
+-      {
+-        id: 2n,
+-        context: 'vessels.urn:mrn:signalk:uuid:abc',
+-        signalk_timestamp: '2026-01-01T00:00:01.500Z',
+-        value_latitude: -71.3125,
+-        exported: -1n,
+-      },
+-    ]);
+-  });
+-
+-  it('keeps a null a null on every channel', () => {
+-    const [row] = roundTrip([
+-      {
+-        id: 7,
+-        context: null,
+-        signalk_timestamp: undefined,
+-        value_latitude: null,
+-        exported: null,
+-      },
+-    ]);
+-    expect(row.id).to.equal(7n);
+-    expect(row.context).to.equal(null);
+-    expect(row.signalk_timestamp).to.equal(null);
+-    expect(row.value_latitude).to.equal(null);
+-    expect(row.exported).to.equal(null);
+-  });
+-
+-  it('distinguishes an empty string from a null', () => {
+-    const [row] = roundTrip([
+-      {
+-        id: 1,
+-        context: '',
+-        signalk_timestamp: null,
+-        value_latitude: 0,
+-        exported: 0,
+-      },
+-    ]);
+-    expect(row.context).to.equal('');
+-    expect(row.signalk_timestamp).to.equal(null);
+-    expect(row.value_latitude).to.equal(0);
+-  });
+-
+-  it('encodes a value that will not convert on its channel as null', () => {
+-    // SQLite columns are dynamically typed, so stray content is possible; the
+-    // appender makes the same choice for content it cannot convert.
+-    const [row] = roundTrip([
+-      {
+-        id: 'not a number',
+-        context: 'c',
+-        signalk_timestamp: 't',
+-        value_latitude: 'not a number',
+-        exported: 0,
+-      },
+-    ]);
+-    expect(row.id).to.equal(null);
+-    expect(row.value_latitude).to.equal(null);
+-  });
+-
+-  it('accepts a bigint from SQLite without going through a double', () => {
+-    const big = 9007199254740993n; // 2^53 + 1, not representable as a double
+-    const [row] = roundTrip([
+-      {
+-        id: big,
+-        context: 'c',
+-        signalk_timestamp: 't',
+-        value_latitude: 1,
+-        exported: 0,
+-      },
+-    ]);
+-    expect(row.id).to.equal(big);
+-  });
+-
+-  it('carries multi-byte text at the right offsets', () => {
+-    const rows = [
+-      {
+-        id: 1,
+-        context: 'Ariel',
+-        signalk_timestamp: 'a',
+-        value_latitude: 1,
+-        exported: 0,
+-      },
+-      {
+-        id: 2,
+-        context: 'Åsgård ⛵',
+-        signalk_timestamp: 'b',
+-        value_latitude: 2,
+-        exported: 0,
+-      },
+-      {
+-        id: 3,
+-        context: '',
+-        signalk_timestamp: 'c',
+-        value_latitude: 3,
+-        exported: 0,
+-      },
+-      {
+-        id: 4,
+-        context: '日本語',
+-        signalk_timestamp: 'd',
+-        value_latitude: 4,
+-        exported: 0,
+-      },
+-    ];
+-    const got = roundTrip(rows).map(r => r.context);
+-    expect(got).to.deep.equal(['Ariel', 'Åsgård ⛵', '', '日本語']);
+-  });
+-
+-  it('handles an empty page', () => {
+-    const { page } = encodePage([], schema);
+-    expect(page.rowCount).to.equal(0);
+-    expect(page.columns).to.have.lengthOf(schema.length);
+-    expect(readPage(page)).to.have.lengthOf(schema.length);
+-  });
+-
+-  it('reads columns in the schema order it was given', () => {
+-    const { page } = encodePage(
+-      [
+-        {
+-          id: 1,
+-          context: 'c',
+-          signalk_timestamp: 't',
+-          value_latitude: 1,
+-          exported: 0,
+-        },
+-      ],
+-      schema
+-    );
+-    expect(readPage(page).map(r => r.name)).to.deep.equal(
+-      schema.map(c => c.name)
+-    );
+-  });
+-});
