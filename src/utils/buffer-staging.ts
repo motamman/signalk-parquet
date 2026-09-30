@@ -62,7 +62,7 @@ const IN_PROCESS_US_PER_ROW = 15;
  * in `getRowsForFederation` is what lets a page be small without the read
  * costing more per row.
  */
-const IN_PROCESS_BATCH_SIZE = Math.round(
+export const IN_PROCESS_BATCH_SIZE = Math.round(
   (PAGE_BUDGET_MS * 1000) / IN_PROCESS_US_PER_ROW
 );
 

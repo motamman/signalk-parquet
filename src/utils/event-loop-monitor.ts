@@ -91,8 +91,11 @@ export async function eventLoopDelay(): Promise<EventLoopDelay | null> {
   if (!h) return null;
   // The timer fires every RESOLUTION_MS while the histogram is enabled, so
   // this ends on the next sample; it also ends if the monitor is stopped.
+  // A reset while waiting empties the histogram, which changes the count
+  // without adding a sample: an empty histogram reports a min of 2^63 ns, so
+  // the wait goes on until there is one.
   const before = h.count;
-  while (histogram === h && h.count === before) {
+  while (histogram === h && (h.count === before || h.count === 0)) {
     await new Promise(resolve => setTimeout(resolve, RESOLUTION_MS));
   }
   if (histogram !== h) return null;

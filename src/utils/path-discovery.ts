@@ -243,12 +243,14 @@ export function bufferPathsInWindow(
   return out;
 }
 
-/** The file listing and a buffer-path set from `bufferPathsInWindow`, merged. */
+/**
+ * The file listing and a buffer-path set from `bufferPathsInWindow`, merged
+ * and sorted, whether or not the buffer contributed anything.
+ */
 export function mergePathSources(
   fromFiles: Path[],
   fromBuffer: Set<string>
 ): Path[] {
-  if (fromBuffer.size === 0) return fromFiles;
   return [...new Set<string>([...fromFiles, ...fromBuffer])].sort() as Path[];
 }
 
@@ -258,7 +260,9 @@ function unionBufferPaths(
   buffer: BufferPathSource | undefined,
   hasRows: (signalkPath: string) => boolean
 ): string[] {
-  if (!buffer || !buffer.isOpen()) return listed;
+  // Sorted on this return too: the order must not depend on whether the
+  // buffer happens to be open.
+  if (!buffer || !buffer.isOpen()) return [...listed].sort();
   const out = new Set(listed);
   for (const signalkPath of buffer.getKnownPaths()) {
     if (out.has(signalkPath)) continue;

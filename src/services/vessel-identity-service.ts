@@ -64,6 +64,9 @@ export class VesselIdentityService {
   private persistTimer?: NodeJS.Timeout;
   private stateDirty = false;
   private running = false;
+  /** Contexts whose report is still arriving; written once it has (flushPending). */
+  private readonly pending = new Set<string>();
+  private flushScheduled = false;
 
   constructor(
     private readonly app: ServerAPI,
@@ -85,9 +88,10 @@ export class VesselIdentityService {
     // The identity paths, through the plugin API's per-path buses, as the
     // data handler subscribes. The server splits every delta into one bus
     // event per value (streambundle pushDelta), each carrying the update's
-    // timestamp and $source, so an AIS static report arrives as several
-    // events that share a stamp; `write` extends the row the first of them
-    // inserted while the rest only complete it. Root keys (name, mmsi)
+    // timestamp and $source, and pushes them all synchronously, so an AIS
+    // static report arrives as several events that share a stamp within one
+    // pass; `absorb` folds them in and the write waits for the end of that
+    // pass (flushPending), so a report is one row. Root keys (name, mmsi)
     // arrive on the root bus as one object. No debounce: it would drop the
     // later pieces of a report.
     this.subscribe('' as Path, (d: NormalizedDelta) => {
@@ -121,6 +125,9 @@ export class VesselIdentityService {
 
   stop(): void {
     if (!this.running) return;
+    // A report that arrived in this same pass is written, not dropped: the
+    // plugin stops this service before it closes the buffer.
+    this.flushPending();
     this.running = false;
     for (const s of this.subscriptions) {
       disposeStreamSubscription(s);
@@ -160,8 +167,10 @@ export class VesselIdentityService {
 
   /**
    * Fold one value for `busPath` (a Signal K path, '' for the root) into the
-   * vessel's known identity. Callers that fold several values pass
-   * `writeNow = false` and write once afterwards.
+   * vessel's known identity. From the buses, a change is written once the
+   * report it belongs to has fully arrived (see flushPending). Callers that
+   * fold several values themselves pass `writeNow = false` and write once
+   * afterwards.
    */
   private absorb(
     context: string,
@@ -173,6 +182,17 @@ export class VesselIdentityService {
   ): void {
     const incoming = identityFromDelta(busPath, value);
     if (Object.keys(incoming).length === 0) return;
+
+    // A value stamped differently is a different report. The one still
+    // pending is written first, so two reports are two rows even when they
+    // arrive in one pass.
+    if (this.pending.has(context)) {
+      const waiting = this.tracked.get(context);
+      if (waiting && waiting.timestamp !== timestamp) {
+        this.pending.delete(context);
+        if (waiting.dirty) this.write(context, waiting);
+      }
+    }
 
     let vessel = this.tracked.get(context);
     if (!vessel) {
@@ -189,7 +209,32 @@ export class VesselIdentityService {
       vessel.timestamp = timestamp;
       vessel.source = source;
       vessel.dirty = canonical(vessel.known) !== this.lastWritten.get(context);
-      if (vessel.dirty && writeNow) this.write(context, vessel);
+      if (vessel.dirty && writeNow) this.schedule(context);
+    }
+  }
+
+  /**
+   * Write the context's identity once the current pass is over. The server
+   * pushes every value of a delta onto its bus synchronously, so by the time a
+   * microtask runs the whole report has been folded in. Writing after each
+   * value instead wrote a partial identity first whenever a report changed
+   * two fields already known: it could not extend the stored row (a field
+   * had changed), so it inserted, and the next value inserted again.
+   */
+  private schedule(context: string): void {
+    this.pending.add(context);
+    if (this.flushScheduled) return;
+    this.flushScheduled = true;
+    queueMicrotask(() => this.flushPending());
+  }
+
+  private flushPending(): void {
+    this.flushScheduled = false;
+    const contexts = [...this.pending];
+    this.pending.clear();
+    for (const context of contexts) {
+      const vessel = this.tracked.get(context);
+      if (vessel?.dirty) this.write(context, vessel);
     }
   }
 

@@ -99,6 +99,21 @@ describe('event loop monitor', () => {
     expect(await eventLoopDelay()).to.equal(null);
   });
 
+  it('answers with a real sample when a reset lands mid-read', async () => {
+    startEventLoopMonitor();
+    await breathe();
+    // The read is waiting for its next sample when the reset empties the
+    // histogram. Answering then would report an empty histogram, whose min
+    // is 2^63 ns (about 9.2e12 ms).
+    const reading = eventLoopDelay();
+    const reset = resetEventLoopDelay();
+    const delay = await reading;
+    await reset;
+    expect(delay).to.not.equal(null);
+    expect(delay!.min, `min was ${delay!.min}ms`).to.be.lessThan(1000);
+    expect(delay!.max).to.be.greaterThan(0);
+  });
+
   it('answers null rather than hanging when stopped mid-read', async () => {
     startEventLoopMonitor();
     const reading = eventLoopDelay();

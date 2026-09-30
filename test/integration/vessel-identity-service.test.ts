@@ -26,15 +26,16 @@ const T0 = '2024-06-01T10:00:00.000Z';
 /**
  * Deliver one delta the way the server's streambundle does: one bus event
  * per value, on that value's path bus, each carrying the update's timestamp
- * and $source.
+ * and $source, all in one synchronous pass. Resolves once that pass is over
+ * and its microtasks have run, which is when the service writes.
  */
-function emit(
+async function emit(
   host: FakeSignalK,
   context: string,
   values: Array<{ path: string; value: unknown }>,
   timestamp = T0,
   $source?: string
-): void {
+): Promise<void> {
   for (const { path: p, value } of values) {
     host.emitBus(p, {
       context,
@@ -45,6 +46,7 @@ function emit(
       isMeta: false,
     });
   }
+  await Promise.resolve();
 }
 
 function rows(buffer: SQLiteBuffer, context: string) {
@@ -85,7 +87,7 @@ describe('vessel identity capture', function () {
     await host?.cleanup();
   });
 
-  it('folds one AIS static report into one row, then writes only on change', () => {
+  it('folds one AIS static report into one row, then writes only on change', async () => {
     // One AIS type 5 report: the server emits it as a single delta carrying
     // several identity values.
     const report = [
@@ -95,7 +97,7 @@ describe('vessel identity capture', function () {
       { path: 'communication.callsignVhf', value: 'PD1234' },
       { path: 'sensors.ais.class', value: 'B' },
     ];
-    emit(host, OTHER, report, T0, 'ais.1');
+    await emit(host, OTHER, report, T0, 'ais.1');
     const first = rows(buffer, OTHER);
     expect(first).to.have.lengthOf(1);
     expect(first[0].value_name).to.equal('Ariel');
@@ -105,12 +107,12 @@ describe('vessel identity capture', function () {
     expect(first[0].value_aisClass).to.equal('B');
 
     // The static report repeats: no new row.
-    emit(host, OTHER, report, '2024-06-01T10:06:00.000Z', 'ais.1');
+    await emit(host, OTHER, report, '2024-06-01T10:06:00.000Z', 'ais.1');
     expect(rows(buffer, OTHER)).to.have.lengthOf(1);
 
     // Ship type arrives: it only completes the identity, so the row still in
     // the buffer is extended rather than joined by a second one.
-    emit(
+    await emit(
       host,
       OTHER,
       [{ path: 'design.aisShipType', value: { id: 36, name: 'Sailing' } }],
@@ -127,7 +129,7 @@ describe('vessel identity capture', function () {
     expect(completed[0].signalk_timestamp).to.equal('2024-06-01T10:07:00.000Z');
 
     // A component changes: one more row carrying the whole identity.
-    emit(
+    await emit(
       host,
       OTHER,
       [{ path: '', value: { name: 'Ariel II' } }],
@@ -144,15 +146,75 @@ describe('vessel identity capture', function () {
     expect(latest.signalk_timestamp).to.equal('2024-06-01T10:08:00.000Z');
   });
 
-  it('records the identity of the own vessel too', () => {
-    emit(host, SELF, [{ path: '', value: { name: 'Zennora' } }]);
+  it('writes one row for a report that changes two known fields', async () => {
+    await emit(
+      host,
+      OTHER,
+      [
+        { path: '', value: { name: 'Ariel' } },
+        { path: 'communication.callsignVhf', value: 'PD1234' },
+      ],
+      T0,
+      'ais.1'
+    );
+    expect(rows(buffer, OTHER)).to.have.lengthOf(1);
+
+    // Renamed and re-registered in one report. Written per value, the first
+    // value could not extend the stored row (its name had changed), so it
+    // inserted {name: new, callsign: old} — an identity the vessel never had
+    // — and the second inserted again.
+    await emit(
+      host,
+      OTHER,
+      [
+        { path: '', value: { name: 'Ariel II' } },
+        { path: 'communication.callsignVhf', value: 'PD9999' },
+      ],
+      '2024-06-01T11:00:00.000Z',
+      'ais.1'
+    );
+    const got = rows(buffer, OTHER);
+    expect(got.map(r => [r.value_name, r.value_callsignVhf])).to.deep.equal([
+      ['Ariel', 'PD1234'],
+      ['Ariel II', 'PD9999'],
+    ]);
+  });
+
+  it('keeps two reports arriving in one pass as two rows', async () => {
+    // Two deltas for one vessel, differently stamped, pushed before either
+    // pass's microtasks run: each is still its own row.
+    host.emitBus('', {
+      context: OTHER,
+      path: '',
+      value: { name: 'Ariel' },
+      timestamp: T0,
+      $source: 'ais.1',
+      isMeta: false,
+    });
+    host.emitBus('', {
+      context: OTHER,
+      path: '',
+      value: { name: 'Ariel II' },
+      timestamp: '2024-06-01T11:00:00.000Z',
+      $source: 'ais.1',
+      isMeta: false,
+    });
+    await Promise.resolve();
+    expect(rows(buffer, OTHER).map(r => r.value_name)).to.deep.equal([
+      'Ariel',
+      'Ariel II',
+    ]);
+  });
+
+  it('records the identity of the own vessel too', async () => {
+    await emit(host, SELF, [{ path: '', value: { name: 'Zennora' } }]);
     expect(rows(buffer, SELF).map(r => r.value_name)).to.deep.equal([
       'Zennora',
     ]);
   });
 
   it('does not rewrite a vessel after a restart when nothing changed', async () => {
-    emit(host, OTHER, [{ path: '', value: { name: 'Ariel' } }]);
+    await emit(host, OTHER, [{ path: '', value: { name: 'Ariel' } }]);
     service.stop();
     expect(
       await fs.pathExists(path.join(host.dataDir, 'identity-state.json'))
@@ -165,7 +227,7 @@ describe('vessel identity capture', function () {
       () => {}
     );
     service.start();
-    emit(
+    await emit(
       host,
       OTHER,
       [{ path: '', value: { name: 'Ariel' } }],
@@ -174,8 +236,8 @@ describe('vessel identity capture', function () {
     expect(rows(buffer, OTHER)).to.have.lengthOf(1);
   });
 
-  it('ignores a one-path-per-message replay of a known identity after a restart', () => {
-    emit(
+  it('ignores a one-path-per-message replay of a known identity after a restart', async () => {
+    await emit(
       host,
       OTHER,
       [
@@ -198,15 +260,15 @@ describe('vessel identity capture', function () {
       () => {}
     );
     service.start();
-    emit(host, OTHER, [{ path: 'design.length', value: { overall: 12.5 } }]);
-    emit(host, OTHER, [{ path: 'design.beam', value: 4.1 }]);
-    emit(host, OTHER, [
+    await emit(host, OTHER, [{ path: 'design.length', value: { overall: 12.5 } }]);
+    await emit(host, OTHER, [{ path: 'design.beam', value: 4.1 }]);
+    await emit(host, OTHER, [
       { path: '', value: { name: 'Ariel', mmsi: 244813000 } },
     ]);
     expect(rows(buffer, OTHER)).to.have.lengthOf(1);
 
     // A real change still writes one row carrying the whole identity.
-    emit(
+    await emit(
       host,
       OTHER,
       [{ path: 'design.beam', value: 4.5 }],
@@ -219,20 +281,20 @@ describe('vessel identity capture', function () {
     expect(got[1].value_beam).to.equal(4.5);
   });
 
-  it('folds a one-path-per-message first hearing into one row', () => {
+  it('folds a one-path-per-message first hearing into one row', async () => {
     // An upstream server replays its cache one path per message. A vessel
     // not yet on file arrives as class, then mmsi, then dimensions, then
     // name, each in its own delta.
-    emit(host, OTHER, [{ path: 'sensors.ais.class', value: 'A' }], T0, 'ais.1');
-    emit(host, OTHER, [{ path: '', value: { mmsi: 244813000 } }], T0, 'ais.1');
-    emit(
+    await emit(host, OTHER, [{ path: 'sensors.ais.class', value: 'A' }], T0, 'ais.1');
+    await emit(host, OTHER, [{ path: '', value: { mmsi: 244813000 } }], T0, 'ais.1');
+    await emit(
       host,
       OTHER,
       [{ path: 'design.length', value: { overall: 40 } }],
       '2024-06-01T10:00:01.000Z',
       'ais.1'
     );
-    emit(
+    await emit(
       host,
       OTHER,
       [{ path: '', value: { name: 'Ariel' } }],
@@ -249,13 +311,13 @@ describe('vessel identity capture', function () {
     expect(buffer.getStats().totalRecords).to.equal(1);
   });
 
-  it('does not extend a row that has already been exported', () => {
-    emit(host, OTHER, [{ path: 'sensors.ais.class', value: 'A' }], T0, 'ais.1');
+  it('does not extend a row that has already been exported', async () => {
+    await emit(host, OTHER, [{ path: 'sensors.ais.class', value: 'A' }], T0, 'ais.1');
     // The daily export took the row to Parquet; it is immutable now.
     buffer.markDateExported(OTHER, 'identity', new Date(), 'batch-1');
     expect(rows(buffer, OTHER)).to.have.lengthOf(0);
 
-    emit(host, OTHER, [{ path: '', value: { mmsi: 244813000 } }], T0, 'ais.1');
+    await emit(host, OTHER, [{ path: '', value: { mmsi: 244813000 } }], T0, 'ais.1');
     const got = rows(buffer, OTHER);
     expect(got).to.have.lengthOf(1);
     expect(got[0].value_aisClass).to.equal('A');
@@ -263,8 +325,8 @@ describe('vessel identity capture', function () {
     expect(buffer.getStats().totalRecords).to.equal(2);
   });
 
-  it('trusts the buffer over a stale state file after a kill', () => {
-    emit(host, OTHER, [{ path: '', value: { name: 'Ariel' } }], T0, 'ais.1');
+  it('trusts the buffer over a stale state file after a kill', async () => {
+    await emit(host, OTHER, [{ path: '', value: { name: 'Ariel' } }], T0, 'ais.1');
     service.stop(); // state file now says: name only
     service = new VesselIdentityService(
       host.app,
@@ -273,7 +335,7 @@ describe('vessel identity capture', function () {
       () => {}
     );
     service.start();
-    emit(
+    await emit(
       host,
       OTHER,
       [{ path: 'design.beam', value: 4.1 }],
@@ -296,13 +358,13 @@ describe('vessel identity capture', function () {
     service.start();
 
     // The upstream replay repeats everything, one path per message.
-    emit(
+    await emit(
       host,
       OTHER,
       [{ path: 'design.beam', value: 4.1 }],
       '2024-06-02T10:00:00.000Z'
     );
-    emit(
+    await emit(
       host,
       OTHER,
       [{ path: '', value: { name: 'Ariel' } }],
@@ -312,7 +374,7 @@ describe('vessel identity capture', function () {
     expect(buffer.getStats().totalRecords).to.equal(1);
 
     // Still one row after a further completion across the restart.
-    emit(
+    await emit(
       host,
       OTHER,
       [{ path: 'sensors.ais.class', value: 'B' }],
@@ -365,7 +427,7 @@ describe('vessel identity capture', function () {
       service.start();
     });
 
-    it('writes a seeded self identity at start, one row for all parts', () => {
+    it('writes a seeded self identity at start, one row for all parts', async () => {
       const got = rows(buffer, SELF);
       expect(got).to.have.lengthOf(1);
       expect(got[0].value_name).to.equal('Zennora');
@@ -375,7 +437,7 @@ describe('vessel identity capture', function () {
       expect(got[0].signalk_timestamp).to.equal(T0);
     });
 
-    it('seeds other vessels and skips vessels without identity', () => {
+    it('seeds other vessels and skips vessels without identity', async () => {
       const got = rows(buffer, OTHER);
       expect(got).to.have.lengthOf(1);
       expect(got[0].value_mmsi).to.equal('244813000');
@@ -385,7 +447,7 @@ describe('vessel identity capture', function () {
       ).to.have.lengthOf(0);
     });
 
-    it('does not rewrite a seeded identity after a restart', () => {
+    it('does not rewrite a seeded identity after a restart', async () => {
       service.stop();
       service = new VesselIdentityService(
         host.app,
@@ -398,7 +460,7 @@ describe('vessel identity capture', function () {
     });
   });
 
-  it('detaches every bus listener on stop, and does not accumulate them', () => {
+  it('detaches every bus listener on stop, and does not accumulate them', async () => {
     // The bus hands back an unsubscribe function, not an object carrying one,
     // so a stop() that calls `handle.unsubscribe?.()` detaches nothing and
     // silently leaves a set of live listeners behind on every restart. They
@@ -427,7 +489,7 @@ describe('vessel identity capture', function () {
     expect(host.activeBusHandlers()).to.equal(0);
   });
 
-  it('starts on a host whose app has no signalk emitter at all', () => {
+  it('starts on a host whose app has no signalk emitter at all', async () => {
     // The Signal K plugin registry's activation check starts the plugin
     // against a stand-in app that has streambundle but no `signalk`
     // emitter; 1.0.0 threw "this.emitter.on is not a function" there.
@@ -440,13 +502,13 @@ describe('vessel identity capture', function () {
       () => {}
     );
     expect(() => svc.start()).to.not.throw();
-    emit(bare, OTHER, [{ path: '', value: { name: 'Ariel' } }], T0, 'ais.1');
+    await emit(bare, OTHER, [{ path: '', value: { name: 'Ariel' } }], T0, 'ais.1');
     expect(rows(buffer, OTHER).map(r => r.value_name)).to.deep.equal(['Ariel']);
     svc.stop();
   });
 
-  it('ignores deltas for non-vessel contexts and meta deltas', () => {
-    emit(host, 'atons.urn:mrn:imo:mmsi:992471234', [
+  it('ignores deltas for non-vessel contexts and meta deltas', async () => {
+    await emit(host, 'atons.urn:mrn:imo:mmsi:992471234', [
       { path: '', value: { name: 'Buoy' } },
     ]);
     // A meta update arrives on the same path bus as a value; the service's
@@ -468,7 +530,7 @@ describe('vessel identity capture', function () {
   it('is readable through the v2 History API provider as an object path', async () => {
     await DuckDBPool.initialize();
     try {
-      emit(
+      await emit(
         host,
         SELF,
         [

@@ -42,7 +42,12 @@ import {
   validateContext,
   validateSignalKPath,
 } from './utils/signalk-validation';
-import { stageBufferTable, BufferStagingSource } from './utils/buffer-staging';
+import {
+  IN_PROCESS_BATCH_SIZE,
+  stageBufferTable,
+  BufferStagingSource,
+} from './utils/buffer-staging';
+import { yieldToEventLoop } from './utils/hive-walk';
 import { federationCursor } from './utils/sqlite-buffer';
 import { FederationCursor } from './types';
 import {
@@ -655,7 +660,9 @@ export class TrackProvider implements TrackApi {
     // contexts' buffered fixes still reach getTracks through staging; they
     // are just not listed until the day's export lands them in parquet.
     if (buffer?.hasTable(POSITION_PATH)) {
-      if (this.bufferHasPositionIn(buffer, this.selfContext, window, filter)) {
+      if (
+        await this.bufferHasPositionIn(buffer, this.selfContext, window, filter)
+      ) {
         found.add(this.selfContext);
       }
     }
@@ -663,13 +670,23 @@ export class TrackProvider implements TrackApi {
     return [...found].sort() as Context[];
   }
 
-  private bufferHasPositionIn(
+  /**
+   * Whether the buffer holds a fix for the context in the window, inside the
+   * box when there is one. Without a box the first row answers; with one, a
+   * vessel whose buffered fixes all lie outside it is read to the end of the
+   * window.
+   *
+   * Each page is a synchronous SQLite read on the server's thread, so the
+   * pages are the staging read's size (the 10 ms budget in buffer-staging.ts)
+   * and the loop yields between them: read whole, the 200,000-row cap was
+   * about 1.6 s of frozen server at the ~8 µs a row measured there.
+   */
+  private async bufferHasPositionIn(
     buffer: TrackBufferSource,
     context: Context,
     window: TimeWindow,
     filter?: SpatialFilter
-  ): boolean {
-    const PAGE = 5000;
+  ): Promise<boolean> {
     const MAX_ROWS = 200_000;
     let after: FederationCursor | null = null;
     let scanned = 0;
@@ -680,9 +697,18 @@ export class TrackProvider implements TrackApi {
         window.fromIso,
         window.toIso,
         after,
-        PAGE
+        IN_PROCESS_BATCH_SIZE
       );
-      if (rows.length === 0) return false;
+      if (rows.length === 0) {
+        // A buffer closed since the last page (plugin stop, reconfigure)
+        // returns no rows, which must not be read as "no fix".
+        if (after !== null && !buffer.isOpen()) {
+          throw new Error(
+            `[TrackProvider] buffer closed mid-scan; refusing to answer with incomplete data`
+          );
+        }
+        return false;
+      }
       for (const row of rows) {
         if (!filter) return true;
         const lat = Number(row.value_latitude);
@@ -697,7 +723,10 @@ export class TrackProvider implements TrackApi {
       }
       scanned += rows.length;
       after = federationCursor(rows[rows.length - 1]);
-      if (rows.length < PAGE || scanned >= MAX_ROWS) return false;
+      if (rows.length < IN_PROCESS_BATCH_SIZE || scanned >= MAX_ROWS) {
+        return false;
+      }
+      await yieldToEventLoop();
     }
   }
 
