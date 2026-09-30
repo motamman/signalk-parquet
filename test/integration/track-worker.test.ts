@@ -75,9 +75,13 @@ describe('Track API through the forked worker', function () {
   before(async () => {
     host = createFakeSignalK({ selfId: SELF_ID });
     buffer = new SQLiteBuffer({ dbPath: path.join(host.dataDir, 'buffer.db') });
-    // The server's pool, on the data directory as the plugin opens it, so the
-    // worker's instance finds the same DuckDB home.
-    await DuckDBPool.initialize(host.dataDir);
+    // This process's pool on DuckDB's default home, as every other suite opens
+    // it, not on the temp data directory: an extension this process loads
+    // stays loaded after the instance closes, and Windows refuses to delete a
+    // loaded DLL, so the directory could not be removed afterwards (EPERM on
+    // spatial.duckdb_extension, Windows CI). The worker keeps the data
+    // directory as its DuckDB home; it has exited before cleanup runs.
+    await DuckDBPool.initialize();
     clearFileListCache();
 
     const exportService = new ParquetExportService(
