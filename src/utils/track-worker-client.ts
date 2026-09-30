@@ -48,6 +48,12 @@ const REQUEST_TIMEOUT_MS = 60000;
 /** Thrown when the worker goes away; never retried, by design. */
 export class TrackWorkerGoneError extends Error {}
 
+/**
+ * How start() ends when close() was called before the worker was ready: the
+ * plugin stopping during startup, which is not a failure to report.
+ */
+export class TrackWorkerClosedError extends Error {}
+
 export interface TrackWorkerClientOptions {
   dataDir: string;
   dbPath?: string;
@@ -72,6 +78,8 @@ export class TrackWorkerClient {
   private readonly pending = new Map<number, PendingRequest>();
   private nextId = 1;
   private ready = false;
+  /** Set by close(); a startup it interrupts ends as TrackWorkerClosedError. */
+  private closing = false;
   private gone?: Error;
   private readyPromise?: Promise<void>;
   private exited?: Promise<void>;
@@ -108,11 +116,21 @@ export class TrackWorkerClient {
         if (error) reject(error);
         else resolve();
       };
+      /** Why startup ended without a ready, as the caller should see it. */
+      const startupFailure = (why: string): Error =>
+        this.closing
+          ? new TrackWorkerClosedError(
+              'track worker closed before it was ready'
+            )
+          : new Error(why);
 
       child.on('message', (msg: TrackWorkerOutbound) => {
         if (!msg || typeof msg !== 'object') return;
         switch (msg.type) {
           case 'ready':
+            // A ready sent before the worker read the shutdown behind it is
+            // not one: close() has already let the worker go.
+            if (this.closing) return;
             this.ready = true;
             settle();
             return;
@@ -136,12 +154,12 @@ export class TrackWorkerClient {
         }
       });
       child.on('error', err => {
-        settle(err);
+        settle(startupFailure(err.message));
         this.fail(new TrackWorkerGoneError(err.message));
       });
       child.on('exit', (code, signal) => {
         const why = `track worker exited (${signal ?? `code ${code}`})`;
-        settle(new Error(why));
+        settle(startupFailure(why));
         this.fail(new TrackWorkerGoneError(why));
       });
 
@@ -198,6 +216,7 @@ export class TrackWorkerClient {
    */
   async close(): Promise<void> {
     const child = this.child;
+    this.closing = true;
     this.fail(new TrackWorkerGoneError('track worker closed'));
     if (!child || child.exitCode !== null || child.signalCode !== null) return;
     this.post({ type: 'shutdown' }, child);

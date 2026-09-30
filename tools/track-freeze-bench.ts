@@ -20,7 +20,8 @@
  *      freeze of the server's event loop, plus about one 10 ms sampling
  *      interval (see the plugin's utils/event-loop-monitor.ts);
  *   5. with --server-pid, reads the resident memory of the server and of its
- *      track-worker child from /proc before and after.
+ *      track-worker child from /proc before, at its peak (sampled once a second)
+ *      and after.
  *
  * One JSON line per run on stdout, then a summary line per label and mode.
  * Run it once against each build with the same arguments and compare.
@@ -177,6 +178,18 @@ async function run(opts: Options, index: number) {
   }
   const memBefore = memory(opts);
 
+  // Resident memory peaks during a query and falls back after, so before and
+  // after alone miss it: sample once a second while the run is on.
+  const peak = { serverMb: 0, workerMb: 0 };
+  const sampleMemory = () => {
+    const m = memory(opts);
+    if (!m) return;
+    peak.serverMb = Math.max(peak.serverMb, m.serverMb ?? 0);
+    peak.workerMb = Math.max(peak.workerMb, m.workerMb ?? 0);
+  };
+  sampleMemory();
+  const sampler = setInterval(sampleMemory, 1000);
+
   const probe: number[] = [];
   let probing = true;
   const probeLoop = (async () => {
@@ -210,6 +223,8 @@ async function run(opts: Options, index: number) {
   await sleep(opts.probeMs * 2);
   probing = false;
   await probeLoop;
+  clearInterval(sampler);
+  sampleMemory();
 
   const delayRes = await fetch(eventLoop, { headers: headers(opts) });
   const delay = findDelay(await delayRes.json());
@@ -228,6 +243,7 @@ async function run(opts: Options, index: number) {
       mean: delay.mean,
     },
     memoryBefore: memBefore,
+    memoryPeak: opts.serverPid === undefined ? null : peak,
     memoryAfter: memory(opts),
   };
 }
@@ -255,6 +271,8 @@ async function main() {
       worstProbeMaxMs: worst(r => r.probeMs.max),
       worstProbeP99Ms: worst(r => r.probeMs.p99),
       trackP50Ms: results.map(r => r.trackMs.p50),
+      peakServerMb: worst(r => r.memoryPeak?.serverMb),
+      peakWorkerMb: worst(r => r.memoryPeak?.workerMb),
     })
   );
 }

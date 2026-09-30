@@ -17,6 +17,7 @@ import { clearFileListCache } from '../../src/utils/context-discovery';
 import { TrackProvider, TracksRequest } from '../../src/track-provider';
 import {
   TrackWorkerClient,
+  TrackWorkerClosedError,
   TrackWorkerGoneError,
   WorkerTrackApi,
 } from '../../src/utils/track-worker-client';
@@ -201,6 +202,28 @@ describe('Track API through the forked worker', function () {
     } finally {
       await silent.close();
     }
+  });
+
+  it('ends a startup that close() interrupts as closed, not failed', async () => {
+    // The plugin stopping while its worker starts: nothing failed, and the
+    // plugin logs nothing for it. The silent worker answers init with ready,
+    // which can reach this side after close(); it must not count.
+    const starting = new TrackWorkerClient({
+      dataDir: host.dataDir,
+      selfId: SELF_ID,
+      workerPath: path.join(__dirname, 'helpers', 'silent-track-worker.ts'),
+      workerExecArgv: ['-r', 'tsx/cjs'],
+    });
+    const started = starting.start();
+    await starting.close();
+    let error: unknown;
+    try {
+      await started;
+    } catch (err) {
+      error = err;
+    }
+    expect(error).to.be.instanceOf(TrackWorkerClosedError);
+    expect(starting.isAlive()).to.equal(false);
   });
 
   it('answers in-process once the worker is closed', async () => {

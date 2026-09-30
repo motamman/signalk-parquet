@@ -40,7 +40,11 @@ import {
   registerTrackApiProvider,
   unregisterTrackApiProvider,
 } from './track-provider';
-import { TrackWorkerClient, WorkerTrackApi } from './utils/track-worker-client';
+import {
+  TrackWorkerClient,
+  TrackWorkerClosedError,
+  WorkerTrackApi,
+} from './utils/track-worker-client';
 import { SQLiteBuffer } from './utils/sqlite-buffer';
 import {
   startEventLoopMonitor,
@@ -978,7 +982,9 @@ export default function (app: ServerAPI): SignalKPlugin {
     // whole, so no part of a track query runs on the server's event loop.
     // Until the worker reports ready, and if it fails or dies, they are
     // answered in-process as before. It starts after the DuckDB pool above
-    // so the extensions that pool cached are there for the worker's own.
+    // so the extensions that pool cached are there for the worker's own, and
+    // only once the registry has taken the provider: on a server without the
+    // Track API it would be a process and a DuckDB instance answering nothing.
     try {
       const trackProvider = new TrackProvider(
         app.selfId,
@@ -994,20 +1000,25 @@ export default function (app: ServerAPI): SignalKPlugin {
         log: (level, msg) =>
           level === 'error' ? app.error(msg) : app.debug(msg),
       });
-      state.trackWorker = trackWorker;
-      trackWorker.start().then(
-        () =>
-          app.debug('[TrackWorker] Ready; Track API calls run in the worker'),
-        err =>
-          app.error(
-            `[TrackWorker] Not available, Track API calls run in-process: ${(err as Error).message}`
-          )
-      );
-      registerTrackApiProvider(
+      const registered = registerTrackApiProvider(
         app,
         new WorkerTrackApi(trackProvider, () => trackWorker, app, app.selfId),
         app.debug
       );
+      if (registered) {
+        state.trackWorker = trackWorker;
+        trackWorker.start().then(
+          () =>
+            app.debug('[TrackWorker] Ready; Track API calls run in the worker'),
+          err => {
+            // Stopped before it was ready: nothing failed.
+            if (err instanceof TrackWorkerClosedError) return;
+            app.error(
+              `[TrackWorker] Not available, Track API calls run in-process: ${(err as Error).message}`
+            );
+          }
+        );
+      }
     } catch (error) {
       app.error(`Failed to register as Track API provider: ${error}`);
     }
