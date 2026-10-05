@@ -616,6 +616,14 @@ export function selectContext(ctx) {
 }
 
 export async function lookupContexts() {
+  // A new lookup supersedes the one before it, from its contexts request to
+  // its name sweep: aborted, and a response that still arrives is dropped, so
+  // an older lookup can neither replace the newer contexts nor run its sweep
+  // over every vessel beside the newer one.
+  state.contextLookup?.abort();
+  const lookup = new AbortController();
+  state.contextLookup = lookup;
+
   const cb = document.getElementById('me-lookup-contexts');
   if (!cb.checked) {
     state.context = 'self';
@@ -636,8 +644,9 @@ export async function lookupContexts() {
   }
 
   try {
-    const resp = await fetch(url);
+    const resp = await fetch(url, { signal: lookup.signal });
     const data = await resp.json();
+    if (lookup.signal.aborted) return;
     state.availableContexts = data.contexts || data || [];
 
     const countEl = document.getElementById('me-context-count');
@@ -651,12 +660,7 @@ export async function lookupContexts() {
     renderContextList('');
     document.getElementById('me-context-select').style.display = 'block';
 
-    // Fetch vessel names in background, then re-render with names. A new
-    // lookup supersedes this one: its requests are aborted, so changing the
-    // time range does not leave sweeps over every vessel running side by side.
-    state.vesselNameLookup?.abort();
-    const lookup = new AbortController();
-    state.vesselNameLookup = lookup;
+    // Fetch vessel names in background, then re-render with names.
     fetchVesselNames(state.availableContexts, from, to, lookup.signal).then((names) => {
       if (lookup.signal.aborted) return;
       state.vesselNames = names;
@@ -665,6 +669,7 @@ export async function lookupContexts() {
       console.error('Failed to fetch vessel names:', err);
     });
   } catch (err) {
+    if (lookup.signal.aborted) return; // superseded, not failed
     console.error('Failed to load contexts:', err);
   }
 }
@@ -799,6 +804,7 @@ export async function executeMapQuery() {
     return;
   }
   // A route track belongs to the previous results.
+  state._routeFetch?.abort();
   state._routeCoords = null;
   state._routeHiResCoords = null;
 
@@ -1666,6 +1672,12 @@ export async function toggleRouteHiRes() {
 
   if (statusEl) statusEl.textContent = 'Fetching high-resolution track...';
 
+  // Closing the modal or starting a new query aborts this; its result must
+  // not land in the cache they cleared.
+  state._routeFetch?.abort();
+  const routeFetch = new AbortController();
+  state._routeFetch = routeFetch;
+
   const { from, to } = getQueryTimeRange();
   const ctx = state.context === 'self' ? '' : state.context;
   let spatialParam = '';
@@ -1684,9 +1696,10 @@ export async function toggleRouteHiRes() {
       `&paths=navigation.position` +
       `&resolution=5` +
       spatialParam;
-    const resp = await fetch(url);
+    const resp = await fetch(url, { signal: routeFetch.signal });
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     const data = await resp.json();
+    if (routeFetch.signal.aborted) return;
     const result = Array.isArray(data) ? data[0] : data;
 
     const hiResCoords = [];
@@ -1709,6 +1722,7 @@ export async function toggleRouteHiRes() {
     if (statusEl) statusEl.textContent = `${hiResCoords.length} high-res points loaded.`;
     updateRoutePreview();
   } catch (err) {
+    if (routeFetch.signal.aborted) return; // closed or superseded, not failed
     console.error('High-res fetch failed:', err);
     if (statusEl) statusEl.textContent = 'Failed to load high-res data.';
     cb.checked = false;
@@ -1719,6 +1733,7 @@ export function closeRouteModal() {
   document.getElementById('me-route-modal').style.display = 'none';
   // The high-resolution track can be tens of MB; it is fetched again if the
   // modal is reopened.
+  state._routeFetch?.abort();
   state._routeCoords = null;
   state._routeHiResCoords = null;
   const nameInput = document.getElementById('me-route-name');

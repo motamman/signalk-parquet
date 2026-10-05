@@ -806,6 +806,9 @@ export default function (app: ServerAPI): SignalKPlugin {
                   state.activeAggregationWorkers,
                   { label: '[StartupExport]' }
                 );
+                // A stop() during the run cancels the worker, which reports
+                // the cancel as an error: not a failure to log.
+                if (superseded()) return;
                 const failed = aggResults.flatMap(r => r.errors);
                 if (failed.length > 0) {
                   app.error(

@@ -13,6 +13,7 @@ import { expect } from 'chai';
 import createPlugin from '../../src/index';
 import { createFakeSignalK, FakeSignalK } from './helpers/fake-signalk';
 import type { SignalKPlugin } from '../../src/types';
+import { DuckDBPool } from '../../src/utils/duckdb-pool';
 
 /** Timers armed in this process, setTimeout and setInterval alike. */
 function timers(): number {
@@ -65,6 +66,19 @@ describe('plugin start and stop', function () {
     configSchemaVersion: 1,
   });
 
+  /**
+   * Start the plugin on a DuckDB pool already open on DuckDB's default home,
+   * which start() then keeps, rather than one it opens on the temp data
+   * directory: an extension this process loads stays loaded after the pool
+   * closes, and Windows refuses to delete a loaded DLL, so the directory
+   * could not be removed afterwards (EPERM on spatial.duckdb_extension,
+   * Windows CI). stop() still shuts the pool down as it always does.
+   */
+  async function start(opts: Record<string, unknown>): Promise<void> {
+    await DuckDBPool.initialize();
+    await plugin.start(opts);
+  }
+
   /** Until start() is waiting on the save callback. */
   async function untilHeld(): Promise<void> {
     while (!releaseSave) await new Promise(r => setImmediate(r));
@@ -72,7 +86,7 @@ describe('plugin start and stop', function () {
 
   it('leaves nothing running after a full start and stop', async () => {
     const before = await baselineTimers();
-    await plugin.start(options());
+    await start(options());
     expect(host.activeBusHandlers()).to.be.greaterThan(0);
     expect(timers()).to.be.greaterThan(before);
 
@@ -83,7 +97,7 @@ describe('plugin start and stop', function () {
 
   it('leaves nothing running when stopped while start is waiting', async () => {
     const before = await baselineTimers();
-    const starting = plugin.start(heldOptions());
+    const starting = start(heldOptions());
     await untilHeld();
 
     const stopping = plugin.stop();
@@ -97,17 +111,17 @@ describe('plugin start and stop', function () {
   it('runs one set of everything when started again after an interrupted start', async () => {
     const before = await baselineTimers();
     // What one run holds, from a run nothing interrupted.
-    await plugin.start(options());
+    await start(options());
     const oneRun = { handlers: host.activeBusHandlers(), timers: timers() };
     await plugin.stop();
 
-    const interrupted = plugin.start(heldOptions());
+    const interrupted = start(heldOptions());
     await untilHeld();
     const stopping = plugin.stop();
     releaseSave!();
     await Promise.all([interrupted, stopping]);
 
-    await plugin.start(options());
+    await start(options());
     expect(host.activeBusHandlers(), 'bus subscriptions').to.equal(
       oneRun.handlers
     );

@@ -20,10 +20,19 @@
  *
  * compare matches each response as JSON, numbers within 1e-9 (DuckDB's
  * parallel sums differ in the last digits from run to run), and prints every
- * difference with its location. Exit status 1 when any response differs.
+ * difference with its location. It compares every snapshot in either
+ * directory (or only those named by --requests); one present in only one of
+ * them counts as a difference. Exit status 1 when any response differs or
+ * there is nothing to compare.
  */
 
-import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
+import {
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  writeFileSync,
+  existsSync,
+} from 'node:fs';
 import * as path from 'node:path';
 
 type Request =
@@ -125,10 +134,20 @@ function diff(a: unknown, b: unknown, where: string, out: string[], max = 20) {
 }
 
 function compare(dirA: string, dirB: string, requestsFile?: string) {
-  const names = requestsFile
+  // The requests named in the file, or every snapshot either directory holds:
+  // comparing nothing must not pass as a match.
+  const snapshotsIn = (dir: string) =>
+    readdirSync(dir)
+      .filter(f => f.endsWith('.json'))
+      .map(f => f.slice(0, -'.json'.length));
+  const files = requestsFile
     ? (JSON.parse(readFileSync(requestsFile, 'utf8')) as Request[]).map(r => r.name)
-    : undefined;
-  const files = names ?? [];
+    : [...new Set([...snapshotsIn(dirA), ...snapshotsIn(dirB)])].sort();
+  if (files.length === 0) {
+    console.error(`no snapshots in ${dirA} or ${dirB}`);
+    process.exitCode = 1;
+    return;
+  }
   let differing = 0;
   for (const name of files) {
     const fa = path.join(dirA, `${name}.json`);
@@ -154,13 +173,22 @@ function compare(dirA: string, dirB: string, requestsFile?: string) {
   process.exitCode = differing > 0 ? 1 : 0;
 }
 
-const [command, ...rest] = process.argv.slice(2);
-if (command === 'snapshot') {
-  await snapshot(args(rest));
-} else if (command === 'compare') {
-  const [dirA, dirB, ...more] = rest;
-  compare(dirA, dirB, args(more).get('requests'));
-} else {
-  console.error('usage: snapshot --requests F --out D [--base U --token-file T] | compare A B --requests F');
-  process.exit(2);
+async function main() {
+  const [command, ...rest] = process.argv.slice(2);
+  if (command === 'snapshot') {
+    await snapshot(args(rest));
+  } else if (command === 'compare') {
+    const [dirA, dirB, ...more] = rest;
+    compare(dirA, dirB, args(more).get('requests'));
+  } else {
+    console.error(
+      'usage: snapshot --requests F --out D [--base U --token-file T] | compare A B [--requests F]'
+    );
+    process.exit(2);
+  }
 }
+
+main().catch(err => {
+  console.error(err instanceof Error ? err.message : err);
+  process.exit(1);
+});

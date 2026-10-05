@@ -134,10 +134,14 @@ async function main() {
     const listFrom = iso(opts.listDays * day);
     const valuesFrom = iso(opts.valuesDays * day);
     const now = iso(0);
+    // Every parameter encoded: the timestamps carry ':' and --paths is free
+    // text that may hold '&', '#' or '+'.
+    const query = (params: Record<string, string>) =>
+      new URLSearchParams(params).toString();
     const requests = {
-      contexts: `${opts.base}/signalk/v1/history/contexts?from=${listFrom}&to=${now}`,
-      paths: `${opts.base}/api/history/paths?context=&from=${encodeURIComponent(listFrom)}&to=${encodeURIComponent(now)}`,
-      values: `${opts.base}/signalk/v1/history/values?context=&from=${valuesFrom}&to=${now}&paths=${opts.paths}`,
+      contexts: `${opts.base}/signalk/v1/history/contexts?${query({ from: listFrom, to: now })}`,
+      paths: `${opts.base}/api/history/paths?${query({ context: '', from: listFrom, to: now })}`,
+      values: `${opts.base}/signalk/v1/history/values?${query({ context: '', from: valuesFrom, to: now, paths: opts.paths })}`,
     };
     const results: Record<string, unknown> = {};
     if (opts.only && !(opts.only in requests)) {

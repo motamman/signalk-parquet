@@ -314,6 +314,15 @@ export class VesselIdentityService {
     this.lookups = this.lookups.then(async () => {
       try {
         await this.decideFromParquet(context, vessel);
+      } catch (error) {
+        // Caught here so the chain stays resolved: one rejected link would
+        // skip every lookup queued after it, leaving those vessels waiting
+        // for good, and make stop() reject before it shuts down.
+        this.debug(
+          `[Identity] Deciding the identity of ${context} failed: ${(error as Error).message}`
+        );
+        // Its next report is then decided as for any vessel, not held.
+        vessel.loading = false;
       } finally {
         this.lookupsInFlight -= 1;
       }
