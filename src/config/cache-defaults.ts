@@ -53,6 +53,17 @@ export const CACHE_SIZE = {
    * @default 1000 entries
    */
   DATA_BUFFER_MAX: 1000,
+
+  /**
+   * Maximum number of decoded parquet footers kept (parquet-footer.ts).
+   * An entry is 2-5 KB (measured on brain, 2026-10-05: 5.3 KB for a raw
+   * position file of 18 row groups, 1.9 KB for a scalar one), so this is a
+   * budget of about 50 MB. Decoding the same footer again allocates about
+   * 4.6 MB of short-lived heap. Too small a limit only means more files are
+   * decoded again, as every file was before the cache.
+   * @default 10000 entries
+   */
+  FOOTER_MAX: 10000,
 } as const;
 
 /**

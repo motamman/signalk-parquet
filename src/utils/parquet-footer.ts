@@ -23,6 +23,8 @@
  * for that file, which is the one thing DuckDB is kept for).
  */
 
+import * as fs from 'fs';
+import { CACHE_SIZE } from '../config/cache-defaults';
 import { debugLogger } from './debug-logger';
 
 /** A top-level column as the footer describes it. */
@@ -167,13 +169,81 @@ export function readRowGroups(rowGroups: RowGroup[]): {
   };
 }
 
-/** Read one file's footer. Rejects when the file cannot be opened or parsed. */
+/**
+ * Footers already decoded, by file, least recently used first.
+ *
+ * Decoding is what costs: parquetjs's thrift decoder allocates about 4.6 MB
+ * of short-lived heap for a 30 KB footer of 18 row groups, and a 30-day
+ * history query decoded the same 29 such footers on every call (measured on
+ * brain, 2026-10-05: about 220 MB of garbage per request, which V8 let pile
+ * up to over 1 GB of resident memory before collecting it). What is kept is
+ * a few KB. A file is written once and then only replaced: a rewrite in place
+ * (schema repair) changes its size and modification time, which a hit must
+ * match, and a file compaction deletes is simply never asked for again.
+ *
+ * Callers share the cached object, so they must not modify it; none does.
+ */
+export class FooterCache {
+  private entries = new Map<
+    string,
+    { size: number; mtimeMs: number; footer: ParquetFooter }
+  >();
+
+  constructor(private readonly max: number) {}
+
+  get(file: string, size: number, mtimeMs: number): ParquetFooter | undefined {
+    const entry = this.entries.get(file);
+    if (!entry) return undefined;
+    if (entry.size !== size || entry.mtimeMs !== mtimeMs) {
+      this.entries.delete(file);
+      return undefined;
+    }
+    // Most recently used goes last; a Map keeps insertion order.
+    this.entries.delete(file);
+    this.entries.set(file, entry);
+    return entry.footer;
+  }
+
+  set(file: string, size: number, mtimeMs: number, footer: ParquetFooter) {
+    this.entries.delete(file);
+    this.entries.set(file, { size, mtimeMs, footer });
+    while (this.entries.size > this.max) {
+      this.entries.delete(this.entries.keys().next().value as string);
+    }
+  }
+
+  get size(): number {
+    return this.entries.size;
+  }
+}
+
+const footerCache = new FooterCache(CACHE_SIZE.FOOTER_MAX);
+
+/**
+ * Read one file's footer, decoded once per version of the file (see
+ * FooterCache). Rejects when the file cannot be opened or parsed.
+ */
 export async function readFooter(file: string): Promise<ParquetFooter> {
   if (!parquetjs) {
     throw new Error(
       'parquet footer reader unavailable: @dsnp/parquetjs missing'
     );
   }
+  // Stat before decoding: if the file is replaced in between, the footer is
+  // the new file's under the old stat, which the next call sees differ from
+  // the file's own and decodes again.
+  const { size, mtimeMs } = await fs.promises.stat(file);
+  const cached = footerCache.get(file, size, mtimeMs);
+  if (cached) return cached;
+  const footer = await decodeFooter(parquetjs, file);
+  footerCache.set(file, size, mtimeMs, footer);
+  return footer;
+}
+
+async function decodeFooter(
+  parquetjs: ReaderLib,
+  file: string
+): Promise<ParquetFooter> {
   const reader = await parquetjs.ParquetReader.openFile(file);
   try {
     const columns = new Map<string, FooterColumn>();
