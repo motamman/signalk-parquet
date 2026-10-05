@@ -61,6 +61,7 @@ import {
   AggregationService,
   AggregationConfig,
   buildPerTierRetention,
+  cancelAllBulkAggregations,
 } from './services/aggregation-service';
 import {
   PathRetentionRule,
@@ -1060,6 +1061,18 @@ export default function (app: ServerAPI): SignalKPlugin {
         );
       }
     }
+
+    // Bulk aggregations requested over HTTP run in this process on the DuckDB
+    // pool closed below; each stops at its next group boundary. Bounded like
+    // the aggregation workers below, so one stuck in a COPY cannot hang stop.
+    let bulkGrace: NodeJS.Timeout | undefined;
+    await Promise.race([
+      cancelAllBulkAggregations(),
+      new Promise<void>(resolve => {
+        bulkGrace = setTimeout(resolve, AGGREGATION_WORKER_SHUTDOWN_GRACE_MS);
+      }),
+    ]);
+    clearTimeout(bulkGrace);
 
     // Unregister as History API and Track API provider
     unregisterHistoryApiProvider(app);

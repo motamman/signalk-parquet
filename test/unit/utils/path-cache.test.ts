@@ -169,6 +169,22 @@ describe('path cache', () => {
     ).to.deep.equal(['pNew']);
   });
 
+  // A sliding dashboard poll makes a new key every minute and never asks for
+  // the old one again, so an expired entry must go without its own lookup.
+  it('drops expired entries of other keys when storing', () => {
+    setCachedPaths(DATA_DIR, CTX, FROM, TO, PATHS, currentPathCacheEpoch());
+    clock += CACHE_TTL.PATH_CONTEXT;
+    setCachedPaths(
+      DATA_DIR,
+      CTX,
+      zdt('2025-11-02T10:16:30Z'),
+      zdt('2025-11-02T11:16:30Z'),
+      PATHS,
+      currentPathCacheEpoch()
+    );
+    expect(getPathCacheStats().size).to.equal(1);
+  });
+
   it('drops a listing computed before the cache was cleared', () => {
     // A read-through fill is miss, compute, store, and the compute is an
     // await. An export clearing the cache in between must not be undone by the
@@ -250,6 +266,18 @@ describe('context cache', () => {
     setCachedContexts(OTHER_DIR, FROM, TO, [CTX]);
     expect(getCachedContexts(DATA_DIR, FROM, TO)).to.deep.equal(CONTEXTS);
     expect(getCachedContexts(OTHER_DIR, FROM, TO)).to.deep.equal([CTX]);
+  });
+
+  it('drops expired entries of other keys when storing', () => {
+    setCachedContexts(DATA_DIR, FROM, TO, [CTX]);
+    clock += CACHE_TTL.PATH_CONTEXT;
+    setCachedContexts(
+      DATA_DIR,
+      zdt('2025-11-02T10:16:30Z'),
+      zdt('2025-11-02T11:16:30Z'),
+      [CTX]
+    );
+    expect(getAllCacheStats().contexts.size).to.equal(1);
   });
 
   it('clears only the context cache', () => {

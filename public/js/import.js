@@ -463,7 +463,9 @@ async function pollGpxImportProgress() {
       document.getElementById('cancelGpxImportBtn').disabled = true;
 
       if (data.status === 'completed') {
-        const parquetCount = (data.filesCreated || []).length;
+        // The server keeps only the first paths; the count is every file.
+        const parquetCount =
+          data.filesCreatedCount ?? (data.filesCreated || []).length;
         const hint = samplePartitionPath(data.filesCreated);
         alert(
           `Import complete.\n\n` +
@@ -535,7 +537,7 @@ function updateGpxImportProgress(data) {
   stats.textContent =
     `Points parsed: ${Number(data.pointsParsed).toLocaleString()} ` +
     `· Records written: ${Number(data.recordsWritten).toLocaleString()} ` +
-    `· Output files: ${(data.filesCreated || []).length}`;
+    `· Output files: ${data.filesCreatedCount ?? (data.filesCreated || []).length}`;
 
   if (data.status === 'running' || data.status === 'scanning') {
     progressBar.style.background = 'linear-gradient(90deg, #8e24aa, #ba68c8)';

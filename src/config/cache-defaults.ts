@@ -41,8 +41,11 @@ export const CACHE_TTL = {
  */
 export const CACHE_SIZE = {
   /**
-   * Maximum number of path/context cache entries
-   * Each entry is relatively small (~100 bytes)
+   * Maximum number of path/context cache entries, per cache. An entry holds a
+   * whole listing (every path of a context, or every context in a window), so
+   * its size grows with the number of vessels or paths heard; it is not a
+   * small fixed record. Expired entries are dropped on every insert
+   * (utils/path-cache.ts).
    * @default 100 entries
    */
   PATH_CONTEXT_MAX: 100,

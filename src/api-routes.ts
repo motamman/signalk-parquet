@@ -115,6 +115,7 @@ import {
 import { updateDataSubscriptions } from './data-handler';
 import { toContextFilePath, toParquetFilePath } from './utils/path-helpers';
 import { newJobId } from './utils/job-id';
+import { keepMessage } from './utils/job-messages';
 import { ServerAPI, Context } from '@signalk/server-api';
 import { ClaudeAnalyzer, AnalysisRequest } from './claude-analyzer';
 import {
@@ -954,12 +955,16 @@ export function registerApiRoutes(
             cloudOnly: cloudOnly.slice(0, 100),
             hasMore: localOnly.length > 100 || cloudOnly.length > 100,
           };
-
-          setTimeout(() => cloudCompareJobs.delete(jobId), 5 * 60 * 1000);
         } catch (error) {
           app.error(`Cloud compare failed: ${(error as Error).message}`);
           job.status = 'error';
           job.error = 'Cloud compare failed';
+        } finally {
+          // A failed job is evicted too, not kept for the life of the process.
+          setTimeout(
+            () => cloudCompareJobs.delete(jobId),
+            5 * 60 * 1000
+          ).unref();
         }
       })();
 
@@ -1135,7 +1140,6 @@ export function registerApiRoutes(
             job.status = 'completed';
             job.phase = 'No files to sync';
             job.progress = 100;
-            setTimeout(() => cloudSyncJobs.delete(jobId), 5 * 60 * 1000);
             return;
           }
 
@@ -1159,7 +1163,7 @@ export function registerApiRoutes(
               app.debug(`Synced to ${label}: ${key}`);
             } catch (err) {
               job.filesFailed++;
-              job.errors.push(`${key}: ${(err as Error).message}`);
+              keepMessage(job.errors, `${key}: ${(err as Error).message}`);
             }
           }
 
@@ -1167,11 +1171,12 @@ export function registerApiRoutes(
           job.phase = 'Complete';
           job.progress = 100;
           job.currentFile = '';
-
-          setTimeout(() => cloudSyncJobs.delete(jobId), 5 * 60 * 1000);
         } catch (error) {
           job.status = 'error';
           job.phase = (error as Error).message;
+        } finally {
+          // Evicted however the job ended, a failed one included.
+          setTimeout(() => cloudSyncJobs.delete(jobId), 5 * 60 * 1000).unref();
         }
       })();
 
@@ -2776,219 +2781,233 @@ export function registerApiRoutes(
 
             try {
               const reader = await parquet.ParquetReader.openFile(filePath);
-              const cursor = reader.getCursor();
-              const schema = cursor.schema;
+              // Closed however the checks below end, a throw included.
+              try {
+                const cursor = reader.getCursor();
+                const schema = cursor.schema;
 
-              if (schema && schema.schema) {
-                const fields = schema.schema;
+                if (schema && schema.schema) {
+                  const fields = schema.schema;
 
-                const receivedTimestamp = fields.received_timestamp
-                  ? fields.received_timestamp.type
-                  : 'MISSING';
-                const signalkTimestamp = fields.signalk_timestamp
-                  ? fields.signalk_timestamp.type
-                  : 'MISSING';
+                  const receivedTimestamp = fields.received_timestamp
+                    ? fields.received_timestamp.type
+                    : 'MISSING';
+                  const signalkTimestamp = fields.signalk_timestamp
+                    ? fields.signalk_timestamp.type
+                    : 'MISSING';
 
-                const valueFields: { [key: string]: string } = {};
-                Object.keys(fields).forEach(fieldName => {
-                  if (fieldName.startsWith('value_') || fieldName === 'value') {
-                    valueFields[fieldName] = fields[fieldName].type;
-                  }
-                });
+                  const valueFields: { [key: string]: string } = {};
+                  Object.keys(fields).forEach(fieldName => {
+                    if (
+                      fieldName.startsWith('value_') ||
+                      fieldName === 'value'
+                    ) {
+                      valueFields[fieldName] = fields[fieldName].type;
+                    }
+                  });
 
-                // Forward slashes, so the flat-layout pattern below also
-                // matches the native paths found on Windows.
-                const relativePath = (
-                  progressJob.currentRelativePath ||
-                  path.relative(dataDir, filePath)
-                )
-                  .split(path.sep)
-                  .join('/');
-                const pathMatch = relativePath.match(
-                  /vessels\/[^/]+\/(.+?)\/[^/]*\.parquet$/
-                );
-                const signalkPath = pathMatch
-                  ? pathMatch[1].replace(/\//g, '.')
-                  : '';
-
-                let hasViolations = false;
-                const violations: string[] = [];
-
-                if (
-                  receivedTimestamp !== 'UTF8' &&
-                  receivedTimestamp !== 'MISSING'
-                ) {
-                  violations.push(
-                    `received_timestamp should be UTF8, got ${receivedTimestamp}`
+                  // Forward slashes, so the flat-layout pattern below also
+                  // matches the native paths found on Windows.
+                  const relativePath = (
+                    progressJob.currentRelativePath ||
+                    path.relative(dataDir, filePath)
+                  )
+                    .split(path.sep)
+                    .join('/');
+                  const pathMatch = relativePath.match(
+                    /vessels\/[^/]+\/(.+?)\/[^/]*\.parquet$/
                   );
-                  hasViolations = true;
-                }
-                if (
-                  signalkTimestamp !== 'UTF8' &&
-                  signalkTimestamp !== 'MISSING'
-                ) {
-                  violations.push(
-                    `signalk_timestamp should be UTF8, got ${signalkTimestamp}`
-                  );
-                  hasViolations = true;
-                }
+                  const signalkPath = pathMatch
+                    ? pathMatch[1].replace(/\//g, '.')
+                    : '';
 
-                const isExplodedFile = Object.keys(valueFields).some(
-                  fieldName =>
-                    fieldName.startsWith('value_') &&
-                    fieldName !== 'value' &&
-                    fieldName !== 'value_json'
-                );
-                addDebug(`🔍 Validation: isExplodedFile = ${isExplodedFile}`);
+                  let hasViolations = false;
+                  const violations: string[] = [];
 
-                let sampleRecords = [];
-                try {
-                  if (!parquet) {
-                    throw new Error('ParquetJS not available');
-                  }
-                  const sampleReader =
-                    await parquet.ParquetReader.openFile(filePath);
-                  const sampleCursor = sampleReader.getCursor();
-                  let record: any;
-                  let count = 0;
-                  while ((record = await sampleCursor.next()) && count < 100) {
-                    sampleRecords.push(record);
-                    count++;
-                  }
-                  await sampleReader.close();
-                } catch (error) {
-                  addDebug(
-                    `⚠️ Could not read sample data for validation: ${(error as Error).message}`
-                  );
-                  sampleRecords = [];
-                }
-
-                for (const [fieldName, fieldType] of Object.entries(
-                  valueFields
-                )) {
-                  if (fieldName === 'value_json') {
-                    addDebug(
-                      `⏭️ ${fieldName}: Skipped entirely (always ignored)`
+                  if (
+                    receivedTimestamp !== 'UTF8' &&
+                    receivedTimestamp !== 'MISSING'
+                  ) {
+                    violations.push(
+                      `received_timestamp should be UTF8, got ${receivedTimestamp}`
                     );
-                    continue;
+                    hasViolations = true;
                   }
-
-                  if (isExplodedFile && fieldName === 'value') {
-                    addDebug(
-                      `⏭️ ${fieldName}: Skipped in exploded file (always empty)`
+                  if (
+                    signalkTimestamp !== 'UTF8' &&
+                    signalkTimestamp !== 'MISSING'
+                  ) {
+                    violations.push(
+                      `signalk_timestamp should be UTF8, got ${signalkTimestamp}`
                     );
-                    continue;
+                    hasViolations = true;
                   }
 
-                  if (fieldType === 'UTF8' || fieldType === 'VARCHAR') {
-                    let shouldBeNumeric = false;
+                  const isExplodedFile = Object.keys(valueFields).some(
+                    fieldName =>
+                      fieldName.startsWith('value_') &&
+                      fieldName !== 'value' &&
+                      fieldName !== 'value_json'
+                  );
+                  addDebug(`🔍 Validation: isExplodedFile = ${isExplodedFile}`);
 
-                    if (sampleRecords.length > 0) {
-                      const values = sampleRecords
-                        .map(r => r[fieldName])
-                        .filter(v => v !== null && v !== undefined);
-
-                      if (values.length > 0) {
-                        let allNumeric = true;
-                        let allBoolean = true;
-
-                        for (const value of values) {
-                          const str = String(value).trim();
-                          if (str === 'true' || str === 'false') {
-                            allNumeric = false;
-                          } else if (!isNaN(Number(str)) && str !== '') {
-                            allBoolean = false;
-                          } else {
-                            allNumeric = false;
-                            allBoolean = false;
-                            break;
-                          }
-                        }
-
-                        if (allNumeric && values.length > 0) {
-                          shouldBeNumeric = true;
-                          violations.push(
-                            `${fieldName} contains numbers but is ${fieldType}, should be DOUBLE`
-                          );
-                          hasViolations = true;
-                          addDebug(
-                            `🔍 ${fieldName}: VARCHAR contains numbers, flagged as violation`
-                          );
-                        } else if (allBoolean && values.length > 0) {
-                          violations.push(
-                            `${fieldName} contains booleans but is ${fieldType}, should be BOOLEAN`
-                          );
-                          hasViolations = true;
-                          addDebug(
-                            `🔍 ${fieldName}: VARCHAR contains booleans, flagged as violation`
-                          );
-                        }
+                  let sampleRecords = [];
+                  try {
+                    if (!parquet) {
+                      throw new Error('ParquetJS not available');
+                    }
+                    const sampleReader =
+                      await parquet.ParquetReader.openFile(filePath);
+                    try {
+                      const sampleCursor = sampleReader.getCursor();
+                      let record: any;
+                      let count = 0;
+                      while (
+                        (record = await sampleCursor.next()) &&
+                        count < 100
+                      ) {
+                        sampleRecords.push(record);
+                        count++;
                       }
+                    } finally {
+                      await sampleReader.close().catch(() => undefined);
+                    }
+                  } catch (error) {
+                    addDebug(
+                      `⚠️ Could not read sample data for validation: ${(error as Error).message}`
+                    );
+                    sampleRecords = [];
+                  }
+
+                  for (const [fieldName, fieldType] of Object.entries(
+                    valueFields
+                  )) {
+                    if (fieldName === 'value_json') {
+                      addDebug(
+                        `⏭️ ${fieldName}: Skipped entirely (always ignored)`
+                      );
+                      continue;
                     }
 
-                    if (!shouldBeNumeric && sampleRecords.length === 0) {
-                      const isExplodedField = fieldName.startsWith('value_');
+                    if (isExplodedFile && fieldName === 'value') {
+                      addDebug(
+                        `⏭️ ${fieldName}: Skipped in exploded file (always empty)`
+                      );
+                      continue;
+                    }
 
-                      if (!isExplodedField && signalkPath) {
-                        addDebug(
-                          `🔍 ${fieldName}: Using metadata fallback (matches repair logic)`
-                        );
-                        try {
-                          const metadata = app.getMetadata(signalkPath) as any;
-                          if (
-                            metadata &&
-                            metadata.units &&
-                            (metadata.units === 'm' ||
-                              metadata.units === 'deg' ||
-                              metadata.units === 'm/s' ||
-                              metadata.units === 'rad' ||
-                              metadata.units === 'K' ||
-                              metadata.units === 'Pa' ||
-                              metadata.units === 'V' ||
-                              metadata.units === 'A' ||
-                              metadata.units === 'Hz' ||
-                              metadata.units === 'ratio' ||
-                              metadata.units === 'kg' ||
-                              metadata.units === 'J')
-                          ) {
+                    if (fieldType === 'UTF8' || fieldType === 'VARCHAR') {
+                      let shouldBeNumeric = false;
+
+                      if (sampleRecords.length > 0) {
+                        const values = sampleRecords
+                          .map(r => r[fieldName])
+                          .filter(v => v !== null && v !== undefined);
+
+                        if (values.length > 0) {
+                          let allNumeric = true;
+                          let allBoolean = true;
+
+                          for (const value of values) {
+                            const str = String(value).trim();
+                            if (str === 'true' || str === 'false') {
+                              allNumeric = false;
+                            } else if (!isNaN(Number(str)) && str !== '') {
+                              allBoolean = false;
+                            } else {
+                              allNumeric = false;
+                              allBoolean = false;
+                              break;
+                            }
+                          }
+
+                          if (allNumeric && values.length > 0) {
+                            shouldBeNumeric = true;
                             violations.push(
-                              `${fieldName} has numeric units (${metadata.units}) but is ${fieldType}, should be DOUBLE`
+                              `${fieldName} contains numbers but is ${fieldType}, should be DOUBLE`
                             );
                             hasViolations = true;
                             addDebug(
-                              `🔍 ${fieldName}: Metadata indicates numeric (${metadata.units}), flagged as violation`
+                              `🔍 ${fieldName}: VARCHAR contains numbers, flagged as violation`
+                            );
+                          } else if (allBoolean && values.length > 0) {
+                            violations.push(
+                              `${fieldName} contains booleans but is ${fieldType}, should be BOOLEAN`
+                            );
+                            hasViolations = true;
+                            addDebug(
+                              `🔍 ${fieldName}: VARCHAR contains booleans, flagged as violation`
                             );
                           }
-                        } catch (metadataError) {
+                        }
+                      }
+
+                      if (!shouldBeNumeric && sampleRecords.length === 0) {
+                        const isExplodedField = fieldName.startsWith('value_');
+
+                        if (!isExplodedField && signalkPath) {
                           addDebug(
-                            `🔍 ${fieldName}: Metadata lookup failed, no violation flagged`
+                            `🔍 ${fieldName}: Using metadata fallback (matches repair logic)`
+                          );
+                          try {
+                            const metadata = app.getMetadata(
+                              signalkPath
+                            ) as any;
+                            if (
+                              metadata &&
+                              metadata.units &&
+                              (metadata.units === 'm' ||
+                                metadata.units === 'deg' ||
+                                metadata.units === 'm/s' ||
+                                metadata.units === 'rad' ||
+                                metadata.units === 'K' ||
+                                metadata.units === 'Pa' ||
+                                metadata.units === 'V' ||
+                                metadata.units === 'A' ||
+                                metadata.units === 'Hz' ||
+                                metadata.units === 'ratio' ||
+                                metadata.units === 'kg' ||
+                                metadata.units === 'J')
+                            ) {
+                              violations.push(
+                                `${fieldName} has numeric units (${metadata.units}) but is ${fieldType}, should be DOUBLE`
+                              );
+                              hasViolations = true;
+                              addDebug(
+                                `🔍 ${fieldName}: Metadata indicates numeric (${metadata.units}), flagged as violation`
+                              );
+                            }
+                          } catch (metadataError) {
+                            addDebug(
+                              `🔍 ${fieldName}: Metadata lookup failed, no violation flagged`
+                            );
+                          }
+                        } else {
+                          addDebug(
+                            `🔍 ${fieldName}: Exploded field or no path, skipping metadata (matches repair logic)`
                           );
                         }
-                      } else {
-                        addDebug(
-                          `🔍 ${fieldName}: Exploded field or no path, skipping metadata (matches repair logic)`
-                        );
                       }
                     }
                   }
-                }
 
-                if (hasViolations) {
-                  violationSchemas++;
-                  const shortPath = path.relative(dataDir, filePath);
-                  violationDetails.push(
-                    `[${totalFiles}] ${shortPath}: ${violations.join(', ')}`
-                  );
-                  violationFiles.push({
-                    file: shortPath,
-                    vessel: vesselName,
-                    issues: [...violations],
-                  });
-                } else {
-                  correctSchemas++;
+                  if (hasViolations) {
+                    violationSchemas++;
+                    const shortPath = path.relative(dataDir, filePath);
+                    violationDetails.push(
+                      `[${totalFiles}] ${shortPath}: ${violations.join(', ')}`
+                    );
+                    violationFiles.push({
+                      file: shortPath,
+                      vessel: vesselName,
+                      issues: [...violations],
+                    });
+                  } else {
+                    correctSchemas++;
+                  }
                 }
-
-                if (typeof reader.close === 'function') reader.close();
+              } finally {
+                await reader.close().catch(() => undefined);
               }
             } catch (error) {
               app.debug(
@@ -3274,10 +3293,16 @@ export function registerApiRoutes(
               continue;
             }
 
+            // The reader or writer open at the moment this file's repair
+            // throws, closed by the catch below; and the temp file being
+            // written, removed there.
+            let openHandle: { close(): Promise<unknown> } | undefined;
+            let repairTemp: string | undefined;
             try {
               // Get schema and sample data directly from parquet file (same as validation)
               const parquetReader =
                 await parquet.ParquetReader.openFile(filePath);
+              openHandle = parquetReader;
               const parquetCursor = parquetReader.getCursor();
               const schema = parquetCursor.schema;
 
@@ -3328,6 +3353,7 @@ export function registerApiRoutes(
                 );
               }
               await parquetReader.close();
+              openHandle = undefined;
 
               const fieldEntries = Object.entries(valueFields);
               const hasExplodedFields = fieldEntries.some(
@@ -3438,6 +3464,7 @@ export function registerApiRoutes(
               app.debug(`🔧 Backed up: ${path.basename(filePath)}`);
 
               const reader = await parquet.ParquetReader.openFile(filePath);
+              openHandle = reader;
               const cursor = reader.getCursor();
               const records: any[] = [];
               let record: any;
@@ -3445,6 +3472,7 @@ export function registerApiRoutes(
                 records.push(record);
               }
               await reader.close();
+              openHandle = undefined;
               // eslint-disable-next-line @typescript-eslint/no-require-imports
               const { ParquetWriter } = require('./parquet-writer');
               const writer = new ParquetWriter({ format: 'parquet', app });
@@ -3453,10 +3481,15 @@ export function registerApiRoutes(
                 signalkPath
               );
 
+              // Written beside the original and moved over it once complete:
+              // writing in place truncated the original at the first error,
+              // leaving only the backup above.
+              repairTemp = `${filePath}.tmp`;
               const parquetWriter = await parquet.ParquetWriter.openFile(
                 correctedSchema,
-                filePath
+                repairTemp
               );
+              openHandle = parquetWriter;
               for (const row of records) {
                 const prepared = writer.prepareRecordForParquet(
                   row,
@@ -3465,11 +3498,17 @@ export function registerApiRoutes(
                 await parquetWriter.appendRow(prepared);
               }
               await parquetWriter.close();
+              openHandle = undefined;
+              await fs.move(repairTemp, filePath, { overwrite: true });
+              repairTemp = undefined;
               repairedFiles++;
               handledRelativePaths.add(relativePath);
               job.message = `Repaired: ${relativePath}`;
               app.debug(`🔧 ✅ Repaired: ${path.basename(filePath)}`);
             } catch (fileError) {
+              await openHandle?.close().catch(() => undefined);
+              if (repairTemp)
+                await fs.remove(repairTemp).catch(() => undefined);
               const message = `Error processing ${relativePath}: ${(fileError as Error).message}`;
               app.debug(`🔧 ❌ ${message}`);
               errors.push(message);
@@ -4030,19 +4069,30 @@ export function registerApiRoutes(
   // raw variable: that variable stays undefined until the getter first
   // runs, so an import that beats every aggregation route would otherwise
   // capture undefined and silently skip the aggregation phase.
+  // Rebuilt, like the aggregation service, when what it was built on has been
+  // replaced: each plugin start makes a new writer, and a config change a new
+  // aggregation service. Import jobs live outside the instance, so a running
+  // one is still found.
   let gpxImportService: GpxImportService | undefined;
+  let gpxBuiltOn: { writer: unknown; aggregation: unknown } | undefined;
   const getGpxImportService = (): GpxImportService => {
     if (!state.parquetWriter) {
       throw new Error(
         'ParquetWriter not initialized — cannot import GPX files'
       );
     }
-    if (!gpxImportService) {
+    const aggregation = getAggregationService();
+    if (
+      !gpxImportService ||
+      gpxBuiltOn?.writer !== state.parquetWriter ||
+      gpxBuiltOn?.aggregation !== aggregation
+    ) {
       gpxImportService = new GpxImportService(
         app,
         state.parquetWriter,
-        getAggregationService()
+        aggregation
       );
+      gpxBuiltOn = { writer: state.parquetWriter, aggregation };
     }
     return gpxImportService;
   };
@@ -4738,21 +4788,28 @@ export function registerApiRoutes(
   // /api/aggregate* route can only be reached after start(), so the config
   // is available by then. Memoized to a single instance so bulk-aggregation
   // job state survives the start -> progress -> cancel request sequence.
+  // These routes are registered once per server process, but the plugin is
+  // stopped and started again with a new configuration on every save, so the
+  // service is rebuilt whenever the settings it reads have changed: one built
+  // at first use would aggregate into the old output directory, with the old
+  // retention, until the server restarts. A bulk job already running keeps
+  // the service it started on; it is cancelled by id (cancelBulkAggregation).
   let aggregationService: AggregationService | undefined;
+  let aggregationServiceConfig: string | undefined;
   const getAggregationService = (): AggregationService => {
-    if (!aggregationService) {
-      aggregationService = new AggregationService(
-        {
-          outputDirectory: state.getDataDirPath(),
-          filenamePrefix: state.currentConfig?.filenamePrefix || 'signalk_data',
-          // ?? not || so explicit 0 (= keep forever) survives the coalesce.
-          retentionDays: buildPerTierRetention(
-            state.currentConfig?.retentionDays ?? 0
-          ),
-          pathRetentionOverrides: state.currentConfig?.pathRetentionOverrides,
-        },
-        app
-      );
+    const config = {
+      outputDirectory: state.getDataDirPath(),
+      filenamePrefix: state.currentConfig?.filenamePrefix || 'signalk_data',
+      // ?? not || so explicit 0 (= keep forever) survives the coalesce.
+      retentionDays: buildPerTierRetention(
+        state.currentConfig?.retentionDays ?? 0
+      ),
+      pathRetentionOverrides: state.currentConfig?.pathRetentionOverrides,
+    };
+    const key = JSON.stringify(config);
+    if (!aggregationService || key !== aggregationServiceConfig) {
+      aggregationService = new AggregationService(config, app);
+      aggregationServiceConfig = key;
     }
     return aggregationService;
   };
@@ -4965,6 +5022,8 @@ export function registerApiRoutes(
   // VECTOR AVERAGING MIGRATION API ROUTES
   // ===========================================
 
+  // How long a finished job stays pollable, as for the position jobs.
+  const VECTOR_AVG_JOB_TTL_MS = 10 * 60 * 1000;
   const vectorAvgJobs = new Map<
     string,
     {
@@ -5100,12 +5159,22 @@ export function registerApiRoutes(
             job.datesProcessed++;
           }
 
-          job.status = 'completed';
-          job.completedAt = new Date();
+          // The cancel route already marked a cancelled job; reporting it
+          // completed would hide the dates it skipped.
+          if ((job.status as string) !== 'cancelled') {
+            job.status = 'completed';
+            job.completedAt = new Date();
+          }
         } catch (error) {
           job.status = 'error';
           job.error = (error as Error).message;
           job.completedAt = new Date();
+        } finally {
+          // Evicted however the job ended, as the position jobs are.
+          setTimeout(
+            () => vectorAvgJobs.delete(jobId),
+            VECTOR_AVG_JOB_TTL_MS
+          ).unref();
         }
       })();
 

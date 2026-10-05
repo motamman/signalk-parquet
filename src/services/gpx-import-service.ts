@@ -30,6 +30,7 @@ import * as path from 'path';
 import { globIn } from '../utils/glob-in';
 import { ServerAPI } from '@signalk/server-api';
 import { DataRecord, ParquetAppender, ParquetWriter } from '../types';
+import { keepMessage } from '../utils/job-messages';
 import { HivePathBuilder } from '../utils/hive-path-builder';
 import { GpxTokenizer, GpxPoint } from '../utils/gpx-parser';
 import {
@@ -126,8 +127,12 @@ export interface GpxImportProgress {
   recordsWritten: number; // parquet rows actually emitted
   filesImported: number;
   filesSkipped: number;
+  /** The first files' paths (see utils/job-messages.ts); the count is every one. */
   filesCreated: string[];
+  filesCreatedCount: number;
+  /** The first errors' text; the count is every one. */
   errors: string[];
+  errorCount: number;
   // Populated only during the post-write aggregation phase
   aggregationDatesTotal?: number;
   aggregationDatesProcessed?: number;
@@ -149,6 +154,10 @@ export interface GpxImportServiceOptions {
 }
 
 const importJobs = new Map<string, GpxImportProgress>();
+// Beside the jobs, not on a service instance: the routes rebuild the service
+// when the plugin's writer or configuration changes, and a cancel must still
+// reach a job started on the previous one.
+const cancelledJobs = new Set<string>();
 
 function scheduleImportJobCleanup(jobId: string) {
   // unref: a pending cleanup must not keep the process alive on its own
@@ -173,7 +182,6 @@ export class GpxImportService {
   // Per-job cancellation. A set (rather than a single flag) so concurrent
   // imports don't trample each other's state — cancelling one job never
   // cancels another.
-  private readonly cancelledJobs: Set<string> = new Set();
 
   constructor(
     app: ServerAPI,
@@ -253,7 +261,9 @@ export class GpxImportService {
       filesImported: 0,
       filesSkipped: 0,
       filesCreated: [],
+      filesCreatedCount: 0,
       errors: [],
+      errorCount: 0,
     };
 
     importJobs.set(jobId, progress);
@@ -270,7 +280,7 @@ export class GpxImportService {
       .finally(() => {
         // Drop the cancellation flag once the job is no longer running
         // so the set doesn't grow unboundedly across the plugin's lifetime.
-        this.cancelledJobs.delete(jobId);
+        cancelledJobs.delete(jobId);
       });
 
     return jobId;
@@ -330,7 +340,7 @@ export class GpxImportService {
       const touchedDays = new Map<string, Date>();
 
       for (let i = 0; i < gpxFiles.length; i++) {
-        if (this.cancelledJobs.has(jobId)) {
+        if (cancelledJobs.has(jobId)) {
           progress.status = 'cancelled';
           progress.completedAt = new Date();
           scheduleImportJobCleanup(jobId);
@@ -370,7 +380,8 @@ export class GpxImportService {
         } catch (error) {
           const errorMsg = `Failed to import ${file}: ${(error as Error).message}`;
           this.app.debug(errorMsg);
-          progress.errors.push(errorMsg);
+          progress.errorCount++;
+          keepMessage(progress.errors, errorMsg);
           progress.filesSkipped++;
         }
       }
@@ -384,7 +395,7 @@ export class GpxImportService {
       if (
         this.aggregationService &&
         touchedDays.size > 0 &&
-        !this.cancelledJobs.has(jobId)
+        !cancelledJobs.has(jobId)
       ) {
         await this.runAggregationPhase(jobId, touchedDays, progress);
       }
@@ -392,9 +403,7 @@ export class GpxImportService {
       // Cancellation requested mid-aggregation is reported as cancelled,
       // not completed; partial tier coverage is real and the caller
       // should know.
-      progress.status = this.cancelledJobs.has(jobId)
-        ? 'cancelled'
-        : 'completed';
+      progress.status = cancelledJobs.has(jobId) ? 'cancelled' : 'completed';
       progress.completedAt = new Date();
       scheduleImportJobCleanup(jobId);
     } catch (error) {
@@ -480,7 +489,8 @@ export class GpxImportService {
         return { appender, finalPath, tempPath };
       },
       onClosed: (group, rows, finalPath) => {
-        progress.filesCreated.push(finalPath);
+        progress.filesCreatedCount++;
+        keepMessage(progress.filesCreated, finalPath);
         progress.recordsWritten += rows;
         // Record only after a successful write so a failed group doesn't
         // schedule aggregation for a partition we never produced.
@@ -491,7 +501,7 @@ export class GpxImportService {
       },
     });
 
-    const filesBefore = progress.filesCreated.length;
+    const filesBefore = progress.filesCreatedCount;
     const tokenizer = new GpxTokenizer();
     const stream = fs.createReadStream(sourcePath, {
       encoding: 'utf8',
@@ -532,7 +542,7 @@ export class GpxImportService {
           await handlePoint(event.point);
           if (++sinceCancelCheck >= GPX_IMPORT_CANCEL_CHECK_POINTS) {
             sinceCancelCheck = 0;
-            if (this.cancelledJobs.has(jobId)) {
+            if (cancelledJobs.has(jobId)) {
               cancelled = true;
               break;
             }
@@ -554,7 +564,7 @@ export class GpxImportService {
       stream.destroy();
     }
 
-    return progress.filesCreated.length > filesBefore;
+    return progress.filesCreatedCount > filesBefore;
   }
 
   /**
@@ -585,7 +595,7 @@ export class GpxImportService {
 
     let i = 0;
     for (const [dateStr, date] of sortedDays) {
-      if (this.cancelledJobs.has(jobId)) return;
+      if (cancelledJobs.has(jobId)) return;
 
       progress.aggregationCurrentDate = dateStr;
       progress.aggregationDatesProcessed = i;
@@ -593,7 +603,9 @@ export class GpxImportService {
       try {
         await this.aggregationService.aggregateDate(date);
       } catch (error) {
-        progress.errors.push(
+        progress.errorCount++;
+        keepMessage(
+          progress.errors,
           `Aggregation failed for ${dateStr}: ${(error as Error).message}`
         );
       }
@@ -726,7 +738,7 @@ export class GpxImportService {
   cancel(jobId: string): boolean {
     const job = importJobs.get(jobId);
     if (job && job.status === 'running') {
-      this.cancelledJobs.add(jobId);
+      cancelledJobs.add(jobId);
       return true;
     }
     return false;

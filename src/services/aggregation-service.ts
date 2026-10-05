@@ -18,6 +18,7 @@ import { readFooters } from '../utils/parquet-footer';
 import { listHiveDirs } from '../utils/hive-walk';
 import { ServerAPI } from '@signalk/server-api';
 import { DuckDBPool } from '../utils/duckdb-pool';
+import { keepMessage } from '../utils/job-messages';
 import { HivePathBuilder, AggregationTier } from '../utils/hive-path-builder';
 import { isAngularPath } from '../utils/angular-paths';
 import { isIdentityPath } from '../utils/vessel-identity';
@@ -96,7 +97,9 @@ export interface BulkAggregationProgress {
   startTime: Date;
   completedAt?: Date;
   error?: string;
+  /** The first errors' text (see utils/job-messages.ts); errorCount counts all. */
   errors: string[];
+  errorCount: number;
 }
 
 export interface AggregationResult {
@@ -110,15 +113,46 @@ export interface AggregationResult {
 }
 
 const bulkAggregationJobs = new Map<string, BulkAggregationProgress>();
+
+/**
+ * Bulk jobs still running, with the service each runs on and the promise
+ * that settles when it ends: what cancelling one by id, or all of them at
+ * plugin stop, needs to reach. A job keeps its service even after the routes
+ * have replaced theirs for a new configuration.
+ */
+const runningBulkJobs = new Map<
+  string,
+  { service: AggregationService; done: Promise<void> }
+>();
+
+/** Cancel one bulk job at its next group boundary; false if not running. */
+export function cancelBulkAggregation(jobId: string): boolean {
+  const running = runningBulkJobs.get(jobId);
+  if (!running) return false;
+  running.service.cancel();
+  return true;
+}
+
+/**
+ * Cancel every running bulk job and wait for each to stop at its next group
+ * boundary. Called from plugin.stop() before the DuckDB pool closes: a job
+ * left running would fail every remaining date against the closed pool.
+ */
+export async function cancelAllBulkAggregations(): Promise<void> {
+  const running = [...runningBulkJobs.values()];
+  for (const { service } of running) service.cancel();
+  await Promise.all(running.map(r => r.done));
+}
 const BULK_JOB_TTL_MS = 60 * 60 * 1000; // 1 hour
 
 function scheduleBulkJobCleanup(jobId: string) {
+  // unref: a finished job's TTL must not keep the process alive on its own.
   setTimeout(() => {
     const job = bulkAggregationJobs.get(jobId);
     if (job && job.status !== 'running' && job.status !== 'scanning') {
       bulkAggregationJobs.delete(jobId);
     }
-  }, BULK_JOB_TTL_MS);
+  }, BULK_JOB_TTL_MS).unref();
 }
 
 const TIER_INTERVALS: Record<AggregationTier, number> = {
@@ -363,8 +397,6 @@ export class AggregationService {
       );
       return { recordsAggregated: 0, outputFile: null };
     }
-    const connection = await DuckDBPool.getConnection();
-
     // Build output path
     const outputDir = this.hivePathBuilder.buildPath(
       this.config.outputDirectory,
@@ -411,6 +443,9 @@ export class AggregationService {
           hasCosAvg
         );
 
+    // Taken here, where the finally below releases it: taken before the
+    // directory and query were prepared, a throw there leaked it.
+    const connection = await DuckDBPool.getConnection();
     try {
       await connection.runAndReadAll(query);
 
@@ -977,19 +1012,23 @@ export class AggregationService {
       recordsAggregated: 0,
       startTime: new Date(),
       errors: [],
+      errorCount: 0,
     };
 
     bulkAggregationJobs.set(jobId, progress);
     this.cancelRequested = false;
 
-    this.runBulkAggregation(jobId, startDate, endDate).catch(error => {
-      const job = bulkAggregationJobs.get(jobId);
-      if (job) {
-        job.status = 'error';
-        job.error = (error as Error).message;
-        job.completedAt = new Date();
-      }
-    });
+    const done = this.runBulkAggregation(jobId, startDate, endDate)
+      .catch(error => {
+        const job = bulkAggregationJobs.get(jobId);
+        if (job) {
+          job.status = 'error';
+          job.error = (error as Error).message;
+          job.completedAt = new Date();
+        }
+      })
+      .finally(() => runningBulkJobs.delete(jobId));
+    runningBulkJobs.set(jobId, { service: this, done });
 
     return jobId;
   }
@@ -1048,14 +1087,16 @@ export class AggregationService {
           for (const r of results) {
             progress.filesCreated += r.filesCreated;
             progress.recordsAggregated += r.recordsAggregated;
-            if (r.errors.length > 0) {
-              progress.errors.push(...r.errors.map(e => `[${dateStr}] ${e}`));
+            for (const e of r.errors) {
+              progress.errorCount += 1;
+              keepMessage(progress.errors, `[${dateStr}] ${e}`);
             }
           }
         } catch (error) {
           const errorMsg = `[${dateStr}] ${(error as Error).message}`;
           this.app.error(`[BulkAggregation] ${errorMsg}`);
-          progress.errors.push(errorMsg);
+          progress.errorCount += 1;
+          keepMessage(progress.errors, errorMsg);
         }
       }
 
@@ -1084,14 +1125,9 @@ export class AggregationService {
   }
 
   /**
-   * Cancel a bulk aggregation job
+   * Cancel a bulk aggregation job, whichever service it runs on.
    */
   cancelBulk(jobId: string): boolean {
-    const job = bulkAggregationJobs.get(jobId);
-    if (job && (job.status === 'running' || job.status === 'scanning')) {
-      this.cancelRequested = true;
-      return true;
-    }
-    return false;
+    return cancelBulkAggregation(jobId);
   }
 }

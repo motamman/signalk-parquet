@@ -41,6 +41,9 @@ export class DuckDBPool {
   private static sqliteInitialized: boolean = false;
   private static spatialAvailable: boolean = false;
   private static sandboxInstance: DuckDBInstance | null = null;
+  // The sandbox being created, shared by every caller that arrives meanwhile:
+  // two first calls each creating one left one of them never closed.
+  private static sandboxPending: Promise<DuckDBInstance> | null = null;
   // Instance configuration chosen at initialize() (extension and temp
   // directories, optional extension repository). The sandbox instance is
   // created with the same one so it finds the extensions the main pool cached.
@@ -162,56 +165,92 @@ export class DuckDBPool {
    *   call to scope the sandbox; ignored thereafter while the instance lives.
    */
   static async getSandboxConnection(dataDir: string) {
-    if (!this.sandboxInstance) {
-      // Same directories as the main pool, so the spatial extension it cached
-      // is found here rather than looked for under DuckDB's default home.
-      const instance = await DuckDBInstance.create(':memory:', {
-        ...this.instanceConfig,
-      });
-      const setup = await instance.connect();
-      // Cap memory on this untrusted-SQL instance, matching the main pool, so a
-      // heavy query can't exhaust the Node process.
-      await setup.runAndReadAll("SET memory_limit = '512MB';");
-      // Spatial must be loaded before access is locked down (extensions cannot
-      // load once external access is disabled). Best-effort, like the main
-      // pool: with no cached copy and no network, INSTALL fails, and that must
-      // degrade spatial queries on this instance rather than make every raw
-      // SQL and analysis query fail until a restart with connectivity. (The
-      // Signal K plugin registry runs the test suite with no network; this
-      // was the only thing that failed there.)
-      try {
-        await setup.runAndReadAll('LOAD spatial;');
-      } catch {
-        try {
-          await setup.runAndReadAll('INSTALL spatial;');
-          await setup.runAndReadAll('LOAD spatial;');
-        } catch (err) {
-          this.warn?.(
-            `DuckDB spatial extension unavailable on the sandbox instance ` +
-              `(likely no network on first start): ${(err as Error).message}. ` +
-              `Spatial functions in raw SQL and analysis queries will fail ` +
-              `until the plugin next starts with connectivity.`
-          );
-        }
-      }
-      // Order matters: allowed_directories can only be set while external access
-      // is still enabled; disabling it afterwards confines file access to that
-      // directory and cannot be re-enabled for the life of the instance.
-      await setup.runAndReadAll(
-        `SET allowed_directories=['${dataDir.replace(/'/g, "''")}'];`
+    // Only alongside the main pool: after shutdown() the directories it chose
+    // are gone, and a sandbox made then would be one nothing ever closes.
+    if (!this.instance) {
+      throw new Error(
+        'DuckDBPool not initialized. Call DuckDBPool.initialize() first.'
       );
-      await setup.runAndReadAll('SET enable_external_access=false;');
-      // Freeze the configuration last. The sandbox never changes a setting
-      // after this point (unlike the main pool, which loads httpfs later), so
-      // locking it costs nothing and closes the one hole the settings above
-      // leave open: untrusted SQL can otherwise raise memory_limit itself —
-      // `EXPLAIN ANALYZE SET memory_limit='4GB'` lifts the 512MB cap — which
-      // the SQL guard catches by keyword but the engine should refuse outright.
-      await setup.runAndReadAll('SET lock_configuration=true;');
-      setup.disconnectSync();
-      this.sandboxInstance = instance;
+    }
+    if (!this.sandboxInstance) {
+      this.sandboxPending ??= this.createSandbox(dataDir).finally(() => {
+        this.sandboxPending = null;
+      });
+      await this.sandboxPending;
+    }
+    if (!this.sandboxInstance) {
+      throw new Error('DuckDBPool was shut down while the sandbox was created');
     }
     return await this.sandboxInstance.connect();
+  }
+
+  /**
+   * Create and lock down the sandbox instance. One whose setup fails is
+   * closed; one finished after a shutdown() (or a re-initialize) that it was
+   * not created for is closed rather than published.
+   */
+  private static async createSandbox(dataDir: string): Promise<DuckDBInstance> {
+    const mainPool = this.instance;
+    // Same directories as the main pool, so the spatial extension it cached
+    // is found here rather than looked for under DuckDB's default home.
+    const instance = await DuckDBInstance.create(':memory:', {
+      ...this.instanceConfig,
+    });
+    try {
+      const setup = await instance.connect();
+      try {
+        // Cap memory on this untrusted-SQL instance, matching the main pool, so a
+        // heavy query can't exhaust the Node process.
+        await setup.runAndReadAll("SET memory_limit = '512MB';");
+        // Spatial must be loaded before access is locked down (extensions cannot
+        // load once external access is disabled). Best-effort, like the main
+        // pool: with no cached copy and no network, INSTALL fails, and that must
+        // degrade spatial queries on this instance rather than make every raw
+        // SQL and analysis query fail until a restart with connectivity. (The
+        // Signal K plugin registry runs the test suite with no network; this
+        // was the only thing that failed there.)
+        try {
+          await setup.runAndReadAll('LOAD spatial;');
+        } catch {
+          try {
+            await setup.runAndReadAll('INSTALL spatial;');
+            await setup.runAndReadAll('LOAD spatial;');
+          } catch (err) {
+            this.warn?.(
+              `DuckDB spatial extension unavailable on the sandbox instance ` +
+                `(likely no network on first start): ${(err as Error).message}. ` +
+                `Spatial functions in raw SQL and analysis queries will fail ` +
+                `until the plugin next starts with connectivity.`
+            );
+          }
+        }
+        // Order matters: allowed_directories can only be set while external access
+        // is still enabled; disabling it afterwards confines file access to that
+        // directory and cannot be re-enabled for the life of the instance.
+        await setup.runAndReadAll(
+          `SET allowed_directories=['${dataDir.replace(/'/g, "''")}'];`
+        );
+        await setup.runAndReadAll('SET enable_external_access=false;');
+        // Freeze the configuration last. The sandbox never changes a setting
+        // after this point (unlike the main pool, which loads httpfs later), so
+        // locking it costs nothing and closes the one hole the settings above
+        // leave open: untrusted SQL can otherwise raise memory_limit itself —
+        // `EXPLAIN ANALYZE SET memory_limit='4GB'` lifts the 512MB cap — which
+        // the SQL guard catches by keyword but the engine should refuse outright.
+        await setup.runAndReadAll('SET lock_configuration=true;');
+      } finally {
+        setup.disconnectSync();
+      }
+    } catch (err) {
+      this.closeQuietly(instance);
+      throw err;
+    }
+    if (this.instance !== mainPool) {
+      this.closeQuietly(instance);
+      throw new Error('DuckDBPool was shut down while the sandbox was created');
+    }
+    this.sandboxInstance = instance;
+    return instance;
   }
 
   /**

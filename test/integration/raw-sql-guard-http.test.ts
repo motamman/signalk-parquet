@@ -20,6 +20,7 @@ import { expect } from 'chai';
 import { Router } from 'express';
 import { registerApiRoutes } from '../../src/api-routes';
 import { PluginState } from '../../src/types';
+import { DuckDBPool } from '../../src/utils/duckdb-pool';
 import { createFakeSignalK, FakeSignalK } from './helpers/fake-signalk';
 
 const SELF_ID = 'rawsqlself';
@@ -159,21 +160,32 @@ describe('raw SQL endpoint guard', function () {
     expect(body.error).to.match(/Raw SQL queries are disabled/);
   });
 
-  it('caps a large result and reports the truncation', async () => {
-    // range() needs no fixture files, so this exercises the row cap without
-    // depending on which data directory the sandbox instance was scoped to.
-    const { body } = await postQuery('SELECT i FROM range(25000) t(i)');
-    expect(body.success).to.equal(true);
-    expect(body.rowCount).to.equal(10000);
-    expect(body.truncated).to.equal(true);
-    expect(body.data).to.have.lengthOf(10000);
-  });
+  describe('with the pool the plugin opens at start', () => {
+    // The sandbox these run on is made only alongside the main pool.
+    before(async () => {
+      await DuckDBPool.shutdown();
+      await DuckDBPool.initialize();
+    });
+    after(async () => {
+      await DuckDBPool.shutdown();
+    });
 
-  it('does not report truncation for a result under the cap', async () => {
-    const { body } = await postQuery('SELECT i FROM range(5) t(i)');
-    expect(body.success).to.equal(true);
-    expect(body.rowCount).to.equal(5);
-    expect(body.truncated).to.equal(false);
+    it('caps a large result and reports the truncation', async () => {
+      // range() needs no fixture files, so this exercises the row cap without
+      // depending on which data directory the sandbox instance was scoped to.
+      const { body } = await postQuery('SELECT i FROM range(25000) t(i)');
+      expect(body.success).to.equal(true);
+      expect(body.rowCount).to.equal(10000);
+      expect(body.truncated).to.equal(true);
+      expect(body.data).to.have.lengthOf(10000);
+    });
+
+    it('does not report truncation for a result under the cap', async () => {
+      const { body } = await postQuery('SELECT i FROM range(5) t(i)');
+      expect(body.success).to.equal(true);
+      expect(body.rowCount).to.equal(5);
+      expect(body.truncated).to.equal(false);
+    });
   });
 
   it('lets a read-only query past the guard', async () => {
