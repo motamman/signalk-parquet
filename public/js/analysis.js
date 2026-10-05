@@ -484,6 +484,7 @@ export async function runQuickAnalysis(dataPath) {
   const content = document.getElementById('analysisContent');
 
   result.style.display = 'block';
+  purgeCharts(content);
   content.innerHTML =
     '<div style="text-align: center; padding: 20px;">🔄 Running direct analysis...</div>';
 
@@ -519,9 +520,11 @@ Provide actionable insights based on what you observe in the data.`,
     if (data.success && data.data) {
       displayAnalysisResult(data.data);
     } else {
+      purgeCharts(content);
       content.innerHTML = `<div style="color: red;">❌ Analysis failed: ${data.error}</div>`;
     }
   } catch (error) {
+    purgeCharts(content);
     content.innerHTML = `<div style="color: red;">❌ Error: ${error.message}</div>`;
   }
 }
@@ -675,6 +678,7 @@ export async function runCustomAnalysis() {
   timerElement.style.cssText =
     'background: #e3f2fd; border: 1px solid #2196f3; border-radius: 5px; padding: 10px; margin-bottom: 15px; text-align: center; font-family: monospace;';
 
+  purgeCharts(content);
   content.innerHTML = '';
   content.appendChild(timerElement);
 
@@ -1004,6 +1008,16 @@ function processChartRequests(container) {
   // Charts are now processed using direct HTML replacement above
 }
 
+/**
+ * Release the Plotly charts inside `el` before its contents are replaced.
+ * A chart only detached from the page stays alive through the window resize
+ * listener Plotly registers for it.
+ */
+function purgeCharts(el) {
+  if (!el || typeof Plotly === 'undefined') return;
+  el.querySelectorAll('.js-plotly-plot').forEach(chart => Plotly.purge(chart));
+}
+
 // Render chart using Plotly.js (native format)
 function renderChart(chartId, chartSpec) {
   console.log('Attempting to render Plotly chart:', chartId, chartSpec);
@@ -1315,6 +1329,7 @@ export async function viewAnalysis(analysisId) {
 
   // Show modal
   modal.style.display = 'block';
+  purgeCharts(content);
   content.innerHTML =
     '<div style="text-align: center; padding: 20px;">🔄 Loading analysis...</div>';
 
@@ -1330,11 +1345,13 @@ export async function viewAnalysis(analysisId) {
       if (analysis) {
         displayFullAnalysis(analysis);
       } else {
+        purgeCharts(content);
         content.innerHTML =
           '<div style="text-align: center; padding: 20px; color: #d32f2f;">Analysis not found.</div>';
       }
     }
   } catch (error) {
+    purgeCharts(content);
     content.innerHTML = `<div style="text-align: center; padding: 20px; color: #d32f2f;">Error loading analysis: ${error.message}</div>`;
   }
 }
@@ -1417,6 +1434,7 @@ function displayFullAnalysis(analysis) {
         </div>
     `;
 
+  purgeCharts(content);
   content.innerHTML = html;
 
   // Process chart requests FIRST (before MMSI link conversion which would break JSON)
@@ -1758,28 +1776,16 @@ export async function askFollowUpQuestion() {
                 </div>
             `;
 
-      // Append to existing content
-      content.innerHTML += followUpHtml;
+      // Append after what is there, without re-parsing it: `innerHTML +=`
+      // rebuilt the whole area, which replaced every live chart above with a
+      // dead copy and left the original reachable through Plotly's resize
+      // listener.
+      content.insertAdjacentHTML('beforeend', followUpHtml);
+      const followUp = content.lastElementChild;
 
-      // Create a temporary container with just the new follow-up content
-      const tempDiv = document.createElement('div');
-      tempDiv.innerHTML = followUpHtml;
-
-      // Process only the new follow-up content
       // Process chart requests FIRST (before MMSI link conversion which would break JSON)
-      processChartRequests(tempDiv);
-      convertMMSIToLinks(tempDiv);
-
-      // If tempDiv was modified, replace the last follow-up section
-      if (tempDiv.innerHTML !== followUpHtml) {
-        const followUpSections = content.querySelectorAll(
-          'div[style*="border-left: 4px solid #1976d2"]'
-        );
-        if (followUpSections.length > 0) {
-          followUpSections[followUpSections.length - 1].outerHTML =
-            tempDiv.innerHTML;
-        }
-      }
+      processChartRequests(followUp);
+      convertMMSIToLinks(followUp);
 
       // Clear the question input
       questionTextarea.value = '';

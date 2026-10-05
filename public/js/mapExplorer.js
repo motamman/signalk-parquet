@@ -113,6 +113,7 @@ export function initMapExplorer() {
   // Map click handler for drawing
   state.map.on('click', onMapClick);
   state.map.on('mousemove', onMapMouseMove);
+  state.map.on('mouseup', onMapMouseUp);
 
   state.mapInitialized = true;
   state._pathsStale = true;
@@ -354,14 +355,6 @@ function makeHandle(latlng, index) {
     state.map.dragging.disable();
   });
 
-  state.map.on('mouseup', () => {
-    if (state.isDraggingHandle !== null) {
-      state.isDraggingHandle = null;
-      state.map.dragging.enable();
-      if (state.results) executeMapQuery();
-    }
-  });
-
   state.handles.push(h);
   return h;
 }
@@ -402,13 +395,19 @@ function enableAreaDrag() {
     state.map.dragging.disable();
   });
 
-  state.map.on('mouseup', () => {
-    if (state.isDraggingArea) {
-      state.isDraggingArea = false;
-      state.map.dragging.enable();
-      if (state.results) executeMapQuery();
-    }
-  });
+}
+
+/**
+ * The end of a handle or area drag. Registered once, at map creation: the
+ * area is redrawn on every mousemove of a drag, and registering it there
+ * added a listener per redraw that was never removed.
+ */
+function onMapMouseUp() {
+  if (state.isDraggingHandle === null && !state.isDraggingArea) return;
+  state.isDraggingHandle = null;
+  state.isDraggingArea = false;
+  state.map.dragging.enable();
+  if (state.results) executeMapQuery();
 }
 
 function handleAreaDrag(latlng) {
@@ -547,7 +546,7 @@ function contextDisplayName(ctx, vesselNames) {
   return lastDot >= 0 ? ctx.substring(lastDot + 1) : ctx;
 }
 
-async function fetchVesselNames(contexts, from, to) {
+async function fetchVesselNames(contexts, from, to, signal) {
   const names = new Map();
   // Batch in groups of 10 to avoid overwhelming the server
   const ctxList = (Array.isArray(contexts) ? contexts : [])
@@ -555,11 +554,12 @@ async function fetchVesselNames(contexts, from, to) {
     .filter((ctx) => ctx !== 'self' && ctx !== 'vessels.self');
 
   for (let i = 0; i < ctxList.length; i += 10) {
+    if (signal?.aborted) break;
     const batch = ctxList.slice(i, i + 10);
     await Promise.all(batch.map(async (ctx) => {
       try {
         const url = `/signalk/v1/history/values?context=${encodeURIComponent(ctx)}&paths=name&from=${from}&to=${to}&resolution=86400`;
-        const resp = await fetch(url);
+        const resp = await fetch(url, { signal });
         if (!resp.ok) return;
         const data = await resp.json();
         const result = Array.isArray(data) ? data[0] : data;
@@ -649,8 +649,14 @@ export async function lookupContexts() {
     renderContextList('');
     document.getElementById('me-context-select').style.display = 'block';
 
-    // Fetch vessel names in background, then re-render with names
-    fetchVesselNames(state.availableContexts, from, to).then((names) => {
+    // Fetch vessel names in background, then re-render with names. A new
+    // lookup supersedes this one: its requests are aborted, so changing the
+    // time range does not leave sweeps over every vessel running side by side.
+    state.vesselNameLookup?.abort();
+    const lookup = new AbortController();
+    state.vesselNameLookup = lookup;
+    fetchVesselNames(state.availableContexts, from, to, lookup.signal).then((names) => {
+      if (lookup.signal.aborted) return;
       state.vesselNames = names;
       renderContextList(filterEl ? filterEl.value : '');
     }).catch((err) => {
@@ -790,6 +796,9 @@ export async function executeMapQuery() {
     setToolbarStatus('Draw an area on the map first.');
     return;
   }
+  // A route track belongs to the previous results.
+  state._routeCoords = null;
+  state._routeHiResCoords = null;
 
   const paths = getSelectedPaths();
   if (paths.length === 0) {
@@ -1146,6 +1155,13 @@ export function selectPoint(idx) {
 function renderDetailPanel() {
   const panel = document.getElementById('me-detail-content');
   if (!panel) return;
+
+  // Release the previous sparklines before their HTML is replaced: this runs
+  // on every selection, every playback tick included, and a plot only
+  // detached stays alive through its resize listener.
+  panel
+    .querySelectorAll('.js-plotly-plot')
+    .forEach((el) => Plotly.purge(el));
 
   if (state.selectedIndex < 0) {
     panel.innerHTML = '<p>Click a point to see details.</p>';
@@ -1699,6 +1715,10 @@ export async function toggleRouteHiRes() {
 
 export function closeRouteModal() {
   document.getElementById('me-route-modal').style.display = 'none';
+  // The high-resolution track can be tens of MB; it is fetched again if the
+  // modal is reopened.
+  state._routeCoords = null;
+  state._routeHiResCoords = null;
   const nameInput = document.getElementById('me-route-name');
   if (nameInput) { nameInput.value = ''; nameInput.style.border = ''; }
 }

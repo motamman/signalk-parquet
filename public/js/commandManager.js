@@ -954,7 +954,9 @@ function initializeBoundingBoxUI(valueContainerId) {
     { id: 'se', label: '↘️ SE', row: 2, col: 2, desc: 'Southeast Corner' },
   ];
 
-  // Create anchor buttons
+  // Create anchor buttons, replacing any a previous call made: appending
+  // again piled up duplicate buttons with duplicate ids.
+  anchorGrid.replaceChildren();
   anchors.forEach(anchor => {
     const button = document.createElement('button');
     button.type = 'button';
@@ -1005,9 +1007,9 @@ function initializeBoundingBoxUI(valueContainerId) {
 
   // Update visualization when box size changes
   if (boxSizeInput) {
-    boxSizeInput.addEventListener('input', () => {
+    boxSizeInput.oninput = () => {
       updateBoundingBoxVisualization(valueContainerId);
-    });
+    };
   }
 }
 
@@ -1567,7 +1569,7 @@ async function populateThresholdPaths() {
 
     // Setup search
     if (searchInput) {
-      searchInput.addEventListener('input', e => {
+      searchInput.oninput = e => {
         const searchTerm = e.target.value;
         let html = '';
         Object.keys(tree)
@@ -1588,7 +1590,7 @@ async function populateThresholdPaths() {
             if (el.textContent) el.textContent = '▼';
           });
         }
-      });
+      };
     }
   } catch (error) {
     console.log(
@@ -1602,11 +1604,11 @@ async function populateThresholdPaths() {
   // Handle path selection for type detection
   const hiddenInput = document.getElementById('newThresholdPath');
   if (hiddenInput) {
-    hiddenInput.addEventListener('change', async function () {
+    hiddenInput.onchange = async function () {
       if (this.value) {
         await applyPathMetadata('newThresholdOperator', 'newThresholdValueGroup', this.value);
       }
-    });
+    };
   }
 
   // Handle custom path input
@@ -2444,7 +2446,7 @@ async function populateThresholdModalPaths() {
 
     // Setup search
     if (searchInput) {
-      searchInput.addEventListener('input', e => {
+      searchInput.oninput = e => {
         const searchTerm = e.target.value;
         let html = '';
         Object.keys(tree)
@@ -2465,7 +2467,7 @@ async function populateThresholdModalPaths() {
             if (el.textContent) el.textContent = '▼';
           });
         }
-      });
+      };
     }
   } catch (error) {
     console.log('Could not load real-time SignalK paths:', error);
@@ -2476,11 +2478,11 @@ async function populateThresholdModalPaths() {
   // Handle path selection for type detection
   const hiddenInput = document.getElementById('thresholdPath');
   if (hiddenInput) {
-    hiddenInput.addEventListener('change', async function () {
+    hiddenInput.onchange = async function () {
       if (this.value) {
         await applyPathMetadata('thresholdOperator', 'thresholdValueGroup', this.value);
       }
-    });
+    };
   }
 
   // Handle custom path input
@@ -2566,7 +2568,7 @@ async function populateAddCmdThresholdPaths() {
 
     // Setup search
     if (searchInput) {
-      searchInput.addEventListener('input', e => {
+      searchInput.oninput = e => {
         const searchTerm = e.target.value;
         let html = '';
         Object.keys(tree)
@@ -2587,7 +2589,7 @@ async function populateAddCmdThresholdPaths() {
             if (el.textContent) el.textContent = '▼';
           });
         }
-      });
+      };
     }
   } catch (error) {
     console.log(
@@ -2601,11 +2603,11 @@ async function populateAddCmdThresholdPaths() {
   // Handle path selection for type detection
   const hiddenInput = document.getElementById('addCmdThresholdPath');
   if (hiddenInput) {
-    hiddenInput.addEventListener('change', async function () {
+    hiddenInput.onchange = async function () {
       if (this.value) {
         await applyPathMetadata('addCmdThresholdOperator', 'addCmdThresholdValueGroup', this.value);
       }
-    });
+    };
   }
 
   // Handle custom path input
