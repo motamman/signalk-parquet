@@ -55,7 +55,9 @@ let state = {
   availableContexts: [],
   vesselNames: new Map(),
   // Results
-  results: null,
+  // Whether the last query returned. Its raw response is not kept: the
+  // points built from it (dataPoints) are all the page reads afterwards.
+  hasResults: false,
   trackLayer: null,
   markerLayers: [],
   dataPoints: [],
@@ -407,7 +409,7 @@ function onMapMouseUp() {
   state.isDraggingHandle = null;
   state.isDraggingArea = false;
   state.map.dragging.enable();
-  if (state.results) executeMapQuery();
+  if (state.hasResults) executeMapQuery();
 }
 
 function handleAreaDrag(latlng) {
@@ -838,11 +840,11 @@ export async function executeMapQuery() {
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     const data = await resp.json();
 
-    state.results = Array.isArray(data) ? data : [data];
+    state.hasResults = true;
     state.mode = STATES.RESULTS;
     state.selectedIndex = -1;
 
-    processResults();
+    processResults(Array.isArray(data) ? data : [data]);
     const pathNames = getUniquePathNames();
     await fetchPathMeta(pathNames);
     renderMapResults();
@@ -867,16 +869,16 @@ export async function executeMapQuery() {
   }
 }
 
-function processResults() {
+function processResults(results) {
   state.dataPoints = [];
 
-  if (!state.results || state.results.length === 0) return;
+  if (!results || results.length === 0) return;
 
   // Find position result and value results
   let posResult = null;
   const valueResults = [];
 
-  state.results.forEach((r) => {
+  results.forEach((r) => {
     if (!r || !r.values) return;
     r.values.forEach((v, vi) => {
       if (v.path === 'navigation.position') {
@@ -1384,7 +1386,7 @@ function legendToggle(index) {
 
 function renderSummary() {
   const container = document.getElementById('me-summary');
-  if (!container || !state.results) return;
+  if (!container || !state.hasResults) return;
 
   const pathNames = getUniquePathNames();
   const ctx = state.context === 'self' ? 'Self' : state.context;
