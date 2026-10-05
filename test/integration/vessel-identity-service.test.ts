@@ -14,6 +14,8 @@ import { SQLiteBuffer } from '../../src/utils/sqlite-buffer';
 import { DuckDBPool } from '../../src/utils/duckdb-pool';
 import { HistoryProvider } from '../../src/history-provider';
 import { VesselIdentityService } from '../../src/services/vessel-identity-service';
+import { ParquetExportService } from '../../src/services/parquet-export-service';
+import { ParquetWriter } from '../../src/parquet-writer';
 import { createFakeSignalK, FakeSignalK } from './helpers/fake-signalk';
 import type { PluginState } from '../../src/types';
 import type { ValuesRequest } from '@signalk/server-api/dist/history';
@@ -457,6 +459,123 @@ describe('vessel identity capture', function () {
       );
       service.start();
       expect(rows(buffer, SELF)).to.have.lengthOf(1);
+    });
+  });
+
+  describe('a bounded memory that never writes an identity twice (#137)', () => {
+    const A = 'vessels.urn:mrn:imo:mmsi:111111111';
+    const B = 'vessels.urn:mrn:imo:mmsi:222222222';
+    const C = 'vessels.urn:mrn:imo:mmsi:333333333';
+    const stateFile = () => path.join(host.dataDir, 'identity-state.json');
+    const remembered = async () =>
+      Object.keys((await fs.readJson(stateFile())).lastWritten);
+
+    /** A service that remembers two vessels, on the given buffer. */
+    function small(buf: SQLiteBuffer): VesselIdentityService {
+      const s = new VesselIdentityService(
+        host.app,
+        { sqliteBuffer: buf } as unknown as PluginState,
+        host.dataDir,
+        () => {},
+        { maxRemembered: 2 }
+      );
+      s.start();
+      return s;
+    }
+
+    beforeEach(async () => {
+      await service.stop();
+    });
+
+    it('remembers at most the limit, the most recently written', async () => {
+      service = small(buffer);
+      for (const [ctx, name] of [[A, 'Alpha'], [B, 'Bravo'], [C, 'Charlie']]) {
+        await emit(host, ctx, [{ path: '', value: { name } }]);
+      }
+      await service.stop();
+      expect(await remembered()).to.deep.equal([B, C]);
+    });
+
+    it('does not write a vessel it no longer remembers again, from the buffer', async () => {
+      service = small(buffer);
+      await emit(host, A, [{ path: '', value: { name: 'Alpha' } }]);
+      await emit(host, B, [{ path: '', value: { name: 'Bravo' } }]);
+      await emit(host, C, [{ path: '', value: { name: 'Charlie' } }]);
+      // A is no longer remembered; heard again unchanged, nothing is written.
+      await emit(host, A, [{ path: '', value: { name: 'Alpha' } }], '2024-06-02T10:00:00.000Z');
+      expect(rows(buffer, A)).to.have.lengthOf(1);
+      // A real change is still written.
+      await emit(host, A, [{ path: '', value: { name: 'Alpha II' } }], '2024-06-03T10:00:00.000Z');
+      expect(rows(buffer, A).map(r => r.value_name)).to.deep.equal(['Alpha', 'Alpha II']);
+    });
+
+    describe('when the identity is only in parquet', () => {
+      let fresh: SQLiteBuffer;
+
+      beforeEach(async () => {
+        await DuckDBPool.initialize();
+        // A, then B and C, so A is not remembered; all exported to parquet.
+        service = small(buffer);
+        await emit(host, A, [
+          { path: '', value: { name: 'Alpha', mmsi: '111111111' } },
+          { path: 'design.beam', value: 4.2 },
+        ]);
+        await emit(host, B, [{ path: '', value: { name: 'Bravo' } }]);
+        await emit(host, C, [{ path: '', value: { name: 'Charlie' } }]);
+        await service.stop();
+        await new ParquetExportService(
+          buffer,
+          new ParquetWriter({ format: 'parquet', app: host.app }),
+          {
+            outputDirectory: host.dataDir,
+            filenamePrefix: 'signalk_data',
+            useHivePartitioning: true,
+            dailyExportHour: 4,
+          },
+          host.app
+        ).exportDayToParquet(new Date());
+        // A buffer past its retention: nothing of A left in it.
+        fresh = new SQLiteBuffer({
+          dbPath: path.join(host.dataDir, 'later', 'buffer.db'),
+        });
+        service = small(fresh);
+      });
+
+      afterEach(async () => {
+        await service.stop();
+        if (fresh.isOpen()) fresh.close();
+        await DuckDBPool.shutdown();
+      });
+
+      it('does not write it again when heard unchanged', async () => {
+        await emit(host, A, [
+          { path: '', value: { name: 'Alpha', mmsi: '111111111' } },
+          { path: 'design.beam', value: 4.2 },
+        ], '2024-06-02T10:00:00.000Z');
+        await service.stop();
+        expect(rows(fresh, A)).to.have.lengthOf(0);
+      });
+
+      it('writes it, whole, when it has changed', async () => {
+        await emit(host, A, [{ path: 'design.beam', value: 4.5 }], '2024-06-02T10:00:00.000Z');
+        await service.stop();
+        const got = rows(fresh, A);
+        expect(got).to.have.lengthOf(1);
+        expect(got[0].value_name).to.equal('Alpha');
+        expect(got[0].value_mmsi).to.equal('111111111');
+        expect(got[0].value_beam).to.equal(4.5);
+      });
+    });
+
+    it('cuts a state file saved before the limit, keeping the newest', async () => {
+      const lastWritten: Record<string, string> = {};
+      for (const [ctx, name] of [[A, 'Alpha'], [B, 'Bravo'], [C, 'Charlie']]) {
+        lastWritten[ctx] = JSON.stringify({ name });
+      }
+      await fs.writeJson(stateFile(), { lastWritten });
+      service = small(buffer);
+      await service.stop();
+      expect(await remembered()).to.deep.equal([B, C]);
     });
   });
 

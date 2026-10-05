@@ -747,7 +747,8 @@ export interface PluginState {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   autoDiscoveryService?: any; // AutoDiscoveryService - avoiding circular import
   // Vessel identity capture (typed loosely to avoid a circular import)
-  identityService?: { stop(): void };
+  // stop() resolves once a stored-identity lookup in flight has finished.
+  identityService?: { stop(): void | Promise<void> };
   // History API (V1 routes). Registered once and reused across reconfigure so
   // the express routes are never left bound to a closed SQLite buffer.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any

@@ -39,6 +39,7 @@ import { filesFor, readParquetSql } from './utils/parquet-files';
 import { readFooters } from './utils/parquet-footer';
 import { getAvailableContextsForTimeRange } from './utils/context-discovery';
 import { IDENTITY_PATH, IdentityComponents } from './utils/vessel-identity';
+import { latestStoredIdentity } from './utils/stored-identity';
 import {
   PlaybackRow,
   PlaybackDelta,
@@ -171,8 +172,6 @@ interface Chunk {
 }
 
 type DeltaSink = (delta: PlaybackDelta) => void;
-
-type Connection = Awaited<ReturnType<typeof DuckDBPool.getConnection>>;
 
 /**
  * Rebuild an object value from its flattened `value_<component>` columns.
@@ -560,71 +559,12 @@ export class PlaybackProvider {
       if (parsed && typeof parsed === 'object')
         return parsed as IdentityComponents;
     }
-    // The identity files of this vessel up to `atIso`: identity is written
-    // only when it changes, so this is a handful of files, and the footers
-    // drop the ones that start after the instant asked about.
-    let candidates: Awaited<ReturnType<typeof readFooters>>;
     try {
-      const files = await filesFor({
-        dataDir: this.dataDir,
-        contexts: [context],
-        paths: [IDENTITY_PATH],
-        fromIso: '1970-01-01T00:00:00.000Z',
-        toIso: new Date(Date.parse(atIso) + 1).toISOString(),
-      });
-      if (files.length === 0) return undefined;
-      candidates = (await readFooters(files)).filter(
-        f =>
-          f.timestampSpans === null ||
-          f.timestampSpans.some(([lo]) => lo <= atIso)
-      );
-    } catch (err) {
-      this.debug(`[Playback] identity files unreadable for ${context}: ${err}`);
-      return undefined;
-    }
-    if (candidates.length === 0) return undefined;
-    let connection: Connection;
-    try {
-      connection = await DuckDBPool.getConnection();
-    } catch {
-      return undefined;
-    }
-    // An identity file holds the object as `value_json` text, as its
-    // flattened `value_*` components, or both, depending on what wrote it;
-    // read whichever the files have, as readFiles does for every object path.
-    const components = [
-      ...new Set(
-        candidates.flatMap(f =>
-          [...f.columns.keys()]
-            .filter(c => c.startsWith('value_') && c !== 'value_json')
-            .map(c => c.slice('value_'.length))
-        )
-      ),
-    ].sort();
-    const valueJson = candidates.some(f => f.columns.has('value_json'))
-      ? 'value_json AS v'
-      : 'NULL AS v';
-    try {
-      const result = await connection.runAndReadAll(
-        `SELECT ${[valueJson, ...components.map(c => `"value_${c}"`)].join(', ')}
-         FROM ${readParquetSql(candidates.map(f => f.file))}
-         WHERE context = '${escapeSqlString(context)}'
-           AND signalk_timestamp <= '${escapeSqlString(atIso)}'
-         ORDER BY signalk_timestamp DESC LIMIT 1`
-      );
-      const rows = result.getRowObjects() as Array<Record<string, unknown>>;
-      const parsed = rows.length
-        ? (decodeJson(rows[0].v == null ? null : String(rows[0].v)) ??
-          objectFromComponents(rows[0], components))
-        : null;
-      return parsed && typeof parsed === 'object'
-        ? (parsed as IdentityComponents)
-        : undefined;
+      const stored = await latestStoredIdentity(this.dataDir, context, atIso);
+      return stored as IdentityComponents | undefined;
     } catch (err) {
       this.debug(`[Playback] identity lookup failed for ${context}: ${err}`);
       return undefined;
-    } finally {
-      connection.disconnectSync();
     }
   }
 }

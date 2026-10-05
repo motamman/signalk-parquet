@@ -1212,7 +1212,7 @@ export default function (app: ServerAPI): SignalKPlugin {
     // Stop identity capture before the buffer closes; it persists its state.
     if (state.identityService) {
       try {
-        state.identityService.stop();
+        await state.identityService.stop();
       } catch (error) {
         app.error(`Error stopping identity capture: ${error}`);
       }
