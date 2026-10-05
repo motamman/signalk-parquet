@@ -755,6 +755,9 @@ export interface PluginState {
   // The forked process that answers Track API calls; stop() closes it. Set as
   // soon as it is forked, so a stop during its startup still reaches it.
   trackWorker?: import('./utils/track-worker-client').TrackWorkerClient;
+  // The registered v1 playback provider, kept so stop() can end the sessions
+  // it is still streaming.
+  playbackProvider?: import('./playback-provider').PlaybackProvider;
 }
 
 // Parquet Writer Class Interface

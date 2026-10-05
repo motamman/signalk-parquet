@@ -71,9 +71,15 @@ export interface PlaybackOptions {
   subscribe?: string;
 }
 
-/** The slice of the server's connection object the provider reads. */
+/** Primus `Spark.CLOSED`: the client has gone and writes are dropped. */
+const SPARK_CLOSED = 2;
+
+/** The slice of the server's connection object (a Primus spark) used here. */
 interface PlaybackSpark {
   query?: Record<string, unknown>;
+  readyState?: number;
+  once?(event: 'end', listener: () => void): unknown;
+  removeListener?(event: 'end', listener: () => void): unknown;
 }
 
 /**
@@ -217,6 +223,8 @@ function startOfNextDay(d: Date): Date {
 export class PlaybackProvider {
   private readonly hive = new HivePathBuilder();
   private readonly selfContext: string;
+  /** Sessions still running, by the promise that settles when each ends. */
+  private readonly sessions = new Map<Promise<void>, PlaybackSession>();
 
   constructor(
     private readonly app: Pick<ServerAPI, 'selfId' | 'selfContext'>,
@@ -289,14 +297,25 @@ export class PlaybackProvider {
 
   /**
    * Start replaying. Returns the function the server calls on disconnect.
+   *
+   * The server cannot be relied on to call it. It asks hasAnyData first and
+   * calls this from the answer, and a client that disconnects while that
+   * answer is being worked out (seconds, with many vessels) has already had
+   * its disconnect handled: the stop function returned here lands in a list
+   * nothing reads again. So a spark that is already closed gets no session,
+   * and every session also stops on its spark's own 'end' (#141).
    */
   streamHistory(
     spark: unknown,
     options: PlaybackOptions,
     onChange: DeltaSink
   ): () => void {
-    const query = (spark as PlaybackSpark | null | undefined)?.query;
-    const named = parseContextParam(query?.context, this.selfContext);
+    const client = spark as PlaybackSpark | null | undefined;
+    if (client?.readyState === SPARK_CLOSED) {
+      this.debug('[Playback] client left before playback began');
+      return () => {};
+    }
+    const named = parseContextParam(client?.query?.context, this.selfContext);
     const session = new PlaybackSession(
       this,
       this.dataDir,
@@ -306,10 +325,28 @@ export class PlaybackProvider {
       onChange,
       this.debug
     );
-    session.run().catch(err => {
-      this.debug(`[Playback] stream ended with error: ${err}`);
-    });
-    return () => session.stop();
+    const stop = () => session.stop();
+    client?.once?.('end', stop);
+    const running = session
+      .run()
+      .catch(err => {
+        this.debug(`[Playback] stream ended with error: ${err}`);
+      })
+      .finally(() => {
+        this.sessions.delete(running);
+        client?.removeListener?.('end', stop);
+      });
+    this.sessions.set(running, session);
+    return stop;
+  }
+
+  /**
+   * Stop every session and wait for each to finish. Called from plugin stop,
+   * before the buffer and DuckDB they read from are closed.
+   */
+  async stopAll(): Promise<void> {
+    for (const session of this.sessions.values()) session.stop();
+    await Promise.all(this.sessions.keys());
   }
 
   // ---- storage access used by sessions ------------------------------------
@@ -526,7 +563,7 @@ export class PlaybackProvider {
     // The identity files of this vessel up to `atIso`: identity is written
     // only when it changes, so this is a handful of files, and the footers
     // drop the ones that start after the instant asked about.
-    let candidates: string[];
+    let candidates: Awaited<ReturnType<typeof readFooters>>;
     try {
       const files = await filesFor({
         dataDir: this.dataDir,
@@ -536,13 +573,11 @@ export class PlaybackProvider {
         toIso: new Date(Date.parse(atIso) + 1).toISOString(),
       });
       if (files.length === 0) return undefined;
-      candidates = (await readFooters(files))
-        .filter(
-          f =>
-            f.timestampSpans === null ||
-            f.timestampSpans.some(([lo]) => lo <= atIso)
-        )
-        .map(f => f.file);
+      candidates = (await readFooters(files)).filter(
+        f =>
+          f.timestampSpans === null ||
+          f.timestampSpans.some(([lo]) => lo <= atIso)
+      );
     } catch (err) {
       this.debug(`[Playback] identity files unreadable for ${context}: ${err}`);
       return undefined;
@@ -554,16 +589,33 @@ export class PlaybackProvider {
     } catch {
       return undefined;
     }
+    // An identity file holds the object as `value_json` text, as its
+    // flattened `value_*` components, or both, depending on what wrote it;
+    // read whichever the files have, as readFiles does for every object path.
+    const components = [
+      ...new Set(
+        candidates.flatMap(f =>
+          [...f.columns.keys()]
+            .filter(c => c.startsWith('value_') && c !== 'value_json')
+            .map(c => c.slice('value_'.length))
+        )
+      ),
+    ].sort();
+    const valueJson = candidates.some(f => f.columns.has('value_json'))
+      ? 'value_json AS v'
+      : 'NULL AS v';
     try {
       const result = await connection.runAndReadAll(
-        `SELECT value_json FROM ${readParquetSql(candidates)}
+        `SELECT ${[valueJson, ...components.map(c => `"value_${c}"`)].join(', ')}
+         FROM ${readParquetSql(candidates.map(f => f.file))}
          WHERE context = '${escapeSqlString(context)}'
            AND signalk_timestamp <= '${escapeSqlString(atIso)}'
          ORDER BY signalk_timestamp DESC LIMIT 1`
       );
-      const rows = result.getRowObjects() as Array<{ value_json: unknown }>;
+      const rows = result.getRowObjects() as Array<Record<string, unknown>>;
       const parsed = rows.length
-        ? decodeJson(String(rows[0].value_json))
+        ? (decodeJson(rows[0].v == null ? null : String(rows[0].v)) ??
+          objectFromComponents(rows[0], components))
         : null;
       return parsed && typeof parsed === 'object'
         ? (parsed as IdentityComponents)

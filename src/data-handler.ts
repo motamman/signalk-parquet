@@ -384,6 +384,11 @@ export function updateDataSubscriptions(
   config: PluginConfig,
   app: ServerAPI
 ): void {
+  // HTTP routes outlive stop() (auto-discovery from a history request, a
+  // path config edit) and would otherwise subscribe a stopped plugin to the
+  // server again, writing into a closed buffer.
+  if (state.isStopping) return;
+
   // First, unsubscribe from all existing subscriptions
   state.unsubscribes.forEach(unsubscribe => {
     if (typeof unsubscribe === 'function') {

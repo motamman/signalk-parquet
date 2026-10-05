@@ -6,6 +6,7 @@
  * playback rate, jumping over silence, and stopping when told.
  */
 import { expect } from 'chai';
+import { EventEmitter } from 'events';
 import * as path from 'path';
 import { SQLiteBuffer } from '../../src/utils/sqlite-buffer';
 import { ParquetWriter } from '../../src/parquet-writer';
@@ -16,6 +17,8 @@ import { PlaybackProvider, parseContextParam } from '../../src/playback-provider
 import type { PlaybackDelta } from '../../src/utils/playback-deltas';
 import { createFakeSignalK, FakeSignalK } from './helpers/fake-signalk';
 import type { DataRecord } from '../../src/types';
+import { filesFor } from '../../src/utils/parquet-files';
+import { readFooters } from '../../src/utils/parquet-footer';
 
 const SELF_ID = 'playbackself';
 const SELF = `vessels.${SELF_ID}`;
@@ -375,6 +378,128 @@ describe('v1 history playback provider', function () {
     expect(rows.length).to.be.at.most(4);
     const all = buffer.getRowsForPlayback(t, '2024-06-01T13:00:00.000Z', null, 1000);
     expect(all.length).to.equal(15);
+  });
+
+  it('announces an identity stored only as components, with no value_json', async () => {
+    const VESSEL = 'vessels.urn:mrn:imo:mmsi:235000001';
+    const NEXT_DAY = new Date('2024-06-02T00:00:00.000Z');
+    // As brain's identity files are: the fields as value_* columns only.
+    buffer.insert({
+      received_timestamp: '2024-06-02T09:00:00.000Z',
+      signalk_timestamp: '2024-06-02T09:00:00.000Z',
+      context: VESSEL,
+      path: 'identity',
+      value: null,
+      value_name: 'Solent',
+      value_mmsi: '235000001',
+      source_label: 'ais.1',
+    } as DataRecord);
+    buffer.insert(sog(VESSEL, '2024-06-02T10:00:00.000Z', 4, 'ais.1'));
+    const exporter = new ParquetExportService(
+      buffer,
+      new ParquetWriter({ format: 'parquet', app: host.app }),
+      {
+        outputDirectory: host.dataDir,
+        filenamePrefix: 'signalk_data',
+        useHivePartitioning: true,
+        dailyExportHour: 4,
+      },
+      host.app
+    );
+    await exporter.exportDayToParquet(NEXT_DAY);
+    const identityFiles = await filesFor({
+      dataDir: host.dataDir,
+      contexts: [VESSEL],
+      paths: ['identity'],
+    });
+    expect(identityFiles).to.have.lengthOf(1);
+    const [footer] = await readFooters(identityFiles);
+    expect(footer.columns.has('value_json'), 'precondition').to.equal(false);
+
+    // No buffer, so the identity can only come from that file.
+    const fromParquet = new PlaybackProvider(
+      { selfId: SELF_ID, selfContext: SELF },
+      host.dataDir,
+      undefined,
+      () => {}
+    );
+    const { deltas, stop } = await collect(
+      fromParquet,
+      { startTime: new Date('2024-06-02T10:00:00Z'), playbackRate: 1000, subscribe: 'all' },
+      2,
+      15000,
+      { context: '235000001' }
+    );
+    stops.push(stop);
+    stop();
+    expect(deltas[0].context).to.equal(VESSEL);
+    // The writer types a column of numeric-looking text as DOUBLE, so the
+    // mmsi comes back a number; brain's identity files are all typed so.
+    expect(deltas[0].updates[0].values[0]).to.deep.equal({
+      path: '',
+      value: { name: 'Solent', mmsi: 235000001 },
+    });
+    expect(deltas[1].updates[0].values[0]).to.deep.equal({ path: SOG, value: 4 });
+  });
+
+  describe('sessions the server cannot stop (#141)', () => {
+    /** A Primus spark as far as playback sees one: 3 is open, 2 closed. */
+    const spark = (readyState: number) =>
+      Object.assign(new EventEmitter(), { readyState, query: {} });
+    const logged = (): { provider: PlaybackProvider; logs: string[] } => {
+      const logs: string[] = [];
+      return {
+        logs,
+        provider: new PlaybackProvider(
+          { selfId: SELF_ID, selfContext: SELF },
+          host.dataDir,
+          buffer,
+          msg => logs.push(msg)
+        ),
+      };
+    };
+    const opts = {
+      startTime: new Date('2024-06-01T10:00:00Z'),
+      playbackRate: 1,
+      subscribe: 'self',
+    };
+
+    it('starts no session for a client that left before playback began', async () => {
+      const { provider: p, logs } = logged();
+      const seen: PlaybackDelta[] = [];
+      p.streamHistory(spark(2), opts, d => seen.push(d));
+      await new Promise(r => setTimeout(r, 1000));
+      expect(seen).to.have.lengthOf(0);
+      expect(logs).to.include('[Playback] client left before playback began');
+      expect(logs.some(l => l.startsWith('[Playback] start '))).to.equal(false);
+    });
+
+    it('stops when its client disconnects, with no call from the server', async () => {
+      const { provider: p, logs } = logged();
+      const client = spark(3);
+      const seen: PlaybackDelta[] = [];
+      // The returned stop function is dropped, as the server drops it when
+      // the disconnect was handled before streamHistory was called.
+      p.streamHistory(client, opts, d => seen.push(d));
+      while (seen.length === 0) await new Promise(r => setTimeout(r, 20));
+      client.emit('end');
+      await new Promise(r => setTimeout(r, 100));
+      const count = seen.length;
+      await new Promise(r => setTimeout(r, 1500));
+      expect(seen).to.have.lengthOf(count);
+      expect(logs).to.include('[Playback] stopped');
+    });
+
+    it('stopAll ends every session and waits for each', async () => {
+      const { provider: p, logs } = logged();
+      for (let i = 0; i < 3; i++) p.streamHistory(spark(3), opts, () => {});
+      await new Promise(r => setTimeout(r, 200));
+      await p.stopAll();
+      expect(logs.filter(l => l === '[Playback] stopped')).to.have.lengthOf(3);
+      // Nothing left to stop.
+      await p.stopAll();
+      expect(logs.filter(l => l === '[Playback] stopped')).to.have.lengthOf(3);
+    });
   });
 
   it('emits nothing after stop', async () => {
