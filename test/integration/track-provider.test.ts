@@ -175,24 +175,188 @@ describe('Track API provider', function () {
   });
 
   it('selects whole tracks by bounding box and drops contexts with nothing inside it', async () => {
-    // Settled on SignalK/signalk-server#2995: the box picks which tracks are
-    // returned, it does not clip them. A box around the first leg alone still
+    // Not clipped (no `clip`, as a server without #3081 sends, or
+    // `clip: false`), the box picks which tracks are returned, as settled on
+    // SignalK/signalk-server#2995. A box around the first leg alone still
     // yields both legs, approach and departure included.
-    const around = await provider.getTracks({
-      ...WHOLE_DAY,
-      bbox: [9.39, 47.49, 9.41, 47.51],
-    });
-    expect(around.features).to.have.lengthOf(1);
-    expect(
-      around.features[0].geometry!.coordinates.map(s => s.length)
-    ).to.deep.equal([5, 3]);
-    expect(around.features[0].properties.pointCount).to.equal(8);
+    for (const clip of [undefined, false]) {
+      const around = await provider.getTracks({
+        ...WHOLE_DAY,
+        bbox: [9.39, 47.49, 9.41, 47.51],
+        clip,
+      });
+      expect(around.features).to.have.lengthOf(1);
+      expect(
+        around.features[0].geometry!.coordinates.map(s => s.length)
+      ).to.deep.equal([5, 3]);
+      expect(around.features[0].properties.pointCount).to.equal(8);
+    }
 
     const elsewhere = await provider.getTracks({
       ...WHOLE_DAY,
       bbox: [1, 1, 2, 2],
     });
     expect(elsewhere.features).to.deep.equal([]);
+  });
+
+  describe('clipped to the bounding box (SignalK/signalk-server#3081)', () => {
+    /** Fixes a minute apart from 10:00 on 2024-06-03, buffer only. */
+    const recordFixes = (context: Context, lonLats: Array<[number, number]>) => {
+      lonLats.forEach(([lon, lat], i) => {
+        const iso = new Date(
+          Date.parse('2024-06-03T10:00:00.000Z') + i * 60_000
+        ).toISOString();
+        buffer.insert(makePositionRecord(context, lat, lon, iso));
+      });
+    };
+    const JUNE_3: TracksRequest = {
+      from: '2024-06-03T00:00:00Z',
+      to: '2024-06-04T00:00:00Z',
+    };
+    const OTHER = 'vessels.urn:mrn:imo:mmsi:244000001' as Context;
+    const coordinates = async (query: TracksRequest) =>
+      (await provider.getTracks(query)).features[0].geometry!.coordinates;
+
+    it('returns the stretch inside, with the fix just outside at either end', async () => {
+      // The first leg's middle fixes, 9.401 and 9.402, are inside; 9.400
+      // before them and 9.403 after them are the crossings. The second leg
+      // never enters the box.
+      const res = await provider.getTracks({
+        ...WHOLE_DAY,
+        bbox: [9.4005, 47.49, 9.4025, 47.51],
+        clip: true,
+        times: true,
+      });
+      expect(res.features).to.have.lengthOf(1);
+      const feature = res.features[0];
+      // The fixture's own longitudes, as it computes them.
+      const leg1 = (i: number) => [LEG1.lon + i * 0.001, LEG1.lat];
+      expect(feature.geometry!.coordinates).to.deep.equal([
+        [leg1(0), leg1(1), leg1(2), leg1(3)],
+      ]);
+      expect(feature.properties.pointCount).to.equal(4);
+      expect(feature.properties.coordTimes).to.deep.equal([
+        [
+          '2024-06-01T10:00:00.000Z',
+          '2024-06-01T10:01:00.000Z',
+          '2024-06-01T10:02:00.000Z',
+          '2024-06-01T10:03:00.000Z',
+        ],
+      ]);
+    });
+
+    it('starts a new segment each time the track re-enters the box', async () => {
+      recordFixes(OTHER, [
+        [0.0, 0], // entry
+        [0.1, 0], // inside
+        [0.2, 0], // inside
+        [0.3, 0], // exit
+        [0.4, 0], // outside, dropped
+        [0.3, 0], // entry
+        [0.15, 0], // inside
+        [0.35, 0], // exit
+      ]);
+      expect(
+        await coordinates({
+          ...JUNE_3,
+          contexts: [OTHER],
+          bbox: [0.05, -1, 0.25, 1],
+          clip: true,
+        })
+      ).to.deep.equal([
+        [
+          [0.0, 0],
+          [0.1, 0],
+          [0.2, 0],
+          [0.3, 0],
+        ],
+        [
+          [0.3, 0],
+          [0.15, 0],
+          [0.35, 0],
+        ],
+      ]);
+    });
+
+    it('puts a single fix outside between two visits in both segments', async () => {
+      recordFixes(OTHER, [
+        [0.1, 0], // inside, first in the window
+        [0.3, 0], // closes the first visit and opens the second
+        [0.2, 0], // inside
+      ]);
+      expect(
+        await coordinates({
+          ...JUNE_3,
+          contexts: [OTHER],
+          bbox: [0.05, -1, 0.25, 1],
+          clip: true,
+        })
+      ).to.deep.equal([
+        [
+          [0.1, 0],
+          [0.3, 0],
+        ],
+        [
+          [0.3, 0],
+          [0.2, 0],
+        ],
+      ]);
+    });
+
+    it('clips a box across the antimeridian the same way', async () => {
+      recordFixes(OTHER, [
+        [179.0, 0], // entry
+        [179.9, 0], // inside
+        [-179.9, 0], // inside
+        [-179.5, 0], // exit
+      ]);
+      expect(
+        await coordinates({
+          ...JUNE_3,
+          contexts: [OTHER],
+          bbox: [179.5, -1, -179.7, 1],
+          clip: true,
+        })
+      ).to.deep.equal([
+        [
+          [179.0, 0],
+          [179.9, 0],
+          [-179.9, 0],
+          [-179.5, 0],
+        ],
+      ]);
+    });
+
+    it('spends maxPoints on the clipped part', async () => {
+      // Clipped, the track spans three minutes, so four points are 90 s
+      // buckets once the two crossing fixes are set aside; over the whole
+      // day they would be six-hour buckets.
+      const res = await provider.getTracks({
+        ...WHOLE_DAY,
+        bbox: [9.4005, 47.49, 9.4025, 47.51],
+        clip: true,
+        maxPoints: 4,
+      });
+      const props = res.features[0].properties;
+      expect(props.resolution).to.equal('PT90S');
+      expect(props.pointCount).to.be.at.most(4);
+      const segment = res.features[0].geometry!.coordinates[0];
+      expect(segment[0]).to.deep.equal([LEG1.lon, LEG1.lat]);
+      expect(segment[segment.length - 1]).to.deep.equal([
+        LEG1.lon + 3 * 0.001,
+        LEG1.lat,
+      ]);
+    });
+
+    it('returns nothing for a track that never enters the box', async () => {
+      const res = await provider.getTracks({
+        ...WHOLE_DAY,
+        contexts: [STORED_CONTEXT],
+        bbox: [1, 1, 2, 2],
+        clip: true,
+      });
+      expect(res.features).to.deep.equal([]);
+    });
   });
 
   it('returns metadata only when geometry is false', async () => {
