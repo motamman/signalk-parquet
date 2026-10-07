@@ -50,6 +50,8 @@ describe('toWireRequest', () => {
   it('passes everything else through unchanged', () => {
     const query = {
       bbox: [1, 2, 3, 4] as [number, number, number, number],
+      // So a clipped request is clipped in the worker as well.
+      clip: true,
       maxPoints: 10,
       simplify: true,
       properties: ['navigation.speedOverGround'],
