@@ -104,18 +104,24 @@ describe('track-geometry', () => {
     });
 
     it('keeps the crossing points while they fit and spreads the rest', () => {
-      // Four crossing points and room for one more, taken from the start of
-      // the evenly spaced others.
+      // Four crossing points and room for one more: with room for one, the
+      // first of the others.
       expect(names(capPoints([pts('AbcD'), pts('EfG')], 5))).to.deep.equal([
         'AbD',
         'EG',
       ]);
-      // Room for two of the three others (b, c, f): picks 0 and 1 of the
-      // even spread, b and c.
+      // Room for two of the three others (b, c, f): the first and the last.
       expect(names(capPoints([pts('AbcD'), pts('EfG')], 6))).to.deep.equal([
-        'AbcD',
-        'EG',
+        'AbD',
+        'EfG',
       ]);
+    });
+
+    it('keeps the first and the last fix, so the time range does not narrow', () => {
+      // Four fixes into three places: the ends and one between them.
+      expect(names(capPoints([pts('abcd')], 3))).to.deep.equal(['abd']);
+      // Seven into four: every second fix, both ends included.
+      expect(names(capPoints([pts('abcdefg')], 4))).to.deep.equal(['aceg']);
     });
 
     it('drops the crossing points when they alone exceed the bound', () => {

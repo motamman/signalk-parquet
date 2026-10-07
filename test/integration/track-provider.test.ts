@@ -230,7 +230,12 @@ describe('Track API provider', function () {
       contexts: [OTHER],
       maxPoints: 3,
     });
-    expect(res.features[0].properties.pointCount).to.equal(3);
+    const props = res.features[0].properties;
+    expect(props.pointCount).to.equal(3);
+    // The point dropped is not the last: the track still ends at the last fix
+    // in the window, so the time range it reports does not narrow.
+    expect(props.from).to.equal('2024-06-03T10:01:00.000Z');
+    expect(props.to).to.equal('2024-06-03T10:09:00.000Z');
   });
 
   describe('clipped to the bounding box (SignalK/signalk-server#3081)', () => {

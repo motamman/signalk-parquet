@@ -57,7 +57,8 @@ export function splitIntoSegments<T extends { tMs: number }>(
  *
  * Crossing points (the fixes just outside a clipping box, which let a line
  * reach the edge of the view) are kept first while they fit, and the room
- * left goes to the other points, spread evenly over the track in time order.
+ * left goes to the other points, spread evenly over the track in time order
+ * from its first to its last, so the time range returned does not narrow.
  * When the crossing points alone do not fit, the bound wins and they are
  * dropped. A segment left with no points is dropped.
  *
@@ -82,10 +83,12 @@ export function capPoints<T extends { crossing?: boolean }>(
     others,
     keepCrossings ? maxPoints - crossings : maxPoints
   );
-  // `room` of the `others` points, evenly spaced through them.
+  // `room` of the `others` points, evenly spaced from the first to the last:
+  // dropping the last fix would end the track early and narrow the time range
+  // it reports, which the Track API rules out. With room for one, the first.
   const chosen = new Set<number>();
   for (let i = 0; i < room; i++) {
-    chosen.add(Math.floor((i * others) / room));
+    chosen.add(room === 1 ? 0 : Math.floor((i * (others - 1)) / (room - 1)));
   }
 
   const out: T[][] = [];
