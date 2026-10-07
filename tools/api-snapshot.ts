@@ -79,7 +79,13 @@ function getWs(base: string, token: string | undefined, p: string, count: number
     };
     const timer = setTimeout(() => done(`timeout after ${messages.length}`), 60_000);
     ws.onmessage = e => {
-      const m = JSON.parse(String(e.data));
+      const text = String(e.data);
+      let m: unknown = text;
+      try {
+        m = JSON.parse(text);
+      } catch {
+        // not JSON: kept as text
+      }
       // The hello names the server and the time of connection: not data.
       if (m && typeof m === 'object' && 'roles' in m) return;
       messages.push(m);

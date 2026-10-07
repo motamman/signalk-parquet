@@ -50,14 +50,18 @@ export async function latestStoredIdentity(
   const valueJson = candidates.some(f => f.columns.has('value_json'))
     ? 'value_json AS v'
     : 'NULL AS v';
+  // Legacy files have no context column, and naming an absent column fails
+  // the whole query. The files were already chosen by context above.
+  const contextFilter = candidates.some(f => f.columns.has('context'))
+    ? `context = '${escapeSqlString(context)}' AND `
+    : '';
 
   const connection = await DuckDBPool.getConnection();
   try {
     const result = await connection.runAndReadAll(
       `SELECT ${[valueJson, ...components.map(c => `"value_${c}"`)].join(', ')}
        FROM ${readParquetSql(candidates.map(f => f.file))}
-       WHERE context = '${escapeSqlString(context)}'
-         AND signalk_timestamp <= '${escapeSqlString(atIso)}'
+       WHERE ${contextFilter}signalk_timestamp <= '${escapeSqlString(atIso)}'
        ORDER BY signalk_timestamp DESC LIMIT 1`
     );
     const rows = result.getRowObjects() as Array<Record<string, unknown>>;

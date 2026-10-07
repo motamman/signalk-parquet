@@ -115,21 +115,21 @@ export interface AggregationResult {
 const bulkAggregationJobs = new Map<string, BulkAggregationProgress>();
 
 /**
- * Bulk jobs still running, with the service each runs on and the promise
+ * Bulk jobs still running, with each job's own cancellation and the promise
  * that settles when it ends: what cancelling one by id, or all of them at
- * plugin stop, needs to reach. A job keeps its service even after the routes
- * have replaced theirs for a new configuration.
+ * plugin stop, needs to reach. Cancelling one job stops only that job, not
+ * other work on the same service. The entry goes when the job settles.
  */
 const runningBulkJobs = new Map<
   string,
-  { service: AggregationService; done: Promise<void> }
+  { controller: AbortController; done: Promise<void> }
 >();
 
 /** Cancel one bulk job at its next group boundary; false if not running. */
 export function cancelBulkAggregation(jobId: string): boolean {
   const running = runningBulkJobs.get(jobId);
   if (!running) return false;
-  running.service.cancel();
+  running.controller.abort();
   return true;
 }
 
@@ -140,7 +140,7 @@ export function cancelBulkAggregation(jobId: string): boolean {
  */
 export async function cancelAllBulkAggregations(): Promise<void> {
   const running = [...runningBulkJobs.values()];
-  for (const { service } of running) service.cancel();
+  for (const { controller } of running) controller.abort();
   await Promise.all(running.map(r => r.done));
 }
 const BULK_JOB_TTL_MS = 60 * 60 * 1000; // 1 hour
@@ -205,11 +205,13 @@ export class AggregationService {
   /**
    * Run aggregation for a specific date.
    * Optional pathFilter restricts which signalk paths are aggregated (used by
-   * targeted migrations like position re-aggregation).
+   * targeted migrations like position re-aggregation). Optional signal stops
+   * the run at the next group boundary (a bulk job's own cancellation).
    */
   async aggregateDate(
     date: Date,
-    pathFilter?: (signalkPath: string) => boolean
+    pathFilter?: (signalkPath: string) => boolean,
+    signal?: AbortSignal
   ): Promise<AggregationResult[]> {
     const results: AggregationResult[] = [];
 
@@ -223,7 +225,8 @@ export class AggregationService {
           sourceTier,
           targetTier,
           date,
-          pathFilter
+          pathFilter,
+          signal
         );
         results.push(result);
       } catch (error) {
@@ -252,7 +255,8 @@ export class AggregationService {
     sourceTier: AggregationTier,
     targetTier: AggregationTier,
     date: Date,
-    pathFilter?: (signalkPath: string) => boolean
+    pathFilter?: (signalkPath: string) => boolean,
+    signal?: AbortSignal
   ): Promise<AggregationResult> {
     const startTime = Date.now();
     const errors: string[] = [];
@@ -292,7 +296,7 @@ export class AggregationService {
 
     // Process each group
     for (const [key, files] of fileGroups) {
-      if (this.cancelRequested) break;
+      if (this.cancelRequested || signal?.aborted) break;
 
       try {
         const { context, signalkPath } = this.parseGroupKey(key);
@@ -1016,9 +1020,14 @@ export class AggregationService {
     };
 
     bulkAggregationJobs.set(jobId, progress);
-    this.cancelRequested = false;
+    const controller = new AbortController();
 
-    const done = this.runBulkAggregation(jobId, startDate, endDate)
+    const done = this.runBulkAggregation(
+      jobId,
+      controller.signal,
+      startDate,
+      endDate
+    )
       .catch(error => {
         const job = bulkAggregationJobs.get(jobId);
         if (job) {
@@ -1028,7 +1037,7 @@ export class AggregationService {
         }
       })
       .finally(() => runningBulkJobs.delete(jobId));
-    runningBulkJobs.set(jobId, { service: this, done });
+    runningBulkJobs.set(jobId, { controller, done });
 
     return jobId;
   }
@@ -1038,6 +1047,7 @@ export class AggregationService {
    */
   private async runBulkAggregation(
     jobId: string,
+    signal: AbortSignal,
     startDate?: Date,
     endDate?: Date
   ): Promise<void> {
@@ -1068,7 +1078,7 @@ export class AggregationService {
       progress.status = 'running';
 
       for (let i = 0; i < dates.length; i++) {
-        if (this.cancelRequested) {
+        if (signal.aborted) {
           progress.status = 'cancelled';
           progress.completedAt = new Date();
           scheduleBulkJobCleanup(jobId);
@@ -1082,7 +1092,7 @@ export class AggregationService {
         progress.percent = Math.round((i / dates.length) * 100);
 
         try {
-          const results = await this.aggregateDate(date);
+          const results = await this.aggregateDate(date, undefined, signal);
 
           for (const r of results) {
             progress.filesCreated += r.filesCreated;
