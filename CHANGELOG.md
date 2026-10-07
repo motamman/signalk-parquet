@@ -1,5 +1,44 @@
 # Changelog
 
+## [1.0.1-beta.2] - 2026-10-07
+
+Memory and resource fixes (#137, #139–#144), a history query that left about 1 GB of garbage behind after a restart, and `clip` for the Track API (SignalK/signalk-server#3081).
+
+### Fixed
+
+- **Repeated history queries grew the server by about 1 GB** — measured on a Raspberry Pi test server (2026-10-05): the same 30-day `/signalk/v1/history/values` query, repeated after a restart, grew the server by about 20 MB a request. It was not a leak (a forced garbage collection returned all of it): each request allocated about 220 MB of short-lived JavaScript objects, and after a restart V8 let them pile up past 1 GB before collecting. Two causes, both fixed. Every request decoded the parquet footer of every file in the window again, about 4.6 MB of allocation for a 30 KB footer; footers are now decoded once per file and kept in memory, keyed by size and modification time so a rewritten file is decoded again, up to `CACHE_SIZE.FOOTER_MAX` (10,000 files, 2–5 KB each). And buffer staging read every column of today's rows; it now reads only the columns a federated query uses (`federationColumns`), leaving out `source`, `meta`, `received_timestamp` and the other bookkeeping columns. Measured after, same server, 30 requests after a restart: RSS growth +778 MB → +84 MB, allocation per request ~220 MB → ~55 MB, time per request ~1.2 s → ~0.8 s. A before/after snapshot of 32 endpoints (history v1 and v2, contexts, paths, tracks, the plugin's own routes, playback) answered identically apart from the playback identity fix below; the snapshot tool is `tools/api-snapshot.ts`.
+- **A restart during plugin start left timers, listeners and the daily export running for good** (#139) — Signal K does not await `start()`, so a config save or a disable that landed while start was waiting on the startup sweep or DuckDB stopped the plugin, after which the start resumed and armed its timers, identity listener and daily export on a stopped plugin, where the next start overwrote their handles. Every `start()` and `stop()` now takes a generation number; a start checks it after each await and returns once superseded, a stop waits for an in-flight start, and a start waits for an in-flight stop. The daily and startup exports check it after each await too, so a stopped run cannot fork a worker, upload or run retention. The startup sweep worker now honours the shutdown message instead of being killed after 15 s. Verified on the test server: two config saves 4 s apart left exactly one running set.
+- **The daily cloud upload listed the whole bucket** (#140) — to find which of a day's files were already uploaded it listed every key ever uploaded (about 450,000 on the test server) into one set. It now lists only the directories that hold the day's files (316 that day).
+- **Playback sessions could outlive their client** (#141) — the server calls `streamHistory` from the answer to `hasAnyData`, so a client that disconnected while that answer was being worked out had its disconnect handled before the session existed, and the session ran on, polling the buffer every second, for the life of the process. A client already gone now gets no session, every session also stops on its connection's own `'end'`, and the provider keeps its sessions so `plugin.stop` ends them before the buffer and DuckDB close.
+- **The startup catch-up aggregated in the server's process** (#142) — it re-aggregated late-exported days in-process, so its DuckDB memory stayed until restart. It now uses the forked aggregation worker the daily run uses (`services/aggregation-runner.ts`); a parity test shows identical 5s/60s/1h tiers from both.
+- **The identity service's memory grew without bound** (#137) — what was last written per vessel was kept, and persisted to `identity-state.json`, for every vessel ever heard. It now keeps at most 20,000 vessels, the least recently written dropped first, and a vessel no longer in memory is looked up in the buffer and then its parquet files before anything is written, so dropping one never writes its identity a second time. An oversized state file is cut at load.
+- **Smaller leaks on rare actions and error paths** (#143):
+  - deleting a command unsubscribes its threshold monitors
+  - a running bulk aggregation is cancelled at plugin stop before DuckDB closes, cancelling one job no longer stops other work on the same service, a cancelled run starts no further tier, and a job cancelled while it was finding dates is reported `cancelled`
+  - finished cloud compare/sync and vector-average jobs are evicted however they ended
+  - the path and context caches drop expired entries on every insert
+  - parquet writers and readers are closed on error paths; a failed write removes its partial file; schema repair writes to a `.tmp` file and renames it over the original only on success (a failed write used to truncate the original)
+  - the sandbox DuckDB instance is created once for callers that arrive together, closed if its setup fails, and refused once the pool has been shut down
+  - the S3 client is destroyed at stop, and HTTP routes no longer re-subscribe a stopped plugin
+  - the aggregation routes kept their first configuration, output directory included, across plugin restarts; they are rebuilt when it changes, and so is the GPX import service
+  - a cancelled vector-average migration was reported `completed`
+- **Webapp leaks** (#144) — the map explorer purges its sparklines before each redraw, registers one `mouseup` handler instead of one per redraw, cancels a vessel-name lookup when a new one starts, and no longer keeps the route track or the raw query response; the threshold modal, bounding-box UI and path-edit dropdown assign their handlers instead of adding another on every open; analysis charts are purged before each rewrite and follow-ups are appended without rebuilding the charts above them; the migration panel runs one poll at a time.
+- **Playback announced no identity for vessels whose identity files have no `value_json`** — the lookup selected `value_json`, which identity files written as `value_*` components alone do not have, so the query failed and the vessel was replayed unnamed. It now reads whichever the files hold, through one helper (`utils/stored-identity.ts`) shared with the identity service, and leaves out the context filter for legacy files without a `context` column.
+- **`maxPoints` could be exceeded** — buckets aligned to the clock can number one more than the budget. Every track is now held to `maxPoints` exactly; with a limit of at least two points, the points kept run from the first fix to the last, so capping does not narrow the time range a track reports; `maxPoints=1` keeps only the first fix.
+
+### Added
+
+- **Track API `clip`** (SignalK/signalk-server#3081) — with a `bbox` and `clip=true`, which a server carrying #3081 sends by default, only the parts of each track inside the box are returned: a segment per visit, each keeping the recorded fix just outside the box at either crossing, with boxes across the antimeridian clipped the same way and the point budget spent on the clipped part. When `maxPoints` cannot hold every crossing fix, the bound wins and they are dropped. A server without #3081 never sends `clip`, and its `bbox` still selects whole tracks.
+- **Measurement tools** (not shipped): `tools/history-memory-bench.ts`, `tools/history-values-memory.ts`, `tools/server-heap-probe.ts`, `tools/server-alloc-profile.ts` and `tools/api-snapshot.ts`, used for the measurements above.
+
+### Changed
+
+- **Background job lists keep a count and the first 100 entries** — bulk aggregation, migration, GPX import and cloud sync errors, and GPX `filesCreated`, grew by one entry per file or date and were sent whole on every progress poll. Each now carries a full count (`errorCount`, `filesCreatedCount`) and the first 100 messages; the GPX screen shows the count.
+
+### Not changed
+
+- **DuckDB's external file cache** (#138) — measured over 60 rounds with the cache on and off; both reached the same ~2.1 GB, which was the history-query garbage above, so the setting is left as it is.
+
 ## [1.0.1-beta.1] - 2026-09-29
 
 The plugin failed the Signal K plugin registry's activation check on 1.0.0, and a history query covering today froze the server while it ran. Track API queries now run in a separate process.

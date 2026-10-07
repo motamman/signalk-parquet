@@ -65,6 +65,7 @@ Vessel data Parquet file archive with automated value and geospatial triggers. H
   - One object path per vessel rather than one path per attribute, so a busy AIS coast adds one file per vessel to a day's export instead of seven
   - Retention-exempt and excluded from tier aggregation; readable through the History API like any object path (`paths=identity`)
   - Independent of path configuration; a configured `name` path for `vessels.*` is no longer needed and can be removed
+  - Memory is bounded (v1.0.1-beta.2+): what was last written is held for at most 20,000 vessels, the least recently written dropped first; a vessel no longer held is looked up in the buffer and its parquet files before anything is written, so it is never written twice
 - **Short-term paths** (v1.0.0+): a path can be kept in the SQLite buffer for the retention window only, queryable through the History API for that window, and never written to Parquet or the cloud
   - Set per path in the webapp under **Keep**; a path with no setting behaves exactly as before, so existing configurations are unchanged
   - Optional **Keep forever while regimen** writes the path to Parquet as well for as long as that regimen is active, so a path can be buffered continuously and kept only for a passage
@@ -857,7 +858,7 @@ The plugin provides full SignalK History API compliance, allowing you to query h
 
 > ⚠️ **Extension**: The `/contexts` and `/paths` endpoints accept time range parameters as **optional**. The official spec requires time parameters; without them, these endpoints return all available data (more permissive behavior).
 
-> **Bounded reads (v1.0.0+):** every history read opens only the parquet files of the days the window touches (plus a compacted year's file) and takes file metadata from parquet footers in JavaScript rather than from DuckDB. Earlier versions opened a path's whole history per request and the memory DuckDB used for that stayed in the server; on a station with thousands of AIS vessels a seven-day contexts or paths call added hundreds of megabytes each time.
+> **Bounded reads (v1.0.0+):** every history read opens only the parquet files of the days the window touches (plus a compacted year's file) and takes file metadata from parquet footers in JavaScript rather than from DuckDB. Earlier versions opened a path's whole history per request and the memory DuckDB used for that stayed in the server; on a station with thousands of AIS vessels a seven-day contexts or paths call added hundreds of megabytes each time. From v1.0.1-beta.2 each file's footer is decoded once and kept (up to 10,000 files), and today's buffer rows are read with only the columns a query uses; a repeated 30-day values query went from about 220 MB of short-lived allocation per request to about 55 MB.
 
 > **Exact context ids (v0.7.44-beta.3+):** the contexts endpoints return vessel context strings exactly as recorded — resolved from the stored data rather than reconstructed from partition directory names, whose encoding is lossy. Earlier versions mangled UUID-identified vessels (`urn:mrn:signalk:uuid:…`, the default when no MMSI is configured) by turning the UUID's dashes into colons.
 
@@ -1531,9 +1532,10 @@ All registered providers are queried and their features concatenated; each featu
 | ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `context` / `contexts`   | Vessel(s) to return. Defaults to the own vessel. Bare ids are qualified with `vessels.`                                                                                                                                                                                                                                                                                                                                     |
 | `from`, `to`, `duration` | Time window. `duration` measures back from `to` (default now); with `from` as well, the later start wins. Required unless a single context is requested                                                                                                                                                                                                                                                                     |
-| `bbox`                   | `west,south,east,north`. **Selects** tracks that pass through the box during the window; a matching track is returned whole, not clipped                                                                                                                                                                                                                                                                                    |
+| `bbox`                   | `west,south,east,north`. Selects the tracks that pass through the box during the window; what comes back of each is set by `clip`                                                                                                                                                                                                                                                                                          |
+| `clip`                   | With a `bbox`: only the parts of each track inside the box, a segment per visit, each keeping the recorded fix just outside the box at either crossing (SignalK/signalk-server#3081, v1.0.1-beta.2+). A server carrying #3081 sends `clip=true` by default with a `bbox`; `clip=false` returns matching tracks whole, as does a server without #3081                                                                     |
 | `resolution`             | Minimum spacing between points (ISO 8601 or seconds). The spacing actually applied is reported in `properties.resolution`                                                                                                                                                                                                                                                                                                   |
-| `maxPoints`              | Point budget per track; the spacing is widened until it fits. Default budget 5000                                                                                                                                                                                                                                                                                                                                           |
+| `maxPoints`              | Upper bound on points per track; the spacing is widened to fit, and the result is held to the bound exactly. With a limit of at least two points it keeps the first and last fix so the time range does not narrow; `maxPoints=1` keeps only the first fix (v1.0.1-beta.2+). Default budget 5000 |
 | `simplify`, `epsilon`    | Douglas-Peucker simplification, tolerance in metres; the applied tolerance is reported                                                                                                                                                                                                                                                                                                                                      |
 | `times`                  | Include the recording time of every point as `properties.coordTimes`, nested like `coordinates`                                                                                                                                                                                                                                                                                                                             |
 | `properties`             | Comma-separated paths to return alongside each position (e.g. `navigation.speedOverGround`), nested like `coordinates` under `properties.values`. Only paths the store holds are returned; `properties.appliedProperties` lists them. Values are matched to the nearest sample within a few seconds, because different talkers stamp position and speed a few hundred milliseconds apart. Angular paths use a circular mean |
@@ -1545,6 +1547,7 @@ All registered providers are queried and their features concatenated; each featu
 - A gap in recording longer than five buckets, and at least five minutes, starts a new segment of the `MultiLineString`, so a line is never drawn across a stretch the vessel did not travel.
 - Position is read from the raw tier only, since the aggregated tiers collapse object paths; long windows are thinned by bucket size, not by tier.
 - A request with no window returns the context's whole recorded history, anchored on its earliest raw partition.
+- Clipped (`clip=true`), the box is applied before the budget: the bucket size comes from the time spent inside the box, not the whole window. The crossing fixes are kept while `maxPoints` has room for them; when it does not, the bound wins and they are dropped.
 
 ```bash
 # Last 24 hours of the own vessel, with times and speed
@@ -1552,6 +1555,9 @@ curl "http://localhost:3000/signalk/v2/api/tracks?duration=P1D&times=true&proper
 
 # Every recorded vessel that passed through a box this week, at most 500 points each
 curl "http://localhost:3000/signalk/v2/api/tracks?bbox=23.5,60.0,23.6,60.1&duration=P7D&maxPoints=500"
+
+# The same vessels' whole tracks rather than the parts inside the box
+curl "http://localhost:3000/signalk/v2/api/tracks?bbox=23.5,60.0,23.6,60.1&duration=P7D&clip=false"
 
 # Only this plugin's answer, when several providers are registered
 curl "http://localhost:3000/signalk/v2/api/tracks?duration=PT1H&provider=signalk-parquet"
@@ -1612,7 +1618,7 @@ When the plugin starts, it runs the following initialization steps:
 5. **Data Subscriptions** — Subscribe to configured SignalK paths and start threshold monitoring
 6. **Periodic Save** — Start flush interval (default: every 30s) from memory buffer to SQLite
 7. **Daily Export Schedule** — Schedule next export at configured UTC hour (default: 4 AM); includes aggregation and cloud upload
-8. **Startup Catch-Up** (10s delay) — Export any unexported historical data from SQLite, re-aggregate affected dates, and sync recent files to cloud (7-day lookback, raw-tier-only prefix scan; the local listing opens only the seven wanted day directories per path, never a `**` walk of the store)
+8. **Startup Catch-Up** (10s delay) — Export any unexported historical data from SQLite, re-aggregate affected dates in the forked aggregation worker (v1.0.1-beta.2+; earlier versions aggregated in the server's process), and sync recent files to cloud (7-day lookback, raw-tier-only prefix scan; the local listing opens only the seven wanted day directories per path, never a `**` walk of the store)
 9. **History API** — Register HTTP routes and SignalK HistoryApi provider
 10. **Auto-Discovery** — Initialize service for on-demand path configuration
 
@@ -1639,7 +1645,7 @@ signalk-parquet/
 │   ├── HistoryAPI.ts           # SignalK History API implementation
 │   ├── HistoryAPI-types.ts     # History API type definitions
 │   ├── history-provider.ts     # SignalK HistoryApi provider (v2)
-│   ├── track-provider.ts       # SignalK Track API provider (preview, server PR #2995)
+│   ├── track-provider.ts       # SignalK Track API provider (preview, server PRs #2995 and #3081)
 │   ├── services/
 │   │   ├── aggregation-service.ts  # Tier aggregation (raw→5s→60s→1h)
 │   │   └── parquet-export-service.ts # Daily export pipeline
