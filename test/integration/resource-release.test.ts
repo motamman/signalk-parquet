@@ -16,6 +16,7 @@ import {
   AggregationService,
   cancelAllBulkAggregations,
 } from '../../src/services/aggregation-service';
+import type { AggregationConfig } from '../../src/services/aggregation-service';
 import { DuckDBPool } from '../../src/utils/duckdb-pool';
 import { JOB_MESSAGES_KEPT, keepMessage } from '../../src/utils/job-messages';
 import { registerApiRoutes } from '../../src/api-routes';
@@ -152,6 +153,35 @@ describe('resources released on rare actions and error paths (#143)', function (
     const progress = service.getBulkProgress(jobId)!;
     expect(progress.status).to.equal('cancelled');
     expect(progress.datesProcessed).to.be.below(3);
+  });
+
+  describe('a cancelled bulk aggregation', () => {
+    const config = (dir: string): AggregationConfig => ({
+      outputDirectory: dir,
+      filenamePrefix: 'signalk_data',
+      retentionDays: { raw: 0, '5s': 0, '60s': 0, '1h': 0 },
+    });
+
+    it('starts no further tier once cancelled', async () => {
+      await exportDays(host, host.dataDir, 1);
+      await DuckDBPool.initialize();
+      const cancelled = new AbortController();
+      cancelled.abort();
+      const results = await new AggregationService(
+        config(host.dataDir),
+        host.app
+      ).aggregateDate(new Date('2024-06-01T00:00:00Z'), undefined, cancelled.signal);
+      // Not one tier begun: each would have scanned its files first.
+      expect(results).to.deep.equal([]);
+    });
+
+    it('is reported cancelled when cancelled while finding no dates', async () => {
+      // An empty store: the scan finds nothing, after the cancel arrived.
+      const service = new AggregationService(config(host.dataDir), host.app);
+      const jobId = service.startBulkAggregation();
+      await cancelAllBulkAggregations();
+      expect(service.getBulkProgress(jobId)!.status).to.equal('cancelled');
+    });
   });
 
   it('keeps the first messages of a job and no more', () => {

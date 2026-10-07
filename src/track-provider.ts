@@ -73,6 +73,7 @@ import {
 import { parseDurationToMillis } from './utils/duration-parser';
 import {
   boundingBoxOf,
+  capPoints,
   millisToIsoDuration,
   simplifyIndices,
   splitIntoSegments,
@@ -247,6 +248,8 @@ interface TrackPoint {
   tMs: number;
   lon: number;
   lat: number;
+  /** A clipped track's fix just outside the box, at an entry or exit. */
+  crossing?: boolean;
 }
 
 type PropertyValue = number | string | null;
@@ -877,6 +880,10 @@ export class TrackProvider implements TrackApi {
       segments = splitIntoSegments(points, gapMs);
     }
 
+    // The budget is an upper bound (`maxPoints`), which the buckets only aim
+    // at; see capPoints.
+    segments = capPoints(segments, budget);
+
     let epsilon: number | undefined;
     if (query.simplify || query.epsilon !== undefined) {
       epsilon =
@@ -1089,9 +1096,10 @@ export class TrackProvider implements TrackApi {
    * one and opens the next, so it is in both.
    *
    * The budget is spent on what is returned: the bucket size comes from the
-   * clipped segments' time span, not the window's, and every segment's entry
-   * and exit fix is kept whatever the bucket, with room reserved for them.
-   * Null when no fix is inside the box.
+   * clipped segments' time span, not the window's, with room reserved for
+   * every segment's entry and exit fix, which are kept whatever the bucket
+   * and marked `crossing` so the caller's cap (capPoints) keeps them while
+   * they fit. Null when no fix is inside the box.
    */
   private async queryClippedPositions(
     context: Context,
@@ -1193,17 +1201,18 @@ export class TrackProvider implements TrackApi {
       // outside (the entry and exit fixes), in time order.
       const rows = (
         await connection.runAndReadAll(`
-          SELECT seg, t_ms, lat, lon,
+          SELECT seg, t_ms, lat, lon, crossing,
                  CAST(FLOOR(t_ms / ${resolutionMs}) * ${resolutionMs} AS BIGINT) AS bucket_ms
           FROM (
-            SELECT seg, t_ms, lat, lon
+            SELECT seg, t_ms, lat, lon, TRUE AS crossing
             FROM track_clip
             WHERE NOT inside
             UNION ALL
             SELECT seg,
                    MIN(t_ms),
                    ARG_MIN(lat, t_ms),
-                   ARG_MIN(lon, t_ms)
+                   ARG_MIN(lon, t_ms),
+                   FALSE
             FROM track_clip
             WHERE inside
             GROUP BY seg, FLOOR(t_ms / ${resolutionMs})
@@ -1224,6 +1233,7 @@ export class TrackProvider implements TrackApi {
           tMs: Number(row.t_ms),
           lat: Number(row.lat),
           lon: Number(row.lon),
+          crossing: row.crossing === true,
         });
       }
       return { segments: [...bySegment.values()], resolutionMs };

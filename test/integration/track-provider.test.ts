@@ -199,24 +199,41 @@ describe('Track API provider', function () {
     expect(elsewhere.features).to.deep.equal([]);
   });
 
-  describe('clipped to the bounding box (SignalK/signalk-server#3081)', () => {
-    /** Fixes a minute apart from 10:00 on 2024-06-03, buffer only. */
-    const recordFixes = (context: Context, lonLats: Array<[number, number]>) => {
-      lonLats.forEach(([lon, lat], i) => {
-        const iso = new Date(
-          Date.parse('2024-06-03T10:00:00.000Z') + i * 60_000
-        ).toISOString();
-        buffer.insert(makePositionRecord(context, lat, lon, iso));
-      });
-    };
-    const JUNE_3: TracksRequest = {
-      from: '2024-06-03T00:00:00Z',
-      to: '2024-06-04T00:00:00Z',
-    };
-    const OTHER = 'vessels.urn:mrn:imo:mmsi:244000001' as Context;
-    const coordinates = async (query: TracksRequest) =>
-      (await provider.getTracks(query)).features[0].geometry!.coordinates;
+  /** Fixes a minute apart from 10:00 on 2024-06-03, buffer only. */
+  const recordFixes = (context: Context, lonLats: Array<[number, number]>) => {
+    lonLats.forEach(([lon, lat], i) => {
+      const iso = new Date(
+        Date.parse('2024-06-03T10:00:00.000Z') + i * 60_000
+      ).toISOString();
+      buffer.insert(makePositionRecord(context, lat, lon, iso));
+    });
+  };
+  const JUNE_3: TracksRequest = {
+    from: '2024-06-03T00:00:00Z',
+    to: '2024-06-04T00:00:00Z',
+  };
+  const OTHER = 'vessels.urn:mrn:imo:mmsi:244000001' as Context;
+  const coordinates = async (query: TracksRequest) =>
+    (await provider.getTracks(query)).features[0].geometry!.coordinates;
 
+  it('never returns more points than maxPoints, whatever the bucket alignment', async () => {
+    // Ten fixes a minute apart, asked for over 10:00:30-10:09:30 in three
+    // points: three-minute buckets aligned to the clock touch four of them
+    // (10:00, 10:03, 10:06, 10:09), one more than the bound.
+    recordFixes(
+      OTHER,
+      Array.from({ length: 10 }, (_, i) => [i * 0.01, 0] as [number, number])
+    );
+    const res = await provider.getTracks({
+      from: '2024-06-03T10:00:30Z',
+      to: '2024-06-03T10:09:30Z',
+      contexts: [OTHER],
+      maxPoints: 3,
+    });
+    expect(res.features[0].properties.pointCount).to.equal(3);
+  });
+
+  describe('clipped to the bounding box (SignalK/signalk-server#3081)', () => {
     it('returns the stretch inside, with the fix just outside at either end', async () => {
       // The first leg's middle fixes, 9.401 and 9.402, are inside; 9.400
       // before them and 9.403 after them are the crossings. The second leg
@@ -278,7 +295,67 @@ describe('Track API provider', function () {
       ]);
     });
 
-    it('puts a single fix outside between two visits in both segments', async () => {
+    it('keeps the crossing points within maxPoints when they fit', async () => {
+    recordFixes(OTHER, [
+      [0.0, 0], // entry
+      [0.1, 0],
+      [0.2, 0],
+      [0.3, 0], // exit
+      [0.4, 0],
+      [0.3, 0], // entry
+      [0.15, 0],
+      [0.35, 0], // exit
+    ]);
+    // Two visits are four crossing points: all of the bound, so the lines
+    // run edge to edge.
+    const res = await provider.getTracks({
+      ...JUNE_3,
+      contexts: [OTHER],
+      bbox: [0.05, -1, 0.25, 1],
+      clip: true,
+      maxPoints: 4,
+    });
+    expect(res.features[0].properties.pointCount).to.equal(4);
+    expect(res.features[0].geometry!.coordinates).to.deep.equal([
+      [
+        [0.0, 0],
+        [0.3, 0],
+      ],
+      [
+        [0.3, 0],
+        [0.35, 0],
+      ],
+    ]);
+  });
+
+  it('drops the crossing points when they alone exceed maxPoints', async () => {
+    recordFixes(OTHER, [
+      [0.0, 0],
+      [0.1, 0],
+      [0.2, 0],
+      [0.3, 0],
+      [0.4, 0],
+      [0.3, 0],
+      [0.15, 0],
+      [0.35, 0],
+    ]);
+    // Four crossing points do not fit in three: the bound wins, and what is
+    // returned is inside the box.
+    const res = await provider.getTracks({
+      ...JUNE_3,
+      contexts: [OTHER],
+      bbox: [0.05, -1, 0.25, 1],
+      clip: true,
+      maxPoints: 3,
+    });
+    const props = res.features[0].properties;
+    expect(props.pointCount).to.be.at.most(3);
+    for (const [lon] of res.features[0].geometry!.coordinates.flat()) {
+      expect(lon).to.be.within(0.05, 0.25);
+    }
+  });
+
+  it('puts a single fix outside between two visits in both segments', async () => {
       recordFixes(OTHER, [
         [0.1, 0], // inside, first in the window
         [0.3, 0], // closes the first visit and opens the second

@@ -49,6 +49,62 @@ export function splitIntoSegments<T extends { tMs: number }>(
   return segments;
 }
 
+/**
+ * Hold a track to `maxPoints`, the Track API's upper bound on points per
+ * track. Bucketing aims at the budget but can pass it: buckets are aligned to
+ * the clock, so a window or a segment can touch one more than its share, and
+ * a clipped track's crossing points come on top of its buckets.
+ *
+ * Crossing points (the fixes just outside a clipping box, which let a line
+ * reach the edge of the view) are kept first while they fit, and the room
+ * left goes to the other points, spread evenly over the track in time order.
+ * When the crossing points alone do not fit, the bound wins and they are
+ * dropped. A segment left with no points is dropped.
+ *
+ * Input:  [[c, a, b, c], [c, d, c]] (c crossing), maxPoints 5
+ * Output: [[c, a, c], [c, c]]
+ */
+export function capPoints<T extends { crossing?: boolean }>(
+  segments: readonly T[][],
+  maxPoints: number
+): T[][] {
+  const total = segments.reduce((n, s) => n + s.length, 0);
+  if (total <= maxPoints) {
+    return segments.map(s => [...s]);
+  }
+  const crossings = segments.reduce(
+    (n, s) => n + s.filter(p => p.crossing).length,
+    0
+  );
+  const keepCrossings = crossings <= maxPoints;
+  const others = total - crossings;
+  const room = Math.min(
+    others,
+    keepCrossings ? maxPoints - crossings : maxPoints
+  );
+  // `room` of the `others` points, evenly spaced through them.
+  const chosen = new Set<number>();
+  for (let i = 0; i < room; i++) {
+    chosen.add(Math.floor((i * others) / room));
+  }
+
+  const out: T[][] = [];
+  let index = 0;
+  for (const segment of segments) {
+    const kept: T[] = [];
+    for (const point of segment) {
+      if (point.crossing) {
+        if (keepCrossings) kept.push(point);
+        continue;
+      }
+      if (chosen.has(index)) kept.push(point);
+      index++;
+    }
+    if (kept.length > 0) out.push(kept);
+  }
+  return out;
+}
+
 function project(p: LonLat, cosLat: number): [number, number] {
   return [
     p.lon * DEG_TO_RAD * cosLat * EARTH_RADIUS_M,

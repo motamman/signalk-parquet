@@ -1,6 +1,7 @@
 import { expect } from 'chai';
 import {
   boundingBoxOf,
+  capPoints,
   millisToIsoDuration,
   perpendicularDistanceMetres,
   simplifyIndices,
@@ -87,6 +88,55 @@ describe('track-geometry', () => {
       expect(simplifyIndices(bent, 50)).to.deep.equal([0, 2, 4]);
       expect(simplifyIndices(bent, 200)).to.deep.equal([0, 4]);
       expect(simplifyIndices(bent, 10)).to.deep.equal([0, 1, 2, 3, 4]);
+    });
+  });
+
+  describe('capPoints', () => {
+    /** Points named by letter; upper case are crossing points. */
+    const pts = (names: string) =>
+      [...names].map(n => ({ n, crossing: n === n.toUpperCase() }));
+    const names = (segments: Array<Array<{ n: string }>>) =>
+      segments.map(s => s.map(p => p.n).join(''));
+
+    it('returns a track within the bound unchanged', () => {
+      const track = [pts('AbcD'), pts('EfG')];
+      expect(names(capPoints(track, 7))).to.deep.equal(['AbcD', 'EfG']);
+    });
+
+    it('keeps the crossing points while they fit and spreads the rest', () => {
+      // Four crossing points and room for one more, taken from the start of
+      // the evenly spaced others.
+      expect(names(capPoints([pts('AbcD'), pts('EfG')], 5))).to.deep.equal([
+        'AbD',
+        'EG',
+      ]);
+      // Room for two of the three others (b, c, f): picks 0 and 1 of the
+      // even spread, b and c.
+      expect(names(capPoints([pts('AbcD'), pts('EfG')], 6))).to.deep.equal([
+        'AbcD',
+        'EG',
+      ]);
+    });
+
+    it('drops the crossing points when they alone exceed the bound', () => {
+      expect(names(capPoints([pts('AbcD'), pts('EfG')], 3))).to.deep.equal([
+        'bc',
+        'f',
+      ]);
+    });
+
+    it('drops a segment left with no points', () => {
+      expect(names(capPoints([pts('AbD'), pts('EfG')], 1))).to.deep.equal([
+        'b',
+      ]);
+    });
+
+    it('never returns more than the bound', () => {
+      const track = [pts('AbcdefG'), pts('HijK'), pts('Lm')];
+      for (let max = 1; max <= 12; max++) {
+        const total = capPoints(track, max).reduce((n, s) => n + s.length, 0);
+        expect(total, `maxPoints ${max}`).to.be.at.most(max);
+      }
     });
   });
 

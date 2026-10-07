@@ -217,6 +217,9 @@ export class AggregationService {
 
     // Aggregate through the hierarchy: raw -> 5s -> 60s -> 1h
     for (let i = 0; i < TIER_HIERARCHY.length - 1; i++) {
+      // A cancelled run stops here too, not only between groups: the next
+      // tier would start with a scan of its files before checking again.
+      if (this.cancelRequested || signal?.aborted) break;
       const sourceTier = TIER_HIERARCHY[i];
       const targetTier = TIER_HIERARCHY[i + 1];
 
@@ -1061,6 +1064,15 @@ export class AggregationService {
 
       const dates = await this.discoverRawDates(startDate, endDate);
       progress.datesTotal = dates.length;
+
+      // Cancelled while the dates were being found: cancelled, whatever the
+      // scan found, including nothing.
+      if (signal.aborted) {
+        progress.status = 'cancelled';
+        progress.completedAt = new Date();
+        scheduleBulkJobCleanup(jobId);
+        return;
+      }
 
       if (dates.length === 0) {
         progress.status = 'completed';
