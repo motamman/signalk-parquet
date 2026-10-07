@@ -1110,6 +1110,15 @@ export class AggregationService {
         }
       }
 
+      // Cancelled while the last date was aggregating: the loop's own check
+      // never runs again, so the job must not be reported completed.
+      if (signal.aborted) {
+        progress.status = 'cancelled';
+        progress.completedAt = new Date();
+        scheduleBulkJobCleanup(jobId);
+        return;
+      }
+
       progress.datesProcessed = dates.length;
       progress.percent = 100;
       progress.status = 'completed';

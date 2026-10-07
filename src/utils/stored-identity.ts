@@ -51,9 +51,11 @@ export async function latestStoredIdentity(
     ? 'value_json AS v'
     : 'NULL AS v';
   // Legacy files have no context column, and naming an absent column fails
-  // the whole query. The files were already chosen by context above.
+  // the whole query. The files were already chosen by context above. When
+  // schemas are mixed, union_by_name gives the legacy files' rows a NULL
+  // context, so those stay eligible alongside the rows that match.
   const contextFilter = candidates.some(f => f.columns.has('context'))
-    ? `context = '${escapeSqlString(context)}' AND `
+    ? `(context IS NULL OR context = '${escapeSqlString(context)}') AND `
     : '';
 
   const connection = await DuckDBPool.getConnection();
