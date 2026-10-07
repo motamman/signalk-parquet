@@ -272,7 +272,8 @@ async function scanForMigration() {
       </p>
     `;
 
-    startBtn.disabled = false;
+    // Not while a migration is still running: Start would launch a second.
+    startBtn.disabled = Boolean(currentMigrationJobId);
   } catch (error) {
     contentDiv.innerHTML = `<p style="color: red;">Scan failed: ${error.message}</p>`;
   }
@@ -285,6 +286,16 @@ function formatDuration(seconds) {
   if (seconds < 60) return `${seconds}s`;
   if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
   return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`;
+}
+
+/**
+ * Poll the current job once a second, replacing any polling already
+ * running: a second start used to overwrite the handle and leave the first
+ * interval running for the life of the page.
+ */
+function startMigrationPolling() {
+  clearInterval(migrationPollInterval);
+  migrationPollInterval = setInterval(pollMigrationProgress, 1000);
 }
 
 /**
@@ -323,7 +334,7 @@ async function startMigration() {
     localStorage.setItem('migrationJobId', data.jobId);
 
     // Start polling for progress
-    migrationPollInterval = setInterval(pollMigrationProgress, 1000);
+    startMigrationPolling();
   } catch (error) {
     alert(`Failed to start migration: ${error.message}`);
     startBtn.disabled = false;
@@ -584,7 +595,7 @@ document.addEventListener('DOMContentLoaded', () => {
       progressDiv.style.display = 'block';
       document.getElementById('startMigrationBtn').disabled = true;
       document.getElementById('cancelMigrationBtn').disabled = false;
-      migrationPollInterval = setInterval(pollMigrationProgress, 1000);
+      startMigrationPolling();
     }
   }
 });

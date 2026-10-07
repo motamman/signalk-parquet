@@ -34,8 +34,10 @@ describe('sandbox write exposure', function () {
   beforeEach(async () => {
     // The sandbox instance is scoped to the data directory of the first
     // caller and reused thereafter, so drop any instance an earlier suite
-    // built before pointing it at this fixture directory.
+    // built before pointing it at this fixture directory. The sandbox is made
+    // only alongside the main pool, as the plugin always has it.
     await DuckDBPool.shutdown();
+    await DuckDBPool.initialize();
 
     dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'sandbox-write-'));
     recorded = path.join(dataDir, 'navigation_position.parquet');

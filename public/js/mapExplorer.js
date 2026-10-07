@@ -55,7 +55,9 @@ let state = {
   availableContexts: [],
   vesselNames: new Map(),
   // Results
-  results: null,
+  // Whether the last query returned. Its raw response is not kept: the
+  // points built from it (dataPoints) are all the page reads afterwards.
+  hasResults: false,
   trackLayer: null,
   markerLayers: [],
   dataPoints: [],
@@ -113,6 +115,7 @@ export function initMapExplorer() {
   // Map click handler for drawing
   state.map.on('click', onMapClick);
   state.map.on('mousemove', onMapMouseMove);
+  state.map.on('mouseup', onMapMouseUp);
 
   state.mapInitialized = true;
   state._pathsStale = true;
@@ -354,14 +357,6 @@ function makeHandle(latlng, index) {
     state.map.dragging.disable();
   });
 
-  state.map.on('mouseup', () => {
-    if (state.isDraggingHandle !== null) {
-      state.isDraggingHandle = null;
-      state.map.dragging.enable();
-      if (state.results) executeMapQuery();
-    }
-  });
-
   state.handles.push(h);
   return h;
 }
@@ -402,13 +397,19 @@ function enableAreaDrag() {
     state.map.dragging.disable();
   });
 
-  state.map.on('mouseup', () => {
-    if (state.isDraggingArea) {
-      state.isDraggingArea = false;
-      state.map.dragging.enable();
-      if (state.results) executeMapQuery();
-    }
-  });
+}
+
+/**
+ * The end of a handle or area drag. Registered once, at map creation: the
+ * area is redrawn on every mousemove of a drag, and registering it there
+ * added a listener per redraw that was never removed.
+ */
+function onMapMouseUp() {
+  if (state.isDraggingHandle === null && !state.isDraggingArea) return;
+  state.isDraggingHandle = null;
+  state.isDraggingArea = false;
+  state.map.dragging.enable();
+  if (state.hasResults) executeMapQuery();
 }
 
 function handleAreaDrag(latlng) {
@@ -547,7 +548,7 @@ function contextDisplayName(ctx, vesselNames) {
   return lastDot >= 0 ? ctx.substring(lastDot + 1) : ctx;
 }
 
-async function fetchVesselNames(contexts, from, to) {
+async function fetchVesselNames(contexts, from, to, signal) {
   const names = new Map();
   // Batch in groups of 10 to avoid overwhelming the server
   const ctxList = (Array.isArray(contexts) ? contexts : [])
@@ -555,11 +556,12 @@ async function fetchVesselNames(contexts, from, to) {
     .filter((ctx) => ctx !== 'self' && ctx !== 'vessels.self');
 
   for (let i = 0; i < ctxList.length; i += 10) {
+    if (signal?.aborted) break;
     const batch = ctxList.slice(i, i + 10);
     await Promise.all(batch.map(async (ctx) => {
       try {
         const url = `/signalk/v1/history/values?context=${encodeURIComponent(ctx)}&paths=name&from=${from}&to=${to}&resolution=86400`;
-        const resp = await fetch(url);
+        const resp = await fetch(url, { signal });
         if (!resp.ok) return;
         const data = await resp.json();
         const result = Array.isArray(data) ? data[0] : data;
@@ -614,6 +616,14 @@ export function selectContext(ctx) {
 }
 
 export async function lookupContexts() {
+  // A new lookup supersedes the one before it, from its contexts request to
+  // its name sweep: aborted, and a response that still arrives is dropped, so
+  // an older lookup can neither replace the newer contexts nor run its sweep
+  // over every vessel beside the newer one.
+  state.contextLookup?.abort();
+  const lookup = new AbortController();
+  state.contextLookup = lookup;
+
   const cb = document.getElementById('me-lookup-contexts');
   if (!cb.checked) {
     state.context = 'self';
@@ -634,8 +644,9 @@ export async function lookupContexts() {
   }
 
   try {
-    const resp = await fetch(url);
+    const resp = await fetch(url, { signal: lookup.signal });
     const data = await resp.json();
+    if (lookup.signal.aborted) return;
     state.availableContexts = data.contexts || data || [];
 
     const countEl = document.getElementById('me-context-count');
@@ -649,14 +660,16 @@ export async function lookupContexts() {
     renderContextList('');
     document.getElementById('me-context-select').style.display = 'block';
 
-    // Fetch vessel names in background, then re-render with names
-    fetchVesselNames(state.availableContexts, from, to).then((names) => {
+    // Fetch vessel names in background, then re-render with names.
+    fetchVesselNames(state.availableContexts, from, to, lookup.signal).then((names) => {
+      if (lookup.signal.aborted) return;
       state.vesselNames = names;
       renderContextList(filterEl ? filterEl.value : '');
     }).catch((err) => {
       console.error('Failed to fetch vessel names:', err);
     });
   } catch (err) {
+    if (lookup.signal.aborted) return; // superseded, not failed
     console.error('Failed to load contexts:', err);
   }
 }
@@ -790,6 +803,10 @@ export async function executeMapQuery() {
     setToolbarStatus('Draw an area on the map first.');
     return;
   }
+  // A route track belongs to the previous results.
+  state._routeFetch?.abort();
+  state._routeCoords = null;
+  state._routeHiResCoords = null;
 
   const paths = getSelectedPaths();
   if (paths.length === 0) {
@@ -829,11 +846,11 @@ export async function executeMapQuery() {
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     const data = await resp.json();
 
-    state.results = Array.isArray(data) ? data : [data];
+    state.hasResults = true;
     state.mode = STATES.RESULTS;
     state.selectedIndex = -1;
 
-    processResults();
+    processResults(Array.isArray(data) ? data : [data]);
     const pathNames = getUniquePathNames();
     await fetchPathMeta(pathNames);
     renderMapResults();
@@ -858,16 +875,16 @@ export async function executeMapQuery() {
   }
 }
 
-function processResults() {
+function processResults(results) {
   state.dataPoints = [];
 
-  if (!state.results || state.results.length === 0) return;
+  if (!results || results.length === 0) return;
 
   // Find position result and value results
   let posResult = null;
   const valueResults = [];
 
-  state.results.forEach((r) => {
+  results.forEach((r) => {
     if (!r || !r.values) return;
     r.values.forEach((v, vi) => {
       if (v.path === 'navigation.position') {
@@ -1147,6 +1164,13 @@ function renderDetailPanel() {
   const panel = document.getElementById('me-detail-content');
   if (!panel) return;
 
+  // Release the previous sparklines before their HTML is replaced: this runs
+  // on every selection, every playback tick included, and a plot only
+  // detached stays alive through its resize listener.
+  panel
+    .querySelectorAll('.js-plotly-plot')
+    .forEach((el) => Plotly.purge(el));
+
   if (state.selectedIndex < 0) {
     panel.innerHTML = '<p>Click a point to see details.</p>';
     return;
@@ -1368,7 +1392,7 @@ function legendToggle(index) {
 
 function renderSummary() {
   const container = document.getElementById('me-summary');
-  if (!container || !state.results) return;
+  if (!container || !state.hasResults) return;
 
   const pathNames = getUniquePathNames();
   const ctx = state.context === 'self' ? 'Self' : state.context;
@@ -1648,6 +1672,12 @@ export async function toggleRouteHiRes() {
 
   if (statusEl) statusEl.textContent = 'Fetching high-resolution track...';
 
+  // Closing the modal or starting a new query aborts this; its result must
+  // not land in the cache they cleared.
+  state._routeFetch?.abort();
+  const routeFetch = new AbortController();
+  state._routeFetch = routeFetch;
+
   const { from, to } = getQueryTimeRange();
   const ctx = state.context === 'self' ? '' : state.context;
   let spatialParam = '';
@@ -1666,9 +1696,10 @@ export async function toggleRouteHiRes() {
       `&paths=navigation.position` +
       `&resolution=5` +
       spatialParam;
-    const resp = await fetch(url);
+    const resp = await fetch(url, { signal: routeFetch.signal });
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     const data = await resp.json();
+    if (routeFetch.signal.aborted) return;
     const result = Array.isArray(data) ? data[0] : data;
 
     const hiResCoords = [];
@@ -1691,6 +1722,7 @@ export async function toggleRouteHiRes() {
     if (statusEl) statusEl.textContent = `${hiResCoords.length} high-res points loaded.`;
     updateRoutePreview();
   } catch (err) {
+    if (routeFetch.signal.aborted) return; // closed or superseded, not failed
     console.error('High-res fetch failed:', err);
     if (statusEl) statusEl.textContent = 'Failed to load high-res data.';
     cb.checked = false;
@@ -1699,6 +1731,11 @@ export async function toggleRouteHiRes() {
 
 export function closeRouteModal() {
   document.getElementById('me-route-modal').style.display = 'none';
+  // The high-resolution track can be tens of MB; it is fetched again if the
+  // modal is reopened.
+  state._routeFetch?.abort();
+  state._routeCoords = null;
+  state._routeHiResCoords = null;
   const nameInput = document.getElementById('me-route-name');
   if (nameInput) { nameInput.value = ''; nameInput.style.border = ''; }
 }

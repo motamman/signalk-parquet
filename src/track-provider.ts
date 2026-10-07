@@ -17,12 +17,14 @@
  * - Position lives only in the raw tier (the aggregated tiers collapse object
  *   paths to a scalar), so the query always reads tier=raw and buckets in
  *   DuckDB rather than picking a tier.
- * - A bounding box selects tracks, it does not clip them (settled on #2995):
- *   a context whose track touches the box anywhere in the window is returned
- *   whole, approach and departure included, rather than as a line that stops
- *   at an invisible edge. A gap in recording longer than a few buckets starts
- *   a new segment, so a line is never drawn across a stretch the vessel did
- *   not travel.
+ * - A bounding box selects the contexts whose track touches it anywhere in
+ *   the window. What comes back of each is set by `clip` (#3081): clipped,
+ *   only the stretches inside the box, each its own segment and each keeping
+ *   the recorded fix just outside at either crossing, with the point budget
+ *   spent on them; not clipped (`clip=false`, or a server that predates
+ *   `clip`), the whole track, approach and departure included (#2995). A gap
+ *   in recording longer than a few buckets starts a new segment either way,
+ *   so a line is never drawn across a stretch the vessel did not travel.
  * - `properties` are co-recorded paths returned nested to match coordinates.
  *   Each is bucketed with the same expression as the positions and joined on
  *   the bucket, so a value lands on the fix it was recorded alongside. Paths
@@ -71,6 +73,7 @@ import {
 import { parseDurationToMillis } from './utils/duration-parser';
 import {
   boundingBoxOf,
+  capPoints,
   millisToIsoDuration,
   simplifyIndices,
   splitIntoSegments,
@@ -115,6 +118,15 @@ export interface TracksRequest {
   to?: TrackInstant;
   duration?: TrackDuration;
   bbox?: TrackBoundingBox;
+  /**
+   * Return only the parts of each track inside `bbox` (SignalK/signalk-server
+   * #3081): a segment per stretch inside, each keeping the recorded fix just
+   * outside the box at either crossing, clipped before `resolution`,
+   * `maxPoints` and simplification. The server resolves it (true with a
+   * `bbox` unless the client sent `clip=false`); a server without #3081
+   * never sends it, and its `bbox` keeps selecting whole tracks.
+   */
+  clip?: boolean;
   resolution?: TrackDuration;
   maxPoints?: number;
   simplify?: boolean;
@@ -229,11 +241,15 @@ interface TimeWindow {
   bounded: boolean;
 }
 
+type Connection = Awaited<ReturnType<typeof DuckDBPool.getConnection>>;
+
 interface TrackPoint {
   bucketMs: number;
   tMs: number;
   lon: number;
   lat: number;
+  /** A clipped track's fix just outside the box, at an entry or exit. */
+  crossing?: boolean;
 }
 
 type PropertyValue = number | string | null;
@@ -790,52 +806,83 @@ export class TrackProvider implements TrackApi {
       return null;
     }
 
-    // Bucket size: whatever the caller asked for, widened as needed so the
-    // window fits the point budget. The budget is a bound on bucket count and
-    // so on points; a fine bucket over a short window returns raw fixes.
+    // Bucket size: whatever the caller asked for, widened as needed so what
+    // is returned fits the point budget: the window, or when clipping, the
+    // clipped part. The budget is a bound on bucket count and so on points; a
+    // fine bucket over a short window returns raw fixes.
     const budget =
       query.maxPoints !== undefined && query.maxPoints > 0
         ? Math.floor(query.maxPoints)
         : DEFAULT_POINT_BUDGET;
     const requestedMs =
       query.resolution !== undefined ? durationToMillis(query.resolution) : 0;
-    const resolutionMs = Math.max(
-      1,
-      Math.ceil(requestedMs),
-      Math.ceil((window.toMs - window.fromMs) / budget)
-    );
 
-    // The box selects tracks, it does not clip them: probe for any fix inside
-    // it over the whole window as a single bucket, and if there is one, return
-    // the context's track in full.
-    if (query.bbox) {
-      const probe = await this.queryPositions(
+    let resolutionMs: number;
+    let segments: TrackPoint[][];
+    if (query.bbox && query.clip === true) {
+      // Clipped: the parts inside the box, the budget spent on them.
+      const clipped = await this.queryClippedPositions(
         context,
         window,
-        window.toMs - window.fromMs,
         toSpatialFilter(query.bbox),
+        budget,
+        requestedMs,
         dataDir,
         buffer
       );
-      if (probe.length === 0) {
+      if (!clipped) {
         return null;
       }
+      resolutionMs = clipped.resolutionMs;
+      const gapMs = Math.max(GAP_BUCKETS * resolutionMs, MIN_GAP_MS);
+      segments = clipped.segments.flatMap(segment =>
+        splitIntoSegments(segment, gapMs)
+      );
+    } else {
+      // Bucket size: whatever the caller asked for, widened as needed so the
+      // window fits the point budget.
+      resolutionMs = Math.max(
+        1,
+        Math.ceil(requestedMs),
+        Math.ceil((window.toMs - window.fromMs) / budget)
+      );
+
+      // Not clipped, the box selects tracks: probe for any fix inside it over
+      // the whole window as a single bucket, and if there is one, return the
+      // context's track in full.
+      if (query.bbox) {
+        const probe = await this.queryPositions(
+          context,
+          window,
+          window.toMs - window.fromMs,
+          toSpatialFilter(query.bbox),
+          dataDir,
+          buffer
+        );
+        if (probe.length === 0) {
+          return null;
+        }
+      }
+
+      const points = await this.queryPositions(
+        context,
+        window,
+        resolutionMs,
+        undefined,
+        dataDir,
+        buffer
+      );
+      if (points.length === 0) {
+        return null;
+      }
+
+      const gapMs = Math.max(GAP_BUCKETS * resolutionMs, MIN_GAP_MS);
+      segments = splitIntoSegments(points, gapMs);
     }
 
-    const points = await this.queryPositions(
-      context,
-      window,
-      resolutionMs,
-      undefined,
-      dataDir,
-      buffer
-    );
-    if (points.length === 0) {
-      return null;
-    }
-
-    const gapMs = Math.max(GAP_BUCKETS * resolutionMs, MIN_GAP_MS);
-    let segments = splitIntoSegments(points, gapMs);
+    // The budget is an upper bound (`maxPoints`), which the buckets only aim
+    // at; see capPoints.
+    segments = capPoints(segments, budget);
 
     let epsilon: number | undefined;
     if (query.simplify || query.epsilon !== undefined) {
@@ -954,37 +1001,13 @@ export class TrackProvider implements TrackApi {
 
     const connection = await DuckDBPool.getConnection();
     try {
-      const sources: string[] = [];
-      if (files.length > 0) {
-        sources.push(
-          `SELECT signalk_timestamp, TRY_CAST(value_latitude AS DOUBLE) AS lat, TRY_CAST(value_longitude AS DOUBLE) AS lon ` +
-            `FROM ${readParquetSql(files)}`
-        );
-      }
-      if (hasBufferTable && buffer) {
-        const staged = await stageBufferTable(
-          connection,
-          buffer,
-          String(context),
-          POSITION_PATH,
-          window.fromIso,
-          window.toIso,
-          this.debug
-        );
-        if (staged) {
-          const subquery = buildBufferObjectSubquery(
-            staged,
-            context,
-            window.fromIso,
-            window.toIso,
-            POSITION_COMPONENTS,
-            buffer.getTableColumns(POSITION_PATH)
-          );
-          sources.push(
-            `SELECT signalk_timestamp, value_latitude AS lat, value_longitude AS lon FROM ${subquery}`
-          );
-        }
-      }
+      const sources = await this.positionSources(
+        connection,
+        context,
+        window,
+        files,
+        buffer
+      );
       if (sources.length === 0) {
         return [];
       }
@@ -1014,6 +1037,206 @@ export class TrackProvider implements TrackApi {
         lat: Number(row.lat),
         lon: Number(row.lon),
       }));
+    } finally {
+      connection.disconnectSync();
+    }
+  }
+
+  /**
+   * The SELECTs a position query unions: raw parquet, and the buffer staged
+   * onto `connection`, each as `signalk_timestamp, lat, lon`.
+   */
+  private async positionSources(
+    connection: Connection,
+    context: Context,
+    window: TimeWindow,
+    files: string[],
+    buffer: TrackBufferSource | undefined
+  ): Promise<string[]> {
+    const sources: string[] = [];
+    if (files.length > 0) {
+      sources.push(
+        `SELECT signalk_timestamp, TRY_CAST(value_latitude AS DOUBLE) AS lat, TRY_CAST(value_longitude AS DOUBLE) AS lon ` +
+          `FROM ${readParquetSql(files)}`
+      );
+    }
+    if (buffer?.hasTable(POSITION_PATH)) {
+      const staged = await stageBufferTable(
+        connection,
+        buffer,
+        String(context),
+        POSITION_PATH,
+        window.fromIso,
+        window.toIso,
+        this.debug
+      );
+      if (staged) {
+        const subquery = buildBufferObjectSubquery(
+          staged,
+          context,
+          window.fromIso,
+          window.toIso,
+          POSITION_COMPONENTS,
+          buffer.getTableColumns(POSITION_PATH)
+        );
+        sources.push(
+          `SELECT signalk_timestamp, value_latitude AS lat, value_longitude AS lon FROM ${subquery}`
+        );
+      }
+    }
+    return sources;
+  }
+
+  /**
+   * The parts of the context's track inside the box, as the Track API's
+   * `clip` asks (SignalK/signalk-server#3081): each stretch inside is its own
+   * segment, opened by the recorded fix just before it entered and closed by
+   * the one just after it left, so a line reaches the edge of the view
+   * without invented points. A single fix outside between two visits closes
+   * one and opens the next, so it is in both.
+   *
+   * The budget is spent on what is returned: the bucket size comes from the
+   * clipped segments' time span, not the window's, with room reserved for
+   * every segment's entry and exit fix, which are kept whatever the bucket
+   * and marked `crossing` so the caller's cap (capPoints) keeps them while
+   * they fit. Null when no fix is inside the box.
+   */
+  private async queryClippedPositions(
+    context: Context,
+    window: TimeWindow,
+    box: SpatialFilter,
+    budget: number,
+    requestedMs: number,
+    dataDir: string,
+    buffer: TrackBufferSource | undefined
+  ): Promise<{ segments: TrackPoint[][]; resolutionMs: number } | null> {
+    const files = await this.rawFiles(dataDir, context, POSITION_PATH, window);
+    if (files.length === 0 && !buffer?.hasTable(POSITION_PATH)) {
+      return null;
+    }
+
+    const connection = await DuckDBPool.getConnection();
+    try {
+      const sources = await this.positionSources(
+        connection,
+        context,
+        window,
+        files,
+        buffer
+      );
+      if (sources.length === 0) {
+        return null;
+      }
+
+      // Every fix in the window, flagged inside or not, then only those a
+      // clipped track keeps: inside, or next to an inside fix in time. `seg`
+      // counts entries: a kept fix starts a segment when it is the fix
+      // before an entry, or an inside fix with nothing before it in the
+      // window. A fix outside with an inside fix on both sides also closes
+      // the segment before it, so it is copied there.
+      const inside = `(${buildSpatialSqlClause(box, 'lat', 'lon')})`;
+      await connection.run(`
+        CREATE OR REPLACE TEMP TABLE track_clip AS
+        WITH fixes AS (
+          SELECT
+            EPOCH_MS(signalk_timestamp::TIMESTAMP) AS t_ms,
+            lat,
+            lon,
+            ${inside} AS inside
+          FROM (${sources.join(' UNION ALL ')}) AS src
+          WHERE signalk_timestamp >= '${escapeSqlString(window.fromIso)}'
+            AND signalk_timestamp < '${escapeSqlString(window.toIso)}'
+            AND lat IS NOT NULL AND lon IS NOT NULL
+        ),
+        flagged AS (
+          SELECT
+            t_ms, lat, lon, inside,
+            LAG(inside) OVER w AS prev_inside,
+            LEAD(inside) OVER w AS next_inside
+          FROM fixes
+          WINDOW w AS (ORDER BY t_ms, lat, lon)
+        ),
+        kept AS (
+          SELECT
+            t_ms, lat, lon, inside,
+            SUM(
+              CASE
+                WHEN (NOT inside AND next_inside)
+                  OR (inside AND prev_inside IS NULL) THEN 1
+                ELSE 0
+              END
+            ) OVER (ORDER BY t_ms, lat, lon ROWS UNBOUNDED PRECEDING) AS seg,
+            NOT inside AND prev_inside AND next_inside AS between_visits
+          FROM flagged
+          WHERE inside OR prev_inside OR next_inside
+        )
+        SELECT t_ms, lat, lon, inside, seg FROM kept
+        UNION ALL
+        SELECT t_ms, lat, lon, inside, seg - 1 FROM kept WHERE between_visits`);
+
+      const spans = (
+        await connection.runAndReadAll(`
+          SELECT COUNT(*) AS segments,
+                 SUM(span) AS total_span
+          FROM (
+            SELECT MAX(t_ms) - MIN(t_ms) AS span
+            FROM track_clip
+            GROUP BY seg
+          )`)
+      ).getRowObjects()[0];
+      const segmentCount = Number(spans?.segments ?? 0);
+      if (segmentCount === 0) {
+        return null;
+      }
+      // Entry and exit fixes are kept whatever the bucket, so they come out of
+      // the budget first.
+      const buckets = Math.max(1, budget - 2 * segmentCount);
+      const resolutionMs = Math.max(
+        1,
+        Math.ceil(requestedMs),
+        Math.ceil(Number(spans.total_span ?? 0) / buckets)
+      );
+
+      // The first inside fix per bucket within each segment, and every fix
+      // outside (the entry and exit fixes), in time order.
+      const rows = (
+        await connection.runAndReadAll(`
+          SELECT seg, t_ms, lat, lon, crossing,
+                 CAST(FLOOR(t_ms / ${resolutionMs}) * ${resolutionMs} AS BIGINT) AS bucket_ms
+          FROM (
+            SELECT seg, t_ms, lat, lon, TRUE AS crossing
+            FROM track_clip
+            WHERE NOT inside
+            UNION ALL
+            SELECT seg,
+                   MIN(t_ms),
+                   ARG_MIN(lat, t_ms),
+                   ARG_MIN(lon, t_ms),
+                   FALSE
+            FROM track_clip
+            WHERE inside
+            GROUP BY seg, FLOOR(t_ms / ${resolutionMs})
+          )
+          ORDER BY seg, t_ms`)
+      ).getRowObjects();
+
+      const bySegment = new Map<number, TrackPoint[]>();
+      for (const row of rows) {
+        const seg = Number(row.seg);
+        let points = bySegment.get(seg);
+        if (!points) {
+          points = [];
+          bySegment.set(seg, points);
+        }
+        points.push({
+          bucketMs: Number(row.bucket_ms),
+          tMs: Number(row.t_ms),
+          lat: Number(row.lat),
+          lon: Number(row.lon),
+          crossing: row.crossing === true,
+        });
+      }
+      return { segments: [...bySegment.values()], resolutionMs };
     } finally {
       connection.disconnectSync();
     }

@@ -833,15 +833,16 @@ async function populateEditSignalKPaths(index, currentPath) {
       }
     }
 
-    // Add change listener
-    dropdown.addEventListener('change', function () {
+    // Set, not added: this runs again on every Self/Others toggle while the
+    // row is being edited, and each added listener stayed.
+    dropdown.onchange = function () {
       if (this.value === 'custom') {
         customInput.style.display = 'block';
         customInput.focus();
       } else {
         customInput.style.display = 'none';
       }
-    });
+    };
   } catch (error) {
     console.log('Could not load real-time SignalK paths for edit:', error);
     // Fallback to custom input

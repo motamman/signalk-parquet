@@ -677,6 +677,16 @@ export function unregisterCommand(commandName: string): CommandExecutionResult {
       };
     }
 
+    // Stop its threshold monitors, as updateCommand does for replaced ones:
+    // left running they evaluate every update on their watch path until the
+    // plugin stops, for a command that no longer exists.
+    for (const threshold of commandConfig.thresholds || []) {
+      const monitorKey = buildThresholdMonitorKey(commandName, threshold);
+      thresholdState.get(monitorKey)?.unsubscribe?.();
+      thresholdState.delete(monitorKey);
+    }
+    thresholdProcessingLocks.delete(commandName);
+
     // Remove PUT handler (SignalK API doesn't have unregister, but we can track it)
     commandState.putHandlers.delete(commandName);
     commandState.registeredCommands.delete(commandName);

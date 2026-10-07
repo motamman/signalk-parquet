@@ -174,6 +174,32 @@ function sameJsonValue(a: unknown, b: unknown): boolean {
 }
 
 /**
+ * The columns of a per-path table that a federated read returns: the cursor
+ * (`id`, `signalk_timestamp`), what the federation SQL filters on (`context`,
+ * `exported`, `source_label` for a source filter or source discovery), and the
+ * value itself (`value`, or `value_json` and the `value_*` components). Every
+ * reader of getRowsForFederation and stageBufferTable uses only these.
+ *
+ * The rest — `source`, `received_timestamp`, `created_at`, `source_type`,
+ * `source_pgn`, `source_src`, `meta`, `export_batch_id` — is ingestion and
+ * export bookkeeping. Reading it anyway was most of a values request's
+ * garbage: on brain (2026-10-05) one request read 50,659 position rows as
+ * about 66 MB of JS objects, `source` alone being the widest column.
+ */
+export function federationColumns(columns: Iterable<string>): string[] {
+  const base = new Set([
+    'id',
+    'context',
+    'signalk_timestamp',
+    'exported',
+    'source_label',
+    'value',
+    'value_json',
+  ]);
+  return [...columns].filter(c => base.has(c) || c.startsWith('value_'));
+}
+
+/**
  * The keyset cursor for the last row of a federation page — what the next call
  * to getRowsForFederation resumes after.
  */
@@ -1410,8 +1436,8 @@ export class SQLiteBuffer {
   /**
    * Read a batch of unexported rows for federated history queries,
    * keyset-paginated by `(signalk_timestamp, id)` so callers can stream large
-   * windows without materializing them all. Rows are raw table rows (all
-   * columns), matching the table schema, in timestamp order.
+   * windows without materializing them all. Rows carry the table's
+   * federationColumns, in timestamp order.
    *
    * Pass `null` for the first page and the last row of each page thereafter;
    * see FederationCursor for why the timestamp and not the id carries the
@@ -1430,6 +1456,13 @@ export class SQLiteBuffer {
 
     const tableInfo = this.tableMap.get(signalkPath);
     if (!tableInfo) return [];
+    // From the table as it is now, not the column set read at open: a
+    // read-only connection's set does not learn of a `value_*` column the
+    // writer added since, and stageBufferTable builds its table from this
+    // same schema.
+    const columns = federationColumns(
+      (this.getTableSchema(signalkPath) ?? []).map(c => c.name)
+    );
 
     // Resuming raises the window's lower bound to the cursor's timestamp,
     // and a separate predicate drops the rows already read at exactly that
@@ -1455,7 +1488,8 @@ export class SQLiteBuffer {
     return this.db
       .prepare(
         `
-      SELECT * FROM ${tableInfo.tableName}
+      SELECT ${columns.join(', ')}
+      FROM ${tableInfo.tableName}
       WHERE context = ?
         AND signalk_timestamp >= ? AND signalk_timestamp < ?
         AND exported IN (${EXPORTED_PENDING}, ${EXPORTED_BUFFER_ONLY})

@@ -26,6 +26,8 @@ import * as fs from 'fs-extra';
 import * as path from 'path';
 import { NormalizedDelta, Path, ServerAPI } from '@signalk/server-api';
 import { DataRecord, PluginState } from '../types';
+import { HivePathBuilder } from '../utils/hive-path-builder';
+import { latestStoredIdentity } from '../utils/stored-identity';
 import {
   disposeStreamSubscription,
   StreamSubscription,
@@ -39,7 +41,13 @@ import {
   mergeIdentity,
 } from '../utils/vessel-identity';
 
-/** Vessels tracked in memory before the maps are cleared and rebuilt. */
+/**
+ * Vessels held in memory: the working set (`tracked`, emptied when full) and
+ * the last-written identities (`lastWritten`, least recently written dropped
+ * first). Memory is only a cache of what is stored: a vessel no longer held is
+ * looked up in the buffer and its parquet files before anything is written,
+ * so dropping one never writes its identity again (#137).
+ */
 const MAX_TRACKED_CONTEXTS = 20_000;
 
 /** How often the last-written map is flushed to disk while running. */
@@ -54,11 +62,20 @@ interface TrackedVessel {
   source?: string;
   /** True when `known` differs from what was last written. */
   dirty: boolean;
+  /**
+   * True while its stored identity is being read from parquet: values are
+   * folded into `known` meanwhile, and whether to write is decided once the
+   * stored identity is in.
+   */
+  loading?: boolean;
 }
 
 export class VesselIdentityService {
   private readonly tracked = new Map<string, TrackedVessel>();
-  /** Canonical JSON of the components last written per context (persisted). */
+  /**
+   * Canonical JSON of the components last written per context (persisted),
+   * least recently written first, at most `maxRemembered` of them.
+   */
   private lastWritten = new Map<string, string>();
   private subscriptions: StreamSubscription[] = [];
   private persistTimer?: NodeJS.Timeout;
@@ -67,13 +84,21 @@ export class VesselIdentityService {
   /** Contexts whose report is still arriving; written once it has (flushPending). */
   private readonly pending = new Set<string>();
   private flushScheduled = false;
+  /** Parquet lookups, one at a time; stop() waits for the one in flight. */
+  private lookups: Promise<void> = Promise.resolve();
+  private lookupsInFlight = 0;
+  private readonly hive = new HivePathBuilder();
+  private readonly maxRemembered: number;
 
   constructor(
     private readonly app: ServerAPI,
     private readonly state: PluginState,
     private readonly dataDir: string,
-    private readonly debug: (msg: string) => void
-  ) {}
+    private readonly debug: (msg: string) => void,
+    options: { maxRemembered?: number } = {}
+  ) {
+    this.maxRemembered = options.maxRemembered ?? MAX_TRACKED_CONTEXTS;
+  }
 
   private get stateFile(): string {
     return path.join(this.dataDir, STATE_FILE);
@@ -123,8 +148,25 @@ export class VesselIdentityService {
     );
   }
 
-  stop(): void {
-    if (!this.running) return;
+  /**
+   * Resolves once stopped. A parquet lookup still in flight finishes first,
+   * while the service is running, so a vessel heard just before the stop is
+   * decided and written like any other; it also holds a DuckDB connection,
+   * and the plugin closes the pool after this.
+   */
+  stop(): Promise<void> {
+    if (!this.running) return Promise.resolve();
+    // Without a lookup in flight the stop is immediate, as it always was.
+    if (this.lookupsInFlight === 0) {
+      this.shutdown();
+      return Promise.resolve();
+    }
+    return this.lookups.then(() => {
+      if (this.running) this.shutdown();
+    });
+  }
+
+  private shutdown(): void {
     // A report that arrived in this same pass is written, not dropped: the
     // plugin stops this service before it closes the buffer.
     this.flushPending();
@@ -201,15 +243,135 @@ export class VesselIdentityService {
       }
       // Start from what was last written, so a replay of known values after
       // a restart (an upstream cache sent one path per message) is not
-      // mistaken for a change.
-      vessel = { known: this.lastWrittenIdentity(context), dirty: false };
+      // mistaken for a change. What is not in memory is asked of the
+      // buffer, synchronously; only a vessel whose identity is on disk but
+      // no longer in the buffer waits for a parquet read.
+      vessel = { known: {}, dirty: false };
       this.tracked.set(context, vessel);
+      const written =
+        this.lastWritten.get(context) ?? this.recallFromBuffer(context);
+      if (written !== undefined) {
+        vessel.known = parseIdentity(written) ?? {};
+      } else if (this.hasIdentityOnDisk(context)) {
+        vessel.loading = true;
+        this.recallFromParquet(context, vessel);
+      }
     }
     if (mergeIdentity(vessel.known, incoming)) {
       vessel.timestamp = timestamp;
       vessel.source = source;
+      // Decided once the stored identity is in (recallFromParquet).
+      if (vessel.loading) return;
       vessel.dirty = canonical(vessel.known) !== this.lastWritten.get(context);
       if (vessel.dirty && writeNow) this.schedule(context);
+    }
+  }
+
+  /**
+   * The vessel's last identity row in the buffer, exported or not, as
+   * canonical JSON, remembered; undefined when the buffer has none.
+   */
+  private recallFromBuffer(context: string): string | undefined {
+    const buffer = this.state.sqliteBuffer;
+    if (!buffer || !buffer.isOpen()) return undefined;
+    let row: ReturnType<typeof buffer.getLatestObjectRowAt>;
+    try {
+      row = buffer.getLatestObjectRowAt(
+        IDENTITY_PATH,
+        context,
+        '9999-12-31T23:59:59.999Z'
+      );
+    } catch {
+      return undefined;
+    }
+    const known = parseIdentity(row?.value_json ?? undefined);
+    if (!known) return undefined;
+    const written = canonical(known);
+    this.remember(context, written);
+    return written;
+  }
+
+  /** Whether the vessel has an identity directory in the raw tier. */
+  private hasIdentityOnDisk(context: string): boolean {
+    return fs.existsSync(
+      path.join(
+        this.dataDir,
+        'tier=raw',
+        `context=${this.hive.sanitizeContext(context)}`,
+        `path=${this.hive.sanitizePath(IDENTITY_PATH)}`
+      )
+    );
+  }
+
+  /**
+   * Read the vessel's newest identity from its parquet files, then decide
+   * as for any vessel: write only if what has arrived since differs from it.
+   * A read that fails is taken as nothing on file, as for a new vessel: an
+   * identity is not left unrecorded because a file could not be read.
+   */
+  private recallFromParquet(context: string, vessel: TrackedVessel): void {
+    this.lookupsInFlight += 1;
+    this.lookups = this.lookups.then(async () => {
+      try {
+        await this.decideFromParquet(context, vessel);
+      } catch (error) {
+        // Caught here so the chain stays resolved: one rejected link would
+        // skip every lookup queued after it, leaving those vessels waiting
+        // for good, and make stop() reject before it shuts down.
+        this.debug(
+          `[Identity] Deciding the identity of ${context} failed: ${(error as Error).message}`
+        );
+        // Its next report is then decided as for any vessel, not held.
+        vessel.loading = false;
+      } finally {
+        this.lookupsInFlight -= 1;
+      }
+    });
+  }
+
+  private async decideFromParquet(
+    context: string,
+    vessel: TrackedVessel
+  ): Promise<void> {
+    if (!this.running) return;
+    let stored: IdentityComponents | null = null;
+    try {
+      const raw = await latestStoredIdentity(
+        this.dataDir,
+        context,
+        new Date().toISOString()
+      );
+      stored = raw ? fromStoredRow(raw) : null;
+    } catch (error) {
+      this.app.error(
+        `[Identity] Could not read the stored identity of ${context}: ${(error as Error).message}`
+      );
+    }
+    if (!this.running || this.tracked.get(context) !== vessel) return;
+    vessel.loading = false;
+    const known: IdentityComponents = stored ? { ...stored } : {};
+    if (stored) this.remember(context, canonical(stored));
+    mergeIdentity(known, vessel.known);
+    vessel.known = known;
+    vessel.dirty = canonical(known) !== this.lastWritten.get(context);
+    if (vessel.dirty) this.schedule(context);
+  }
+
+  /**
+   * Record what was last written for a context as the most recent entry,
+   * dropping the least recently written past the limit.
+   */
+  private remember(context: string, written: string): void {
+    if (this.lastWritten.get(context) !== written) this.stateDirty = true;
+    this.lastWritten.delete(context);
+    this.lastWritten.set(context, written);
+    this.trimLastWritten();
+  }
+
+  private trimLastWritten(): void {
+    while (this.lastWritten.size > this.maxRemembered) {
+      this.lastWritten.delete(this.lastWritten.keys().next().value as string);
+      this.stateDirty = true;
     }
   }
 
@@ -338,12 +500,7 @@ export class VesselIdentityService {
       return;
     }
     vessel.dirty = false;
-    this.lastWritten.set(context, canonical(vessel.known));
-    this.stateDirty = true;
-  }
-
-  private lastWrittenIdentity(context: string): IdentityComponents {
-    return parseIdentity(this.lastWritten.get(context)) ?? {};
+    this.remember(context, canonical(vessel.known));
   }
 
   /**
@@ -367,11 +524,8 @@ export class VesselIdentityService {
     for (const row of rows) {
       const known = parseIdentity(row.value_json ?? undefined);
       if (!known) continue;
-      const written = canonical(known);
-      if (this.lastWritten.get(row.context) !== written) {
-        this.lastWritten.set(row.context, written);
-        this.stateDirty = true;
-      }
+      // Rows in the buffer are the newest written, so they go last.
+      this.remember(row.context, canonical(known));
     }
     this.persistState();
   }
@@ -387,6 +541,9 @@ export class VesselIdentityService {
           const known = parseIdentity(json);
           if (known) this.lastWritten.set(context, canonical(known));
         }
+        // A file saved before the limit existed is cut to it here, the
+        // least recently written first, as the file keeps the map's order.
+        this.trimLastWritten();
       }
     } catch {
       this.lastWritten = new Map();
@@ -469,6 +626,30 @@ function parseIdentity(json: string | undefined): IdentityComponents | null {
     (out as Record<string, unknown>)[field] = value;
   }
   return out;
+}
+
+/**
+ * Identity components from a stored parquet row, as the file typed them: a
+ * numeric-looking text column such as the MMSI comes back a number and is
+ * turned back into text. Keys that are not identity components are dropped.
+ */
+function fromStoredRow(
+  row: Record<string, unknown>
+): IdentityComponents | null {
+  const out: Record<string, unknown> = {};
+  for (const [key, expected] of Object.entries(IDENTITY_FIELD_TYPES)) {
+    const v = row[key];
+    if (v === null || v === undefined) continue;
+    if (expected === 'string') {
+      if (typeof v === 'string') out[key] = v;
+      else if (typeof v === 'number' && Number.isFinite(v))
+        out[key] = String(v);
+    } else {
+      const n = Number(v);
+      if (Number.isFinite(n)) out[key] = n;
+    }
+  }
+  return Object.keys(out).length > 0 ? (out as IdentityComponents) : null;
 }
 
 /** Walk a dotted path through nested plain objects. */

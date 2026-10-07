@@ -16,7 +16,11 @@
  */
 
 import { DuckDBConnection, DuckDBAppender } from '@duckdb/node-api';
-import { federationCursor, pathToTableName } from './sqlite-buffer';
+import {
+  federationColumns,
+  federationCursor,
+  pathToTableName,
+} from './sqlite-buffer';
 import { yieldToEventLoop } from './hive-walk';
 import { FederationCursor } from '../types';
 
@@ -216,8 +220,14 @@ export async function stageBufferTable(
   warn?: (msg: string) => void
 ): Promise<string | null> {
   const source = inProcessSource(buffer);
-  const schema = await source.schema(signalkPath);
-  if (!schema || schema.length === 0) {
+  // Only the columns getRowsForFederation returns: the staged table is
+  // filled from those rows.
+  const fullSchema = await source.schema(signalkPath);
+  const wanted = new Set(
+    federationColumns((fullSchema ?? []).map(c => c.name))
+  );
+  const schema = (fullSchema ?? []).filter(c => wanted.has(c.name));
+  if (schema.length === 0) {
     return null;
   }
 

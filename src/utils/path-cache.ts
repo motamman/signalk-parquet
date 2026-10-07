@@ -34,6 +34,30 @@ let pathCacheEpoch = 0;
 const contextCache = new Map<string, ContextCacheEntry>();
 
 /**
+ * Store an entry, dropping every expired one first and then the oldest past
+ * the size limit. Keys carry the minute-rounded window, so a sliding
+ * dashboard poll makes a new key every minute and never asks for the old one
+ * again: expiring entries only when their own key is looked up left each map
+ * full of stale result lists (#143). Insertion order is age order, because an
+ * entry is deleted before it is set again.
+ */
+function store<T extends { timestamp: number }>(
+  cache: Map<string, T>,
+  key: string,
+  entry: T
+): void {
+  const now = Date.now();
+  for (const [k, v] of cache) {
+    if (now - v.timestamp >= CACHE_TTL.PATH_CONTEXT) cache.delete(k);
+  }
+  cache.delete(key);
+  cache.set(key, entry);
+  while (cache.size > CACHE_SIZE.PATH_CONTEXT_MAX) {
+    cache.delete(cache.keys().next().value as string);
+  }
+}
+
+/**
  * Round timestamp to nearest minute for cache key generation
  * This allows queries within the same minute to share cache entries
  * @param dateTime - ZonedDateTime to round
@@ -100,19 +124,11 @@ export function setCachedPaths(
   // Use rounded timestamps for cache key to improve hit rate
   const key = `${dataDir}:${context}:${roundToMinute(from)}:${roundToMinute(to)}`;
 
-  pathCache.set(key, {
+  store(pathCache, key, {
     timeRange: { from: from.toString(), to: to.toString() },
     paths,
     timestamp: Date.now(),
   });
-
-  // Clean up old entries if cache is too large
-  if (pathCache.size > CACHE_SIZE.PATH_CONTEXT_MAX) {
-    const oldestKey = Array.from(pathCache.entries()).sort(
-      (a, b) => a[1].timestamp - b[1].timestamp
-    )[0][0];
-    pathCache.delete(oldestKey);
-  }
 }
 
 /**
@@ -184,19 +200,11 @@ export function setCachedContexts(
   // Use rounded timestamps for cache key to improve hit rate
   const key = `${dataDir}:${roundToMinute(from)}:${roundToMinute(to)}`;
 
-  contextCache.set(key, {
+  store(contextCache, key, {
     timeRange: { from: from.toString(), to: to.toString() },
     contexts,
     timestamp: Date.now(),
   });
-
-  // Clean up old entries if cache is too large
-  if (contextCache.size > CACHE_SIZE.PATH_CONTEXT_MAX) {
-    const oldestKey = Array.from(contextCache.entries()).sort(
-      (a, b) => a[1].timestamp - b[1].timestamp
-    )[0][0];
-    contextCache.delete(oldestKey);
-  }
 }
 
 /**

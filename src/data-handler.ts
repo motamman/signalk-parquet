@@ -384,6 +384,11 @@ export function updateDataSubscriptions(
   config: PluginConfig,
   app: ServerAPI
 ): void {
+  // HTTP routes outlive stop() (auto-discovery from a history request, a
+  // path config edit) and would otherwise subscribe a stopped plugin to the
+  // server again, writing into a closed buffer.
+  if (state.isStopping) return;
+
   // First, unsubscribe from all existing subscriptions
   state.unsubscribes.forEach(unsubscribe => {
     if (typeof unsubscribe === 'function') {
@@ -1172,12 +1177,24 @@ export async function uploadConsolidatedFilesToS3(
 
     if (localFiles.length === 0) return;
 
-    // List existing keys and only upload missing
-    const existingKeys = await listCloudKeys(
-      target.client,
-      target.bucket,
-      target.keyPrefix || undefined
+    // Which of the day's files are already in the bucket, asked of the day's
+    // own directories only. Listing the whole bucket put every key ever
+    // uploaded into one Set to test a single day's files against, so the
+    // daily peak grew with the archive: about 450,000 keys on the test server
+    // (2026-10-05), against 316 directories holding that day's files.
+    const prefixes = new Set(
+      localFiles.map(f => getCloudKey(f, target, config).replace(/[^/]+$/, ''))
     );
+    const existingKeys = new Set<string>();
+    for (const prefix of prefixes) {
+      for (const key of await listCloudKeys(
+        target.client,
+        target.bucket,
+        prefix
+      )) {
+        existingKeys.add(key);
+      }
+    }
 
     const uploaded = await uploadMissingFiles(
       localFiles,

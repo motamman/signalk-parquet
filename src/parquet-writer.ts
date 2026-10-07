@@ -142,17 +142,26 @@ export class ParquetWriter {
       // Create Parquet writer
       const writer = await parquet.ParquetWriter.openFile(schema, filepath);
 
-      // Write records to Parquet file
-      for (let i = 0; i < records.length; i++) {
-        const record = records[i];
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const cleanRecord: { [key: string]: any } = {};
+      // Write records to Parquet file. A row that fails leaves the writer
+      // open and a partial file at the final name, where a later read would
+      // find it; close the writer and remove the file before the catch below
+      // keeps the records as JSON.
+      try {
+        for (let i = 0; i < records.length; i++) {
+          const record = records[i];
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const cleanRecord: { [key: string]: any } = {};
 
-        // Prepare record for typed Parquet schema
-        const preparedRecord = this.prepareRecordForParquet(record, schema);
-        Object.assign(cleanRecord, preparedRecord);
+          // Prepare record for typed Parquet schema
+          const preparedRecord = this.prepareRecordForParquet(record, schema);
+          Object.assign(cleanRecord, preparedRecord);
 
-        await writer.appendRow(cleanRecord);
+          await writer.appendRow(cleanRecord);
+        }
+      } catch (error) {
+        await writer.close().catch(() => undefined);
+        await fs.remove(filepath).catch(() => undefined);
+        throw error;
       }
 
       // Close the writer
@@ -237,20 +246,27 @@ export class ParquetWriter {
       );
       const writer = await parquet.ParquetWriter.openFile(schema, filepath);
 
-      // Write first batch
-      for (const record of firstBatch) {
-        const preparedRecord = this.prepareRecordForParquet(record, schema);
-        await writer.appendRow({ ...preparedRecord });
-      }
-
-      // Pull and write subsequent batches
-      let batch = nextBatch();
-      while (batch.length > 0) {
-        for (const record of batch) {
+      // A failing row or batch read leaves the writer open; close it. The
+      // caller writes to a temp name and removes that on failure.
+      try {
+        // Write first batch
+        for (const record of firstBatch) {
           const preparedRecord = this.prepareRecordForParquet(record, schema);
           await writer.appendRow({ ...preparedRecord });
         }
-        batch = nextBatch();
+
+        // Pull and write subsequent batches
+        let batch = nextBatch();
+        while (batch.length > 0) {
+          for (const record of batch) {
+            const preparedRecord = this.prepareRecordForParquet(record, schema);
+            await writer.appendRow({ ...preparedRecord });
+          }
+          batch = nextBatch();
+        }
+      } catch (error) {
+        await writer.close().catch(() => undefined);
+        throw error;
       }
 
       await writer.close();
@@ -390,7 +406,7 @@ export class ParquetWriter {
 
   // Create Parquet schema based on sample records
   // Now uses consolidated SchemaService
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
   async createParquetSchema(
     records: DataRecord[],
     currentPath?: string
@@ -814,11 +830,13 @@ export class ParquetWriter {
       // Try to open and read the parquet file
       try {
         const reader = await parquet.ParquetReader.openFile(filepath);
-        const cursor = reader.getCursor();
-
-        // Try to read first record to verify file structure
-        const firstRecord = await cursor.next();
-        await reader.close();
+        let firstRecord: unknown;
+        try {
+          // Try to read first record to verify file structure
+          firstRecord = await reader.getCursor().next();
+        } finally {
+          await reader.close().catch(() => undefined);
+        }
 
         // Log file size for debugging (matches your stat command format)
         this.app?.debug(

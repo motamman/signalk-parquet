@@ -8,6 +8,7 @@
 import * as fs from 'fs-extra';
 import * as path from 'path';
 import { globIn } from '../utils/glob-in';
+import { keepMessage } from '../utils/job-messages';
 import { readParquetSql } from '../utils/parquet-files';
 import { ServerAPI } from '@signalk/server-api';
 import { HivePathBuilder, AggregationTier } from '../utils/hive-path-builder';
@@ -36,7 +37,9 @@ export interface MigrationProgress {
   bytesProcessed: number;
   filesMigrated: number;
   filesSkipped: number;
+  /** The first errors' text (see utils/job-messages.ts); the count is every one. */
   errors: string[];
+  errorCount: number;
   cancelRequested?: boolean; // per-job cancel flag, set by cancel(jobId)
   aggregationDatesProcessed?: number;
   aggregationDatesTotal?: number;
@@ -158,6 +161,7 @@ export class MigrationService {
       filesMigrated: 0,
       filesSkipped: 0,
       errors: [],
+      errorCount: 0,
     };
 
     migrationJobs.set(jobId, progress);
@@ -261,7 +265,8 @@ export class MigrationService {
         } catch (error) {
           const errorMsg = `Failed to migrate ${file}: ${(error as Error).message}`;
           this.app.debug(errorMsg);
-          progress.errors.push(errorMsg);
+          progress.errorCount++;
+          keepMessage(progress.errors, errorMsg);
         }
       }
 
@@ -302,7 +307,9 @@ export class MigrationService {
             try {
               await aggService.aggregateDate(dates[i]);
             } catch (error) {
-              progress.errors.push(
+              progress.errorCount++;
+              keepMessage(
+                progress.errors,
                 `Aggregation failed for ${dateStr}: ${(error as Error).message}`
               );
             }
@@ -310,7 +317,9 @@ export class MigrationService {
 
           progress.aggregationDatesProcessed = dates.length;
         } catch (error) {
-          progress.errors.push(
+          progress.errorCount++;
+          keepMessage(
+            progress.errors,
             `Aggregation phase failed: ${(error as Error).message}`
           );
         }

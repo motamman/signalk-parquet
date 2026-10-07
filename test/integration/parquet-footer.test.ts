@@ -11,6 +11,7 @@ import { ParquetWriter } from '../../src/parquet-writer';
 import {
   componentColumns,
   dataTypeOf,
+  FooterCache,
   footerReaderAvailable,
   hasColumn,
   overlapsWindow,
@@ -133,6 +134,55 @@ describe('parquet footer reader', function () {
       until: () => true,
     });
     expect(seen).to.have.lengthOf(1);
+  });
+
+  describe('decoded once per version of a file', () => {
+    it('answers a second read of an unchanged file from the cache', async () => {
+      const first = await readFooter(scalarFile);
+      expect(await readFooter(scalarFile)).to.equal(first);
+    });
+
+    it('decodes again when the file is rewritten', async () => {
+      const before = await readFooter(scalarFile);
+      expect(before.columns.has('value_latitude')).to.equal(false);
+      // Same name, different contents: what a schema repair does in place.
+      await writer.writeRecords(scalarFile, [
+        makePositionRecord(CONTEXT, 40.6, -73.98, '2024-06-02T10:00:00.000Z'),
+      ]);
+      const after = await readFooter(scalarFile);
+      expect(after).to.not.equal(before);
+      expect(after.columns.has('value_latitude')).to.equal(true);
+      expect(after.timestampSpans).to.deep.equal([
+        ['2024-06-02T10:00:00.000Z', '2024-06-02T10:00:00.000Z'],
+      ]);
+    });
+
+    it('drops the least recently used entry past its limit', () => {
+      const cache = new FooterCache(2);
+      const footer = (file: string) => ({
+        file,
+        columns: new Map(),
+        context: null,
+        timestampSpans: null,
+      });
+      cache.set('a', 1, 1, footer('a'));
+      cache.set('b', 1, 1, footer('b'));
+      expect(cache.get('a', 1, 1)?.file).to.equal('a'); // a is now newest
+      cache.set('c', 1, 1, footer('c'));
+      expect(cache.size).to.equal(2);
+      expect(cache.get('b', 1, 1)).to.equal(undefined);
+      expect(cache.get('a', 1, 1)?.file).to.equal('a');
+      expect(cache.get('c', 1, 1)?.file).to.equal('c');
+    });
+
+    it('misses when the size or modification time differs', () => {
+      const cache = new FooterCache(10);
+      cache.set('a', 100, 5, { file: 'a', columns: new Map(), context: null, timestampSpans: null });
+      expect(cache.get('a', 101, 5)).to.equal(undefined);
+      cache.set('a', 100, 5, { file: 'a', columns: new Map(), context: null, timestampSpans: null });
+      expect(cache.get('a', 100, 6)).to.equal(undefined);
+      expect(cache.size).to.equal(0);
+    });
   });
 
   describe('row-group statistics', () => {

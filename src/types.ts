@@ -747,7 +747,8 @@ export interface PluginState {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   autoDiscoveryService?: any; // AutoDiscoveryService - avoiding circular import
   // Vessel identity capture (typed loosely to avoid a circular import)
-  identityService?: { stop(): void };
+  // stop() resolves once a stored-identity lookup in flight has finished.
+  identityService?: { stop(): void | Promise<void> };
   // History API (V1 routes). Registered once and reused across reconfigure so
   // the express routes are never left bound to a closed SQLite buffer.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -755,6 +756,9 @@ export interface PluginState {
   // The forked process that answers Track API calls; stop() closes it. Set as
   // soon as it is forked, so a stop during its startup still reaches it.
   trackWorker?: import('./utils/track-worker-client').TrackWorkerClient;
+  // The registered v1 playback provider, kept so stop() can end the sessions
+  // it is still streaming.
+  playbackProvider?: import('./playback-provider').PlaybackProvider;
 }
 
 // Parquet Writer Class Interface

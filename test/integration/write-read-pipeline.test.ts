@@ -271,6 +271,70 @@ describe('storage pipeline (SQLite buffer -> Parquet -> DuckDB)', function () {
     }
   });
 
+  it('stages only the federation columns and still filters by source', async () => {
+    const fromIso = '2024-06-01T00:00:00.000Z';
+    const toIso = '2024-06-02T00:00:00.000Z';
+    // Bookkeeping columns filled in, so leaving them out is visible.
+    buffer.insert({
+      ...positionRecord(40.6, -73.9, '2024-06-01T10:00:00.000Z'),
+      source: { label: 'gps.1', type: 'NMEA2000', pgn: 129025, src: '3' },
+      source_type: 'NMEA2000',
+      source_pgn: 129025,
+      source_src: '3',
+      meta: { units: 'deg' },
+    });
+    buffer.insert({
+      ...positionRecord(41.6, -72.9, '2024-06-01T10:01:00.000Z'),
+      source_label: 'gps.2',
+    });
+
+    const conn = await DuckDBPool.getConnection();
+    try {
+      const staged = await stageBufferTable(
+        conn,
+        buffer,
+        CONTEXT,
+        'navigation.position',
+        fromIso,
+        toIso
+      );
+      expect(staged).to.be.a('string');
+      const described = await conn.runAndReadAll(`DESCRIBE ${staged as string}`);
+      const columns = described
+        .getRowObjects()
+        .map(r => String(r.column_name))
+        .sort();
+      expect(columns).to.deep.equal(
+        [
+          'id',
+          'context',
+          'signalk_timestamp',
+          'exported',
+          'source_label',
+          'value_json',
+          'value_latitude',
+          'value_longitude',
+        ].sort()
+      );
+
+      const subquery = buildBufferObjectSubquery(
+        staged as string,
+        CONTEXT,
+        fromIso,
+        toIso,
+        new Map([
+          ['latitude', { name: 'latitude', columnName: 'value_latitude', dataType: 'numeric' as const }],
+        ]),
+        buffer.getTableColumns('navigation.position'),
+        [{ field: 'sourceRef', column: 'source_label', value: 'gps.2' }]
+      );
+      const res = await conn.runAndReadAll(`SELECT value_latitude FROM ${subquery}`);
+      expect(res.getRowObjects().map(r => Number(r.value_latitude))).to.deep.equal([41.6]);
+    } finally {
+      conn.disconnectSync();
+    }
+  });
+
   it('yields between staged pages without losing or duplicating rows', async () => {
     // Staging pages 5,000 rows at a time and gives the event loop a turn
     // between pages, so the server keeps answering during a large history

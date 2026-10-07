@@ -39,6 +39,7 @@ import { filesFor, readParquetSql } from './utils/parquet-files';
 import { readFooters } from './utils/parquet-footer';
 import { getAvailableContextsForTimeRange } from './utils/context-discovery';
 import { IDENTITY_PATH, IdentityComponents } from './utils/vessel-identity';
+import { latestStoredIdentity } from './utils/stored-identity';
 import {
   PlaybackRow,
   PlaybackDelta,
@@ -71,9 +72,15 @@ export interface PlaybackOptions {
   subscribe?: string;
 }
 
-/** The slice of the server's connection object the provider reads. */
+/** Primus `Spark.CLOSED`: the client has gone and writes are dropped. */
+const SPARK_CLOSED = 2;
+
+/** The slice of the server's connection object (a Primus spark) used here. */
 interface PlaybackSpark {
   query?: Record<string, unknown>;
+  readyState?: number;
+  once?(event: 'end', listener: () => void): unknown;
+  removeListener?(event: 'end', listener: () => void): unknown;
 }
 
 /**
@@ -166,8 +173,6 @@ interface Chunk {
 
 type DeltaSink = (delta: PlaybackDelta) => void;
 
-type Connection = Awaited<ReturnType<typeof DuckDBPool.getConnection>>;
-
 /**
  * Rebuild an object value from its flattened `value_<component>` columns.
  * DuckDB hands integers back as bigint; they become numbers. Null when no
@@ -217,6 +222,8 @@ function startOfNextDay(d: Date): Date {
 export class PlaybackProvider {
   private readonly hive = new HivePathBuilder();
   private readonly selfContext: string;
+  /** Sessions still running, by the promise that settles when each ends. */
+  private readonly sessions = new Map<Promise<void>, PlaybackSession>();
 
   constructor(
     private readonly app: Pick<ServerAPI, 'selfId' | 'selfContext'>,
@@ -289,14 +296,25 @@ export class PlaybackProvider {
 
   /**
    * Start replaying. Returns the function the server calls on disconnect.
+   *
+   * The server cannot be relied on to call it. It asks hasAnyData first and
+   * calls this from the answer, and a client that disconnects while that
+   * answer is being worked out (seconds, with many vessels) has already had
+   * its disconnect handled: the stop function returned here lands in a list
+   * nothing reads again. So a spark that is already closed gets no session,
+   * and every session also stops on its spark's own 'end' (#141).
    */
   streamHistory(
     spark: unknown,
     options: PlaybackOptions,
     onChange: DeltaSink
   ): () => void {
-    const query = (spark as PlaybackSpark | null | undefined)?.query;
-    const named = parseContextParam(query?.context, this.selfContext);
+    const client = spark as PlaybackSpark | null | undefined;
+    if (client?.readyState === SPARK_CLOSED) {
+      this.debug('[Playback] client left before playback began');
+      return () => {};
+    }
+    const named = parseContextParam(client?.query?.context, this.selfContext);
     const session = new PlaybackSession(
       this,
       this.dataDir,
@@ -306,10 +324,28 @@ export class PlaybackProvider {
       onChange,
       this.debug
     );
-    session.run().catch(err => {
-      this.debug(`[Playback] stream ended with error: ${err}`);
-    });
-    return () => session.stop();
+    const stop = () => session.stop();
+    client?.once?.('end', stop);
+    const running = session
+      .run()
+      .catch(err => {
+        this.debug(`[Playback] stream ended with error: ${err}`);
+      })
+      .finally(() => {
+        this.sessions.delete(running);
+        client?.removeListener?.('end', stop);
+      });
+    this.sessions.set(running, session);
+    return stop;
+  }
+
+  /**
+   * Stop every session and wait for each to finish. Called from plugin stop,
+   * before the buffer and DuckDB they read from are closed.
+   */
+  async stopAll(): Promise<void> {
+    for (const session of this.sessions.values()) session.stop();
+    await Promise.all(this.sessions.keys());
   }
 
   // ---- storage access used by sessions ------------------------------------
@@ -523,56 +559,12 @@ export class PlaybackProvider {
       if (parsed && typeof parsed === 'object')
         return parsed as IdentityComponents;
     }
-    // The identity files of this vessel up to `atIso`: identity is written
-    // only when it changes, so this is a handful of files, and the footers
-    // drop the ones that start after the instant asked about.
-    let candidates: string[];
     try {
-      const files = await filesFor({
-        dataDir: this.dataDir,
-        contexts: [context],
-        paths: [IDENTITY_PATH],
-        fromIso: '1970-01-01T00:00:00.000Z',
-        toIso: new Date(Date.parse(atIso) + 1).toISOString(),
-      });
-      if (files.length === 0) return undefined;
-      candidates = (await readFooters(files))
-        .filter(
-          f =>
-            f.timestampSpans === null ||
-            f.timestampSpans.some(([lo]) => lo <= atIso)
-        )
-        .map(f => f.file);
-    } catch (err) {
-      this.debug(`[Playback] identity files unreadable for ${context}: ${err}`);
-      return undefined;
-    }
-    if (candidates.length === 0) return undefined;
-    let connection: Connection;
-    try {
-      connection = await DuckDBPool.getConnection();
-    } catch {
-      return undefined;
-    }
-    try {
-      const result = await connection.runAndReadAll(
-        `SELECT value_json FROM ${readParquetSql(candidates)}
-         WHERE context = '${escapeSqlString(context)}'
-           AND signalk_timestamp <= '${escapeSqlString(atIso)}'
-         ORDER BY signalk_timestamp DESC LIMIT 1`
-      );
-      const rows = result.getRowObjects() as Array<{ value_json: unknown }>;
-      const parsed = rows.length
-        ? decodeJson(String(rows[0].value_json))
-        : null;
-      return parsed && typeof parsed === 'object'
-        ? (parsed as IdentityComponents)
-        : undefined;
+      const stored = await latestStoredIdentity(this.dataDir, context, atIso);
+      return stored as IdentityComponents | undefined;
     } catch (err) {
       this.debug(`[Playback] identity lookup failed for ${context}: ${err}`);
       return undefined;
-    } finally {
-      connection.disconnectSync();
     }
   }
 }

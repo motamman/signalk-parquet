@@ -17,7 +17,7 @@ import * as path from 'path';
 import * as fs from 'fs-extra';
 import { SQLiteBuffer, federationCursor } from '../../src/utils/sqlite-buffer';
 import { FederationCursor } from '../../src/types';
-import { makeScalarRecord } from './helpers/records';
+import { makePositionRecord, makeScalarRecord } from './helpers/records';
 
 const CONTEXT = 'vessels.urn:mrn:signalk:uuid:paging';
 const OTHER = 'vessels.urn:mrn:signalk:uuid:other';
@@ -151,6 +151,41 @@ describe('federation read paging', () => {
         expect(String(row.signalk_timestamp) >= FROM).to.equal(true);
         expect(String(row.signalk_timestamp) < TO).to.equal(true);
       }
+    }
+  });
+
+  it('returns only the federation columns, not the bookkeeping ones', () => {
+    buffer.insert({
+      ...makeScalarRecord(CONTEXT, SOG, 1, FROM),
+      source: { label: 'test.source', type: 'NMEA0183' },
+      source_type: 'NMEA0183',
+      meta: { units: 'm/s' },
+    });
+    const [row] = buffer.getRowsForFederation(SOG, CONTEXT, FROM, TO, null, 10);
+    expect(Object.keys(row).sort()).to.deep.equal(
+      ['context', 'exported', 'id', 'signalk_timestamp', 'source_label', 'value'].sort()
+    );
+  });
+
+  it('returns a component the writer added after a reader opened', () => {
+    const POS = 'navigation.position';
+    buffer.insert(makePositionRecord(CONTEXT, 1, 2, FROM));
+    const reader = new SQLiteBuffer({
+      dbPath: path.join(dataDir, 'buffer.db'),
+      readOnly: true,
+    });
+    try {
+      reader.loadTableIfMissing(POS);
+      // A component the table did not have when the reader opened.
+      buffer.insert({
+        ...makePositionRecord(CONTEXT, 3, 4, '2026-01-01T00:00:01.000Z'),
+        value_altitude: 12,
+      });
+      const rows = reader.getRowsForFederation(POS, CONTEXT, FROM, TO, null, 10);
+      expect(rows).to.have.lengthOf(2);
+      expect(rows[1].value_altitude).to.equal(12);
+    } finally {
+      reader.close();
     }
   });
 

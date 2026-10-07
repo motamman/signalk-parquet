@@ -74,6 +74,11 @@ export interface FakeSignalKOptions {
   metadata?: Record<string, unknown>;
   /** Full-model vessels map returned by getPath('vessels'), keyed by id. */
   vessels?: Record<string, unknown>;
+  /**
+   * Replaces savePluginOptions, which otherwise calls back at once. A test
+   * holds the callback to keep plugin.start() waiting at that point.
+   */
+  savePluginOptions?: (opts: unknown, cb?: (err?: unknown) => void) => void;
 }
 
 /**
@@ -150,9 +155,11 @@ export function createFakeSignalK(
     handleMessage: (source: string, delta: unknown) => {
       published.push({ source, delta });
     },
-    savePluginOptions: (_opts: unknown, cb?: (err?: unknown) => void) => {
-      if (cb) cb();
-    },
+    savePluginOptions:
+      options.savePluginOptions ??
+      ((_opts: unknown, cb?: (err?: unknown) => void) => {
+        if (cb) cb();
+      }),
     setPluginStatus: () => {},
     setPluginError: () => {},
     registerPutHandler: (

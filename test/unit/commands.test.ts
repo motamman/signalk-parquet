@@ -16,6 +16,7 @@ import {
   registerCommand,
   setCurrentCommands,
   stopThresholdMonitoring,
+  unregisterCommand,
   updateCommand,
 } from '../../src/commands';
 import type { ThresholdConfig } from '../../src/types';
@@ -140,6 +141,18 @@ describe('command threshold monitoring', () => {
 
     expect(host.live()).to.have.lengthOf(1);
     expect(host.subscriptions[0].active).to.be.false;
+  });
+
+  it('unsubscribes every monitor when the command is deleted', () => {
+    registerCommand('bilgepump', undefined, undefined, false, [
+      threshold(),
+      threshold({ watchPath: 'environment.wind.speedApparent', operator: 'gt' }),
+    ]);
+    expect(host.live()).to.have.lengthOf(2);
+
+    unregisterCommand('bilgepump');
+
+    expect(host.live()).to.be.empty;
   });
 
   it('unsubscribes when a threshold is removed entirely', () => {
