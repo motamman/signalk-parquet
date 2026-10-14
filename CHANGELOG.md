@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.0.1] - 2026-10-14
+
+First release published since 1.0.0: everything in 1.0.1-beta.1 and 1.0.1-beta.2 below ships here, with no changes since beta.2.
+
 ## [1.0.1-beta.2] - 2026-10-07
 
 Memory and resource fixes (#137, #139–#144), a history query that left about 1 GB of garbage behind after a restart, and `clip` for the Track API (SignalK/signalk-server#3081).
