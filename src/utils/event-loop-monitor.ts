@@ -19,7 +19,11 @@
  * sequence holds even when the thing is synchronous.
  */
 
-import { monitorEventLoopDelay, IntervalHistogram } from 'perf_hooks';
+import { monitorEventLoopDelay } from 'perf_hooks';
+
+// Named from the function rather than imported: @types/node renamed the
+// returned type (IntervalHistogram, then ELDHistogram in 26.6).
+type Histogram = ReturnType<typeof monitorEventLoopDelay>;
 
 /**
  * Loop delay in milliseconds, as libuv records it: each figure *includes* the
@@ -51,7 +55,7 @@ export interface EventLoopDelay {
  */
 const RESOLUTION_MS = 10;
 
-let histogram: IntervalHistogram | undefined;
+let histogram: Histogram | undefined;
 let resetAt = Date.now();
 
 /** Begin recording. Idempotent; a second call does not restart the histogram. */
