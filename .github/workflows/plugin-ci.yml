@@ -15,7 +15,7 @@ on:
 
 jobs:
   plugin-ci:
-    uses: SignalK/signalk-server/.github/workflows/plugin-ci.yml@c72b3b7f9fae462dcf937a636fa5658e046c90f9 # master 2026-07-17
+    uses: SignalK/signalk-server/.github/workflows/plugin-ci.yml@b6f8adf6609525b31eac390fdd867b88c09590b4 # master 2026-07-17
     with:
       test-command: 'npm test'
       build-command: 'npm run build'
