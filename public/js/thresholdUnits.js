@@ -1,3 +1,5 @@
+import { readJson } from './utils.js';
+
 /**
  * Display units for threshold values (#74).
  *
@@ -78,7 +80,7 @@ export async function loadThresholdUnit(path, dataType) {
       { headers: { Accept: 'application/json' } }
     );
     if (response.ok) {
-      const body = await response.json();
+      const body = await readJson(response);
       const meta = body && body[path];
       const conversions = meta && meta.conversions ? meta.conversions : {};
       const targetUnit = Object.keys(conversions)[0];

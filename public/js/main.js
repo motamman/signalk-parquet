@@ -8,7 +8,7 @@ import * as LiveConnections from './liveConnections.js';
 import * as Analysis from './analysis.js';
 import * as HomePort from './homePort.js';
 import * as MapExplorer from './mapExplorer.js';
-import { getPluginPath } from './utils.js';
+import { getPluginPath, readJson } from './utils.js';
 
 function registerGlobals(mapping) {
   Object.entries(mapping).forEach(([name, fn]) => {
@@ -229,7 +229,7 @@ async function checkRawSqlEnabled() {
   try {
     const response = await fetch(`${getPluginPath()}/api/query/enabled`);
     if (response.ok) {
-      const data = await response.json();
+      const data = await readJson(response);
       const queryTab = document.getElementById('queryDatabaseTab');
       const queryPanel = document.getElementById('dataPaths');
       if (queryTab) {

@@ -1,4 +1,4 @@
-import { getPluginPath } from './utils.js';
+import { getPluginPath, readJson } from './utils.js';
 
 let currentAnalysisId = null;
 
@@ -19,7 +19,7 @@ export async function testClaudeConnection() {
       }
     );
 
-    const data = await response.json();
+    const data = await readJson(response);
 
     if (data.success) {
       result.innerHTML = `<div style="color: green; padding: 10px; background: #d4edda; border-radius: 5px;">
@@ -57,7 +57,7 @@ export async function loadVesselContext() {
       throw new Error(`HTTP ${response.status}: ${response.statusText}`);
     }
 
-    const data = await response.json();
+    const data = await readJson(response);
     console.log('Vessel context data:', data);
 
     if (data.success && data.data) {
@@ -217,7 +217,7 @@ export async function refreshVesselInfo() {
       throw new Error(`HTTP ${response.status}: ${response.statusText}`);
     }
 
-    const data = await response.json();
+    const data = await readJson(response);
     console.log('Refresh data:', data);
 
     if (data.success && data.data) {
@@ -261,7 +261,7 @@ export async function saveVesselContext() {
       }),
     });
 
-    const data = await response.json();
+    const data = await readJson(response);
 
     if (data.success) {
       updateVesselContextStatus('Context saved successfully ✅');
@@ -293,7 +293,7 @@ export async function previewClaudeContext() {
       throw new Error(`HTTP ${response.status}: ${response.statusText}`);
     }
 
-    const data = await response.json();
+    const data = await readJson(response);
     console.log('Preview data:', data);
 
     if (data.success && data.data) {
@@ -374,7 +374,7 @@ export function toggleVesselContext() {
 export async function loadAnalysisTemplates() {
   try {
     const response = await fetch(`${getPluginPath()}/api/analyze/templates`);
-    const data = await response.json();
+    const data = await readJson(response);
 
     if (data.success && data.templates) {
       // Flatten template categories into a single array
@@ -515,7 +515,7 @@ Provide actionable insights based on what you observe in the data.`,
       body: JSON.stringify(analysisRequest),
     });
 
-    const data = await response.json();
+    const data = await readJson(response);
 
     if (data.success && data.data) {
       displayAnalysisResult(data.data);
@@ -747,7 +747,7 @@ Provide actionable insights based on what you observe in the data.`,
       signal: currentAnalysisController.signal,
     });
 
-    const data = await response.json();
+    const data = await readJson(response);
 
     // Stop timer and show final time
     clearInterval(timerInterval);
@@ -1249,7 +1249,7 @@ export async function openAnalysisHistoryModal() {
       throw new Error(`HTTP ${response.status}: ${response.statusText}`);
     }
 
-    const data = await response.json();
+    const data = await readJson(response);
 
     if (data.success && data.data && data.data.length > 0) {
       let html = '<div>';
@@ -1338,7 +1338,7 @@ export async function viewAnalysis(analysisId) {
     const historyResponse = await fetch(
       `${getPluginPath()}/api/analyze/history`
     );
-    const historyData = await historyResponse.json();
+    const historyData = await readJson(historyResponse);
 
     if (historyData.success && historyData.data) {
       const analysis = historyData.data.find(a => a.id === analysisId);
@@ -1465,7 +1465,7 @@ export async function deleteAnalysis(analysisId, isFullView = false) {
         method: 'DELETE',
       }
     );
-    const result = await response.json();
+    const result = await readJson(response);
 
     if (result.success) {
       // Close modal if in full view
@@ -1617,7 +1617,7 @@ export function initializeAIAnalysisTab() {
 export async function loadAvailableDataPaths() {
   try {
     const response = await fetch(`${getPluginPath()}/api/paths`);
-    const data = await response.json();
+    const data = await readJson(response);
 
     if (data.success && data.paths) {
       // Populate custom analysis checkboxes
@@ -1634,7 +1634,7 @@ export async function loadAvailableDataPaths() {
 export async function loadDataPathsForAnalysis() {
   try {
     const response = await fetch(`${getPluginPath()}/api/paths`);
-    const data = await response.json();
+    const data = await readJson(response);
 
     if (data.success && data.paths) {
       const container = document.getElementById('analysisDataPathContainer');
@@ -1739,7 +1739,7 @@ export async function askFollowUpQuestion() {
       }),
     });
 
-    const result = await response.json();
+    const result = await readJson(response);
 
     // Stop timer and show final time
     clearInterval(timerInterval);

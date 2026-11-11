@@ -1,4 +1,4 @@
-import { getPluginPath, escapeHtml } from './utils.js';
+import { getPluginPath, escapeHtml, readJson } from './utils.js';
 import {
   loadThresholdUnit,
   hasThresholdUnit,
@@ -510,7 +510,7 @@ async function persistCommandChanges({
       }),
     });
 
-    const result = await response.json();
+    const result = await readJson(response);
 
     if (result.success) {
       clearEditFormDirtyState(
@@ -551,7 +551,7 @@ async function persistCommandChanges({
 export async function loadCommands() {
   try {
     const response = await fetch(`${getPluginPath()}/api/commands`);
-    const result = await response.json();
+    const result = await readJson(response);
 
     if (result.success) {
       displayCommands(result.commands || []);
@@ -735,7 +735,7 @@ export async function showEditCommandForm(commandName) {
 
     // Find the command in the current commands list
     const response = await fetch(`${getPluginPath()}/api/commands`).then(r =>
-      r.json()
+      readJson(r)
     );
     const command = response.commands.find(cmd => cmd.command === commandName);
 
@@ -844,7 +844,7 @@ export async function registerCommand() {
       }),
     });
 
-    const result = await response.json();
+    const result = await readJson(response);
 
     if (result.success) {
       hideAddCommandForm();
@@ -876,7 +876,7 @@ export async function executeCommand(commandName, value) {
       }
     );
 
-    const result = await response.json();
+    const result = await readJson(response);
 
     if (result.success) {
       await loadCommandHistory();
@@ -915,7 +915,7 @@ export async function unregisterCommand(commandName) {
       }
     );
 
-    const result = await response.json();
+    const result = await readJson(response);
 
     if (result.success) {
       await loadCommands();
@@ -1141,7 +1141,7 @@ async function detectPathType(path) {
     const response = await fetch(
       `${getPluginPath()}/api/paths/${encodeURIComponent(path)}/type`
     );
-    const result = await response.json();
+    const result = await readJson(response);
     if (result.success) {
       return {
         dataType: result.dataType || 'unknown',
@@ -1334,7 +1334,7 @@ function updateValueFields(operatorSelectId, valueContainerId, dataType) {
     const checkHomePortConfigured = async () => {
       try {
         const response = await fetch(`${getPluginPath()}/api/config/homeport`);
-        const data = await response.json();
+        const data = await readJson(response);
         return (
           data.success && data.latitude !== null && data.longitude !== null
         );
@@ -1395,7 +1395,7 @@ function updateValueFields(operatorSelectId, valueContainerId, dataType) {
     const checkHomePortConfigured = async () => {
       try {
         const response = await fetch(`${getPluginPath()}/api/config/homeport`);
-        const data = await response.json();
+        const data = await readJson(response);
         return (
           data.success && data.latitude !== null && data.longitude !== null
         );
@@ -1527,7 +1527,7 @@ async function populateThresholdPaths() {
     try {
       const response = await fetch('/signalk/v1/api/');
       if (response.ok) {
-        const data = await response.json();
+        const data = await readJson(response);
         allPaths = extractPathsFromSignalK(data, filterType);
       }
     } catch (error) {
@@ -1541,7 +1541,7 @@ async function populateThresholdPaths() {
       try {
         const pluginResponse = await fetch(`${getPluginPath()}/api/paths`);
         if (pluginResponse.ok) {
-          const pluginData = await pluginResponse.json();
+          const pluginData = await readJson(pluginResponse);
           if (pluginData.success && Array.isArray(pluginData.paths)) {
             allPaths = pluginData.paths
               .map(pathInfo => pathInfo.path)
@@ -2401,7 +2401,7 @@ async function populateThresholdModalPaths() {
     try {
       const response = await fetch('/signalk/v1/api/');
       if (response.ok) {
-        const data = await response.json();
+        const data = await readJson(response);
         allPaths = extractPathsFromSignalK(data, filterType);
       }
     } catch (error) {
@@ -2412,7 +2412,7 @@ async function populateThresholdModalPaths() {
       try {
         const pluginResponse = await fetch(`${getPluginPath()}/api/paths`);
         if (pluginResponse.ok) {
-          const pluginData = await pluginResponse.json();
+          const pluginData = await readJson(pluginResponse);
           if (pluginData.success && Array.isArray(pluginData.paths)) {
             allPaths = pluginData.paths
               .map(pathInfo => pathInfo.path)
@@ -2523,7 +2523,7 @@ async function populateAddCmdThresholdPaths() {
     try {
       const response = await fetch('/signalk/v1/api/');
       if (response.ok) {
-        const data = await response.json();
+        const data = await readJson(response);
         allPaths = extractPathsFromSignalK(data, filterType);
       }
     } catch (error) {
@@ -2537,7 +2537,7 @@ async function populateAddCmdThresholdPaths() {
       try {
         const pluginResponse = await fetch(`${getPluginPath()}/api/paths`);
         if (pluginResponse.ok) {
-          const pluginData = await pluginResponse.json();
+          const pluginData = await readJson(pluginResponse);
           if (pluginData.success && Array.isArray(pluginData.paths)) {
             allPaths = pluginData.paths
               .map(pathInfo => pathInfo.path)
@@ -2943,7 +2943,7 @@ export async function setManualOverride(
       }
     );
 
-    const result = await response.json();
+    const result = await readJson(response);
 
     if (result.success) {
       await loadCommands();
@@ -2976,7 +2976,7 @@ export async function promptManualOverride(commandName) {
 export async function loadCommandHistory() {
   try {
     const response = await fetch(`${getPluginPath()}/api/commands/history`);
-    const result = await response.json();
+    const result = await readJson(response);
 
     if (result.success) {
       displayCommandHistory(result.data || []);
@@ -3107,7 +3107,7 @@ async function getAutomationState(commandName) {
       `/signalk/v1/api/vessels/self/commands/${commandName}/auto`
     );
     if (response.ok) {
-      const data = await response.json();
+      const data = await readJson(response);
       console.log(`🔍 getAutomationState(${commandName}):`, data);
       return data.value || false;
     } else {
@@ -3315,7 +3315,7 @@ function updateCommandStateDisplay(commandName, isOn) {
 export async function updateAllAutomationStates() {
   try {
     const response = await fetch(`${getPluginPath()}/api/commands`);
-    const result = await response.json();
+    const result = await readJson(response);
 
     if (result.success && result.commands) {
       for (const command of result.commands) {

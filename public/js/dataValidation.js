@@ -1,4 +1,4 @@
-import { getPluginPath } from './utils.js';
+import { getPluginPath, readJson } from './utils.js';
 
 // Global variables for validation cancellation
 let currentValidationController = null;
@@ -112,7 +112,7 @@ async function pollValidationProgress(
         break;
       }
 
-      const progress = await response.json();
+      const progress = await readJson(response);
       lastProgress = progress;
 
       const processed = progress.processed ?? 0;
@@ -232,7 +232,7 @@ async function pollRepairProgress(jobId, timerElement, startTime, abortSignal) {
         break;
       }
 
-      const progress = await response.json();
+      const progress = await readJson(response);
       lastProgress = progress;
 
       const processed = progress.processed ?? 0;
@@ -381,7 +381,7 @@ export async function runDataValidation() {
     });
     console.log('✅ Fetch completed, response status:', response.status);
 
-    const result = await response.json();
+    const result = await readJson(response);
 
     if (!response.ok) {
       throw new Error(result.message || 'Validation failed');
@@ -553,7 +553,7 @@ export async function runDataValidation() {
             }
           );
           if (progressResponse.ok) {
-            const cancelData = await progressResponse.json();
+            const cancelData = await readJson(progressResponse);
             if (
               cancelData.result &&
               Array.isArray(cancelData.result.violationFiles)
@@ -672,7 +672,7 @@ export async function repairSchemas() {
       },
     });
 
-    const result = await response.json();
+    const result = await readJson(response);
 
     if (!response.ok) {
       throw new Error(result.message || 'Repair failed');

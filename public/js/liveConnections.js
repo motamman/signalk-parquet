@@ -1,4 +1,4 @@
-import { getPluginPath } from './utils.js';
+import { getPluginPath, readJson } from './utils.js';
 
 export async function loadStreams() {
   // DISABLED - Streaming functionality has been disabled
@@ -73,7 +73,7 @@ async function loadSignalKPaths() {
 
     // Use the same endpoint as the Available Paths tab
     const response = await fetch(`${getPluginPath()}/api/paths`);
-    const result = await response.json();
+    const result = await readJson(response);
 
     if (
       result.success &&
@@ -121,7 +121,7 @@ async function loadVersionInfo() {
   try {
     const response = await fetch(`${getPluginPath()}/api/version`);
     if (response.ok) {
-      const versionData = await response.json();
+      const versionData = await readJson(response);
       const headerElement = document.querySelector('.header h1');
       if (headerElement) {
         const versionSpan = document.createElement('span');
@@ -237,7 +237,7 @@ async function streamAction(streamId, action) {
       action === 'delete' ? baseEndpoint : `${baseEndpoint}/${action}`;
 
     const response = await fetch(url, { method });
-    const result = await response.json();
+    const result = await readJson(response);
 
     if (result.success) {
       // Streaming disabled - no need to refresh
