@@ -67,6 +67,8 @@ function showTab(tabId) {
 
 registerGlobals({
   showTab,
+  // Read by the classic scripts (migration.js), which cannot import modules
+  readJson,
   // Path browser & queries
   loadAvailablePaths: PathBrowser.loadAvailablePaths,
   updateSelectedPath: PathBrowser.updateSelectedPath,
