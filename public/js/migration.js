@@ -393,6 +393,10 @@ async function pollMigrationProgress() {
     }
   } catch (error) {
     console.error('Error polling progress:', error);
+    // The job keeps running on the server; the next successful poll
+    // overwrites this line.
+    document.getElementById('migrationCurrentFile').textContent =
+      error.message;
   }
 }
 
