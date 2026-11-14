@@ -17,7 +17,7 @@ async function refreshBufferStatus() {
 
   try {
     const response = await fetch('/plugins/signalk-parquet/api/buffer/stats');
-    const data = await response.json();
+    const data = await window.readJson(response);
 
     if (!data.success) {
       container.innerHTML = `<p style="color: red;">Error: ${data.error}</p>`;
@@ -147,7 +147,7 @@ async function forceBufferExport() {
     const response = await fetch('/plugins/signalk-parquet/api/buffer/export', {
       method: 'POST',
     });
-    const data = await response.json();
+    const data = await window.readJson(response);
 
     if (data.success) {
       alert(
@@ -177,7 +177,7 @@ async function refreshMigrationPanel() {
     const response = await fetch(
       '/plugins/signalk-parquet/api/migrate/legacy-check'
     );
-    const data = await response.json();
+    const data = await window.readJson(response);
     panel.style.display =
       data.success && data.legacyDirectoryPresent ? 'block' : 'none';
   } catch (error) {
@@ -207,7 +207,7 @@ async function scanForMigration() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({}),
     });
-    const data = await response.json();
+    const data = await window.readJson(response);
 
     if (!data.success) {
       contentDiv.innerHTML = `<p style="color: red;">Scan failed: ${data.error}</p>`;
@@ -321,7 +321,7 @@ async function startMigration() {
         deleteSource: deleteSource,
       }),
     });
-    const data = await response.json();
+    const data = await window.readJson(response);
 
     if (!data.success) {
       alert(`Failed to start migration: ${data.error}`);
@@ -352,7 +352,7 @@ async function pollMigrationProgress() {
     const response = await fetch(
       `/plugins/signalk-parquet/api/migrate/progress/${currentMigrationJobId}`
     );
-    const data = await response.json();
+    const data = await window.readJson(response);
 
     if (!data.success || response.status === 404) {
       // Job not found — stale ID from a previous session
@@ -393,6 +393,10 @@ async function pollMigrationProgress() {
     }
   } catch (error) {
     console.error('Error polling progress:', error);
+    // The job keeps running on the server; the next successful poll
+    // overwrites this line.
+    document.getElementById('migrationCurrentFile').textContent =
+      error.message;
   }
 }
 
@@ -447,7 +451,7 @@ async function cancelMigration() {
         method: 'POST',
       }
     );
-    const data = await response.json();
+    const data = await window.readJson(response);
 
     if (data.success) {
       document.getElementById('migrationProgressText').textContent =
@@ -470,7 +474,7 @@ async function refreshStoreStats() {
 
   try {
     const response = await fetch('/plugins/signalk-parquet/api/store/stats');
-    const data = await response.json();
+    const data = await window.readJson(response);
 
     if (!data.success) {
       container.innerHTML = `<p style="color: red;">Error: ${data.error}</p>`;

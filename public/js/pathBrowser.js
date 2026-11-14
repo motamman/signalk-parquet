@@ -1,4 +1,4 @@
-import { getPluginPath } from './utils.js';
+import { getPluginPath, readJson } from './utils.js';
 import { setDataPathsQuery } from './dataPaths.js';
 
 let availablePaths = [];
@@ -7,7 +7,7 @@ let dataDirectory = '';
 export async function loadAvailablePaths() {
   try {
     const response = await fetch(`${getPluginPath()}/api/paths`);
-    const result = await response.json();
+    const result = await readJson(response);
 
     if (result.success) {
       availablePaths = result.paths;

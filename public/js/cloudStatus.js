@@ -1,4 +1,4 @@
-import { getPluginPath } from './utils.js';
+import { getPluginPath, readJson } from './utils.js';
 
 export async function testCloudConnection() {
   const resultDiv = document.getElementById('cloudTestResult');
@@ -19,7 +19,7 @@ export async function testCloudConnection() {
       },
     });
 
-    const result = await response.json();
+    const result = await readJson(response);
 
     if (result.success) {
       const label = (result.provider || 's3').toUpperCase();
@@ -81,7 +81,7 @@ export async function compareCloudFiles() {
     const startResponse = await fetch(`${getPluginPath()}/api/cloud/compare`, {
       method: 'POST',
     });
-    const startResult = await startResponse.json();
+    const startResult = await readJson(startResponse);
 
     if (!startResult.success) {
       resultDiv.innerHTML = `<div class="error">❌ ${startResult.error}</div>`;
@@ -96,7 +96,7 @@ export async function compareCloudFiles() {
         const statusResponse = await fetch(
           `${getPluginPath()}/api/cloud/compare/${compareJobId}`
         );
-        const status = await statusResponse.json();
+        const status = await readJson(statusResponse);
 
         if (!status.success) {
           clearInterval(pollInterval);
@@ -191,7 +191,7 @@ export async function syncToCloud() {
       body: JSON.stringify({}),
     });
 
-    const startResult = await startResponse.json();
+    const startResult = await readJson(startResponse);
 
     if (!startResult.success) {
       document.getElementById('syncProgress').innerHTML =
@@ -208,7 +208,7 @@ export async function syncToCloud() {
         const statusResponse = await fetch(
           `${getPluginPath()}/api/cloud/sync/${syncJobId}`
         );
-        const status = await statusResponse.json();
+        const status = await readJson(statusResponse);
 
         if (!status.success) {
           clearInterval(pollInterval);

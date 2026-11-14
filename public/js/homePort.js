@@ -3,7 +3,7 @@
  * Handles loading, saving, and setting home port location
  */
 
-import { getPluginPath } from './utils.js';
+import { getPluginPath, readJson } from './utils.js';
 
 /**
  * Load home port configuration on page load
@@ -11,7 +11,7 @@ import { getPluginPath } from './utils.js';
 export async function loadHomePort() {
   try {
     const response = await fetch(`${getPluginPath()}/api/config/homeport`);
-    const data = await response.json();
+    const data = await readJson(response);
 
     if (data.success && data.latitude !== null && data.longitude !== null) {
       document.getElementById('homePortLat').value = data.latitude;
@@ -29,7 +29,10 @@ export async function loadHomePort() {
     }
   } catch (error) {
     console.error('Failed to load home port:', error);
-    showHomePortStatus('❌ Failed to load home port', 'error');
+    showHomePortStatus(
+      `❌ Failed to load home port: ${error.message}`,
+      'error'
+    );
   }
 }
 
@@ -73,7 +76,7 @@ export async function saveHomePort() {
       }),
     });
 
-    const data = await response.json();
+    const data = await readJson(response);
 
     if (data.success) {
       showHomePortStatus(
@@ -85,7 +88,10 @@ export async function saveHomePort() {
     }
   } catch (error) {
     console.error('Failed to save home port:', error);
-    showHomePortStatus('❌ Failed to save home port', 'error');
+    showHomePortStatus(
+      `❌ Failed to save home port: ${error.message}`,
+      'error'
+    );
   }
 }
 
@@ -97,7 +103,7 @@ export async function setCurrentLocationAsHomePort() {
     showHomePortStatus('📍 Getting current position...', 'info');
 
     const response = await fetch(`${getPluginPath()}/api/position/current`);
-    const data = await response.json();
+    const data = await readJson(response);
 
     if (data.success) {
       document.getElementById('homePortLat').value = data.latitude;
@@ -112,7 +118,10 @@ export async function setCurrentLocationAsHomePort() {
     }
   } catch (error) {
     console.error('Failed to get current position:', error);
-    showHomePortStatus('❌ Failed to get current position', 'error');
+    showHomePortStatus(
+      `❌ Failed to get current position: ${error.message}`,
+      'error'
+    );
   }
 }
 

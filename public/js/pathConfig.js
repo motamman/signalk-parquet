@@ -1,4 +1,4 @@
-import { getPluginPath, escapeHtml } from './utils.js';
+import { getPluginPath, escapeHtml, readJson } from './utils.js';
 
 let showCommandPaths = false;
 
@@ -6,7 +6,7 @@ let showCommandPaths = false;
 export async function loadPathConfigurations() {
   try {
     const response = await fetch(`${getPluginPath()}/api/config/paths`);
-    const result = await response.json();
+    const result = await readJson(response);
 
     if (result.success) {
       displayPathConfigurations(result.paths);
@@ -181,14 +181,14 @@ async function populateSignalKPaths() {
 
   try {
     const response = await fetch('/signalk/v1/api/');
-    const data = await response.json();
+    const data = await readJson(response);
 
     // Extract paths from SignalK API with filter
     const allPaths = extractPathsFromSignalK(data, filterType);
 
     // Get defined commands to exclude
     const commandsResponse = await fetch(`${getPluginPath()}/api/commands`);
-    const commandsData = await commandsResponse.json();
+    const commandsData = await readJson(commandsResponse);
 
     const definedCommands = new Set();
     if (commandsData.success && commandsData.commands) {
@@ -218,7 +218,7 @@ async function populateSignalKPaths() {
   } catch (error) {
     console.log('Could not load real-time SignalK paths:', error);
     treeContainer.innerHTML =
-      '<div style="padding: 20px; text-align: center; color: #999;">Error loading paths</div>';
+      `<div style="padding: 20px; text-align: center; color: #999;">Error loading paths: ${escapeHtml(error.message)}</div>`;
   }
 }
 
@@ -470,7 +470,7 @@ async function populateAvailableRegimens() {
   try {
     // Get defined commands to use as regimens
     const commandsResponse = await fetch(`${getPluginPath()}/api/commands`);
-    const commandsData = await commandsResponse.json();
+    const commandsData = await readJson(commandsResponse);
 
     const availableRegimens = [];
     if (commandsData.success && commandsData.commands) {
@@ -633,7 +633,7 @@ export async function addPathConfiguration() {
       body: JSON.stringify(pathConfig),
     });
 
-    const result = await response.json();
+    const result = await readJson(response);
 
     if (result.success) {
       hideAddPathForm();
@@ -660,7 +660,7 @@ export async function removePathConfiguration(index) {
       }
     );
 
-    const result = await response.json();
+    const result = await readJson(response);
 
     if (result.success) {
       await loadPathConfigurations();
@@ -685,7 +685,7 @@ export async function editPathConfiguration(index) {
 
   // Get the current path configuration
   const response = await fetch(`${getPluginPath()}/api/config/paths`);
-  const result = await response.json();
+  const result = await readJson(response);
 
   if (!result.success || !result.paths[index]) {
     alert('Error loading path configuration');
@@ -763,13 +763,13 @@ async function populateEditSignalKPaths(index, currentPath) {
 
   try {
     const response = await fetch('/signalk/v1/api/');
-    const data = await response.json();
+    const data = await readJson(response);
 
     const allPaths = extractPathsFromSignalK(data, filterType);
 
     // Get defined commands to exclude
     const commandsResponse = await fetch(`${getPluginPath()}/api/commands`);
-    const commandsData = await commandsResponse.json();
+    const commandsData = await readJson(commandsResponse);
 
     const definedCommands = new Set();
     if (commandsData.success && commandsData.commands) {
@@ -872,7 +872,7 @@ async function populateEditRegimens(index, currentRegimens) {
   try {
     // Get defined commands to use as regimens
     const commandsResponse = await fetch(`${getPluginPath()}/api/commands`);
-    const commandsData = await commandsResponse.json();
+    const commandsData = await readJson(commandsResponse);
 
     const availableRegimens = [];
     if (commandsData.success && commandsData.commands) {
@@ -1010,7 +1010,7 @@ export async function saveEdit(index) {
       }
     );
 
-    const result = await response.json();
+    const result = await readJson(response);
 
     if (result.success) {
       editingIndex = -1;

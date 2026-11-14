@@ -4,7 +4,7 @@
  * Replicates ZedDisplay Historical Data Explorer widget functionality.
  */
 
-import { getPluginPath } from './utils.js';
+import { getPluginPath, readJson } from './utils.js';
 
 // =============================================================================
 // A. STATE MANAGEMENT
@@ -563,7 +563,7 @@ async function fetchVesselNames(contexts, from, to, signal) {
         const url = `/signalk/v1/history/values?context=${encodeURIComponent(ctx)}&paths=name&from=${from}&to=${to}&resolution=86400`;
         const resp = await fetch(url, { signal });
         if (!resp.ok) return;
-        const data = await resp.json();
+        const data = await readJson(resp);
         const result = Array.isArray(data) ? data[0] : data;
         if (result && result.data && result.data.length > 0) {
           const lastRow = result.data[result.data.length - 1];
@@ -645,7 +645,7 @@ export async function lookupContexts() {
 
   try {
     const resp = await fetch(url, { signal: lookup.signal });
-    const data = await resp.json();
+    const data = await readJson(resp);
     if (lookup.signal.aborted) return;
     state.availableContexts = data.contexts || data || [];
 
@@ -686,7 +686,7 @@ export async function loadAvailablePaths() {
 
   try {
     const resp = await fetch(url);
-    const data = await resp.json();
+    const data = await readJson(resp);
     // Response is a plain string array like ["navigation.speedOverGround", ...]
     state.availablePaths = Array.isArray(data) ? data : [];
     state._pathsStale = false;
@@ -844,7 +844,7 @@ export async function executeMapQuery() {
   try {
     const resp = await fetch(url);
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-    const data = await resp.json();
+    const data = await readJson(resp);
 
     state.hasResults = true;
     state.mode = STATES.RESULTS;
@@ -961,7 +961,7 @@ async function fetchPathMeta(paths) {
       const skPath = basePath.replace(/\./g, '/');
       const resp = await fetch(`/signalk/v1/api/${ctxPrefix}/${skPath}/meta`);
       if (resp.ok) {
-        const meta = await resp.json();
+        const meta = await readJson(resp);
         if (meta.displayUnits) {
           state.pathMeta[basePath] = meta.displayUnits;
         }
@@ -1698,7 +1698,7 @@ export async function toggleRouteHiRes() {
       spatialParam;
     const resp = await fetch(url, { signal: routeFetch.signal });
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-    const data = await resp.json();
+    const data = await readJson(resp);
     if (routeFetch.signal.aborted) return;
     const result = Array.isArray(data) ? data[0] : data;
 
@@ -1991,7 +1991,7 @@ async function fetchServerAreas() {
     await ensureResourceType();
     const resp = await fetch(`/signalk/v2/api/resources/${RESOURCE_TYPE}`);
     if (!resp.ok) return [];
-    const data = await resp.json();
+    const data = await readJson(resp);
     return Object.entries(data).map(([id, d]) => resourceDataToArea(id, d));
   } catch {
     return [];

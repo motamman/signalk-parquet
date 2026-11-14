@@ -1,4 +1,4 @@
-import { getPluginPath } from './utils.js';
+import { getPluginPath, readJson } from './utils.js';
 
 export async function executeQuery() {
   const query = document.getElementById('queryInput').value.trim();
@@ -21,7 +21,7 @@ export async function executeQuery() {
       body: JSON.stringify({ query }),
     });
 
-    const result = await response.json();
+    const result = await readJson(response);
 
     if (result.success) {
       displayResults(result, 'customQueryResultsContainer');
@@ -52,7 +52,7 @@ export async function executeDataPathsQuery() {
       body: JSON.stringify({ query }),
     });
 
-    const result = await response.json();
+    const result = await readJson(response);
 
     if (result.success) {
       displayResults(result, 'dataPathsResultsContainer');
