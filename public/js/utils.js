@@ -35,8 +35,8 @@ export async function readJson(response) {
         'Administrator login required. Log in to the Signal K Admin UI and reload this page.'
       );
     }
-    // The body is left out: callers put this message into innerHTML, and an
-    // HTML error page from a proxy would otherwise become markup.
-    throw new Error(`HTTP ${response.status} ${response.statusText}`.trim());
+    // Only the status number: callers put this message into innerHTML, and
+    // the body or reason phrase of a proxy's error reply could carry markup.
+    throw new Error(`HTTP ${response.status}`);
   }
 }
