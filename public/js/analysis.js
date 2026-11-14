@@ -1480,7 +1480,7 @@ export async function deleteAnalysis(analysisId, isFullView = false) {
     }
   } catch (error) {
     console.error('Failed to delete analysis:', error);
-    alert('Failed to delete analysis');
+    alert(`Failed to delete analysis: ${error.message}`);
   }
 }
 
@@ -1825,7 +1825,7 @@ export async function askFollowUpQuestion() {
     followUpTimerElement.style.borderColor = '#f44336';
 
     console.error('Follow-up question error:', error);
-    alert('Failed to ask follow-up question. Please try again.');
+    alert(`Failed to ask follow-up question: ${error.message}`);
   } finally {
     // Re-enable UI
     askButton.disabled = false;

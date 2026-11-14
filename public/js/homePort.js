@@ -29,7 +29,10 @@ export async function loadHomePort() {
     }
   } catch (error) {
     console.error('Failed to load home port:', error);
-    showHomePortStatus('❌ Failed to load home port', 'error');
+    showHomePortStatus(
+      `❌ Failed to load home port: ${error.message}`,
+      'error'
+    );
   }
 }
 
@@ -85,7 +88,10 @@ export async function saveHomePort() {
     }
   } catch (error) {
     console.error('Failed to save home port:', error);
-    showHomePortStatus('❌ Failed to save home port', 'error');
+    showHomePortStatus(
+      `❌ Failed to save home port: ${error.message}`,
+      'error'
+    );
   }
 }
 
@@ -112,7 +118,10 @@ export async function setCurrentLocationAsHomePort() {
     }
   } catch (error) {
     console.error('Failed to get current position:', error);
-    showHomePortStatus('❌ Failed to get current position', 'error');
+    showHomePortStatus(
+      `❌ Failed to get current position: ${error.message}`,
+      'error'
+    );
   }
 }
 

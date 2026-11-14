@@ -218,7 +218,7 @@ async function populateSignalKPaths() {
   } catch (error) {
     console.log('Could not load real-time SignalK paths:', error);
     treeContainer.innerHTML =
-      '<div style="padding: 20px; text-align: center; color: #999;">Error loading paths</div>';
+      `<div style="padding: 20px; text-align: center; color: #999;">Error loading paths: ${escapeHtml(error.message)}</div>`;
   }
 }
 
